@@ -1,0 +1,59 @@
+# Dependencies and package-manager caches
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/install-state.gz
+.pnp.*
+
+# Build output and framework caches
+dist/
+build/
+out/
+.next/
+.turbo/
+.cache/
+*.tsbuildinfo
+next-env.d.ts
+
+# Tests and reports
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Agent Console runtime state (settings, SQLite database, WAL files)
+.agent-console/
+
+# Agent scratch workspace; retain its placeholder
+workspace/*
+!workspace/.gitkeep
+
+# Local agent/runtime metadata injected by development tools
+.agents/
+.codex/
+
+# Logs and diagnostic output
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+next-panic-*.log
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

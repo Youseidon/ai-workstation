@@ -150,6 +150,25 @@ description — and it appears in the UI with no frontend change.
 `REST: GET /api/settings` · `PUT /api/settings` (partial patch) ·
 `POST /api/settings/reset` (`{"keys": [...]}` or `{}` for everything).
 
+## Workspaces and saved prompts
+
+The separate **Workspaces** page at <http://localhost:3000/workspaces> manages
+the execution library. A workspace points to an existing work directory and
+contains programs, programs contain suites, and suites contain reusable
+prompts. The console lets you select a workspace and either type a custom
+prompt or choose one of those saved prompts.
+
+Data is stored in `.agent-console/console.sqlite`. The browser only uses the
+REST API; it never reads or writes SQLite directly. On first start, the server
+creates a **Default workspace** from the effective `AGENT_WORKDIR`, preserving
+the previous single-directory setup. `AGENT_WORKDIR` is therefore the seed and
+legacy fallback; each run resolves its real directory from the selected
+workspace.
+
+Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
+CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
+parent cascades to its owned children.
+
 Host, port, and `ALLOWED_ORIGINS` are deliberately **not** editable from the UI —
 they are boot-time only and live in `config.ts`.
 

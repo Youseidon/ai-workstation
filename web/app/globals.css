@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --console-bg: #0b0d10;
+  --console-panel: #101317;
+  --console-line: #1d2229;
+  --console-text: #d7dde5;
+  --console-dim: #7d8794;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--console-bg);
+  color: var(--console-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A terminal-ish scrollbar so the log panel does not look like a web page. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2b323b transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2b323b;
+  border-radius: 6px;
+  border: 2px solid var(--console-bg);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}

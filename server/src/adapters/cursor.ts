@@ -1,0 +1,295 @@
+import type { AdapterEvent, TokenUsage } from "@agent-console/shared";
+import { oneLine } from "@agent-console/shared";
+import { describeEffectiveAccess, effectiveCursorForce, settings } from "../settings.ts";
+import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
+import type { RunOptions } from "./types.ts";
+
+/*
+ * `cursor-agent -p --output-format stream-json` emits a Claude-Code-shaped JSON
+ * stream. Cursor's flags and payloads move between releases, so this mapper is
+ * deliberately tolerant: it understands both the streaming envelope
+ * (`{"type":"assistant","message":{...}}`) and a single final object from
+ * `--output-format json`, and ignores event types it does not recognise.
+ * Verify with `cursor-agent --help` — see README.
+ */
+
+interface CursorContentBlock {
+  type?: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+}
+
+interface CursorEvent {
+  type?: string;
+  subtype?: string;
+  session_id?: string;
+  model?: string;
+  message?: { id?: string; role?: string; content?: CursorContentBlock[] | string };
+  result?: unknown;
+  is_error?: boolean;
+  error?: { message?: string } | string;
+  usage?: Record<string, number> | null;
+  // Cursor also emits flat tool events in some versions.
+  tool_call?: { id?: string; name?: string; input?: unknown; output?: unknown };
+  call_id?: string;
+  name?: string;
+  input?: unknown;
+  output?: unknown;
+  status?: string;
+}
+
+function toUsage(raw: Record<string, number> | null | undefined): TokenUsage | null {
+  if (!raw) return null;
+  const inputTokens = raw.input_tokens ?? raw.inputTokens ?? 0;
+  const outputTokens = raw.output_tokens ?? raw.outputTokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return null;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: raw.cache_read_input_tokens ?? raw.cached_input_tokens ?? 0,
+    reasoningOutputTokens: raw.reasoning_output_tokens ?? 0,
+    totalTokens: inputTokens + outputTokens,
+  };
+}
+
+function stringifyContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        const block = entry as CursorContentBlock;
+        if (typeof block.text === "string") return block.text;
+        return JSON.stringify(entry);
+      })
+      .join("\n");
+  }
+  if (content === undefined || content === null) return "";
+  return JSON.stringify(content, null, 2);
+}
+
+class CursorMapper implements StreamMapper {
+  settled = false;
+  private usage: TokenUsage | null = null;
+  private lastText: string | null = null;
+  private blockCounter = 0;
+  private readonly toolNames = new Map<string, string>();
+
+  map(value: unknown): AdapterEvent[] {
+    const event = value as CursorEvent;
+    switch (event.type) {
+      case "system":
+        return [{
+          type: "status",
+          payload: {
+            state: "running",
+            detail: event.model ? `model ${event.model}` : (event.subtype ?? "session started"),
+          },
+        }];
+      case "assistant":
+        return this.mapAssistant(event);
+      case "user":
+        return this.mapUser(event);
+      case "tool_call":
+      case "tool_use":
+        return this.mapFlatToolCall(event, "start");
+      case "tool_result":
+        return this.mapFlatToolCall(event, "result");
+      case "result": {
+        this.usage = toUsage(event.usage) ?? this.usage;
+        this.settled = true;
+        const failed = event.is_error === true || event.subtype === "error";
+        const text = typeof event.result === "string" ? event.result : this.lastText;
+        const events: AdapterEvent[] = [];
+        if (failed) {
+          events.push({
+            type: "error",
+            payload: { message: text ?? "cursor-agent reported an error", fatal: true },
+          });
+        }
+        events.push({
+          type: "result",
+          payload: {
+            state: failed ? "error" : "done",
+            usage: this.usage,
+            text,
+            exitCode: failed ? null : 0,
+          },
+        });
+        return events;
+      }
+      case "error": {
+        const message = typeof event.error === "string"
+          ? event.error
+          : event.error?.message ?? "cursor-agent reported an error";
+        return [{ type: "error", payload: { message, fatal: false } }];
+      }
+      default:
+        return [];
+    }
+  }
+
+  private mapAssistant(event: CursorEvent): AdapterEvent[] {
+    const content = event.message?.content;
+    if (typeof content === "string") return [this.textEvent(event, content)];
+    if (!Array.isArray(content)) return [];
+
+    const events: AdapterEvent[] = [];
+    content.forEach((block, index) => {
+      if (block.type === "text" && typeof block.text === "string" && block.text !== "") {
+        events.push(this.textEvent(event, block.text, index));
+      } else if (block.type === "thinking" && typeof block.text === "string") {
+        events.push(this.textEvent(event, block.text, index, "thinking"));
+      } else if (block.type === "tool_use") {
+        const toolUseId = block.id ?? `cursor_tool_${this.blockCounter++}`;
+        const name = block.name ?? "tool";
+        this.toolNames.set(toolUseId, name);
+        events.push({
+          type: "tool_use",
+          payload: {
+            toolUseId,
+            name,
+            summary: oneLine(JSON.stringify(block.input ?? {})),
+            input: block.input ?? {},
+          },
+        });
+      }
+    });
+    return events;
+  }
+
+  private textEvent(
+    event: CursorEvent,
+    text: string,
+    index = 0,
+    kind: "message" | "thinking" = "message",
+  ): AdapterEvent {
+    if (kind === "message") this.lastText = text;
+    const blockId = `${event.message?.id ?? event.session_id ?? "cursor"}:${index}`;
+    return {
+      type: "assistant_text",
+      // Cursor sends whole blocks per event, so replace rather than append.
+      payload: { blockId, delta: false, text, kind },
+    };
+  }
+
+  private mapUser(event: CursorEvent): AdapterEvent[] {
+    const content = event.message?.content;
+    if (!Array.isArray(content)) return [];
+    const events: AdapterEvent[] = [];
+    for (const block of content) {
+      if (block.type !== "tool_result") continue;
+      const toolUseId = block.tool_use_id ?? `cursor_tool_${this.blockCounter++}`;
+      const output = stringifyContent(block.content);
+      events.push({
+        type: "tool_result",
+        payload: {
+          toolUseId,
+          name: this.toolNames.get(toolUseId) ?? null,
+          isError: block.is_error === true,
+          summary: oneLine(output || "completed"),
+          output,
+          exitCode: null,
+        },
+      });
+    }
+    return events;
+  }
+
+  private mapFlatToolCall(event: CursorEvent, phase: "start" | "result"): AdapterEvent[] {
+    const raw = event.tool_call ?? {
+      id: event.call_id,
+      name: event.name,
+      input: event.input,
+      output: event.output,
+    };
+    const toolUseId = raw.id ?? `cursor_tool_${this.blockCounter++}`;
+    const name = raw.name ?? "tool";
+    if (phase === "start") {
+      this.toolNames.set(toolUseId, name);
+      return [{
+        type: "tool_use",
+        payload: {
+          toolUseId,
+          name,
+          summary: oneLine(JSON.stringify(raw.input ?? {})),
+          input: raw.input ?? {},
+        },
+      }];
+    }
+    const output = stringifyContent(raw.output ?? event.output);
+    return [{
+      type: "tool_result",
+      payload: {
+        toolUseId,
+        name: this.toolNames.get(toolUseId) ?? name,
+        isError: event.is_error === true || event.status === "failed",
+        summary: oneLine(output || "completed"),
+        output,
+        exitCode: null,
+      },
+    }];
+  }
+
+  finish(): AdapterEvent[] {
+    return [];
+  }
+}
+
+export class CursorAdapter extends SpawnAdapter {
+  readonly id = "cursor" as const;
+  readonly label = "Cursor CLI";
+  /** Headless cursor-agent does not reliably report usage; never invent it. */
+  readonly reportsTokens = false;
+  // Getters, not fields: settings can change between runs without a restart.
+  get permissionMode(): string {
+    return describeEffectiveAccess(
+      effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
+    );
+  }
+  get model(): string | null {
+    return settings.cursor.model;
+  }
+  protected get binaryName(): string {
+    return settings.cursor.binary;
+  }
+
+  protected missingBinaryReason(): string {
+    return `\`${settings.cursor.binary}\` not found on PATH — install from https://cursor.com/cli`;
+  }
+
+  protected async checkAuth(): Promise<string | null> {
+    if (process.env.CURSOR_API_KEY) return null;
+    if (settings.cursor.assumeAuthenticated) return null;
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const markers = [
+      join(homedir(), ".cursor", "cli-config.json"),
+      join(homedir(), ".cursor", "cli.json"),
+      join(homedir(), ".config", "cursor-agent"),
+      join(homedir(), ".local", "share", "cursor-agent"),
+    ];
+    if (markers.some((marker) => existsSync(marker))) return null;
+    return "No Cursor login detected — run `cursor-agent login` (or set CURSOR_ASSUME_AUTHENTICATED=true)";
+  }
+
+  protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
+    const args = ["-p", "--output-format", settings.cursor.outputFormat];
+    if (effectiveCursorForce()) args.push("--force");
+    const model = opts.model ?? settings.cursor.model;
+    if (model !== null) args.push("-m", model);
+    args.push(...settings.cursor.extraArgs);
+    args.push(prompt);
+    return { args };
+  }
+
+  protected createMapper(): StreamMapper {
+    return new CursorMapper();
+  }
+}
