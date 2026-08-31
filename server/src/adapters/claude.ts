@@ -19,7 +19,7 @@ export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "NotebookEdit",
 ] as const;
 
-/** Permission flags Claude actually starts with. Consult ignores Host access. */
+/** Per-run Claude permission flags. */
 export function claudePermissionConfig(override: PermissionOverride): {
   permissionMode: string;
   allowDangerouslySkipPermissions: boolean;

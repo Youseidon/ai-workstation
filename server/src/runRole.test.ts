@@ -92,6 +92,22 @@ test("second execute is still busy while an execute run is live", () => {
   }
 });
 
+test("explicit permissionMode null is inherit, not the handle's forced mode", () => {
+  const runId = "run_perm_null";
+  try {
+    runHub.start({
+      handle: fakeHandle(runId, "consult"),
+      workspace: { id: 9003, name: "Perm", workDirectory: "/tmp/perm" },
+      source: { type: "custom", displayText: "x" },
+      role: "execute",
+      permissionMode: null,
+    });
+    assert.equal(runHub.get(runId)?.permissionMode, null);
+  } finally {
+    runHub.end(runId, "done");
+  }
+});
+
 test("a consult does not occupy the execute lock", () => {
   const consultId = "run_consult_only";
   try {

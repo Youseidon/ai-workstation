@@ -789,10 +789,7 @@ export function describeEffectiveAccess(base: string): string {
   return hostAccessSuffix(base);
 }
 
-/**
- * Permission/sandbox the process should start with for this run.
- * Consult ignores Host access and forces the provider's read-only sandbox.
- */
+/** Permission/sandbox the process should start with for this run. */
 export function permissionForRun(
   provider: ProviderId,
   override: PermissionOverride,

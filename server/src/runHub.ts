@@ -114,7 +114,7 @@ export const runHub = {
    * The execute run currently writing in a workspace, if any.
    *
    * A workspace is one working directory, and two agents editing the same tree
-   * at once corrupt each other's work. Consults do not take this slot.
+   * at once corrupt each other's work.
    */
   activeForWorkspace(workspaceId: number): LiveRun | undefined {
     return this.activeExecuteForWorkspace(workspaceId);
@@ -149,7 +149,7 @@ export const runHub = {
       workspace: input.workspace,
       source: input.source,
       role: input.role ?? input.handle.role ?? "execute",
-      permissionMode: input.permissionMode ?? input.handle.permissionMode ?? null,
+      permissionMode: input.permissionMode !== undefined ? input.permissionMode : (input.handle.permissionMode ?? null),
       state: "starting",
       startedAt: new Date().toISOString(),
       elapsedMs: 0,

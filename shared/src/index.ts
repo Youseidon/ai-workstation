@@ -13,7 +13,6 @@ export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
-/** Execute takes the workspace writer lock. Consult is a sandboxed reader. */
 export const RUN_ROLES = ["execute", "consult"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
