@@ -3,14 +3,15 @@ import type {
   NormalizedEvent,
   ProviderId,
   ResultPayload,
+  RunRole,
   RunState,
   StatusPayload,
   TokenUsage,
 } from "@agent-console/shared";
-import { settings } from "./settings.ts";
+import { permissionForRun, settings } from "./settings.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
-import type { AgentAdapter } from "./adapters/types.ts";
+import type { AgentAdapter, PermissionOverride } from "./adapters/types.ts";
 
 /** How long a provider gets to stop cleanly before the run is hard-aborted. */
 const INTERRUPT_GRACE_MS = 2000;
@@ -22,6 +23,8 @@ export interface RunHandle {
   provider: ProviderId;
   /** Resolved once at start, so `run_started` and every event agree. */
   model: string | null;
+  role: RunRole;
+  permissionMode: string | null;
   interrupt(): Promise<void>;
   done: Promise<Extract<RunState, "done" | "interrupted" | "error">>;
 }
@@ -33,8 +36,16 @@ export interface StartRunArgs {
   cwd?: string;
   /** Model picked in the UI for this run; falls back to the adapter's setting. */
   model?: string | null;
+  role?: RunRole;
+  permissionOverride?: PermissionOverride;
   onEvent(event: NormalizedEvent): void;
   onEnd(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">): void;
+}
+
+export function runRoleStartError(role: RunRole, provider: string): string | null {
+  if (role !== "consult") return null;
+  if (provider === "cursor") return "Cursor cannot run as a consult; it has no sandbox.";
+  return "Consult runs are not enabled yet.";
 }
 
 /**
@@ -51,6 +62,11 @@ export function startRun(args: StartRunArgs): RunHandle {
   // Resolved once: settings could change mid-run, but a run reports the model
   // it actually started with from its first event to its last.
   const model = args.model ?? adapter.model;
+  const role = args.role ?? "execute";
+  const permissionOverride: PermissionOverride =
+    role === "consult" ? "consult" : (args.permissionOverride ?? "inherit");
+  const resolvedPermission = permissionForRun(provider, permissionOverride);
+  const permissionMode = permissionOverride === "inherit" ? null : resolvedPermission.mode;
 
   const startedAt = Date.now();
   const abortController = new AbortController();
@@ -131,6 +147,7 @@ export function startRun(args: StartRunArgs): RunHandle {
         model,
         signal: abortController.signal,
         log,
+        permissionOverride,
       })) {
         if (event.type === "result") {
           sawResult = true;
@@ -173,6 +190,8 @@ export function startRun(args: StartRunArgs): RunHandle {
     runId,
     provider,
     model,
+    role,
+    permissionMode,
     async interrupt() {
       if (finished) return;
       interruptRequested = true;

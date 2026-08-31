@@ -8,7 +8,40 @@ import {
   hostUnixSockets,
   settings,
 } from "../settings.ts";
-import type { AgentAdapter, AvailabilityReport, RunOptions } from "./types.ts";
+import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
+
+export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
+  "WebFetch",
+  "WebSearch",
+  "Bash",
+  "Write",
+  "Edit",
+  "NotebookEdit",
+] as const;
+
+/** Permission flags Claude actually starts with. Consult ignores Host access. */
+export function claudePermissionConfig(override: PermissionOverride): {
+  permissionMode: string;
+  allowDangerouslySkipPermissions: boolean;
+  disableSandboxForHostAccess: boolean;
+  disallowedTools: string[] | undefined;
+} {
+  if (override === "consult") {
+    return {
+      permissionMode: "plan",
+      allowDangerouslySkipPermissions: false,
+      disableSandboxForHostAccess: false,
+      disallowedTools: [...CLAUDE_CONSULT_DISALLOWED_TOOLS],
+    };
+  }
+  const permissionMode = effectiveClaudePermissionMode();
+  return {
+    permissionMode,
+    allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
+    disableSandboxForHostAccess: settings.hostAccess,
+    disallowedTools: undefined,
+  };
+}
 
 /*
  * Claude Code runs in-process through the Agent SDK's async generator — there is
@@ -166,19 +199,22 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.signal.aborted) abortController.abort();
     opts.signal.addEventListener("abort", onAbort, { once: true });
 
-    const permissionMode = effectiveClaudePermissionMode();
+    const permission = claudePermissionConfig(opts.permissionOverride);
     const options: Options = {
       cwd: opts.cwd,
       abortController,
       includePartialMessages: true,
-      permissionMode: permissionMode as Options["permissionMode"],
+      permissionMode: permission.permissionMode as Options["permissionMode"],
       settingSources: settings.claude.settingSources as Options["settingSources"],
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
     };
-    if (permissionMode === "bypassPermissions") {
+    if (permission.allowDangerouslySkipPermissions) {
       options.allowDangerouslySkipPermissions = true;
     }
-    if (settings.hostAccess) {
+    if (permission.disallowedTools !== undefined) {
+      (options as Options & { disallowedTools?: string[] }).disallowedTools = permission.disallowedTools;
+    }
+    if (permission.disableSandboxForHostAccess) {
       const sockets = hostUnixSockets();
       options.sandbox = {
         enabled: false,

@@ -14,6 +14,7 @@ import type {
   ClientMessage,
   ProviderId,
   ProviderInfo,
+  RunRole,
   RunSnapshot,
   RunSource,
   RunState,
@@ -31,6 +32,8 @@ export interface RunStatus {
   provider: ProviderId;
   /** The model this run resolved to on the server, not the current selection. */
   model: string | null;
+  role: RunRole;
+  permissionMode: string | null;
   state: RunState;
   elapsedMs: number;
   usage: TokenUsage | null;
@@ -88,6 +91,8 @@ function toRunStatus(snapshot: RunSnapshot): RunStatus {
     runId: snapshot.runId,
     provider: snapshot.provider,
     model: snapshot.model,
+    role: snapshot.role ?? "execute",
+    permissionMode: snapshot.permissionMode ?? null,
     state: snapshot.state,
     elapsedMs: snapshot.elapsedMs,
     usage: snapshot.usage,
@@ -187,6 +192,8 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
                 runId: message.runId,
                 provider: message.provider,
                 model: message.model,
+                role: message.role ?? "execute",
+                permissionMode: null,
                 state: "starting",
                 elapsedMs: 0,
                 usage: null,
@@ -366,9 +373,9 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
       run,
       itemsFor: (runId) => state.items.filter((item) => item.runId === runId),
       startRun: (workspaceId, provider, source, model) =>
-        send({ kind: "run", workspaceId, provider, ...source, model }),
+        send({ kind: "run", workspaceId, provider, ...source, model, role: "execute" }),
       askClarification: (workspaceId, provider, promptId, question, model) =>
-        send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model }),
+        send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model, role: "execute" }),
       verifySuite: (suiteId, provider, model) => send({ kind: "verify_suite", suiteId, provider, model }),
       interrupt: (runId) => {
         const target = runId ?? run?.runId;

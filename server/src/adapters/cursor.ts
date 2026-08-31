@@ -279,6 +279,13 @@ export class CursorAdapter extends SpawnAdapter {
     return "No Cursor login detected — run `cursor-agent login` (or set CURSOR_ASSUME_AUTHENTICATED=true)";
   }
 
+  override async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {
+    if (opts.permissionOverride === "consult") {
+      throw new Error("Cursor cannot run as a consult; it has no sandbox.");
+    }
+    yield* super.run(prompt, opts);
+  }
+
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const args = ["-p", "--output-format", settings.cursor.outputFormat];
     if (effectiveCursorForce()) args.push("--force");

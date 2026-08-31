@@ -355,11 +355,12 @@ export class GrokAdapter extends SpawnAdapter {
   }
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
+    const consult = opts.permissionOverride === "consult";
     const args = [
       "--output-format", "streaming-json",
       "--cwd", opts.cwd,
-      "--permission-mode", effectiveGrokPermissionMode(),
-      "--sandbox", effectiveGrokSandboxMode(),
+      "--permission-mode", consult ? "plan" : effectiveGrokPermissionMode(),
+      "--sandbox", consult ? "workspace" : effectiveGrokSandboxMode(),
     ];
     const model = opts.model ?? settings.grok.model;
     if (model !== null) args.push("-m", model);

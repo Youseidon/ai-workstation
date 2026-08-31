@@ -1,6 +1,12 @@
 import type { AdapterEvent, ProviderId, ProviderInfo } from "@agent-console/shared";
 import type { Logger } from "../lib/logger.ts";
 
+/**
+ * "consult" forces the provider's read-only sandbox and ignores Host access.
+ * Adapters must not read settings.hostAccess when this is "consult".
+ */
+export type PermissionOverride = "inherit" | "consult";
+
 export interface RunOptions {
   /** Correlates every event of one run, and is the key for `interrupt()`. */
   runId: string;
@@ -15,6 +21,7 @@ export interface RunOptions {
   model: string | null;
   /** Server-side log; adapter stderr goes here, never to the browser. */
   log: Logger;
+  permissionOverride: PermissionOverride;
 }
 
 export interface AvailabilityReport {

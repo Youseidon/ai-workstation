@@ -13,6 +13,14 @@ export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
+/** Execute takes the workspace writer lock. Consult is a sandboxed reader. */
+export const RUN_ROLES = ["execute", "consult"] as const;
+export type RunRole = (typeof RUN_ROLES)[number];
+
+export function isRunRole(value: unknown): value is RunRole {
+  return typeof value === "string" && (RUN_ROLES as readonly string[]).includes(value);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Model catalog                                                               */
 /* -------------------------------------------------------------------------- */
@@ -374,6 +382,7 @@ export interface PromptRunSummary {
   id: string;
   provider: string;
   model: string | null;
+  role: RunRole;
   state: string;
   startedAt: string;
   endedAt: string | null;
@@ -410,7 +419,7 @@ export interface HumanInputRequest {
 }
 
 export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
-export interface AgentRunActivity { id:string; provider:string; model:string|null; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
+export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
 export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus; programName:string; suiteName:string }
 
 export type PromptOperationalState = "WORKING" | "AWAITING_RESPONSE" | "RECOVERY_NEEDED" | "FAILED" | "READY" | "WAITING_DEPENDENCY" | "COMPLETE" | "SKIPPED";
@@ -441,7 +450,7 @@ export interface OperationsSuite {
   /** The most recent verification of this suite, for the badge. Null if never. */
   latestVerification: SuiteVerificationBadge | null;
 }
-export interface OperationsSession { id:string; workspaceId:number; promptId:number; promptKey:string|null; promptTitle:string; provider:string; model:string|null; state:string; startedAt:string; endedAt:string|null }
+export interface OperationsSession { id:string; workspaceId:number; promptId:number; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
 export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[] }
 export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
 /** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
@@ -566,6 +575,8 @@ export interface ClientRunMessage {
   /** Ask about a blocked work item without reopening or executing it. */
   mode?: "execute" | "clarify";
   question?: string;
+  /** Default "execute". Unknown values are a malformed frame. */
+  role?: RunRole;
 }
 
 export interface ClientInterruptMessage {
@@ -635,6 +646,7 @@ export interface ServerRunStartedMessage {
   model: string | null;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
   source: RunSource;
+  role: RunRole;
 }
 
 /**
@@ -651,6 +663,7 @@ export interface RunSnapshot {
   model: string | null;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
   source: RunSource;
+  role: RunRole;
   state: RunState;
   startedAt: string;
   elapsedMs: number;
@@ -660,6 +673,11 @@ export interface RunSnapshot {
   events: NormalizedEvent[];
   /** True when the buffer overflowed and the oldest events were dropped. */
   truncated: boolean;
+  /**
+   * Forced permission/sandbox the process actually started with, for the
+   * status bar. Null means "inherited global settings".
+   */
+  permissionMode: string | null;
 }
 
 export interface ServerRunEndedMessage {

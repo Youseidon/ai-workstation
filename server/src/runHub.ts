@@ -1,6 +1,7 @@
 import type {
   NormalizedEvent,
   ProviderId,
+  RunRole,
   RunSnapshot,
   RunSource,
   RunState,
@@ -21,13 +22,15 @@ const log = createLogger("runhub");
  */
 const MAX_REPLAY_EVENTS = 2000;
 
-interface LiveRun {
+export interface LiveRun {
   handle: RunHandle;
   runId: string;
   provider: ProviderId;
   model: string | null;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
   source: RunSource;
+  role: RunRole;
+  permissionMode: string | null;
   state: RunState;
   startedAt: string;
   elapsedMs: number;
@@ -49,6 +52,7 @@ function snapshot(run: LiveRun): RunSnapshot {
     model: run.model,
     workspace: run.workspace,
     source: run.source,
+    role: run.role,
     state: run.state,
     startedAt: run.startedAt,
     elapsedMs: run.elapsedMs,
@@ -56,6 +60,7 @@ function snapshot(run: LiveRun): RunSnapshot {
     detail: run.detail,
     events: run.events,
     truncated: run.truncated,
+    permissionMode: run.permissionMode,
   };
 }
 
@@ -106,15 +111,26 @@ export const runHub = {
   },
 
   /**
-   * The run currently working in a workspace, if any.
+   * The execute run currently writing in a workspace, if any.
    *
    * A workspace is one working directory, and two agents editing the same tree
-   * at once corrupt each other's work. The old per-connection guard let two
-   * browser tabs do exactly that.
+   * at once corrupt each other's work. Consults do not take this slot.
    */
   activeForWorkspace(workspaceId: number): LiveRun | undefined {
-    for (const run of runs.values()) if (run.workspace.id === workspaceId) return run;
+    return this.activeExecuteForWorkspace(workspaceId);
+  },
+
+  activeExecuteForWorkspace(workspaceId: number): LiveRun | undefined {
+    for (const run of runs.values()) {
+      if (run.workspace.id === workspaceId && run.role === "execute") return run;
+    }
     return undefined;
+  },
+
+  consultsForWorkspace(workspaceId: number): LiveRun[] {
+    return [...runs.values()].filter(
+      (run) => run.workspace.id === workspaceId && run.role === "consult",
+    );
   },
 
   /** Registers a started run and announces it to every client. */
@@ -122,6 +138,8 @@ export const runHub = {
     handle: RunHandle;
     workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
     source: RunSource;
+    role?: RunRole;
+    permissionMode?: string | null;
   }): void {
     const run: LiveRun = {
       handle: input.handle,
@@ -130,6 +148,8 @@ export const runHub = {
       model: input.handle.model,
       workspace: input.workspace,
       source: input.source,
+      role: input.role ?? input.handle.role ?? "execute",
+      permissionMode: input.permissionMode ?? input.handle.permissionMode ?? null,
       state: "starting",
       startedAt: new Date().toISOString(),
       elapsedMs: 0,
@@ -146,6 +166,7 @@ export const runHub = {
       model: run.model,
       workspace: run.workspace,
       source: run.source,
+      role: run.role,
     });
     this.operationsChanged();
   },

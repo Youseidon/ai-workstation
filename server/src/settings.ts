@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type {
+  ProviderId,
   SettingField,
   SettingOption,
   SettingType,
@@ -8,6 +9,7 @@ import type {
   SettingsPatch,
   SettingsSnapshot,
 } from "@agent-console/shared";
+import type { PermissionOverride } from "./adapters/types.ts";
 import { config } from "./config.ts";
 import { createLogger } from "./lib/logger.ts";
 
@@ -785,6 +787,44 @@ function hostAccessSuffix(value: string): string {
 /** Status-bar / tooltip string; includes the overlay so the UI is honest. */
 export function describeEffectiveAccess(base: string): string {
   return hostAccessSuffix(base);
+}
+
+/**
+ * Permission/sandbox the process should start with for this run.
+ * Consult ignores Host access and forces the provider's read-only sandbox.
+ */
+export function permissionForRun(
+  provider: ProviderId,
+  override: PermissionOverride,
+): { mode: string; hostAccessApplied: boolean } {
+  if (override === "consult") {
+    switch (provider) {
+      case "claude":
+        return { mode: "plan", hostAccessApplied: false };
+      case "codex":
+        return { mode: "read-only", hostAccessApplied: false };
+      case "grok":
+        return { mode: "plan · sandbox: workspace", hostAccessApplied: false };
+      case "cursor":
+        return { mode: "consult-not-supported", hostAccessApplied: false };
+    }
+  }
+  switch (provider) {
+    case "claude":
+      return { mode: effectiveClaudePermissionMode(), hostAccessApplied: settings.hostAccess };
+    case "codex":
+      return { mode: effectiveCodexSandboxMode(), hostAccessApplied: settings.hostAccess };
+    case "grok":
+      return {
+        mode: `${effectiveGrokPermissionMode()} · sandbox: ${effectiveGrokSandboxMode()}`,
+        hostAccessApplied: settings.hostAccess,
+      };
+    case "cursor":
+      return {
+        mode: effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
+        hostAccessApplied: settings.hostAccess,
+      };
+  }
 }
 
 load();

@@ -1,13 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
-import { isProviderId } from "@agent-console/shared";
+import { isProviderId, isRunRole } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
-import { startRun } from "./runner.ts";
+import { runRoleStartError, startRun } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
@@ -316,7 +316,7 @@ wss.on("connection", (ws: WebSocket) => {
         }else{
         if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
         const credential=runContexts.create(plannedRunId,workspaceId,promptId);
-        try{workspaces.beginAgentRun({runId:plannedRunId,workspaceId,promptId,provider:providerId,model,tokenHash:credential.tokenHash,expiresAt:credential.expiresAt});}catch(error){runContexts.revoke(plannedRunId);throw error;}
+        try{workspaces.beginAgentRun({runId:plannedRunId,workspaceId,promptId,provider:providerId,model,tokenHash:credential.tokenHash,expiresAt:credential.expiresAt,role:"execute"});}catch(error){runContexts.revoke(plannedRunId);throw error;}
         activeContextRunId=plannedRunId;
         const contextUrl=`http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
         resolvedPrompt=`Execute saved work item ${record.externalKey??record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
@@ -340,6 +340,8 @@ wss.on("connection", (ws: WebSocket) => {
       prompt: resolvedPrompt,
       cwd: workspace.workDirectory,
       model,
+      role: "execute",
+      permissionOverride: "inherit",
       onEvent: (event) => {if(event.type==="assistant_text"&&event.payload.kind==="message"){if(clarificationId!==null)clarificationAnswer+=event.payload.text;else if(activeContextRunId!==null)executionAnswer+=event.payload.text;}if(event.type==="result"&&event.payload.text){if(clarificationId!==null)clarificationAnswer=event.payload.text;else if(activeContextRunId!==null)executionAnswer=event.payload.text;}if(activeContextRunId!==null)workspaces.recordAgentEvent(activeContextRunId,event);runHub.event(plannedRunId,event);},
       onEnd: (runId, state) => {
         if(activeContextRunId!==null){workspaces.finishAgentRun(activeContextRunId,state,executionAnswer);runContexts.complete(activeContextRunId);activeContextRunId=null;}
@@ -355,6 +357,8 @@ wss.on("connection", (ws: WebSocket) => {
       handle,
       workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
       source:savedPrompt===null?{type:"custom",displayText:customDisplay}:mode==="clarify"?{type:"clarification",promptId:savedPrompt.id,promptKey:savedPrompt.externalKey,title:savedPrompt.title,question:question!.trim()}:{type:"saved",promptId:savedPrompt.id,promptKey:savedPrompt.externalKey,title:savedPrompt.title,programName:savedPrompt.programName,suiteName:savedPrompt.suiteName},
+      role: "execute",
+      permissionMode: handle.permissionMode,
     });
     void handle.done.catch((error: unknown) => connLog.error("run failed", error));
   };
@@ -400,6 +404,8 @@ wss.on("connection", (ws: WebSocket) => {
       prompt: context.prompt,
       cwd: workspace.workDirectory,
       model,
+      role: "execute",
+      permissionOverride: "inherit",
       onEvent: (event) => {
         if (event.type === "assistant_text" && event.payload.kind === "message") report += event.payload.text;
         if (event.type === "result" && event.payload.text) report = event.payload.text;
@@ -415,6 +421,8 @@ wss.on("connection", (ws: WebSocket) => {
       handle,
       workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
       source: { type: "verification", verificationId, suiteId, suiteKey: suite.key, suiteName: suite.name },
+      role: "execute",
+      permissionMode: handle.permissionMode,
     });
     void handle.done.catch((error: unknown) => connLog.error("verification failed", error));
   };
@@ -440,6 +448,10 @@ wss.on("connection", (ws: WebSocket) => {
         const mode=parsed.mode??"execute";
         if(mode!=="execute"&&mode!=="clarify"){sendError("Unknown run mode.");return;}
         if(mode==="clarify"&&(!hasPromptId||typeof parsed.question!=="string"||parsed.question.trim()==="")){sendError("Clarification requires a saved prompt and a question.");return;}
+        if (parsed.role !== undefined && !isRunRole(parsed.role)) { sendError("Unknown run role."); return; }
+        const role = parsed.role ?? "execute";
+        const roleError = runRoleStartError(role, parsed.provider);
+        if (roleError !== null) { sendError(roleError); return; }
         // An absent/blank model means "fall back to the configured one"; a
         // non-string is a malformed frame rather than a silent default.
         if (parsed.model !== undefined && parsed.model !== null && typeof parsed.model !== "string") {
