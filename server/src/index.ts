@@ -1,20 +1,20 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
-import { isProviderId, isRunRole } from "@agent-console/shared";
+import { isRunRole } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
-import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
-import { runRoleStartError, startRun } from "./runner.ts";
+import { runRoleStartError } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
 import { contextMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
-import { newId } from "./lib/ids.ts";
 import { runHub } from "./runHub.ts";
+import { startExecute, startVerifySuite } from "./runService.ts";
 
 const log = createLogger("server");
 
@@ -260,6 +260,16 @@ wss.on("connection", (ws: WebSocket) => {
     });
   });
 
+  const mapStartError = (error: unknown, fallback: string): void => {
+    sendError(
+      error instanceof Error ? error.message : fallback,
+      error instanceof WorkspaceError ? error.fields?.detail ?? null : null,
+    );
+    if (error instanceof WorkspaceError && error.code === "provider_unavailable") {
+      void detectProviders(true).then((providers) => send({ kind: "providers", providers }));
+    }
+  };
+
   const handleRun = async (
     workspaceId: number,
     prompt: string | undefined,
@@ -269,162 +279,19 @@ wss.on("connection", (ws: WebSocket) => {
     mode: "execute"|"clarify" = "execute",
     question?: string,
   ): Promise<void> => {
-    const busy = runHub.activeForWorkspace(workspaceId);
-    if (busy !== undefined) {
-      // One workspace is one working directory. Two agents editing the same
-      // tree at once corrupt each other; the old per-connection guard happily
-      // allowed it as soon as you opened a second tab.
-      sendError(
-        `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`,
-        "Stop the running agent before starting another in the same working directory.",
-      );
-      return;
-    }
-    if (!isProviderId(providerId)) {
-      sendError(`Unknown provider "${providerId}".`);
-      return;
-    }
-    const providers = await detectProviders(true);
-    const info = providers.find((provider) => provider.id === providerId);
-    if (info === undefined || !info.available) {
-      sendError(
-        `Provider "${providerId}" is not available.`,
-        info?.reason ?? "detection failed",
-      );
-      send({ kind: "providers", providers });
-      return;
-    }
-    let workspace;
-    let resolvedPrompt: string;
-    let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
-    let customDisplay = "";
-    let clarificationId:number|null=null;
-    // Scoped to this run, not the connection: runs outlive the socket now.
-    let activeContextRunId: string | null = null;
-    const plannedRunId=newId("run");
     try {
-      workspace = workspaces.get(workspaceId);
-      if (!workspace.workDirectoryExists) throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
-      if (promptId !== undefined) {
-        const record = workspaces.resolvePrompt(workspaceId, promptId);
-        savedPrompt = record;
-        if(mode==="clarify"){
-          if(record.status!=="BLOCKED")throw new WorkspaceError(409,"prompt_not_blocked","Clarification is only available while a prompt is blocked");
-          if(typeof question!=="string"||question.trim()==="")throw new WorkspaceError(422,"validation_error","A clarification question is required");
-          clarificationId=workspaces.beginClarification(promptId,question,providerId,model);
-          resolvedPrompt=`${contextMarkdown(workspaces.agentContext(workspaceId,promptId),"clarify")}\n\n## Human question\n\n${question.trim()}`;
-        }else{
-        if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
-        const credential=runContexts.create(plannedRunId,workspaceId,promptId);
-        try{workspaces.beginAgentRun({runId:plannedRunId,workspaceId,promptId,provider:providerId,model,tokenHash:credential.tokenHash,expiresAt:credential.expiresAt,role:"execute"});}catch(error){runContexts.revoke(plannedRunId);throw error;}
-        activeContextRunId=plannedRunId;
-        const contextUrl=`http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
-        resolvedPrompt=`Execute saved work item ${record.externalKey??record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
-        }
-      } else {
-        resolvedPrompt = prompt?.trim() ?? "";
-        customDisplay = resolvedPrompt;
-        if (resolvedPrompt === "") throw new WorkspaceError(422, "validation_error", "Prompt is empty");
-        if (workspace.description.trim() !== "") resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n# Work item\n\n${resolvedPrompt}`;
-      }
+      await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question });
     } catch (error) {
-      sendError(error instanceof Error ? error.message : "Unable to resolve workspace");
-      return;
+      mapStartError(error, "Unable to resolve workspace");
     }
-
-    let clarificationAnswer="";
-    let executionAnswer="";
-    const handle = startRun({
-      runId:plannedRunId,
-      adapter: getAdapter(providerId),
-      prompt: resolvedPrompt,
-      cwd: workspace.workDirectory,
-      model,
-      role: "execute",
-      permissionOverride: "inherit",
-      onEvent: (event) => {if(event.type==="assistant_text"&&event.payload.kind==="message"){if(clarificationId!==null)clarificationAnswer+=event.payload.text;else if(activeContextRunId!==null)executionAnswer+=event.payload.text;}if(event.type==="result"&&event.payload.text){if(clarificationId!==null)clarificationAnswer=event.payload.text;else if(activeContextRunId!==null)executionAnswer=event.payload.text;}if(activeContextRunId!==null)workspaces.recordAgentEvent(activeContextRunId,event);runHub.event(plannedRunId,event);},
-      onEnd: (runId, state) => {
-        if(activeContextRunId!==null){workspaces.finishAgentRun(activeContextRunId,state,executionAnswer);runContexts.complete(activeContextRunId);activeContextRunId=null;}
-        if(clarificationId!==null)workspaces.finishClarification(clarificationId,state==="done"?"DONE":state==="interrupted"?"INTERRUPTED":"ERROR",clarificationAnswer);
-        // Deregisters and tells every client, not just the one that started it.
-        runHub.end(runId, state);
-      },
-    });
-    // Marked RUNNING before the announcement, so a client that reacts to
-    // run_started by refetching never reads a stale STARTING row.
-    if(savedPrompt!==null&&mode==="execute")workspaces.markAgentRunRunning(handle.runId);
-    runHub.start({
-      handle,
-      workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
-      source:savedPrompt===null?{type:"custom",displayText:customDisplay}:mode==="clarify"?{type:"clarification",promptId:savedPrompt.id,promptKey:savedPrompt.externalKey,title:savedPrompt.title,question:question!.trim()}:{type:"saved",promptId:savedPrompt.id,promptKey:savedPrompt.externalKey,title:savedPrompt.title,programName:savedPrompt.programName,suiteName:savedPrompt.suiteName},
-      role: "execute",
-      permissionMode: handle.permissionMode,
-    });
-    void handle.done.catch((error: unknown) => connLog.error("run failed", error));
   };
 
-  /**
-   * Runs an agent verification of a whole suite.
-   *
-   * The dossier is built here rather than in the browser, and the run is
-   * recorded before it starts, so its events persist and its report survives
-   * the page that launched it. The old path fired the dossier as an anonymous
-   * custom prompt: nothing about it was ever written down.
-   */
   const handleVerifySuite = async (suiteId: number, providerId: string, model: string | null): Promise<void> => {
-    if (!isProviderId(providerId)) { sendError(`Unknown provider "${providerId}".`); return; }
-    const providers = await detectProviders(true);
-    const info = providers.find((provider) => provider.id === providerId);
-    if (info === undefined || !info.available) {
-      sendError(`Provider "${providerId}" is not available.`, info?.reason ?? "detection failed");
-      send({ kind: "providers", providers });
-      return;
-    }
-
-    let suite; let context; let workspace; let verificationId: number;
-    const plannedRunId = newId("run");
     try {
-      suite = workspaces.suiteHeader(suiteId);
-      workspace = workspaces.get(suite.workspaceId);
-      if (!workspace.workDirectoryExists) throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
-      const busy = runHub.activeForWorkspace(workspace.id);
-      if (busy !== undefined) throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}). Stop it before verifying.`);
-      context = workspaces.suiteVerificationContext(suiteId);
-      verificationId = workspaces.beginSuiteVerification({ runId: plannedRunId, suiteId, provider: providerId, model, stats: context.stats });
+      await startVerifySuite({ suiteId, provider: providerId, model });
     } catch (error) {
-      sendError(error instanceof Error ? error.message : "Unable to start verification");
-      return;
+      mapStartError(error, "Unable to start verification");
     }
-
-    // The agent's closing message is the report; keep the last full one.
-    let report = "";
-    const handle = startRun({
-      runId: plannedRunId,
-      adapter: getAdapter(providerId),
-      prompt: context.prompt,
-      cwd: workspace.workDirectory,
-      model,
-      role: "execute",
-      permissionOverride: "inherit",
-      onEvent: (event) => {
-        if (event.type === "assistant_text" && event.payload.kind === "message") report += event.payload.text;
-        if (event.type === "result" && event.payload.text) report = event.payload.text;
-        workspaces.recordVerificationEvent(verificationId, event);
-        runHub.event(plannedRunId, event);
-      },
-      onEnd: (runId, state) => {
-        workspaces.finishSuiteVerification(verificationId, state, report);
-        runHub.end(runId, state);
-      },
-    });
-    runHub.start({
-      handle,
-      workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
-      source: { type: "verification", verificationId, suiteId, suiteKey: suite.key, suiteName: suite.name },
-      role: "execute",
-      permissionMode: handle.permissionMode,
-    });
-    void handle.done.catch((error: unknown) => connLog.error("verification failed", error));
   };
 
   ws.on("message", (raw) => {
