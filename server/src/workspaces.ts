@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import type { AgentRunActivity, AgentSession, ClarificationExchange, HumanInputRequest, NormalizedEvent, OperationsPrompt, OperationsSession, OperationsSnapshot, OperationsSuite, ProgramRecord, PromptActivity, PromptOperationalState, PromptOption, PromptRecord, PromptRemark, PromptStatusEvent, RunRole, SuiteRecord, SuiteVerificationBadge, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationItem, SuiteVerificationRecord, SuiteVerificationStats, SuiteVerificationVerdict, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+import { defaultPromptPipelineRule, isOnBlockedAction, isOnDoneAction, isProviderId, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
 import type { ImportedProgram } from "./promptImport.ts";
@@ -218,6 +218,47 @@ const migrate = db.transaction(() => {
     db.exec(`ALTER TABLE agent_run ADD COLUMN role TEXT NOT NULL DEFAULT 'execute';`);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(7,?)").run(new Date().toISOString());
   }
+  if(version<8){
+    db.exec(`
+      ALTER TABLE suite ADD COLUMN default_provider TEXT;
+      ALTER TABLE suite ADD COLUMN default_model TEXT;
+      CREATE TABLE prompt_pipeline_rule (
+        prompt_id INTEGER PRIMARY KEY REFERENCES prompt(id) ON DELETE CASCADE,
+        provider TEXT,
+        model TEXT,
+        on_done TEXT NOT NULL DEFAULT 'continue'
+          CHECK(on_done IN ('continue','stop','skip_rest')),
+        on_blocked TEXT NOT NULL DEFAULT 'wait'
+          CHECK(on_blocked IN ('wait','retry','recover','skip')),
+        retry_limit INTEGER NOT NULL DEFAULT 1
+          CHECK(retry_limit BETWEEN 1 AND 5),
+        recover_provider TEXT,
+        recover_model TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE suite_pipeline_run (
+        id TEXT PRIMARY KEY,
+        suite_id INTEGER NOT NULL REFERENCES suite(id) ON DELETE CASCADE,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        state TEXT NOT NULL
+          CHECK(state IN ('PLAYING','WAITING_HUMAN','PAUSED','COMPLETE','STOPPED','INTERRUPTED')),
+        current_prompt_id INTEGER REFERENCES prompt(id) ON DELETE SET NULL,
+        current_run_id TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        recovering INTEGER NOT NULL DEFAULT 0,
+        play_provider TEXT,
+        play_model TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        stop_reason TEXT
+      );
+      CREATE INDEX suite_pipeline_run_suite_idx ON suite_pipeline_run(suite_id, started_at);
+      CREATE UNIQUE INDEX suite_pipeline_active_uq
+        ON suite_pipeline_run(suite_id)
+        WHERE state IN ('PLAYING','WAITING_HUMAN','PAUSED');
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(8,?)").run(new Date().toISOString());
+  }
 });
 migrate();
 
@@ -255,13 +296,69 @@ const recoverAbandonedRuns=db.transaction(()=>{
   for(const row of rows)db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,row.id);
   const orphaned=db.prepare(`SELECT p.id,(SELECT r.id FROM agent_run r WHERE r.prompt_id=p.id ORDER BY r.started_at DESC LIMIT 1) runId FROM prompt p WHERE p.status='IN_PROGRESS' AND NOT EXISTS(SELECT 1 FROM agent_run active WHERE active.prompt_id=p.id AND active.state IN ('STARTING','RUNNING'))`).all() as Array<{id:number;runId:string|null}>;
   for(const prompt of orphaned){const reason="No active agent run exists for this IN_PROGRESS prompt; the latest run ended without a terminal prompt status.";db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,prompt.id);db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);}
+  db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
 });
 recoverAbandonedRuns();
 
 type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string };
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
-type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
+type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; default_provider?: string | null; default_model?: string | null };
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number };
+type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string };
+type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
+
+function asProviderId(value: string | null | undefined): ProviderId | null {
+  return value !== null && value !== undefined && isProviderId(value) ? value : null;
+}
+
+function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): PromptPipelineRule {
+  if (row === undefined) return defaultPromptPipelineRule(promptId);
+  const onDone = isOnDoneAction(row.on_done) ? row.on_done : "continue";
+  const onBlocked = isOnBlockedAction(row.on_blocked) ? row.on_blocked : "wait";
+  return {
+    promptId,
+    provider: asProviderId(row.provider),
+    model: row.model,
+    onDone,
+    onBlocked,
+    retryLimit: row.retry_limit,
+    recoverProvider: asProviderId(row.recover_provider),
+    recoverModel: row.recover_model,
+  };
+}
+
+function pipelineRunDto(row: PipelineRunRow): SuitePipelineRun {
+  return {
+    id: row.id,
+    suiteId: row.suite_id,
+    workspaceId: row.workspace_id,
+    state: row.state as PipelineState,
+    currentPromptId: row.current_prompt_id,
+    currentRunId: row.current_run_id,
+    attempt: row.attempt,
+    recovering: row.recovering === 1,
+    playProvider: asProviderId(row.play_provider),
+    playModel: row.play_model,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    stopReason: row.stop_reason,
+  };
+}
+
+function optionalProviderField(value: unknown, field: string): ProviderId | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !isProviderId(value)) {
+    throw new WorkspaceError(422, "validation_error", `${field} must be a known provider`, { [field]: "Unknown provider" });
+  }
+  return value;
+}
+
+function optionalModelField(value: unknown, field: string): string | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new WorkspaceError(422, "validation_error", `${field} must be a string`, { [field]: "Must be a string" });
+  const text = value.trim();
+  return text === "" ? null : requireText(text, field, 200);
+}
 
 const workspaceDto = (row: WorkspaceRow): WorkspaceRecord => ({ id: row.id, name: row.name, description: row.description, workDirectory: row.work_directory, workDirectoryExists: existsSync(row.work_directory), createdAt: row.created_at, updatedAt: row.updated_at });
 const promptDto = (row: PromptRow): PromptRecord => ({ id: row.id, suiteId: row.suite_id, title: row.title, content: row.content, sortOrder: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at, externalKey: row.external_key, status: row.status, completedAt: row.completed_at, result: row.result, isGate: row.is_gate === 1 });
@@ -455,8 +552,12 @@ export const workspaces = {
     const sessionCount=db.prepare("SELECT count(*) count FROM agent_run WHERE prompt_id=?");
     const sessionsBySuite=db.prepare("SELECT r.id,r.workspace_id workspaceId,r.prompt_id promptId,p.external_key promptKey,p.title promptTitle,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? ORDER BY r.started_at DESC");
     const latestVerification=db.prepare("SELECT id,kind,state,verdict,started_at startedAt,ended_at endedAt FROM suite_verification WHERE suite_id=? ORDER BY started_at DESC,id DESC LIMIT 1");
+    const ruleRow=db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?");
+    const suiteDefaults=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel FROM suite WHERE id=?");
+    const activePipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1");
+    const latestPipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? ORDER BY started_at DESC LIMIT 1");
     const suites:OperationsSuite[]=[];
-    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const prompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:state==="AWAITING_RESPONSE"||state==="RECOVERY_NEEDED"||state==="FAILED",latestIntervention:latest,lastActivityAt,sessionCount:count};});const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:prompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null});}}
+    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const prompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:state==="AWAITING_RESPONSE"||state==="RECOVERY_NEEDED"||state==="FAILED",latestIntervention:latest,lastActivityAt,sessionCount:count,pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined)};});const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];const defaultsRow=suiteDefaults.get(suite.id) as {defaultProvider:string|null;defaultModel:string|null};suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:prompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null,pipeline:{defaults:{suiteId:suite.id,defaultProvider:asProviderId(defaultsRow.defaultProvider),defaultModel:defaultsRow.defaultModel},active:(()=>{const row=activePipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})(),latest:(()=>{const row=latestPipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})()}});}}
     return{generatedAt:new Date().toISOString(),suites};
   },
   /* ---------------------------------------------------------------- */
@@ -619,5 +720,204 @@ export const workspaces = {
     db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,?,'TODO','Operator recovered an abandoned agent run','USER',?)").run(promptId,run.id,prompt.status,now);
     db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?, 'HUMAN_RESPONSE','The previous agent run was interrupted or lost. Continue from the existing working tree and prior run evidence; inspect current changes before repeating work.','USER',?)").run(promptId,run.id,now);
   })()); },
+
+  /* ---------------------------------------------------------------- */
+  /* Suite pipelines                                                    */
+  /* ---------------------------------------------------------------- */
+
+  promptHome(promptId:number):{promptId:number;suiteId:number;workspaceId:number} {
+    const row=db.prepare("SELECT p.id promptId,p.suite_id suiteId,g.workspace_id workspaceId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {promptId:number;suiteId:number;workspaceId:number}|undefined;
+    if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
+    return row;
+  },
+
+  promptOutcome(promptId:number):{status:PromptRecord["status"];result:string;suiteId:number} {
+    const row=db.prepare("SELECT status,result,suite_id suiteId FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"];result:string;suiteId:number}|undefined;
+    if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
+    return row;
+  },
+
+  suitePromptCount(suiteId:number):number {
+    this.suiteHeader(suiteId);
+    return (db.prepare("SELECT count(*) count FROM prompt WHERE suite_id=?").get(suiteId) as {count:number}).count;
+  },
+
+  suitePipelineDefaults(suiteId:number):SuitePipelineDefaults {
+    this.suiteHeader(suiteId);
+    const row=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel FROM suite WHERE id=?").get(suiteId) as {defaultProvider:string|null;defaultModel:string|null};
+    return {suiteId,defaultProvider:asProviderId(row.defaultProvider),defaultModel:row.defaultModel};
+  },
+
+  updateSuitePipelineDefaults(suiteId:number,input:Record<string,unknown>):SuitePipelineDefaults {
+    this.suiteHeader(suiteId);
+    const current=this.suitePipelineDefaults(suiteId);
+    const defaultProvider="defaultProvider" in input ? optionalProviderField(input.defaultProvider,"defaultProvider") : current.defaultProvider;
+    const defaultModel="defaultModel" in input ? optionalModelField(input.defaultModel,"defaultModel") : current.defaultModel;
+    db.prepare("UPDATE suite SET default_provider=?,default_model=?,updated_at=? WHERE id=?").run(defaultProvider,defaultModel,new Date().toISOString(),suiteId);
+    return this.suitePipelineDefaults(suiteId);
+  },
+
+  pipelineRule(promptId:number):PromptPipelineRule {
+    this.promptHome(promptId);
+    return pipelineRuleDto(promptId,db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?").get(promptId) as PipelineRuleRow|undefined);
+  },
+
+  upsertPipelineRule(promptId:number,input:Record<string,unknown>):PromptPipelineRule {
+    this.promptHome(promptId);
+    const current=this.pipelineRule(promptId);
+    const next:PromptPipelineRule={
+      promptId,
+      provider:"provider" in input ? optionalProviderField(input.provider,"provider") : current.provider,
+      model:"model" in input ? optionalModelField(input.model,"model") : current.model,
+      onDone:current.onDone,
+      onBlocked:current.onBlocked,
+      retryLimit:current.retryLimit,
+      recoverProvider:"recoverProvider" in input ? optionalProviderField(input.recoverProvider,"recoverProvider") : current.recoverProvider,
+      recoverModel:"recoverModel" in input ? optionalModelField(input.recoverModel,"recoverModel") : current.recoverModel,
+    };
+    if("onDone" in input){
+      if(!isOnDoneAction(input.onDone)) throw new WorkspaceError(422,"validation_error","onDone must be continue, stop, or skip_rest",{onDone:"Unknown action"});
+      next.onDone=input.onDone;
+    }
+    if("onBlocked" in input){
+      if(!isOnBlockedAction(input.onBlocked)) throw new WorkspaceError(422,"validation_error","onBlocked must be wait, retry, recover, or skip",{onBlocked:"Unknown action"});
+      next.onBlocked=input.onBlocked;
+    }
+    if("retryLimit" in input){
+      const value=input.retryLimit;
+      if(typeof value!=="number"||!Number.isInteger(value)||value<1||value>5) throw new WorkspaceError(422,"validation_error","retryLimit must be an integer between 1 and 5",{retryLimit:"Must be 1-5"});
+      next.retryLimit=value;
+    }
+    if(next.onBlocked==="recover" && next.recoverProvider===null){
+      throw new WorkspaceError(422,"validation_error","recoverProvider is required when onBlocked is recover",{recoverProvider:"Required"});
+    }
+    const now=new Date().toISOString();
+    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,retry_limit,recover_provider,recover_model,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(prompt_id) DO UPDATE SET
+        provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
+        retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model, updated_at=excluded.updated_at`)
+      .run(promptId,next.provider,next.model,next.onDone,next.onBlocked,next.retryLimit,next.recoverProvider,next.recoverModel,now);
+    return this.pipelineRule(promptId);
+  },
+
+  pipeline(suiteId:number):SuitePipelineView {
+    const defaults=this.suitePipelineDefaults(suiteId);
+    const promptIds=(db.prepare("SELECT id FROM prompt WHERE suite_id=? ORDER BY sort_order,id").all(suiteId) as Array<{id:number}>).map(row=>row.id);
+    return {defaults,rules:promptIds.map(id=>this.pipelineRule(id)),active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
+  },
+
+  pipelineById(id:string):SuitePipelineRun|null {
+    const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE id=?").get(id) as PipelineRunRow|undefined;
+    return row?pipelineRunDto(row):null;
+  },
+
+  activePipeline(suiteId:number):SuitePipelineRun|null {
+    const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1").get(suiteId) as PipelineRunRow|undefined;
+    return row?pipelineRunDto(row):null;
+  },
+
+  latestPipeline(suiteId:number):SuitePipelineRun|null {
+    const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? ORDER BY started_at DESC LIMIT 1").get(suiteId) as PipelineRunRow|undefined;
+    return row?pipelineRunDto(row):null;
+  },
+
+  activePipelineForWorkspace(workspaceId:number):SuitePipelineRun|null {
+    const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE workspace_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1").get(workspaceId) as PipelineRunRow|undefined;
+    return row?pipelineRunDto(row):null;
+  },
+
+  pipelineByCurrentRun(runId:string):SuitePipelineRun|null {
+    const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE current_run_id=? AND state IN ('PLAYING','PAUSED') ORDER BY started_at DESC LIMIT 1").get(runId) as PipelineRunRow|undefined;
+    return row?pipelineRunDto(row):null;
+  },
+
+  createPipelineRun(args:{id:string;suiteId:number;workspaceId:number;playProvider:ProviderId|null;playModel:string|null}):SuitePipelineRun {
+    return sqliteGuard(()=>{
+      const now=new Date().toISOString();
+      db.prepare("INSERT INTO suite_pipeline_run(id,suite_id,workspace_id,state,current_prompt_id,current_run_id,attempt,recovering,play_provider,play_model,started_at) VALUES(?,?,?,'PLAYING',NULL,NULL,0,0,?,?,?)")
+        .run(args.id,args.suiteId,args.workspaceId,args.playProvider,args.playModel,now);
+      return this.pipelineById(args.id)!;
+    });
+  },
+
+  updatePipelineRun(id:string,patch:{
+    state?:PipelineState;
+    currentPromptId?:number|null;
+    currentRunId?:string|null;
+    attempt?:number;
+    recovering?:boolean;
+    playProvider?:ProviderId|null;
+    playModel?:string|null;
+    endedAt?:string|null;
+    stopReason?:string|null;
+  }):SuitePipelineRun {
+    const current=this.pipelineById(id);
+    if(!current)throw new WorkspaceError(404,"not_found","Pipeline run not found");
+    const next={
+      state:patch.state??current.state,
+      currentPromptId:patch.currentPromptId===undefined?current.currentPromptId:patch.currentPromptId,
+      currentRunId:patch.currentRunId===undefined?current.currentRunId:patch.currentRunId,
+      attempt:patch.attempt??current.attempt,
+      recovering:patch.recovering===undefined?current.recovering:patch.recovering,
+      playProvider:patch.playProvider===undefined?current.playProvider:patch.playProvider,
+      playModel:patch.playModel===undefined?current.playModel:patch.playModel,
+      endedAt:patch.endedAt===undefined?current.endedAt:patch.endedAt,
+      stopReason:patch.stopReason===undefined?current.stopReason:patch.stopReason,
+    };
+    db.prepare("UPDATE suite_pipeline_run SET state=?,current_prompt_id=?,current_run_id=?,attempt=?,recovering=?,play_provider=?,play_model=?,ended_at=?,stop_reason=? WHERE id=?")
+      .run(next.state,next.currentPromptId,next.currentRunId,next.attempt,next.recovering?1:0,next.playProvider,next.playModel,next.endedAt,next.stopReason,id);
+    return this.pipelineById(id)!;
+  },
+
+  readyPromptsInSuite(workspaceId:number,suiteId:number):PromptOption[] {
+    return this.promptOptions(workspaceId).filter(prompt=>prompt.suiteId===suiteId&&prompt.ready);
+  },
+
+  suitePromptRows(suiteId:number):Array<{id:number;status:PromptRecord["status"]}> {
+    return db.prepare("SELECT id,status FROM prompt WHERE suite_id=? ORDER BY sort_order,id").all(suiteId) as Array<{id:number;status:PromptRecord["status"]}>;
+  },
+
+  skipPrompt(promptId:number,actor:"SYSTEM"|"USER",reason:string):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status==="DONE")throw new WorkspaceError(409,"invalid_transition","Completed work items cannot be skipped");
+      if(prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_skipped","Work item is already skipped");
+      if(prompt.status==="IN_PROGRESS"){
+        const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;
+        if(run&&activeRuns.has(run.id))throw new WorkspaceError(409,"prompt_run_active","Stop the running agent before skipping this work item");
+        throw new WorkspaceError(409,"invalid_transition","In-progress work items cannot be skipped");
+      }
+      if(prompt.status!=="TODO"&&prompt.status!=="BLOCKED")throw new WorkspaceError(409,"invalid_transition","Only TODO or BLOCKED work items can be skipped");
+      const now=new Date().toISOString();
+      db.prepare("UPDATE prompt SET status='SKIPPED',updated_at=? WHERE id=?").run(now,promptId);
+      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?, 'SKIPPED',?,?,?)").run(promptId,prompt.status,reason,actor,now);
+      db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,?,?,?,?)").run(promptId,actor==="USER"?"HUMAN_RESPONSE":"PROGRESS",reason,actor,now);
+    })());
+  },
+
+  resetPromptToTodo(promptId:number,reason:string):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status==="IN_PROGRESS"){
+        const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;
+        if(run&&activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active");
+      }else if(prompt.status!=="BLOCKED"){
+        throw new WorkspaceError(409,"invalid_transition","Pipeline can only reset BLOCKED stations to TODO");
+      }
+      const now=new Date().toISOString();
+      db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
+      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,reason,now);
+      db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'SYSTEM',?)")
+        .run(promptId,"Pipeline is retrying / recovering this station. Inspect the working tree and prior evidence; do not repeat resolved work.",now);
+    })());
+  },
+
+  interruptPipelinesOnRestart():void {
+    db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(new Date().toISOString());
+  },
+
   close(): void { db.close(); },
 };

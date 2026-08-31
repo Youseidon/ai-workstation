@@ -7,6 +7,7 @@ import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
+import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const log = createLogger("run");
@@ -19,6 +20,7 @@ export interface StartExecuteArgs {
   promptId?: number;
   mode?: "execute" | "clarify";
   question?: string;
+  pipelineRunId?: string;
 }
 
 export interface StartVerifySuiteArgs {
@@ -42,6 +44,31 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const prompt = args.prompt;
   const promptId = args.promptId;
   const question = args.question;
+
+  const owner = workspaces.activePipelineForWorkspace(workspaceId);
+  if (owner !== null) {
+    const authorized = args.pipelineRunId === owner.id;
+    const clarifyWaiting =
+      mode === "clarify" &&
+      owner.state === "WAITING_HUMAN" &&
+      promptId === owner.currentPromptId;
+    if (!authorized && !clarifyWaiting) {
+      throw new WorkspaceError(
+        409,
+        "workspace_busy",
+        "A pipeline is already active in this workspace.",
+        { detail: "Stop or finish the suite pipeline before starting another execute in this working directory." },
+      );
+    }
+    if (authorized && owner.currentPromptId !== null && promptId !== owner.currentPromptId) {
+      throw new WorkspaceError(
+        409,
+        "workspace_busy",
+        "A pipeline is already active in this workspace.",
+        { detail: "The pipeline is on a different station." },
+      );
+    }
+  }
 
   const busy = runHub.activeForWorkspace(workspaceId);
   if (busy !== undefined) {
@@ -126,6 +153,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       runHub.event(plannedRunId, event);
     },
     onEnd: (runId, state) => {
+      const endedPromptId = savedPrompt?.id ?? promptId;
+      const endedWorkspaceId = workspace.id;
       if (activeContextRunId !== null) {
         workspaces.finishAgentRun(activeContextRunId, state, executionAnswer);
         runContexts.complete(activeContextRunId);
@@ -139,6 +168,14 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         );
       }
       runHub.end(runId, state);
+      if (mode === "execute" && endedPromptId !== undefined) {
+        void pipelineScheduler.onExecuteEnded({
+          runId,
+          workspaceId: endedWorkspaceId,
+          promptId: endedPromptId,
+          processState: state,
+        });
+      }
     },
   });
   // Marked RUNNING before the announcement, so a client that reacts to

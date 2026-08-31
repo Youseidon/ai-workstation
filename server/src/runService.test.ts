@@ -87,15 +87,17 @@ test("runService starts without a socket and does not interrupt", () => {
 
 test("startExecute lock, persist, launch, and finish happen in order", () => {
   const body = functionBody(readFileSync(new URL("./runService.ts", import.meta.url), "utf8"), "startExecute");
-  const lock = firstIndex(body, "activeForWorkspace");
+  const pipelineLock = firstIndex(body, "activePipelineForWorkspace");
+  const lock = firstIndex(body, "runHub.activeForWorkspace");
   const begin = firstIndex(body, "beginAgentRun");
   const launch = firstIndex(body, "startRun(");
   const running = firstIndex(body, "markAgentRunRunning");
   const hubStart = firstIndex(body, "runHub.start");
-  assert.ok(lock < begin && begin < launch && launch < running && running < hubStart);
+  assert.ok(pipelineLock < lock && lock < begin && begin < launch && launch < running && running < hubStart);
   const onEnd = body.slice(firstIndex(body, "onEnd:"), running);
   assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
   assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));
+  assert.ok(firstIndex(onEnd, "runHub.end") < firstIndex(onEnd, "onExecuteEnded"));
 });
 
 test("startVerifySuite lock, persist, launch, and finish happen in order", () => {

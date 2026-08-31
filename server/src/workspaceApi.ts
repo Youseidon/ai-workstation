@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -80,6 +81,51 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     const verificationContextMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verification-context$/);
     if(verificationContextMatch){if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else json(res,200,workspaces.suiteVerificationContext(id(verificationContextMatch[1]!)));return true;}
+    const suitePipelineMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pipeline$/);
+    if(suitePipelineMatch){
+      const suiteId=id(suitePipelineMatch[1]!);
+      if(method==="GET")json(res,200,workspaces.pipeline(suiteId));
+      else if(method==="PATCH"){workspaces.updateSuitePipelineDefaults(suiteId,await body(req));json(res,200,workspaces.pipeline(suiteId));}
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const suitePlayMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/play$/);
+    if(suitePlayMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{pipeline:await pipelineScheduler.play(id(suitePlayMatch[1]!),await body(req))});
+      return true;
+    }
+    const suitePauseMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pause$/);
+    if(suitePauseMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{pipeline:await pipelineScheduler.pause(id(suitePauseMatch[1]!))});
+      return true;
+    }
+    const suiteStopMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/stop$/);
+    if(suiteStopMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{pipeline:await pipelineScheduler.stop(id(suiteStopMatch[1]!))});
+      return true;
+    }
+    const pipelineRuleMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/pipeline-rule$/);
+    if(pipelineRuleMatch){
+      if(method!=="PATCH")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{rule:workspaces.upsertPipelineRule(id(pipelineRuleMatch[1]!),await body(req))});
+      return true;
+    }
+    const skipMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/skip$/);
+    if(skipMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const promptId=id(skipMatch[1]!);
+        const input=await body(req);
+        const reason=typeof input.reason==="string"&&input.reason.trim()!==""?input.reason.trim():"Operator skipped this station.";
+        workspaces.skipPrompt(promptId,"USER",reason);
+        await pipelineScheduler.onPromptSkipped(promptId);
+        json(res,200,{skipped:true});
+      }
+      return true;
+    }
     let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
     if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
     if(url.pathname==="/api/sessions"){

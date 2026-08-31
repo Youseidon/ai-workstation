@@ -422,6 +422,83 @@ export interface AgentRunActivity { id:string; provider:string; model:string|nul
 export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus; programName:string; suiteName:string }
 
 export type PromptOperationalState = "WORKING" | "AWAITING_RESPONSE" | "RECOVERY_NEEDED" | "FAILED" | "READY" | "WAITING_DEPENDENCY" | "COMPLETE" | "SKIPPED";
+
+export const ON_DONE_ACTIONS = ["continue", "stop", "skip_rest"] as const;
+export type OnDoneAction = (typeof ON_DONE_ACTIONS)[number];
+export function isOnDoneAction(value: unknown): value is OnDoneAction {
+  return typeof value === "string" && (ON_DONE_ACTIONS as readonly string[]).includes(value);
+}
+
+export const ON_BLOCKED_ACTIONS = ["wait", "retry", "recover", "skip"] as const;
+export type OnBlockedAction = (typeof ON_BLOCKED_ACTIONS)[number];
+export function isOnBlockedAction(value: unknown): value is OnBlockedAction {
+  return typeof value === "string" && (ON_BLOCKED_ACTIONS as readonly string[]).includes(value);
+}
+
+export const PIPELINE_STATES = ["PLAYING", "WAITING_HUMAN", "PAUSED", "COMPLETE", "STOPPED", "INTERRUPTED"] as const;
+export type PipelineState = (typeof PIPELINE_STATES)[number];
+export function isPipelineState(value: unknown): value is PipelineState {
+  return typeof value === "string" && (PIPELINE_STATES as readonly string[]).includes(value);
+}
+
+export interface PromptPipelineRule {
+  promptId: number;
+  /** Execute override. Null = inherit play/suite/settings. */
+  provider: ProviderId | null;
+  model: string | null;
+  onDone: OnDoneAction;
+  onBlocked: OnBlockedAction;
+  /** Used only when onBlocked === "retry". Inclusive, 1..5, default 1. */
+  retryLimit: number;
+  /** Required when onBlocked === "recover". */
+  recoverProvider: ProviderId | null;
+  recoverModel: string | null;
+}
+
+export function defaultPromptPipelineRule(promptId: number): PromptPipelineRule {
+  return {
+    promptId,
+    provider: null,
+    model: null,
+    onDone: "continue",
+    onBlocked: "wait",
+    retryLimit: 1,
+    recoverProvider: null,
+    recoverModel: null,
+  };
+}
+
+export interface SuitePipelineDefaults {
+  suiteId: number;
+  defaultProvider: ProviderId | null;
+  defaultModel: string | null;
+}
+
+export interface SuitePipelineRun {
+  id: string;
+  suiteId: number;
+  workspaceId: number;
+  state: PipelineState;
+  currentPromptId: number | null;
+  currentRunId: string | null;
+  /** 0 before the first try of the current station; increments on retry/recover. */
+  attempt: number;
+  /** Whether the current attempt is the recover pass (one-shot). */
+  recovering: boolean;
+  playProvider: ProviderId | null;
+  playModel: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  stopReason: string | null;
+}
+
+export interface SuitePipelineView {
+  defaults: SuitePipelineDefaults;
+  rules: PromptPipelineRule[];
+  active: SuitePipelineRun | null;
+  latest: SuitePipelineRun | null;
+}
+
 export interface OperationsPrompt {
   prompt: PromptOption;
   workspace: Pick<WorkspaceRecord,"id"|"name"|"workDirectory"|"workDirectoryExists">;
@@ -432,6 +509,8 @@ export interface OperationsPrompt {
   latestIntervention: string|null;
   lastActivityAt: string;
   sessionCount: number;
+  /** Always present; missing DB rows are filled with defaults. */
+  pipelineRule: PromptPipelineRule;
 }
 export interface OperationsSuite {
   id: number;
@@ -448,6 +527,11 @@ export interface OperationsSuite {
   sessions: OperationsSession[];
   /** The most recent verification of this suite, for the badge. Null if never. */
   latestVerification: SuiteVerificationBadge | null;
+  pipeline: {
+    defaults: SuitePipelineDefaults;
+    active: SuitePipelineRun | null;
+    latest: SuitePipelineRun | null;
+  } | null;
 }
 export interface OperationsSession { id:string; workspaceId:number; promptId:number; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
 export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[] }
