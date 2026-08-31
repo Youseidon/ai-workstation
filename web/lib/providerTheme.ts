@@ -9,31 +9,53 @@ export interface ProviderTheme {
   rule: string;
   /** Selected state in the switcher. */
   active: string;
+  /** Solid fill, for dots and avatar cores. */
+  fill: string;
+  /**
+   * The raw CSS variable. SVG `fill`/`stroke` and `color-mix()` need a real
+   * colour value rather than a utility class — the avatars in a later phase are
+   * drawn with this.
+   */
+  cssVar: string;
 }
 
+/**
+ * One hue per agent, drawn from theme tokens rather than the fixed Tailwind
+ * palette so an agent keeps its identity in every theme. A hardcoded
+ * `amber-300` reads well on a near-black surface and is unreadable on white;
+ * `agent-claude` is defined per theme and stays legible in all three.
+ */
 export const providerTheme: Record<ProviderId, ProviderTheme> = {
   claude: {
-    text: "text-amber-300",
-    chip: "bg-amber-500/10 text-amber-300 ring-amber-500/30",
-    rule: "border-amber-500/40",
-    active: "bg-amber-500/15 text-amber-200 ring-amber-400/40",
+    text: "text-agent-claude",
+    chip: "bg-agent-claude/10 text-agent-claude ring-agent-claude/30",
+    rule: "border-agent-claude/40",
+    active: "bg-agent-claude/15 text-agent-claude ring-agent-claude/40",
+    fill: "bg-agent-claude",
+    cssVar: "var(--agent-claude)",
   },
   codex: {
-    text: "text-emerald-300",
-    chip: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30",
-    rule: "border-emerald-500/40",
-    active: "bg-emerald-500/15 text-emerald-200 ring-emerald-400/40",
+    text: "text-agent-codex",
+    chip: "bg-agent-codex/10 text-agent-codex ring-agent-codex/30",
+    rule: "border-agent-codex/40",
+    active: "bg-agent-codex/15 text-agent-codex ring-agent-codex/40",
+    fill: "bg-agent-codex",
+    cssVar: "var(--agent-codex)",
   },
   cursor: {
-    text: "text-sky-300",
-    chip: "bg-sky-500/10 text-sky-300 ring-sky-500/30",
-    rule: "border-sky-500/40",
-    active: "bg-sky-500/15 text-sky-200 ring-sky-400/40",
+    text: "text-agent-cursor",
+    chip: "bg-agent-cursor/10 text-agent-cursor ring-agent-cursor/30",
+    rule: "border-agent-cursor/40",
+    active: "bg-agent-cursor/15 text-agent-cursor ring-agent-cursor/40",
+    fill: "bg-agent-cursor",
+    cssVar: "var(--agent-cursor)",
   },
   grok: {
-    text: "text-rose-300",
-    chip: "bg-rose-500/10 text-rose-300 ring-rose-500/30",
-    rule: "border-rose-500/40",
-    active: "bg-rose-500/15 text-rose-200 ring-rose-400/40",
+    text: "text-agent-grok",
+    chip: "bg-agent-grok/10 text-agent-grok ring-agent-grok/30",
+    rule: "border-agent-grok/40",
+    active: "bg-agent-grok/15 text-agent-grok ring-agent-grok/40",
+    fill: "bg-agent-grok",
+    cssVar: "var(--agent-grok)",
   },
 };

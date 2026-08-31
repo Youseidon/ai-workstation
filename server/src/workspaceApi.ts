@@ -1,5 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { inspectPromptPack } from "./promptImport.ts";
+import { activeRuns } from "./activeRuns.ts";
+import { runHub } from "./runHub.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -39,13 +42,66 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (!url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications)\//.test(url.pathname)) return false;
+  const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
+  if (mutates) {
+    res.once("finish", () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) runHub.operationsChanged();
+    });
+  }
   try {
     const method = req.method ?? "GET";
+    if(url.pathname==="/api/operations"){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}
+      return true;
+    }
+    // The record audit. A POST records a new one; GET reads the latest without
+    // creating another, so polling a suite cannot spam its history.
+    const verificationMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verification$/);
+    if(verificationMatch){
+      const suiteId=id(verificationMatch[1]!);
+      if(method==="POST")json(res,201,{verification:workspaces.recordSuiteAudit(suiteId)});
+      else if(method==="GET"){const latest=workspaces.suiteVerifications(suiteId,1)[0];json(res,200,{verification:latest??null});}
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const verificationsMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verifications$/);
+    if(verificationsMatch){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{verifications:workspaces.suiteVerifications(id(verificationsMatch[1]!))});
+      return true;
+    }
+    const verificationDetailMatch=url.pathname.match(/^\/api\/verifications\/(\d+)$/);
+    if(verificationDetailMatch){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{verification:workspaces.suiteVerificationDetail(id(verificationDetailMatch[1]!))});
+      return true;
+    }
+    const verificationContextMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verification-context$/);
+    if(verificationContextMatch){if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else json(res,200,workspaces.suiteVerificationContext(id(verificationContextMatch[1]!)));return true;}
+    let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
+    if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
+    if(url.pathname==="/api/sessions"){
+      if(method==="GET")json(res,200,{sessions:workspaces.sessions()});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    if(url.pathname==="/api/prompts/human-input"){
+      if(method==="GET")json(res,200,{requests:workspaces.humanInputRequests()});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
     if (url.pathname === "/api/workspaces") {
       if (method === "GET") json(res, 200, { workspaces: workspaces.list() });
       else if (method === "POST") json(res, 201, { workspace: workspaces.create(await body(req)) });
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    let importMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/imports\/(inspect|apply)$/);
+    if(importMatch){
+      if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else { const workspaceId=id(importMatch[1]!); workspaces.get(workspaceId); const input=await body(req); const inspected=inspectPromptPack(input.rootPath,input.programKey); if(importMatch[2]==="inspect") json(res,200,{preview:inspected.preview}); else json(res,201,{preview:inspected.preview,workspace:workspaces.importProgram(workspaceId,inspected.pack)}); }
       return true;
     }
     let match = url.pathname.match(/^\/api\/workspaces\/(\d+)(?:\/(tree|prompts|programs))?$/);
@@ -76,6 +132,14 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
       return true;
     }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/history$/);
+    if(match&&method==="GET"){json(res,200,workspaces.promptHistory(id(match[1]!)));return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/activity$/);
+    if(match&&method==="GET"){json(res,200,workspaces.promptActivity(id(match[1]!)));return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);
+    if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
+    if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;
   } catch (error) { failure(res, error); return true; }
 }

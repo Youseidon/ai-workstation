@@ -1,8 +1,43 @@
 import Link from "next/link";
+import { cn } from "@/lib/cn";
+import { ThemeToggle } from "./ThemeToggle";
 
-export function AppNav({ active }: { active: "console" | "workspaces" }) {
-  return <nav className="flex items-center gap-1 rounded border border-[#1d2229] bg-[#0b0d10] p-0.5 text-xs">
-    <Link href="/" className={`rounded px-2.5 py-1 ${active === "console" ? "bg-[#20262e] text-[#e7ecf2]" : "text-[#7d8794] hover:text-[#d7dde5]"}`}>Console</Link>
-    <Link href="/workspaces" className={`rounded px-2.5 py-1 ${active === "workspaces" ? "bg-[#20262e] text-[#e7ecf2]" : "text-[#7d8794] hover:text-[#d7dde5]"}`}>Workspaces</Link>
-  </nav>;
+export type NavSection = "console" | "fleet" | "workspaces" | "operations" | "sessions" | "input";
+
+const LINKS: Array<{ href: string; label: string; matches: NavSection[] }> = [
+  { href: "/", label: "Console", matches: ["console"] },
+  { href: "/fleet", label: "Fleet", matches: ["fleet"] },
+  { href: "/workspaces", label: "Workspaces", matches: ["workspaces"] },
+  { href: "/operations", label: "Operations", matches: ["operations", "sessions", "input"] },
+];
+
+export function AppNav({ active }: { active: NavSection }) {
+  return (
+    <div className="flex items-center gap-2">
+      <nav
+        aria-label="Primary"
+        className="flex items-center gap-0.5 rounded-md bg-surface-1 p-0.5 ring-1 ring-inset ring-line"
+      >
+        {LINKS.map((link) => {
+          const current = link.matches.includes(active);
+          return (
+            <Link
+              key={link.href}
+              href={link.href}
+              aria-current={current ? "page" : undefined}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                current
+                  ? "bg-surface-3 text-fg shadow-sm"
+                  : "text-fg-dim hover:bg-surface-2 hover:text-fg",
+              )}
+            >
+              {link.label}
+            </Link>
+          );
+        })}
+      </nav>
+      <ThemeToggle />
+    </div>
+  );
 }

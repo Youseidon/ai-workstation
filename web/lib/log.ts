@@ -54,7 +54,14 @@ export type LogItem =
 
 export function appendPrompt(
   items: LogItem[],
-  input: { runId: string; provider: ProviderId; model: string | null; text: string },
+  input: {
+    runId: string;
+    provider: ProviderId;
+    model: string | null;
+    text: string;
+    /** When replaying a run that started earlier, its real start time. */
+    timestamp?: string;
+  },
 ): LogItem[] {
   return [
     ...items,
@@ -64,7 +71,7 @@ export function appendPrompt(
       provider: input.provider,
       model: input.model,
       runId: input.runId,
-      timestamp: new Date().toISOString(),
+      timestamp: input.timestamp ?? new Date().toISOString(),
       text: input.text,
     },
   ];

@@ -307,7 +307,14 @@ export interface PromptRecord {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+  externalKey: string | null;
+  status: PromptStatus;
+  completedAt: string | null;
+  result: string;
+  isGate: boolean;
 }
+
+export type PromptStatus = "TODO" | "IN_PROGRESS" | "DONE" | "BLOCKED" | "SKIPPED";
 
 export interface SuiteRecord {
   id: number;
@@ -318,6 +325,7 @@ export interface SuiteRecord {
   createdAt: string;
   updatedAt: string;
   prompts: PromptRecord[];
+  externalKey: string | null;
 }
 
 export interface ProgramRecord {
@@ -329,6 +337,7 @@ export interface ProgramRecord {
   createdAt: string;
   updatedAt: string;
   suites: SuiteRecord[];
+  externalKey: string | null;
 }
 
 export interface WorkspaceRecord {
@@ -353,6 +362,184 @@ export interface PromptOption {
   suiteName: string;
   programId: number;
   programName: string;
+  externalKey: string | null;
+  status: PromptStatus;
+  ready: boolean;
+  blockedBy: string[];
+  currentRun: PromptRunSummary | null;
+  recoverable: boolean;
+}
+
+export interface PromptRunSummary {
+  id: string;
+  provider: string;
+  model: string | null;
+  state: string;
+  startedAt: string;
+  endedAt: string | null;
+  processActive: boolean;
+}
+
+export interface PromptDependency {
+  promptId: number;
+  dependsOnPromptId: number;
+}
+
+export interface ProgramGate {
+  id: number;
+  programId: number;
+  promptId: number;
+  code: string;
+  name: string;
+  description: string;
+  sortOrder: number;
+}
+
+export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
+export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
+export interface PromptStatusEvent { id:number; promptId:number; runId:string|null; previousStatus:PromptStatus; newStatus:PromptStatus; reason:string; verificationSummary:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
+
+export interface HumanInputRequest {
+  prompt: PromptOption;
+  workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory" | "workDirectoryExists">;
+  latestBlocker: PromptRemark | null;
+  remarks: PromptRemark[];
+  events: PromptStatusEvent[];
+  clarifications: ClarificationExchange[];
+  currentRun: AgentRunActivity | null;
+}
+
+export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
+export interface AgentRunActivity { id:string; provider:string; model:string|null; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
+export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus; programName:string; suiteName:string }
+
+export type PromptOperationalState = "WORKING" | "AWAITING_RESPONSE" | "RECOVERY_NEEDED" | "FAILED" | "READY" | "WAITING_DEPENDENCY" | "COMPLETE" | "SKIPPED";
+export interface OperationsPrompt {
+  prompt: PromptOption;
+  workspace: Pick<WorkspaceRecord,"id"|"name"|"workDirectory"|"workDirectoryExists">;
+  programKey: string|null;
+  suiteKey: string|null;
+  operationalState: PromptOperationalState;
+  attention: boolean;
+  latestIntervention: string|null;
+  lastActivityAt: string;
+  sessionCount: number;
+}
+export interface OperationsSuite {
+  id: number;
+  key: string|null;
+  name: string;
+  programId: number;
+  programKey: string|null;
+  programName: string;
+  workspaceId: number;
+  workspaceName: string;
+  counts: Record<PromptOperationalState,number>;
+  attentionCount: number;
+  prompts: OperationsPrompt[];
+  sessions: OperationsSession[];
+  /** The most recent verification of this suite, for the badge. Null if never. */
+  latestVerification: SuiteVerificationBadge | null;
+}
+export interface OperationsSession { id:string; workspaceId:number; promptId:number; promptKey:string|null; promptTitle:string; provider:string; model:string|null; state:string; startedAt:string; endedAt:string|null }
+export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[] }
+export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
+/** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
+export type SuiteVerificationCheck = "VERIFIED" | "WARNING" | "FAILED" | "UNVERIFIED";
+/** AGENT re-runs the checks; AUDIT only reads back what was already recorded. */
+export type SuiteVerificationKind = "AGENT" | "AUDIT";
+export type SuiteVerificationState = "RUNNING" | "DONE" | "INTERRUPTED" | "ERROR" | "RECORDED";
+
+export interface SuiteVerificationItem {
+  promptId: number | null;
+  promptKey: string | null;
+  title: string;
+  check: SuiteVerificationCheck;
+  evidence: string;
+  /** The decisive commands the agent says it ran for this item. */
+  commands: string;
+}
+
+export interface SuiteVerificationSummary {
+  total: number;
+  verified: number;
+  warnings: number;
+  failed: number;
+  unverified: number;
+}
+
+export interface SuiteVerificationStats {
+  workItems: number;
+  sourceCharacters: number;
+  dossierCharacters: number;
+  uniqueCommands: number;
+}
+
+/**
+ * A verification that happened, kept forever.
+ *
+ * Verifications used to leave nothing behind: the agent kind ran as an
+ * anonymous custom prompt whose events were never persisted, and the audit kind
+ * was recomputed on every request. Both vanished on navigation or reload, so
+ * "was this suite ever verified, and what did it find?" had no answer.
+ */
+export interface SuiteVerificationRecord {
+  id: number;
+  suite: { id: number; key: string | null; name: string; programName: string; workspaceName: string; workspaceId: number };
+  kind: SuiteVerificationKind;
+  /** The agent run that produced it, for AGENT verifications. */
+  runId: string | null;
+  provider: string | null;
+  model: string | null;
+  state: SuiteVerificationState;
+  /** Null while an agent verification is still running. */
+  verdict: SuiteVerificationVerdict | null;
+  summary: SuiteVerificationSummary;
+  /** The agent's full written report, kept verbatim even if parsing fails. */
+  reportMarkdown: string;
+  stats: SuiteVerificationStats | null;
+  startedAt: string;
+  endedAt: string | null;
+  items: SuiteVerificationItem[];
+}
+
+/** A record plus the transcript of the run that produced it. */
+export interface SuiteVerificationDetail extends SuiteVerificationRecord {
+  events: NormalizedEvent[];
+}
+
+/** The badge on a suite: what the last verification concluded, and when. */
+export interface SuiteVerificationBadge {
+  id: number;
+  kind: SuiteVerificationKind;
+  state: SuiteVerificationState;
+  verdict: SuiteVerificationVerdict | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface SuiteVerificationContext {
+  suiteId:number; prompt:string;
+  stats:SuiteVerificationStats;
+}
+export interface PromptActivity {
+  item: OperationsPrompt;
+  remarks: PromptRemark[];
+  events: PromptStatusEvent[];
+  clarifications: ClarificationExchange[];
+  sessions: AgentSession[];
+}
+
+export interface PromptImportPreview {
+  programKey: string;
+  programName: string;
+  suites: number;
+  prompts: number;
+  dependencies: number;
+  gates: number;
+  statuses: Record<PromptStatus, number>;
+  workspaceDescriptionCharacters: number;
+  warnings: string[];
 }
 
 export interface ApiErrorBody {
@@ -376,6 +563,9 @@ export interface ClientRunMessage {
    * rewrites saved configuration.
    */
   model?: string | null;
+  /** Ask about a blocked work item without reopening or executing it. */
+  mode?: "execute" | "clarify";
+  question?: string;
 }
 
 export interface ClientInterruptMessage {
@@ -391,7 +581,22 @@ export interface ClientPingMessage {
   kind: "ping";
 }
 
+/**
+ * Starts an agent verification of a whole suite.
+ *
+ * Server-initiated on purpose: the browser used to build the dossier itself and
+ * fire it as an anonymous custom prompt, which is why the run was never
+ * recorded and its report was lost the moment the page changed.
+ */
+export interface ClientVerifySuiteMessage {
+  kind: "verify_suite";
+  suiteId: number;
+  provider: ProviderId;
+  model: string | null;
+}
+
 export type ClientMessage =
+  | ClientVerifySuiteMessage
   | ClientRunMessage
   | ClientInterruptMessage
   | ClientRefreshProvidersMessage
@@ -401,6 +606,8 @@ export interface ServerHelloMessage {
   kind: "hello";
   workdir: string;
   providers: ProviderInfo[];
+  /** Every run in flight right now, with its transcript, for replay. */
+  activeRuns: RunSnapshot[];
 }
 
 export interface ServerProvidersMessage {
@@ -413,15 +620,46 @@ export interface ServerEventMessage {
   event: NormalizedEvent;
 }
 
+/** What a run was asked to do. Named, because a run snapshot carries it too. */
+export type RunSource =
+  | { type: "custom"; displayText: string }
+  | { type: "saved"; promptId: number; promptKey: string | null; title: string; programName: string; suiteName: string }
+  | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
+  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string };
+
 export interface ServerRunStartedMessage {
   kind: "run_started";
   runId: string;
   provider: ProviderId;
   /** The model the run resolved to, after the override/settings fallback. */
   model: string | null;
-  prompt: string;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
-  savedPrompt: Pick<PromptRecord, "id" | "title"> | null;
+  source: RunSource;
+}
+
+/**
+ * A run as the server currently sees it, including every event it has emitted.
+ *
+ * Runs belong to the server, not to the socket that started them. This is what
+ * lets a page opened mid-run — a new tab, a reload, or a navigation to another
+ * page in the app — rebuild the transcript and the live status instead of
+ * showing an empty log and claiming the agent is idle.
+ */
+export interface RunSnapshot {
+  runId: string;
+  provider: ProviderId;
+  model: string | null;
+  workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
+  source: RunSource;
+  state: RunState;
+  startedAt: string;
+  elapsedMs: number;
+  usage: TokenUsage | null;
+  detail: string | null;
+  /** Replay buffer, oldest first. */
+  events: NormalizedEvent[];
+  /** True when the buffer overflowed and the oldest events were dropped. */
+  truncated: boolean;
 }
 
 export interface ServerRunEndedMessage {
@@ -441,6 +679,17 @@ export interface ServerSettingsUpdatedMessage {
   providers: ProviderInfo[];
 }
 
+/**
+ * Tells snapshot-backed views that durable operational data changed.
+ *
+ * The frame deliberately carries no partial record: the REST snapshot remains
+ * the single projection of the database, while the socket makes refreshing it
+ * event-driven instead of periodic.
+ */
+export interface ServerOperationsChangedMessage {
+  kind: "operations_changed";
+}
+
 export type ServerMessage =
   | ServerHelloMessage
   | ServerProvidersMessage
@@ -448,6 +697,7 @@ export type ServerMessage =
   | ServerRunStartedMessage
   | ServerRunEndedMessage
   | ServerSettingsUpdatedMessage
+  | ServerOperationsChangedMessage
   | ServerPongMessage;
 
 /* -------------------------------------------------------------------------- */

@@ -64,9 +64,9 @@ export function ModelMenu({
       ref={containerRef}
       role="listbox"
       aria-label={`${provider} model`}
-      className="absolute left-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-md border border-[#252c35] bg-[#0e1115] shadow-xl shadow-black/50"
+      className="absolute left-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-md border border-line bg-surface-1 shadow-xl shadow-black/50"
     >
-      <div className="border-b border-[#1d2229] px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-[#4e5661]">
+      <div className="border-b border-line px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-fg-dim">
         {provider} model
       </div>
 
@@ -83,12 +83,12 @@ export function ModelMenu({
               onClick={() => onSelect(option.id)}
               className={[
                 "flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-xs transition-colors",
-                isSelected ? theme.chip : "text-[#c3cbd6] hover:bg-[#161b21]",
+                isSelected ? theme.chip : "text-fg-muted hover:bg-surface-2",
               ].join(" ")}
             >
-              <span className={isSelected ? "" : "text-[#4e5661]"}>{isSelected ? "●" : "○"}</span>
+              <span className={isSelected ? "" : "text-fg-dim"}>{isSelected ? "●" : "○"}</span>
               <span className="shrink-0">{option.label}</span>
-              <span className="ml-auto truncate pl-2 text-right text-[10px] text-[#5b636e]">
+              <span className="ml-auto truncate pl-2 text-right text-[10px] text-fg-dim">
                 {isConfigured && !isSelected ? "from settings" : option.hint}
               </span>
             </button>
@@ -102,7 +102,7 @@ export function ModelMenu({
         )}
       </div>
 
-      <div className="border-t border-[#1d2229] p-2">
+      <div className="border-t border-line p-2">
         <div className="flex gap-1.5">
           <input
             value={custom}
@@ -114,13 +114,13 @@ export function ModelMenu({
             }}
             placeholder="custom model id…"
             spellCheck={false}
-            className="min-w-0 flex-1 rounded border border-[#1d2229] bg-[#101317] px-2 py-1 text-[11px] text-[#e7ecf2] placeholder:text-[#4e5661] focus:border-[#2f3742] focus:outline-none"
+            className="min-w-0 flex-1 rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:border-line focus:outline-none"
           />
           <button
             type="button"
             onClick={submitCustom}
             disabled={custom.trim() === ""}
-            className="shrink-0 rounded border border-[#2a323c] bg-[#181d24] px-2 text-[11px] text-[#c3cbd6] transition-colors hover:bg-[#20262e] disabled:opacity-40"
+            className="shrink-0 rounded border border-line bg-surface-2 px-2 text-[11px] text-fg-muted transition-colors hover:bg-surface-3 disabled:opacity-40"
           >
             use
           </button>
@@ -129,7 +129,7 @@ export function ModelMenu({
           <button
             type="button"
             onClick={onClear}
-            className="mt-1.5 w-full rounded px-2 py-1 text-left text-[10px] text-[#5b636e] transition-colors hover:text-[#9aa4b1]"
+            className="mt-1.5 w-full rounded px-2 py-1 text-left text-[10px] text-fg-dim transition-colors hover:text-fg-muted"
           >
             ↺ follow settings{configured === null ? "" : ` (${configured})`}
           </button>

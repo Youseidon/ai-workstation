@@ -169,6 +169,27 @@ Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
 CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
 parent cascades to its owned children.
 
+Prompt packs can be copied into a workspace with a two-step server-side import:
+`POST /api/workspaces/:id/imports/inspect` previews the manifest, suites,
+prompts, statuses, dependencies, and gates; the matching `/apply` endpoint
+inserts the previewed structure in one transaction. Both accept `rootPath` and
+`programKey`. The files are import input only: prompt Markdown is copied into
+SQLite, shared standing instructions are copied into the workspace description,
+and no source path, file hash, or continuing filesystem link is stored.
+
+When a saved prompt runs, its body is not pasted into the composer or transcript.
+The server creates a persisted run and random bearer token, then gives the
+provider a short bootstrap instruction pointing to
+`GET /api/agent/runs/:runId/context`. That
+read-only endpoint composes workspace instructions, program and suite context,
+prompt content, dependency results, and gate information directly from SQLite.
+It returns Markdown by default and JSON for `Accept: application/json`, expires
+after the run, and cannot be changed to inspect a different prompt. The same
+run credential can append progress through `POST .../remarks` and perform the
+strict `IN_PROGRESS` → `DONE`/`BLOCKED` transition through `POST .../status`.
+Every mutation is idempotent, audited, transactionally applied, and scoped to
+the selected prompt. Custom prompts continue to be sent directly.
+
 Host, port, and `ALLOWED_ORIGINS` are deliberately **not** editable from the UI —
 they are boot-time only and live in `config.ts`.
 

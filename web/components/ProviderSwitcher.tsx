@@ -33,7 +33,7 @@ export function ProviderSwitcher({
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex flex-wrap items-center gap-1 rounded-md border border-[#1d2229] bg-[#101317] p-1">
+      <div className="flex flex-wrap items-center gap-1 rounded-md border border-line bg-surface-1 p-1">
         {providers.map((provider) => {
           const isSelected = provider.id === selected;
           const isDisabled = disabled || !provider.available;
@@ -47,7 +47,7 @@ export function ProviderSwitcher({
               <div
                 className={[
                   "flex items-stretch rounded ring-1 ring-inset transition-colors",
-                  isSelected ? theme.active : "text-[#7d8794] ring-transparent",
+                  isSelected ? theme.active : "text-fg-muted ring-transparent",
                   isDisabled ? "opacity-45" : "",
                 ].join(" ")}
               >
@@ -59,14 +59,14 @@ export function ProviderSwitcher({
                   className={[
                     "flex items-center gap-2 rounded-l py-1.5 pl-3 pr-2 text-xs transition-colors",
                     isDisabled ? "cursor-not-allowed" : "cursor-pointer",
-                    isSelected ? "" : "hover:text-[#d7dde5]",
+                    isSelected ? "" : "hover:text-fg",
                   ].join(" ")}
                 >
                   <span
                     aria-hidden
                     className={[
                       "size-1.5 rounded-full",
-                      provider.available ? "bg-emerald-400" : "bg-[#3a424c]",
+                      provider.available ? "bg-success" : "bg-line-strong",
                     ].join(" ")}
                   />
                   {provider.label}
@@ -89,7 +89,7 @@ export function ProviderSwitcher({
                   aria-expanded={openMenu === provider.id}
                   className={[
                     "flex max-w-[13ch] cursor-pointer items-center gap-1 rounded-r py-1.5 pl-2 pr-2 text-[11px] transition-colors",
-                    isSelected ? "" : "hover:text-[#d7dde5]",
+                    isSelected ? "" : "hover:text-fg",
                     pinned ? "" : "opacity-70",
                   ].join(" ")}
                 >
@@ -119,14 +119,14 @@ export function ProviderSwitcher({
           );
         })}
         {providers.length === 0 && (
-          <span className="px-3 py-1.5 text-xs text-[#7d8794]">detecting providers…</span>
+          <span className="px-3 py-1.5 text-xs text-fg-muted">detecting providers…</span>
         )}
       </div>
       <button
         type="button"
         onClick={onRefresh}
         title="Re-run provider detection"
-        className="rounded border border-[#1d2229] px-2 py-1.5 text-xs text-[#7d8794] transition-colors hover:text-[#d7dde5]"
+        className="rounded border border-line px-2 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
       >
         ↻
       </button>

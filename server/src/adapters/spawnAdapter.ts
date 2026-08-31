@@ -88,9 +88,16 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
     let child: ChildProcess;
     try {
+      const childEnv={...process.env,...spec.env};
+      // Persistence belongs exclusively to the server process. Never pass a
+      // database/data-directory capability to a spawned agent, even if one is
+      // added to the service environment later.
+      delete childEnv.AGENT_CONSOLE_DATA_DIR;
+      delete childEnv.AGENT_CONSOLE_DATABASE_PATH;
+      delete childEnv.DATABASE_URL;
       child = spawn(binary, spec.args, {
         cwd: opts.cwd,
-        env: { ...process.env, ...spec.env },
+        env: childEnv,
         // With no stdin payload the handle is closed outright: these CLIs
         // otherwise sit waiting for piped input.
         stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],

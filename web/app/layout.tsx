@@ -1,5 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { AgentDock } from "@/components/AgentDock";
+import { ThemeScript } from "@/components/ThemeScript";
+import { DialogProvider } from "@/components/ui/Dialogs";
+import { ToastProvider } from "@/components/ui/Toast";
+import { AgentConsoleProvider } from "@/lib/agentConsole";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -8,6 +13,15 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Agent Console",
   description: "Live console for local CLI coding agents",
+};
+
+export const viewport: Viewport = {
+  // Matches the darkest theme's floor so mobile browser chrome does not flash
+  // white around the app.
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f5f7fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#12151c" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -22,10 +36,27 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
        * stamp attributes onto <html> and <body> before React hydrates, which
        * React reports as a hydration mismatch. suppressHydrationWarning applies
        * to these two elements only — one level deep, never to the app tree — so
-       * a real mismatch anywhere inside still surfaces.
+       * a real mismatch anywhere inside still surfaces. ThemeScript writes
+       * data-theme/data-effects onto <html> for the same reason.
        */}
       <body className="min-h-full" suppressHydrationWarning>
-        {children}
+        <ThemeScript />
+        <ToastProvider>
+          <DialogProvider>
+            {/*
+             * One socket for the whole app, owned above the router so that
+             * navigating between pages does not tear it down and lose the
+             * transcript of a run that is still going.
+             */}
+            <AgentConsoleProvider>
+              <div className="flex h-dvh flex-col">
+                <div className="min-h-0 flex-1">{children}</div>
+                {/* Renders nothing while idle, so it takes no space. */}
+                <AgentDock />
+              </div>
+            </AgentConsoleProvider>
+          </DialogProvider>
+        </ToastProvider>
       </body>
     </html>
   );

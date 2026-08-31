@@ -14,6 +14,8 @@ import type { AgentAdapter } from "./adapters/types.ts";
 
 /** How long a provider gets to stop cleanly before the run is hard-aborted. */
 const INTERRUPT_GRACE_MS = 2000;
+const redactRunCredentials=(value:string)=>value.replace(/Bearer\s+[A-Za-z0-9_-]{20,}/g,"Bearer [REDACTED_RUN_TOKEN]");
+function redactValue(value:unknown):unknown { if(typeof value==="string")return redactRunCredentials(value);if(Array.isArray(value))return value.map(redactValue);if(value!==null&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redactValue(item)]));return value; }
 
 export interface RunHandle {
   runId: string;
@@ -25,6 +27,7 @@ export interface RunHandle {
 }
 
 export interface StartRunArgs {
+  runId?: string;
   adapter: AgentAdapter;
   prompt: string;
   cwd?: string;
@@ -41,7 +44,7 @@ export interface StartRunArgs {
  */
 export function startRun(args: StartRunArgs): RunHandle {
   const { adapter, prompt } = args;
-  const runId = newId("run");
+  const runId = args.runId ?? newId("run");
   const provider = adapter.id;
   const log = createLogger(`${provider}:${runId.slice(4, 12)}`);
   const cwd = args.cwd ?? settings.workdir;
@@ -90,11 +93,11 @@ export function startRun(args: StartRunArgs): RunHandle {
           },
         };
       case "assistant_text":
-        return { ...base, type: "assistant_text", payload: event.payload };
+        return { ...base, type: "assistant_text", payload: { ...event.payload, text:redactRunCredentials(event.payload.text) } };
       case "tool_use":
-        return { ...base, type: "tool_use", payload: event.payload };
+        return { ...base, type: "tool_use", payload: { ...event.payload, summary:redactRunCredentials(event.payload.summary), input:redactValue(event.payload.input) } };
       case "tool_result":
-        return { ...base, type: "tool_result", payload: event.payload };
+        return { ...base, type: "tool_result", payload: { ...event.payload, summary:redactRunCredentials(event.payload.summary), output:redactRunCredentials(event.payload.output) } };
     }
   };
 

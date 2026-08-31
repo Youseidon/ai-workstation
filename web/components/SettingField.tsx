@@ -12,7 +12,7 @@ interface Props {
 }
 
 const inputClass =
-  "w-full rounded border border-[#242a33] bg-[#0b0d10] px-2.5 py-1.5 text-[12px] text-[#e7ecf2] placeholder:text-[#4e5661] focus:border-[#3a4450] focus:outline-none disabled:opacity-50";
+  "w-full rounded border border-line bg-surface-0 px-2.5 py-1.5 text-[12px] text-fg placeholder:text-fg-dim focus:border-line-strong focus:outline-none disabled:opacity-50";
 
 export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props) {
   const value = draft ?? field.value;
@@ -22,14 +22,14 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
     selectedOption?.danger === true || (field.type === "boolean" && value === true && field.dangerWhenTrue);
 
   return (
-    <div className="grid grid-cols-1 gap-2 border-b border-[#161b21] py-3 last:border-b-0 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
+    <div className="grid grid-cols-1 gap-2 border-b border-line py-3 last:border-b-0 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <label htmlFor={field.key} className="text-[12px] text-[#c3cbd6]">
+          <label htmlFor={field.key} className="text-[12px] text-fg-muted">
             {field.label}
           </label>
           {dirty && (
-            <span className="rounded bg-amber-500/15 px-1 text-[9px] uppercase tracking-wider text-amber-300">
+            <span className="rounded bg-warning/15 px-1 text-[9px] uppercase tracking-wider text-warning">
               unsaved
             </span>
           )}
@@ -39,13 +39,13 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
               onClick={() => onRevert(field.key)}
               disabled={disabled}
               title="Revert to the value from .env"
-              className="rounded bg-[#1b2129] px-1 text-[9px] uppercase tracking-wider text-[#7d8794] hover:text-[#d7dde5] disabled:opacity-50"
+              className="rounded bg-surface-2 px-1 text-[9px] uppercase tracking-wider text-fg-muted hover:text-fg disabled:opacity-50"
             >
               overridden ✕
             </button>
           )}
         </div>
-        <div className="mt-0.5 font-mono text-[10px] text-[#4e5661]">{field.envVar}</div>
+        <div className="mt-0.5 font-mono text-[10px] text-fg-dim">{field.envVar}</div>
       </div>
 
       <div className="min-w-0">
@@ -61,14 +61,14 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
               "flex h-6 w-11 items-center rounded-full border px-0.5 transition-colors disabled:opacity-50",
               value === true
                 ? dangerous
-                  ? "border-amber-500/40 bg-amber-500/25"
-                  : "border-emerald-500/40 bg-emerald-500/25"
-                : "border-[#242a33] bg-[#141920]",
+                  ? "border-warning/40 bg-warning/25"
+                  : "border-success/40 bg-success/25"
+                : "border-line bg-surface-2",
             ].join(" ")}
           >
             <span
               className={[
-                "size-4 rounded-full bg-[#c3cbd6] transition-transform",
+                "size-4 rounded-full bg-fg-muted transition-transform",
                 value === true ? "translate-x-5" : "translate-x-0",
               ].join(" ")}
             />
@@ -79,7 +79,7 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
             value={String(value)}
             disabled={disabled}
             onChange={(event) => onChange(field.key, event.target.value)}
-            className={`${inputClass} ${dangerous ? "border-amber-500/50 text-amber-200" : ""}`}
+            className={`${inputClass} ${dangerous ? "border-warning/50 text-warning" : ""}`}
           >
             {field.options?.map((option) => (
               <option key={option.value} value={option.value}>
@@ -115,15 +115,15 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
           />
         )}
 
-        <p className="mt-1 text-[11px] leading-snug text-[#5b636e]">{field.description}</p>
+        <p className="mt-1 text-[11px] leading-snug text-fg-dim">{field.description}</p>
 
         {dangerous && (
-          <p className="mt-1 text-[11px] text-amber-400/90">
+          <p className="mt-1 text-[11px] text-warning/90">
             ⚠ This value removes a safety check — the agent can act outside its sandbox.
           </p>
         )}
         {field.requiresRestart && (
-          <p className="mt-1 text-[11px] text-[#7d8794]">Takes effect after a server restart.</p>
+          <p className="mt-1 text-[11px] text-fg-muted">Takes effect after a server restart.</p>
         )}
       </div>
     </div>

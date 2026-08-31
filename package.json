@@ -16,7 +16,8 @@
     "start": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:start:server\" \"npm:start:web\"",
     "start:server": "npm run start --workspace server",
     "start:web": "npm run start --workspace web",
-    "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web"
+    "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web",
+    "verify:contrast": "node scripts/verify-contrast.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -1,35 +1,84 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PromptOption, ProviderId, WorkspaceRecord } from "@agent-console/shared";
 import { AppNav } from "@/components/AppNav";
+import { CommandBar } from "@/components/CommandBar";
+import { Composer } from "@/components/Composer";
 import { LogPanel } from "@/components/LogPanel";
-import { PromptInput } from "@/components/PromptInput";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { StatusBar } from "@/components/StatusBar";
+import { Button } from "@/components/ui/Button";
+import { useDialogs } from "@/components/ui/Dialogs";
+import { useToast } from "@/components/ui/Toast";
 import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
+import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi } from "@/lib/workspacesApi";
 
-const SERVER_URL = process.env.NEXT_PUBLIC_AGENT_SERVER_URL ?? "http://127.0.0.1:4000";
-
 export default function Page() {
-  const console_ = useAgentConsole(SERVER_URL);
-  const { providers, run, connection, items, workdir, lastRun } = console_;
+  const console_ = useAgentConsole();
+  const { providers, connection, items, workdir, lastRun, operationsRevision } = console_;
+  const toast = useToast();
+  const dialogs = useDialogs();
   const [preferred, setPreferred] = useState<ProviderId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
   const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
   const [savedPromptId, setSavedPromptId] = useState<number | null>(null);
 
-  useEffect(() => { void workspaceApi.list(SERVER_URL).then((list) => {
-    setWorkspaces(list);
-    const remembered = Number(localStorage.getItem("agent-console.workspace"));
-    setWorkspaceId(list.some((w) => w.id === remembered) ? remembered : list[0]?.id ?? null);
-  }); }, []);
-  useEffect(() => { if (workspaceId === null) return; localStorage.setItem("agent-console.workspace", String(workspaceId)); void workspaceApi.prompts(SERVER_URL, workspaceId).then(setPromptOptions); }, [workspaceId]);
+  const refreshWorkspaces = useCallback(() => {
+    return workspaceApi
+      .list(SERVER_URL)
+      .then((list) => {
+        setWorkspaceError(null);
+        setWorkspaces(list);
+        const params = new URLSearchParams(window.location.search);
+        const requestedWorkspace = Number(params.get("workspace"));
+        const requestedPrompt = Number(params.get("prompt"));
+        const remembered = Number(localStorage.getItem("agent-console.workspace"));
+        setWorkspaceId(
+          list.some((w) => w.id === requestedWorkspace)
+            ? requestedWorkspace
+            : list.some((w) => w.id === remembered)
+              ? remembered
+              : list[0]?.id ?? null,
+        );
+        if (Number.isSafeInteger(requestedPrompt) && requestedPrompt > 0) {
+          setSavedPromptId(requestedPrompt);
+        }
+      })
+      .catch((error: unknown) => {
+        setWorkspaceError(error instanceof Error ? error.message : "Workspaces could not be loaded.");
+      })
+      .finally(() => setWorkspaceLoading(false));
+  }, []);
+
+  useEffect(() => {
+    void refreshWorkspaces();
+  }, [refreshWorkspaces]);
+
+  const refreshPrompts = useCallback(
+    (id: number) =>
+      workspaceApi
+        .prompts(SERVER_URL, id)
+        .then(setPromptOptions)
+        .catch(() => {}),
+    [],
+  );
+
+  useEffect(() => {
+    if (workspaceId === null) return;
+    localStorage.setItem("agent-console.workspace", String(workspaceId));
+    void refreshPrompts(workspaceId);
+    const timer = setInterval(() => void refreshPrompts(workspaceId), 60_000);
+    return () => clearInterval(timer);
+  }, [workspaceId, refreshPrompts, operationsRevision]);
+
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null;
   const savedPrompt = promptOptions.find((p) => p.id === savedPromptId) ?? null;
 
@@ -48,13 +97,61 @@ export default function Page() {
 
   const models = useModelSelection(providers);
 
-  const running = run !== null;
-  const canSend = connection === "open" && !running && selectedInfo?.available === true;
+  // Scoped to the selected workspace: the server allows concurrent runs in
+  // different workspaces, so a run elsewhere must not disable this composer.
+  const activeRun =
+    workspaceId === null
+      ? null
+      : console_.runs.find((item) => item.workspace.id === workspaceId) ?? null;
+  const running = activeRun !== null;
+
+  /** Why the composer cannot send right now, in words rather than a grey box. */
+  const blockedReason = useMemo<string | null>(() => {
+    if (connection !== "open") return "backend disconnected";
+    if (workspaceId === null) return "choose a workspace";
+    if (activeWorkspace?.workDirectoryExists === false) return "working directory is missing";
+    if (selectedInfo?.available !== true) return `${selected} is not available`;
+    if (savedPrompt !== null && !savedPrompt.ready) {
+      return savedPrompt.blockedBy.length > 0
+        ? `waiting on ${savedPrompt.blockedBy.join(", ")}`
+        : `work item is ${savedPrompt.status.toLowerCase()}`;
+    }
+    return null;
+  }, [connection, workspaceId, activeWorkspace, selectedInfo, selected, savedPrompt]);
+
+  const recover = async () => {
+    if (savedPrompt === null || workspaceId === null) return;
+    const confirmed = await dialogs.confirm({
+      title: "Recover this interrupted run?",
+      description:
+        "The previous run's logs and any changes it made to the working tree are preserved. The work item returns to READY so it can be run again.",
+      confirmLabel: "Recover",
+    });
+    if (!confirmed) return;
+    try {
+      await workspaceApi.recover(SERVER_URL, savedPrompt.id);
+      await refreshPrompts(workspaceId);
+      toast.success("Run recovered", "The work item is ready to run again.");
+    } catch (error) {
+      toast.error("Recovery failed", error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const send = (prompt: string) => {
+    if (workspaceId === null) return;
+    const started = console_.startRun(
+      workspaceId,
+      selected,
+      savedPrompt !== null ? { promptId: savedPrompt.id } : { prompt },
+      models.resolve(selected),
+    );
+    if (!started) toast.error("Could not start the run", "The agent connection is unavailable.");
+  };
 
   return (
-    <main className="flex h-dvh flex-col bg-[#0b0d10]">
-      <header className="flex flex-wrap items-center gap-3 border-b border-[#1d2229] bg-[#0e1115] px-4 py-2.5">
-        <h1 className="text-xs uppercase tracking-[0.2em] text-[#7d8794]">agent console</h1>
+    <main className="flex h-full flex-col bg-surface-0">
+      <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface-1 px-4 py-2.5">
+        <h1 className="text-xs uppercase tracking-[0.2em] text-fg-muted">agent console</h1>
         <AppNav active="console" />
         <ProviderSwitcher
           providers={providers}
@@ -65,24 +162,48 @@ export default function Page() {
           onRefresh={() => void console_.refreshProviders()}
         />
         <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={console_.clearLog}
-            disabled={items.length === 0}
-            className="rounded border border-[#1d2229] px-2.5 py-1.5 text-xs text-[#7d8794] transition-colors hover:text-[#d7dde5] disabled:opacity-40"
-          >
-            clear log
-          </button>
-          <button
-            type="button"
+          <Button size="sm" variant="ghost" onClick={console_.clearLog} disabled={items.length === 0}>
+            Clear log
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={() => setSettingsOpen(true)}
             title="Configure providers, permissions and the working directory"
-            className="rounded border border-[#1d2229] px-2.5 py-1.5 text-xs text-[#7d8794] transition-colors hover:text-[#d7dde5]"
           >
-            ⚙ settings
-          </button>
+            ⚙ Settings
+          </Button>
         </div>
       </header>
+
+      {workspaceError !== null && (
+        <div role="alert" className="flex items-center gap-3 border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
+          <span className="min-w-0 flex-1">The workspace library is unavailable: {workspaceError}</span>
+          <Button size="sm" variant="secondary" onClick={() => { setWorkspaceLoading(true); void refreshWorkspaces(); }}>Retry</Button>
+        </div>
+      )}
+
+      {!workspaceLoading && workspaceError === null && workspaces.length === 0 && (
+        <div role="status" className="border-b border-line bg-surface-1 px-4 py-2 text-xs text-fg-muted">
+          No workspaces yet. Add one from the Workspaces page before starting an agent.
+        </div>
+      )}
+
+      <CommandBar
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        onWorkspace={(id) => {
+          setSavedPromptId(null);
+          setPromptOptions([]);
+          setWorkspaceId(id);
+        }}
+        prompts={promptOptions}
+        savedPromptId={savedPromptId}
+        onPrompt={setSavedPromptId}
+        disabled={running}
+        activeWorkspace={activeWorkspace}
+        onRecover={() => void recover()}
+      />
 
       <LogPanel items={items} workdir={activeWorkspace?.workDirectory ?? workdir} />
 
@@ -90,32 +211,22 @@ export default function Page() {
         connection={connection}
         provider={selectedInfo}
         model={models.resolve(selected)}
-        run={run}
+        run={activeRun}
         lastRun={lastRun}
         workdir={activeWorkspace?.workDirectory ?? workdir}
       />
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-[#1d2229] bg-[#0e1115] px-4 py-2 text-xs">
-        <span className="text-[#68727f]">Workspace</span>
-        <select value={workspaceId ?? ""} disabled={running} onChange={(e)=>{setSavedPromptId(null);setPromptOptions([]);setWorkspaceId(Number(e.target.value));}} className="rounded border border-[#252c35] bg-[#101317] px-2 py-1.5 text-[#d7dde5]">
-          {workspaces.length===0&&<option value="">No workspaces</option>}{workspaces.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
-        </select>
-        <span className="ml-2 text-[#68727f]">Prompt</span>
-        <select value={savedPromptId ?? "custom"} disabled={running||workspaceId===null} onChange={(e)=>setSavedPromptId(e.target.value==="custom"?null:Number(e.target.value))} className="min-w-52 rounded border border-[#252c35] bg-[#101317] px-2 py-1.5 text-[#d7dde5]">
-          <option value="custom">Custom prompt</option>
-          {promptOptions.map(p=><option key={p.id} value={p.id}>{p.programName} / {p.suiteName} / {p.title}</option>)}
-        </select>
-      </div>
-
-      <PromptInput
-        disabled={!canSend || workspaceId === null || !activeWorkspace?.workDirectoryExists}
+      <Composer
+        disabled={blockedReason !== null || running}
         running={running}
         providers={providers}
         models={models}
         selected={selected}
-        lockedPrompt={savedPrompt}
-        onSubmit={(prompt) => workspaceId !== null && console_.startRun(workspaceId, selected, savedPrompt ? { promptId: savedPrompt.id } : { prompt }, models.resolve(selected))}
-        onInterrupt={console_.interrupt}
+        blockedReason={blockedReason}
+        savedPrompt={savedPrompt}
+        onSubmit={send}
+        onInterrupt={() => console_.interrupt(activeRun?.runId)}
+        onClearSavedPrompt={() => setSavedPromptId(null)}
         onTarget={(provider, model) => {
           setPreferred(provider);
           // A bare `@grok` picks the provider at the model it was already going
