@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { defaultPromptPipelineRule, isOnBlockedAction, isOnDoneAction, isProviderId, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { defaultPromptPipelineRule, isOnBlockedAction, isOnDoneAction, isProviderId, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
 import type { ImportedProgram } from "./promptImport.ts";
@@ -301,6 +301,56 @@ migrate();
     migrate9();
     db.pragma("foreign_keys = ON");
   }
+  const afterNine = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterNine < 10) {
+    db.exec(`
+      ALTER TABLE prompt_pipeline_rule ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE prompt_pipeline_rule ADD COLUMN step_order INTEGER NOT NULL DEFAULT 0;
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(10,?)").run(new Date().toISOString());
+  }
+  const afterTen = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterTen < 11) {
+    db.exec(`
+      CREATE TABLE pipeline (
+        id INTEGER PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        description TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(workspace_id, name)
+      );
+      CREATE INDEX pipeline_workspace_idx ON pipeline(workspace_id);
+      CREATE TABLE pipeline_stage (
+        pipeline_id INTEGER NOT NULL REFERENCES pipeline(id) ON DELETE CASCADE,
+        suite_id INTEGER NOT NULL REFERENCES suite(id) ON DELETE CASCADE,
+        sort_order INTEGER NOT NULL,
+        PRIMARY KEY (pipeline_id, suite_id)
+      );
+      CREATE INDEX pipeline_stage_suite_idx ON pipeline_stage(suite_id);
+      CREATE TABLE pipeline_run (
+        id TEXT PRIMARY KEY,
+        pipeline_id INTEGER NOT NULL REFERENCES pipeline(id) ON DELETE CASCADE,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        state TEXT NOT NULL
+          CHECK(state IN ('PLAYING','WAITING_HUMAN','PAUSED','COMPLETE','STOPPED','INTERRUPTED')),
+        current_suite_id INTEGER REFERENCES suite(id) ON DELETE SET NULL,
+        current_suite_run_id TEXT,
+        play_provider TEXT,
+        play_model TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        stop_reason TEXT
+      );
+      CREATE INDEX pipeline_run_pipeline_idx ON pipeline_run(pipeline_id, started_at);
+      CREATE UNIQUE INDEX pipeline_run_active_uq
+        ON pipeline_run(pipeline_id)
+        WHERE state IN ('PLAYING','WAITING_HUMAN','PAUSED');
+      ALTER TABLE suite_pipeline_run ADD COLUMN pipeline_run_id TEXT;
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(11,?)").run(new Date().toISOString());
+  }
 }
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -338,6 +388,7 @@ const recoverAbandonedRuns=db.transaction(()=>{
   const orphaned=db.prepare(`SELECT p.id,(SELECT r.id FROM agent_run r WHERE r.prompt_id=p.id AND r.role='execute' ORDER BY r.started_at DESC LIMIT 1) runId FROM prompt p WHERE p.status='IN_PROGRESS' AND NOT EXISTS(SELECT 1 FROM agent_run active WHERE active.prompt_id=p.id AND active.state IN ('STARTING','RUNNING') AND active.role='execute')`).all() as Array<{id:number;runId:string|null}>;
   for(const prompt of orphaned){const reason="No active agent run exists for this IN_PROGRESS prompt; the latest run ended without a terminal prompt status.";db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,prompt.id);db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);}
   db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
+  db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
 });
 recoverAbandonedRuns();
 
@@ -345,8 +396,10 @@ type WorkspaceRow = { id: number; name: string; description: string; work_direct
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
 type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; default_provider?: string | null; default_model?: string | null };
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number };
-type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string };
-type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
+type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
+type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; pipeline_run_id: string | null };
+type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
+type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
   return value !== null && value !== undefined && isProviderId(value) ? value : null;
@@ -365,6 +418,8 @@ function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): Pr
     retryLimit: row.retry_limit,
     recoverProvider: asProviderId(row.recover_provider),
     recoverModel: row.recover_model,
+    enabled: row.enabled === 1,
+    stepOrder: row.step_order ?? 0,
   };
 }
 
@@ -378,6 +433,23 @@ function pipelineRunDto(row: PipelineRunRow): SuitePipelineRun {
     currentRunId: row.current_run_id,
     attempt: row.attempt,
     recovering: row.recovering === 1,
+    playProvider: asProviderId(row.play_provider),
+    playModel: row.play_model,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    stopReason: row.stop_reason,
+    pipelineRunId: row.pipeline_run_id ?? null,
+  };
+}
+
+function namedPipelineRunDto(row: NamedPipelineRunRow): PipelineRun {
+  return {
+    id: row.id,
+    pipelineId: row.pipeline_id,
+    workspaceId: row.workspace_id,
+    state: row.state as PipelineState,
+    currentSuiteId: row.current_suite_id,
+    currentSuiteRunId: row.current_suite_run_id,
     playProvider: asProviderId(row.play_provider),
     playModel: row.play_model,
     startedAt: row.started_at,
@@ -835,6 +907,8 @@ export const workspaces = {
       retryLimit:current.retryLimit,
       recoverProvider:"recoverProvider" in input ? optionalProviderField(input.recoverProvider,"recoverProvider") : current.recoverProvider,
       recoverModel:"recoverModel" in input ? optionalModelField(input.recoverModel,"recoverModel") : current.recoverModel,
+      enabled:current.enabled,
+      stepOrder:current.stepOrder,
     };
     if("onDone" in input){
       if(!isOnDoneAction(input.onDone)) throw new WorkspaceError(422,"validation_error","onDone must be continue, stop, or skip_rest",{onDone:"Unknown action"});
@@ -849,23 +923,73 @@ export const workspaces = {
       if(typeof value!=="number"||!Number.isInteger(value)||value<1||value>5) throw new WorkspaceError(422,"validation_error","retryLimit must be an integer between 1 and 5",{retryLimit:"Must be 1-5"});
       next.retryLimit=value;
     }
+    if("enabled" in input) next.enabled=input.enabled===true||input.enabled===1;
+    if("stepOrder" in input){
+      const value=input.stepOrder;
+      if(typeof value!=="number"||!Number.isInteger(value)||value<0) throw new WorkspaceError(422,"validation_error","stepOrder must be a non-negative integer",{stepOrder:"Must be >= 0"});
+      next.stepOrder=value;
+    }
     if(next.onBlocked==="recover" && next.recoverProvider===null){
       throw new WorkspaceError(422,"validation_error","recoverProvider is required when onBlocked is recover",{recoverProvider:"Required"});
     }
     const now=new Date().toISOString();
-    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,retry_limit,recover_provider,recover_model,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?)
+    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,retry_limit,recover_provider,recover_model,updated_at,enabled,step_order)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(prompt_id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
-        retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model, updated_at=excluded.updated_at`)
-      .run(promptId,next.provider,next.model,next.onDone,next.onBlocked,next.retryLimit,next.recoverProvider,next.recoverModel,now);
+        retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model, updated_at=excluded.updated_at,
+        enabled=excluded.enabled, step_order=excluded.step_order`)
+      .run(promptId,next.provider,next.model,next.onDone,next.onBlocked,next.retryLimit,next.recoverProvider,next.recoverModel,now,next.enabled?1:0,next.stepOrder);
     return this.pipelineRule(promptId);
+  },
+
+  enabledPipelineSteps(suiteId:number):PromptPipelineRule[] {
+    this.suiteHeader(suiteId);
+    const rows=db.prepare(`SELECT r.* FROM prompt_pipeline_rule r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? AND r.enabled=1 ORDER BY r.step_order,p.sort_order,p.id`).all(suiteId) as PipelineRuleRow[];
+    return rows.map(row=>pipelineRuleDto(row.prompt_id,row));
+  },
+
+  addPipelineStep(promptId:number,input:Record<string,unknown>={}):PromptPipelineRule {
+    const home=this.promptHome(promptId);
+    const current=this.pipelineRule(promptId);
+    if(current.enabled) return this.upsertPipelineRule(promptId,input);
+    const max=(db.prepare(`SELECT COALESCE(MAX(r.step_order), -1) AS value FROM prompt_pipeline_rule r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? AND r.enabled=1`).get(home.suiteId) as {value:number}).value;
+    const provider="provider" in input ? optionalProviderField(input.provider,"provider") : current.provider;
+    const model="model" in input ? optionalModelField(input.model,"model") : current.model;
+    return this.upsertPipelineRule(promptId,{...input,provider,model,enabled:true,stepOrder:max+1});
+  },
+
+  removePipelineStep(promptId:number):PromptPipelineRule {
+    this.promptHome(promptId);
+    return this.upsertPipelineRule(promptId,{enabled:false,stepOrder:0});
+  },
+
+  reorderPipelineSteps(suiteId:number,promptIds:number[]):PromptPipelineRule[] {
+    this.suiteHeader(suiteId);
+    const current=this.enabledPipelineSteps(suiteId);
+    if(promptIds.length!==current.length || new Set(promptIds).size!==promptIds.length){
+      throw new WorkspaceError(422,"validation_error","promptIds must list every enabled step once");
+    }
+    const allowed=new Set(current.map(step=>step.promptId));
+    for(const promptId of promptIds){
+      if(!allowed.has(promptId)) throw new WorkspaceError(422,"validation_error","promptIds must be the enabled steps of this suite");
+    }
+    sqliteGuard(()=>db.transaction(()=>{
+      promptIds.forEach((promptId,index)=>{
+        db.prepare("UPDATE prompt_pipeline_rule SET step_order=?,updated_at=? WHERE prompt_id=?").run(index,new Date().toISOString(),promptId);
+      });
+    })());
+    return this.enabledPipelineSteps(suiteId);
   },
 
   pipeline(suiteId:number):SuitePipelineView {
     const defaults=this.suitePipelineDefaults(suiteId);
-    const promptIds=(db.prepare("SELECT id FROM prompt WHERE suite_id=? ORDER BY sort_order,id").all(suiteId) as Array<{id:number}>).map(row=>row.id);
-    return {defaults,rules:promptIds.map(id=>this.pipelineRule(id)),active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
+    const prompts=(db.prepare("SELECT id,title,external_key externalKey FROM prompt WHERE suite_id=? ORDER BY sort_order,id").all(suiteId) as Array<{id:number;title:string;externalKey:string|null}>);
+    const rules=prompts.map(row=>this.pipelineRule(row.id));
+    const steps=this.enabledPipelineSteps(suiteId);
+    const enabled=new Set(steps.map(step=>step.promptId));
+    const available:PipelineAvailablePrompt[]=prompts.filter(row=>!enabled.has(row.id)).map(row=>({id:row.id,title:row.title,externalKey:row.externalKey}));
+    return {defaults,steps,available,rules,active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
   },
 
   pipelineById(id:string):SuitePipelineRun|null {
@@ -893,11 +1017,11 @@ export const workspaces = {
     return row?pipelineRunDto(row):null;
   },
 
-  createPipelineRun(args:{id:string;suiteId:number;workspaceId:number;playProvider:ProviderId|null;playModel:string|null}):SuitePipelineRun {
+  createPipelineRun(args:{id:string;suiteId:number;workspaceId:number;playProvider:ProviderId|null;playModel:string|null;pipelineRunId?:string|null}):SuitePipelineRun {
     return sqliteGuard(()=>{
       const now=new Date().toISOString();
-      db.prepare("INSERT INTO suite_pipeline_run(id,suite_id,workspace_id,state,current_prompt_id,current_run_id,attempt,recovering,play_provider,play_model,started_at) VALUES(?,?,?,'PLAYING',NULL,NULL,0,0,?,?,?)")
-        .run(args.id,args.suiteId,args.workspaceId,args.playProvider,args.playModel,now);
+      db.prepare("INSERT INTO suite_pipeline_run(id,suite_id,workspace_id,state,current_prompt_id,current_run_id,attempt,recovering,play_provider,play_model,started_at,pipeline_run_id) VALUES(?,?,?,'PLAYING',NULL,NULL,0,0,?,?,?,?)")
+        .run(args.id,args.suiteId,args.workspaceId,args.playProvider,args.playModel,now,args.pipelineRunId??null);
       return this.pipelineById(args.id)!;
     });
   },
@@ -932,7 +1056,20 @@ export const workspaces = {
   },
 
   readyPromptsInSuite(workspaceId:number,suiteId:number):PromptOption[] {
-    return this.promptOptions(workspaceId).filter(prompt=>prompt.suiteId===suiteId&&prompt.ready);
+    const options=new Map(this.promptOptions(workspaceId).map(prompt=>[prompt.id,prompt]));
+    const next:PromptOption[]=[];
+    for(const step of this.enabledPipelineSteps(suiteId)){
+      const prompt=options.get(step.promptId);
+      if(prompt===undefined) continue;
+      if(prompt.status==="DONE"||prompt.status==="SKIPPED") continue;
+      if(prompt.ready){ next.push(prompt); continue; }
+      break;
+    }
+    return next;
+  },
+
+  remainingPipelinePromptIds(suiteId:number):number[] {
+    return this.enabledPipelineSteps(suiteId).map(step=>step.promptId);
   },
 
   suitePromptRows(suiteId:number):Array<{id:number;status:PromptRecord["status"]}> {
@@ -977,7 +1114,195 @@ export const workspaces = {
   },
 
   interruptPipelinesOnRestart():void {
-    db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(new Date().toISOString());
+    const now=new Date().toISOString();
+    db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
+    db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Named pipelines                                                    */
+  /* ---------------------------------------------------------------- */
+
+  pipelineStages(pipelineId:number):PipelineStage[] {
+    return db.prepare(`
+      SELECT st.suite_id suiteId, st.sort_order sortOrder,
+             g.id programId, g.name programName, g.external_key programKey,
+             s.name suiteName, s.external_key suiteKey,
+             (SELECT count(*) FROM prompt p WHERE p.suite_id=s.id) promptCount,
+             (SELECT count(*) FROM prompt_pipeline_rule r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=s.id AND r.enabled=1) stepCount
+      FROM pipeline_stage st
+      JOIN suite s ON s.id=st.suite_id
+      JOIN program g ON g.id=s.program_id
+      WHERE st.pipeline_id=?
+      ORDER BY st.sort_order, s.id
+    `).all(pipelineId) as PipelineStage[];
+  },
+
+  namedPipelineRunById(id:string):PipelineRun|null {
+    const row=db.prepare("SELECT * FROM pipeline_run WHERE id=?").get(id) as NamedPipelineRunRow|undefined;
+    return row?namedPipelineRunDto(row):null;
+  },
+
+  activeNamedPipelineRun(pipelineId:number):PipelineRun|null {
+    const row=db.prepare("SELECT * FROM pipeline_run WHERE pipeline_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1").get(pipelineId) as NamedPipelineRunRow|undefined;
+    return row?namedPipelineRunDto(row):null;
+  },
+
+  latestNamedPipelineRun(pipelineId:number):PipelineRun|null {
+    const row=db.prepare("SELECT * FROM pipeline_run WHERE pipeline_id=? ORDER BY started_at DESC LIMIT 1").get(pipelineId) as NamedPipelineRunRow|undefined;
+    return row?namedPipelineRunDto(row):null;
+  },
+
+  activeNamedPipelineForWorkspace(workspaceId:number):PipelineRun|null {
+    const row=db.prepare("SELECT * FROM pipeline_run WHERE workspace_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1").get(workspaceId) as NamedPipelineRunRow|undefined;
+    return row?namedPipelineRunDto(row):null;
+  },
+
+  hydratePipeline(row:NamedPipelineRow):PipelineRecord {
+    const workspace=this.get(row.workspace_id);
+    return {
+      id:row.id,
+      workspaceId:row.workspace_id,
+      workspaceName:workspace.name,
+      name:row.name,
+      description:row.description,
+      createdAt:row.created_at,
+      updatedAt:row.updated_at,
+      stages:this.pipelineStages(row.id),
+      active:this.activeNamedPipelineRun(row.id),
+      latest:this.latestNamedPipelineRun(row.id),
+    };
+  },
+
+  listPipelines(workspaceId?:number):PipelineRecord[] {
+    if(workspaceId!==undefined) this.get(workspaceId);
+    const rows=workspaceId===undefined
+      ? db.prepare("SELECT * FROM pipeline ORDER BY updated_at DESC, id DESC").all() as NamedPipelineRow[]
+      : db.prepare("SELECT * FROM pipeline WHERE workspace_id=? ORDER BY updated_at DESC, id DESC").all(workspaceId) as NamedPipelineRow[];
+    return rows.map(row=>this.hydratePipeline(row));
+  },
+
+  getPipeline(id:number):PipelineRecord {
+    const row=db.prepare("SELECT * FROM pipeline WHERE id=?").get(id) as NamedPipelineRow|undefined;
+    if(!row) throw new WorkspaceError(404,"not_found","Pipeline not found");
+    return this.hydratePipeline(row);
+  },
+
+  replacePipelineStages(pipelineId:number,workspaceId:number,suiteIds:number[]):void {
+    const seen=new Set<number>();
+    suiteIds.forEach((suiteId,index)=>{
+      if(typeof suiteId!=="number"||!Number.isSafeInteger(suiteId)||suiteId<=0){
+        throw new WorkspaceError(422,"validation_error","suiteIds must be positive integers",{suiteIds:"Invalid suite id"});
+      }
+      if(seen.has(suiteId)) throw new WorkspaceError(422,"validation_error","suiteIds must be unique",{suiteIds:"Duplicate suite"});
+      seen.add(suiteId);
+      const home=this.suiteHeader(suiteId);
+      if(home.workspaceId!==workspaceId){
+        throw new WorkspaceError(422,"validation_error","Every suite must belong to this pipeline's workspace",{suiteIds:`Suite ${suiteId} is in another workspace`});
+      }
+      db.prepare("INSERT INTO pipeline_stage(pipeline_id,suite_id,sort_order) VALUES(?,?,?)").run(pipelineId,suiteId,index);
+    });
+  },
+
+  createPipeline(input:Record<string,unknown>):PipelineRecord {
+    return sqliteGuard(()=>db.transaction(()=>{
+      const workspaceId=typeof input.workspaceId==="number"?input.workspaceId:0;
+      this.get(workspaceId);
+      const name=requireText(input.name,"name",120);
+      const description=requireText(input.description??"","description",4000,true);
+      const suiteIds=Array.isArray(input.suiteIds)?input.suiteIds.filter((value):value is number=>typeof value==="number"):[];
+      const now=new Date().toISOString();
+      const result=db.prepare("INSERT INTO pipeline(workspace_id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)")
+        .run(workspaceId,name,description,now,now);
+      const id=Number(result.lastInsertRowid);
+      this.replacePipelineStages(id,workspaceId,suiteIds);
+      return this.getPipeline(id);
+    })());
+  },
+
+  updatePipeline(id:number,input:Record<string,unknown>):PipelineRecord {
+    return sqliteGuard(()=>db.transaction(()=>{
+      const current=this.getPipeline(id);
+      const name=input.name===undefined?current.name:requireText(input.name,"name",120);
+      const description=input.description===undefined?current.description:requireText(input.description,"description",4000,true);
+      if("suiteIds" in input && current.active!==null){
+        throw new WorkspaceError(409,"pipeline_active","Stop the running pipeline before changing its stages");
+      }
+      db.prepare("UPDATE pipeline SET name=?,description=?,updated_at=? WHERE id=?").run(name,description,new Date().toISOString(),id);
+      if("suiteIds" in input){
+        const suiteIds=Array.isArray(input.suiteIds)?input.suiteIds.filter((value):value is number=>typeof value==="number"):[];
+        db.prepare("DELETE FROM pipeline_stage WHERE pipeline_id=?").run(id);
+        this.replacePipelineStages(id,current.workspaceId,suiteIds);
+      }
+      return this.getPipeline(id);
+    })());
+  },
+
+  deletePipeline(id:number):void {
+    const current=this.getPipeline(id);
+    if(current.active!==null) throw new WorkspaceError(409,"pipeline_active","Stop the running pipeline before deleting it");
+    if(db.prepare("DELETE FROM pipeline WHERE id=?").run(id).changes===0) throw new WorkspaceError(404,"not_found","Pipeline not found");
+  },
+
+  createNamedPipelineRun(args:{id:string;pipelineId:number;workspaceId:number;playProvider:ProviderId|null;playModel:string|null}):PipelineRun {
+    return sqliteGuard(()=>{
+      const now=new Date().toISOString();
+      db.prepare("INSERT INTO pipeline_run(id,pipeline_id,workspace_id,state,current_suite_id,current_suite_run_id,play_provider,play_model,started_at) VALUES(?,?,?,'PLAYING',NULL,NULL,?,?,?)")
+        .run(args.id,args.pipelineId,args.workspaceId,args.playProvider,args.playModel,now);
+      return this.namedPipelineRunById(args.id)!;
+    });
+  },
+
+  updateNamedPipelineRun(id:string,patch:{
+    state?:PipelineState;
+    currentSuiteId?:number|null;
+    currentSuiteRunId?:string|null;
+    playProvider?:ProviderId|null;
+    playModel?:string|null;
+    endedAt?:string|null;
+    stopReason?:string|null;
+  }):PipelineRun {
+    const current=this.namedPipelineRunById(id);
+    if(!current) throw new WorkspaceError(404,"not_found","Pipeline run not found");
+    const next={
+      state:patch.state??current.state,
+      currentSuiteId:patch.currentSuiteId===undefined?current.currentSuiteId:patch.currentSuiteId,
+      currentSuiteRunId:patch.currentSuiteRunId===undefined?current.currentSuiteRunId:patch.currentSuiteRunId,
+      playProvider:patch.playProvider===undefined?current.playProvider:patch.playProvider,
+      playModel:patch.playModel===undefined?current.playModel:patch.playModel,
+      endedAt:patch.endedAt===undefined?current.endedAt:patch.endedAt,
+      stopReason:patch.stopReason===undefined?current.stopReason:patch.stopReason,
+    };
+    db.prepare("UPDATE pipeline_run SET state=?,current_suite_id=?,current_suite_run_id=?,play_provider=?,play_model=?,ended_at=?,stop_reason=? WHERE id=?")
+      .run(next.state,next.currentSuiteId,next.currentSuiteRunId,next.playProvider,next.playModel,next.endedAt,next.stopReason,id);
+    return this.namedPipelineRunById(id)!;
+  },
+
+  listPipelineRuns(pipelineId:number):PipelineRunDetail[] {
+    this.getPipeline(pipelineId);
+    const rows=db.prepare("SELECT * FROM pipeline_run WHERE pipeline_id=? ORDER BY started_at DESC").all(pipelineId) as NamedPipelineRunRow[];
+    return rows.map(row=>this.pipelineRunDetail(row.id));
+  },
+
+  pipelineRunDetail(id:string):PipelineRunDetail {
+    const run=this.namedPipelineRunById(id);
+    if(!run) throw new WorkspaceError(404,"not_found","Pipeline run not found");
+    const pipeline=this.getPipeline(run.pipelineId);
+    const suiteRuns=new Map(
+      (db.prepare("SELECT * FROM suite_pipeline_run WHERE pipeline_run_id=?").all(id) as PipelineRunRow[])
+        .map(row=>[row.suite_id,pipelineRunDto(row)]),
+    );
+    return {
+      ...run,
+      pipelineName:pipeline.name,
+      stages:pipeline.stages.map(stage=>({
+        suiteId:stage.suiteId,
+        suiteName:stage.suiteName,
+        programName:stage.programName,
+        sortOrder:stage.sortOrder,
+        suiteRun:suiteRuns.get(stage.suiteId)??null,
+      })),
+    };
   },
 
   close(): void { db.close(); },

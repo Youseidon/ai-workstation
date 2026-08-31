@@ -2,13 +2,14 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { ThemeToggle } from "./ThemeToggle";
 
-export type NavSection = "console" | "fleet" | "workspaces" | "operations" | "sessions" | "input";
+export type NavSection = "console" | "fleet" | "workspaces" | "operations" | "pipeline" | "sessions" | "input";
 
 const LINKS: Array<{ href: string; label: string; matches: NavSection[] }> = [
   { href: "/", label: "Console", matches: ["console"] },
   { href: "/fleet", label: "Fleet", matches: ["fleet"] },
   { href: "/workspaces", label: "Workspaces", matches: ["workspaces"] },
   { href: "/operations", label: "Operations", matches: ["operations", "sessions", "input"] },
+  { href: "/pipeline", label: "Pipeline", matches: ["pipeline"] },
 ];
 
 export function AppNav({ active }: { active: NavSection }) {

@@ -1,5 +1,6 @@
-import type { ProviderId, ProviderInfo } from "@agent-console/shared";
+import type { ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
 import { PROVIDER_IDS } from "@agent-console/shared";
+import { providerUsageUnavailable } from "./accountUsage.ts";
 import { ClaudeAdapter } from "./claude.ts";
 import { CodexAdapter } from "./codex.ts";
 import { CursorAdapter } from "./cursor.ts";
@@ -41,4 +42,37 @@ export async function getProviderInfo(id: ProviderId): Promise<ProviderInfo> {
   const found = providers.find((provider) => provider.id === id);
   if (found) return found;
   return toProviderInfo(adapters[id]);
+}
+
+const USAGE_TTL_MS = 60_000;
+
+let usageCache: { at: number; usage: ProviderUsage[] } | null = null;
+let usageInflight: Promise<ProviderUsage[]> | null = null;
+
+export async function collectAccountUsage(force = false): Promise<ProviderUsage[]> {
+  if (!force && usageCache !== null && Date.now() - usageCache.at < USAGE_TTL_MS) {
+    return usageCache.usage;
+  }
+  if (usageInflight !== null) return usageInflight;
+  usageInflight = (async () => {
+    const providers = await detectProviders();
+    const usage = await Promise.all(
+      providers.map(async (info) => {
+        if (!info.available) {
+          return providerUsageUnavailable(info.id, info.reason ?? "provider unavailable");
+        }
+        try {
+          return await adapters[info.id].getAccountUsage();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return providerUsageUnavailable(info.id, message);
+        }
+      }),
+    );
+    usageCache = { at: Date.now(), usage };
+    return usage;
+  })().finally(() => {
+    usageInflight = null;
+  });
+  return usageInflight;
 }

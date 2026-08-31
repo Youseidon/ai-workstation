@@ -4,7 +4,7 @@ import type { ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
-import { detectProviders } from "./adapters/registry.ts";
+import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runRoleStartError } from "./runner.ts";
@@ -135,7 +135,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/pipelines" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }
@@ -152,6 +152,17 @@ const httpServer = createServer((req, res) => {
       .catch((error: unknown) => {
         log.error("provider detection failed", error);
         sendJson(res, 500, { error: "provider detection failed" });
+      });
+    return;
+  }
+
+  if (url.pathname === "/api/providers/usage") {
+    const force = url.searchParams.get("refresh") === "1";
+    collectAccountUsage(force)
+      .then((usage) => sendJson(res, 200, { usage, fetchedAt: new Date().toISOString() }))
+      .catch((error: unknown) => {
+        log.error("provider usage fetch failed", error);
+        sendJson(res, 500, { error: "provider usage fetch failed" });
       });
     return;
   }

@@ -6,15 +6,11 @@ import { useSearchParams } from "next/navigation";
 import type {
   OperationsPrompt,
   OperationsSnapshot,
-  PromptPipelineRule,
   ProviderId,
 } from "@agent-console/shared";
 import { AppNav } from "@/components/AppNav";
 import { LogPanel } from "@/components/LogPanel";
-import { PipelineRail } from "@/components/pipeline/PipelineRail";
-import { StationRules } from "@/components/pipeline/RuleChip";
-import type { RulePatch } from "@/components/pipeline/RulePopover";
-import { LABEL, TONE, pipelineBadge, playBlockedReason, workspaceOccupancy } from "@/components/pipeline/status";
+import { LABEL, TONE } from "@/components/pipeline/status";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { StatusBar } from "@/components/StatusBar";
@@ -30,7 +26,7 @@ import { applyEvent, type LogItem } from "@/lib/log";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole } from "@/lib/agentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
-import { ApiError, workspaceApi } from "@/lib/workspacesApi";
+import { workspaceApi } from "@/lib/workspacesApi";
 
 type Filter = "all" | "attention" | "working";
 type View = "prompts" | "sessions";
@@ -222,108 +218,8 @@ export function OperationsView() {
     }
   };
 
-  const occupancy = suite === null ? null : workspaceOccupancy(suite.workspaceId, console_.runs);
-  const otherPipeline =
-    suite === null
-      ? null
-      : suites.find(
-          (entry) =>
-            entry.id !== suite.id &&
-            entry.workspaceId === suite.workspaceId &&
-            (entry.pipeline?.active?.state === "PLAYING" || entry.pipeline?.active?.state === "PAUSED"),
-        ) ?? null;
-  const railBlocked =
-    suite === null
-      ? "Select a suite"
-      : playBlockedReason({
-          suite,
-          connection: console_.connection,
-          playProvider: provider,
-          providerAvailable: providerInfo?.available === true,
-          occupancy,
-          otherPipeline,
-        });
-  const waitingPipeline = (targetId: number | null) => {
-    const active = suite?.pipeline?.active;
-    return active?.state === "WAITING_HUMAN" && active.currentPromptId === targetId ? active : null;
-  };
-
-  const toastPlayError = (error: unknown) => {
-    if (error instanceof ApiError && error.code === "workspace_busy") {
-      toast.error(
-        "Workspace busy",
-        occupancy !== null
-          ? `${occupancy.provider} is already writing ${occupancy.workspace.name}.`
-          : error.message,
-      );
-      return;
-    }
-    if (error instanceof ApiError && (error.code === "nothing_ready" || error.code === "prompt_not_ready")) {
-      toast.warning("Nothing is ready", error.message);
-      return;
-    }
-    toast.error("Could not play", error instanceof Error ? error.message : String(error));
-  };
-
-  const playSuite = () => {
-    if (suite === null) return;
-    const resuming = suite.pipeline?.active?.state === "WAITING_HUMAN" || suite.pipeline?.active?.state === "PAUSED";
-    setBusy(true);
-    void (async () => {
-      try {
-        await workspaceApi.playSuite(SERVER_URL, suite.id, { provider, model: selectedModel });
-        await refresh();
-        toast.success(resuming ? "Resumed" : "Suite playing");
-      } catch (error) {
-        toastPlayError(error);
-      } finally {
-        setBusy(false);
-      }
-    })();
-  };
-
-  const pauseSuite = () =>
-    void act(async () => {
-      if (suite === null) return;
-      await workspaceApi.pauseSuite(SERVER_URL, suite.id);
-    }, "Paused — current station will finish.");
-
-  const stopSuite = () =>
-    void act(async () => {
-      if (suite === null) return;
-      await workspaceApi.stopSuite(SERVER_URL, suite.id);
-    }, "Pipeline stopped");
-
-  const applyRuleLocal = (current: OperationsSnapshot, promptId: number, rule: PromptPipelineRule): OperationsSnapshot => ({
-    ...current,
-    suites: current.suites.map((entry) => ({
-      ...entry,
-      prompts: entry.prompts.map((row) => (row.prompt.id === promptId ? { ...row, pipelineRule: rule } : row)),
-    })),
-  });
-
-  const patchRule = (promptId: number, patch: RulePatch) => {
-    if (snapshot === null) return;
-    const previous = snapshot;
-    const currentRule = snapshot.suites.flatMap((entry) => entry.prompts).find((row) => row.prompt.id === promptId)?.pipelineRule;
-    if (currentRule !== undefined) setSnapshot(applyRuleLocal(snapshot, promptId, { ...currentRule, ...patch }));
-    void workspaceApi.patchPipelineRule(SERVER_URL, promptId, patch).then(
-      (rule) => setSnapshot((live) => (live === null ? live : applyRuleLocal(live, promptId, rule))),
-      (error: unknown) => {
-        setSnapshot(previous);
-        toast.error("Could not save rule", error instanceof Error ? error.message : String(error));
-      },
-    );
-  };
-
   const start = () => {
     if (item === null || !canStart) return;
-    const waiting = waitingPipeline(item.prompt.id);
-    const paused = suite?.pipeline?.active;
-    if (waiting !== null || (paused?.state === "PAUSED" && paused.currentPromptId === item.prompt.id)) {
-      playSuite();
-      return;
-    }
     const ok = console_.startRun(item.workspace.id, provider, { promptId: item.prompt.id }, selectedModel);
     if (!ok) toast.error("Could not start", "The agent connection is unavailable.");
   };
@@ -338,14 +234,6 @@ export function OperationsView() {
           "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.",
       );
       setResponse("");
-      if (suite !== null && waitingPipeline(item.prompt.id) !== null) {
-        try {
-          await workspaceApi.playSuite(SERVER_URL, suite.id, { provider, model: selectedModel });
-        } catch (error) {
-          toastPlayError(error);
-        }
-        return;
-      }
       if (!console_.startRun(item.workspace.id, provider, { promptId: item.prompt.id }, selectedModel)) {
         throw new Error("Response saved, but the agent connection was unavailable. Run it from the Console.");
       }
@@ -354,19 +242,8 @@ export function OperationsView() {
   const recoverAndResume = (target: OperationsPrompt | null = item) =>
     void act(async () => {
       if (target === null) return;
-      if (suite?.pipeline?.active?.state === "PLAYING") {
-        throw new Error("The pipeline owns this station while it is playing.");
-      }
       await workspaceApi.recover(SERVER_URL, target.prompt.id);
-      if (suite !== null && waitingPipeline(target.prompt.id) !== null) {
-        try {
-          await workspaceApi.playSuite(SERVER_URL, suite.id, { provider, model: selectedModel });
-        } catch (error) {
-          toastPlayError(error);
-        }
-      } else if (suite?.pipeline?.active != null) {
-        throw new Error("This suite is waiting on another station. Resume or stop the pipeline first.");
-      } else if (!console_.startRun(target.workspace.id, provider, { promptId: target.prompt.id }, selectedModel)) {
+      if (!console_.startRun(target.workspace.id, provider, { promptId: target.prompt.id }, selectedModel)) {
         throw new Error("Recovered, but the agent connection was unavailable. Run it from the Console.");
       }
       setFilter("all");
@@ -394,8 +271,7 @@ export function OperationsView() {
       <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface-1 px-4 py-2.5">
         <h1 className="text-xs uppercase tracking-[0.2em] text-fg-muted">agent console</h1>
         <AppNav active="operations" />
-        <div className="hidden items-center gap-2 xl:flex">
-          <span className="text-[10px] uppercase tracking-wider text-fg-dim">Play with</span>
+        <div className="hidden xl:block">
           <ProviderSwitcher
             providers={console_.providers}
             selected={provider}
@@ -465,11 +341,7 @@ export function OperationsView() {
               No suites yet. Create programs and suites on the Workspaces page.
             </p>
           ) : (
-            suites.map((entry) => {
-              const badge = pipelineBadge(entry);
-              const done = entry.counts.COMPLETE;
-              const total = entry.prompts.length;
-              return (
+            suites.map((entry) => (
               <button
                 key={entry.id}
                 type="button"
@@ -491,28 +363,11 @@ export function OperationsView() {
                     {entry.key !== null && <span className="text-fg-muted">{entry.key} · </span>}
                     {entry.name}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    {badge !== null && (
-                      <Badge tone={badge.tone} pulse={badge.pulse}>
-                        {badge.label}
-                      </Badge>
-                    )}
-                    {entry.attentionCount > 0 && <Badge tone="warning">{entry.attentionCount}</Badge>}
-                  </span>
+                  {entry.attentionCount > 0 && <Badge tone="warning">{entry.attentionCount}</Badge>}
                 </div>
                 <div className="mt-1 truncate text-[10px] text-fg-dim">
                   {entry.workspaceName} · {entry.programName}
                 </div>
-                {badge === null && total > 0 && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-3">
-                      <div className="h-full bg-success/70" style={{ width: `${(done / total) * 100}%` }} />
-                    </div>
-                    <span className="shrink-0 text-[10px] text-fg-dim">
-                      {done}/{total} done
-                    </span>
-                  </div>
-                )}
                 <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
                   {entry.latestVerification === null ? (
                     <Badge tone="neutral">unverified</Badge>
@@ -539,8 +394,7 @@ export function OperationsView() {
                   <span className="text-success">{entry.counts.COMPLETE} done</span>
                 </div>
               </button>
-              );
-            })
+            ))
           )}
         </aside>
 
@@ -569,32 +423,63 @@ export function OperationsView() {
               ))}
             </div>
             <span className="text-[10px] text-fg-dim">
-              {view === "prompts" ? (suite?.prompts.length ?? 0) : sessions.length}
+              {view === "prompts" ? prompts.length : sessions.length}
             </span>
           </div>
 
           {view === "prompts" ? (
-            <PipelineRail
-              suite={suite}
-              selectedPromptId={activePromptId}
-              occupancyRuns={console_.runs}
-              playProvider={provider}
-              providers={console_.providers}
-              models={models}
-              onSelectProvider={setPreferredProvider}
-              onRefreshProviders={() => void console_.refreshProviders()}
-              playBlockedReason={railBlocked}
-              busy={busy}
-              loading={snapshot === null}
-              onSelect={(id) => {
-                setPromptId(id);
-                setPane("detail");
-              }}
-              onPlay={playSuite}
-              onPause={pauseSuite}
-              onStop={stopSuite}
-              onChangeRule={patchRule}
-            />
+            prompts.length === 0 ? (
+              <p className="text-xs text-fg-dim">
+                {filter === "all" ? "This suite has no work items." : `Nothing is ${filter} right now.`}
+              </p>
+            ) : (
+              prompts.map((entry) => (
+                <div key={entry.prompt.id} className="mb-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromptId(entry.prompt.id);
+                      setPane("detail");
+                    }}
+                    aria-current={activePromptId === entry.prompt.id ? "true" : undefined}
+                    className={cn(
+                      "w-full rounded-panel border p-3 text-left transition-colors",
+                      activePromptId === entry.prompt.id
+                        ? "border-line-strong bg-surface-3"
+                        : "border-line bg-surface-2 hover:bg-surface-3",
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="truncate text-[13px] text-fg">
+                        {entry.prompt.externalKey ?? entry.prompt.title}
+                      </span>
+                      <Badge tone={TONE[entry.operationalState]}>{LABEL[entry.operationalState]}</Badge>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-fg-muted">{entry.prompt.title}</div>
+                    {entry.latestIntervention !== null && (
+                      <div className="mt-2 truncate text-[10px] text-warning">{entry.latestIntervention}</div>
+                    )}
+                    <div className="mt-2 flex gap-3 text-[10px] text-fg-dim">
+                      <span>
+                        {entry.sessionCount} session{entry.sessionCount === 1 ? "" : "s"}
+                      </span>
+                      <span>{new Date(entry.lastActivityAt).toLocaleString()}</span>
+                    </div>
+                  </button>
+                  {entry.operationalState === "RECOVERY_NEEDED" && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="mt-1 w-full"
+                      disabled={busy}
+                      onClick={() => recoverAndResume(entry)}
+                    >
+                      Recover and resume with {providerInfo?.label ?? provider}
+                    </Button>
+                  )}
+                </div>
+              ))
+            )
           ) : sessions.length === 0 ? (
             <p className="text-xs text-fg-dim">No sessions for the current filter.</p>
           ) : (
@@ -666,14 +551,12 @@ export function OperationsView() {
                   </p>
                 </div>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
-                  {item.operationalState === "READY" && suite?.pipeline?.active?.state !== "PLAYING" && (
+                  {item.operationalState === "READY" && (
                     <Button size="sm" variant="success" disabled={!canStart || busy} onClick={start}>
-                      {waitingPipeline(item.prompt.id) !== null || suite?.pipeline?.active?.state === "PAUSED"
-                        ? "Resume pipeline"
-                        : "Run work item"}
+                      Run work item
                     </Button>
                   )}
-                  {item.operationalState === "RECOVERY_NEEDED" && suite?.pipeline?.active?.state !== "PLAYING" && (
+                  {item.operationalState === "RECOVERY_NEEDED" && (
                     <Button size="sm" variant="secondary" disabled={busy} onClick={() => recoverAndResume()}>
                       Recover and resume
                     </Button>
@@ -682,6 +565,14 @@ export function OperationsView() {
                     <Button size="sm" variant="danger" disabled={busy} onClick={() => void stopAgent()}>
                       Stop agent
                     </Button>
+                  )}
+                  {suite !== null && (
+                    <Link
+                      href={`/pipeline?workspace=${suite.workspaceId}&suite=${suite.id}`}
+                      className="rounded-md px-3 py-1.5 text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
+                    >
+                      Open pipeline
+                    </Link>
                   )}
                   <Link
                     href={`/?workspace=${item.workspace.id}&prompt=${item.prompt.id}`}
@@ -692,22 +583,13 @@ export function OperationsView() {
                 </div>
               </div>
 
-              <StationRules
-                rule={item.pipelineRule}
-                disabled={item.operationalState === "WORKING"}
-                providers={console_.providers}
-                models={models}
-                fallbackProvider={provider}
-                onChange={(patch) => patchRule(item.prompt.id, patch)}
-              />
-
               {suite !== null && (
                 <VerificationPanel
                   key={suite.id}
                   suite={suite}
                   provider={provider}
                   model={selectedModel}
-                  workspaceBusy={workspaceBusy(suite.workspaceId) || suite.pipeline?.active?.state === "PLAYING"}
+                  workspaceBusy={workspaceBusy(suite.workspaceId)}
                 />
               )}
 

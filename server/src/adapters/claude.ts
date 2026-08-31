@@ -1,5 +1,8 @@
 import { createRequire } from "node:module";
-import type { AdapterEvent, TokenUsage } from "@agent-console/shared";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { oneLine } from "@agent-console/shared";
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -8,6 +11,7 @@ import {
   hostUnixSockets,
   settings,
 } from "../settings.ts";
+import { fetchJson, parseClaudeUsage, providerUsageOk, providerUsageUnavailable, writeJsonAtomic } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
 
 export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
@@ -191,6 +195,45 @@ export class ClaudeAdapter implements AgentAdapter {
     } catch {
       return null;
     }
+  }
+
+  async getAccountUsage(): Promise<ProviderUsage> {
+    const token = await resolveClaudeOAuthToken();
+    if (token === null) {
+      return providerUsageUnavailable(
+        "claude",
+        settings.claude.apiKey !== null
+          ? "Claude plan usage is only available for a Claude Code login, not an API key"
+          : "No Claude Code login found — run `claude` once to sign in",
+      );
+    }
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "anthropic-beta": "oauth-2025-04-20",
+      "User-Agent": "claude-code/2.1.0",
+    };
+    let response = await fetchJson("https://api.anthropic.com/api/oauth/usage", { headers });
+    if (response.status === 401) {
+      const refreshed = await refreshClaudeOAuthToken();
+      if (refreshed === null) {
+        return providerUsageUnavailable("claude", "Claude login expired — run `claude` to sign in again");
+      }
+      response = await fetchJson("https://api.anthropic.com/api/oauth/usage", {
+        headers: { ...headers, Authorization: `Bearer ${refreshed}` },
+      });
+    }
+    if (!response.ok) {
+      return providerUsageUnavailable(
+        "claude",
+        response.status === 429
+          ? "Claude usage endpoint rate-limited — try again shortly"
+          : `Claude usage request failed (HTTP ${response.status})`,
+      );
+    }
+    const parsed = parseClaudeUsage(response.body);
+    return providerUsageOk("claude", parsed);
   }
 
   async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {
@@ -498,4 +541,89 @@ function describe(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"));
+}
+
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+interface ClaudeOAuth {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: number | null;
+}
+
+function claudeCredentialsPath(): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  return join(configDir, ".credentials.json");
+}
+
+function readClaudeOAuth(): ClaudeOAuth | null {
+  const env = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (env) return { accessToken: env, refreshToken: null, expiresAt: null };
+  const path = claudeCredentialsPath();
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { claudeAiOauth?: Record<string, unknown> };
+    const oauth = parsed.claudeAiOauth;
+    const accessToken = typeof oauth?.accessToken === "string" ? oauth.accessToken.trim() : "";
+    if (accessToken === "") return null;
+    return {
+      accessToken,
+      refreshToken: typeof oauth?.refreshToken === "string" ? oauth.refreshToken : null,
+      expiresAt: typeof oauth?.expiresAt === "number" ? oauth.expiresAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveClaudeOAuthToken(): Promise<string | null> {
+  const oauth = readClaudeOAuth();
+  if (oauth === null) return null;
+  if (oauth.expiresAt !== null && oauth.expiresAt < Date.now() + 60_000) {
+    return (await refreshClaudeOAuthToken()) ?? oauth.accessToken;
+  }
+  return oauth.accessToken;
+}
+
+async function refreshClaudeOAuthToken(): Promise<string | null> {
+  const oauth = readClaudeOAuth();
+  if (oauth?.refreshToken == null || oauth.refreshToken === "") return null;
+  const response = await fetchJson("https://console.anthropic.com/v1/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: oauth.refreshToken,
+      client_id: CLAUDE_OAUTH_CLIENT_ID,
+    }),
+  });
+  if (!response.ok || response.body === null || typeof response.body !== "object") return null;
+  const body = response.body as Record<string, unknown>;
+  const accessToken = typeof body.access_token === "string" ? body.access_token : "";
+  if (accessToken === "") return null;
+  persistClaudeOAuth({
+    accessToken,
+    refreshToken: typeof body.refresh_token === "string" ? body.refresh_token : oauth.refreshToken,
+    expiresAt:
+      typeof body.expires_in === "number" ? Date.now() + body.expires_in * 1000 : Date.now() + 8 * 60 * 60 * 1000,
+  });
+  return accessToken;
+}
+
+function persistClaudeOAuth(next: ClaudeOAuth): void {
+  const path = claudeCredentialsPath();
+  if (!existsSync(path)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const current = (parsed.claudeAiOauth ?? {}) as Record<string, unknown>;
+    parsed.claudeAiOauth = {
+      ...current,
+      accessToken: next.accessToken,
+      refreshToken: next.refreshToken ?? current.refreshToken,
+      expiresAt: next.expiresAt ?? current.expiresAt,
+    };
+    writeJsonAtomic(path, parsed);
+  } catch {
+    // A failed write leaves the previous file in place; the in-memory token still works this request.
+  }
 }

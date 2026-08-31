@@ -2,16 +2,25 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { formatElapsed, formatTokens, modelLabel } from "@agent-console/shared";
+import {
+  formatElapsed,
+  formatResetIn,
+  formatTokens,
+  modelLabel,
+  type ProviderUsage,
+  type ProviderUsageWindow,
+} from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
 import { ACTIVITY_LABEL, agentState, type AgentState } from "@/lib/agentState";
 import { useAgentConsole } from "@/lib/agentConsole";
+import { useProviderUsage } from "@/lib/providerUsage";
 import { AgentAvatar } from "./AgentAvatar";
 import { AskChip } from "./AgentDock";
 import { Badge, type Tone } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { CountUp } from "./CountUp";
+import { Skeleton } from "./ui/Spinner";
 
 const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
   offline: "neutral",
@@ -40,6 +49,7 @@ function fleetSummary(writing: number, asking: number): string {
  */
 export function FleetView() {
   const { providers, runs, items, lastRun, connection, interrupt } = useAgentConsole();
+  const credits = useProviderUsage(true);
 
   const agents = useMemo(
     () => providers.map((provider) => agentState(provider, runs, items, lastRun)),
@@ -57,20 +67,32 @@ export function FleetView() {
           <h2 className="text-lg text-fg">Fleet</h2>
           <p className="mt-0.5 text-xs text-fg-dim">
             {connection === "open" ? fleetSummary(writing, asking) : "Reconnecting to the backend…"}
+            {credits.error !== null ? ` · ${credits.error}` : ""}
           </p>
         </div>
-        <dl className="ml-auto flex gap-6">
-          <Stat label="available" value={agents.filter((agent) => agent.available).length} />
-          {asking > 0 ? (
-            <>
-              {writing > 0 && <Stat label="writing" value={writing} />}
-              <Stat label="asking" value={asking} />
-            </>
-          ) : (
-            <Stat label="working" value={writing} />
-          )}
-          <Stat label="tokens in flight" value={totalTokens} format={formatTokens} />
-        </dl>
+        <div className="ml-auto flex flex-wrap items-end gap-6">
+          <dl className="flex gap-6">
+            <Stat label="available" value={agents.filter((agent) => agent.available).length} />
+            {asking > 0 ? (
+              <>
+                {writing > 0 && <Stat label="writing" value={writing} />}
+                <Stat label="asking" value={asking} />
+              </>
+            ) : (
+              <Stat label="working" value={writing} />
+            )}
+            <Stat label="tokens in flight" value={totalTokens} format={formatTokens} />
+          </dl>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void credits.refresh(true)}
+            loading={credits.loading && credits.usage !== null}
+            title="Refresh plan usage from each provider"
+          >
+            Refresh usage
+          </Button>
+        </div>
       </header>
 
       <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -78,6 +100,8 @@ export function FleetView() {
           <AgentCard
             key={agent.provider}
             agent={agent}
+            usage={credits.usage?.[agent.provider] ?? null}
+            usageLoading={credits.loading && credits.usage === null}
             onStop={() => {
               if (agent.run !== null) interrupt(agent.run.runId);
             }}
@@ -110,10 +134,14 @@ function Stat({
 
 function AgentCard({
   agent,
+  usage,
+  usageLoading,
   onStop,
   onStopConsult,
 }: {
   agent: AgentState;
+  usage: ProviderUsage | null;
+  usageLoading: boolean;
   onStop(): void;
   onStopConsult(runId: string): void;
 }) {
@@ -216,6 +244,113 @@ function AgentCard({
           {agent.available ? "Ready to take work." : "Configure it in Settings, then re-run detection."}
         </div>
       )}
+
+      <UsageBlock usage={usage} loading={usageLoading} available={agent.available} />
     </li>
   );
+}
+
+const WINDOW_ORDER = ["session", "daily", "weekly", "monthly"] as const;
+
+function UsageBlock({
+  usage,
+  loading,
+  available,
+}: {
+  usage: ProviderUsage | null;
+  loading: boolean;
+  available: boolean;
+}) {
+  if (!available) return null;
+  if (loading) {
+    return (
+      <div className="mt-3 border-t border-line pt-3">
+        <div className="text-[10px] uppercase tracking-wider text-fg-dim">plan usage</div>
+        <div className="mt-2 flex flex-col gap-2">
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+        </div>
+      </div>
+    );
+  }
+  if (usage === null || !usage.available || (usage.windows.length === 0 && usage.credits === null)) {
+    return null;
+  }
+
+  const windows = [...usage.windows].sort(
+    (left, right) => WINDOW_ORDER.indexOf(left.kind) - WINDOW_ORDER.indexOf(right.kind),
+  );
+
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-wider text-fg-dim">plan usage</div>
+        {usage.plan !== null && <div className="truncate text-[10px] text-fg-dim">{usage.plan}</div>}
+      </div>
+      <dl className="mt-2 flex flex-col gap-2">
+        {windows.map((window) => (
+          <UsageMeter key={window.kind} window={window} />
+        ))}
+      </dl>
+      {usage.credits !== null && <CreditsLine credits={usage.credits} />}
+    </div>
+  );
+}
+
+function UsageMeter({ window }: { window: ProviderUsageWindow }) {
+  const percent = window.usedPercent;
+  const tone = percent === null ? "neutral" : percent >= 90 ? "danger" : percent >= 70 ? "warning" : "success";
+  const reset = formatResetIn(window.resetsAt);
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 text-[11px]">
+        <dt className="text-fg-dim">{windowLabel(window)}</dt>
+        <dd className="numeric text-fg">{percent === null ? "—" : `${Math.round(percent)}%`}</dd>
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-surface-3">
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width]",
+            tone === "danger" && "bg-danger",
+            tone === "warning" && "bg-warning",
+            tone === "success" && "bg-success",
+            tone === "neutral" && "bg-fg-dim",
+          )}
+          style={{ width: `${percent === null ? 0 : Math.min(100, percent)}%` }}
+        />
+      </div>
+      {reset !== null && <div className="mt-0.5 text-[10px] text-fg-dim">resets {reset}</div>}
+    </div>
+  );
+}
+
+function CreditsLine({ credits }: { credits: NonNullable<ProviderUsage["credits"]> }) {
+  const useful =
+    credits.enabled === true ||
+    (credits.balance !== null && credits.balance > 0) ||
+    (credits.limit !== null && credits.limit > 0);
+  if (!useful) return null;
+  const money = (value: number) => {
+    const symbol = credits.currency === "USD" || credits.currency === null ? "$" : `${credits.currency} `;
+    return `${symbol}${value.toFixed(2)}`;
+  };
+  const parts: string[] = [];
+  if (credits.balance !== null) parts.push(`${money(credits.balance)} left`);
+  if (credits.used !== null && credits.limit !== null) {
+    parts.push(`${money(credits.used)} / ${money(credits.limit)}`);
+  } else if (credits.used !== null) {
+    parts.push(`${money(credits.used)} used`);
+  } else if (credits.limit !== null) {
+    parts.push(`${money(credits.limit)} cap`);
+  }
+  if (parts.length === 0) return null;
+  return <div className="mt-2 text-[10px] text-fg-dim">credits · {parts.join(" · ")}</div>;
+}
+
+function windowLabel(window: ProviderUsageWindow): string {
+  if (window.kind === "session" && window.durationMinutes !== null) {
+    const hours = window.durationMinutes / 60;
+    if (hours >= 1 && Math.abs(hours - Math.round(hours)) < 0.05) return `${Math.round(hours)}h`;
+  }
+  return window.kind;
 }

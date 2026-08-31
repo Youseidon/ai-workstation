@@ -122,6 +122,58 @@ export interface ProviderInfo {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Account usage credits                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Quota windows a provider's own account API actually reports.
+ *
+ * Names follow the window, not a wish: Claude and Codex expose a short session
+ * window (typically 5 hours) and a weekly cap, not a calendar day. Grok's
+ * billing API is weekly-only. Callers must skip kinds the provider omitted
+ * rather than inventing a daily figure.
+ */
+export const USAGE_WINDOW_KINDS = ["session", "daily", "weekly", "monthly"] as const;
+export type UsageWindowKind = (typeof USAGE_WINDOW_KINDS)[number];
+
+export interface ProviderUsageWindow {
+  kind: UsageWindowKind;
+  /** Length of the window in minutes, when the provider reports it. */
+  durationMinutes: number | null;
+  /** Percent used in 0–100. Null when the window exists but has no figure. */
+  usedPercent: number | null;
+  /** ISO 8601 instant the window resets, when the provider reports one. */
+  resetsAt: string | null;
+}
+
+export interface ProviderUsageCredits {
+  /** Prepaid/overage balance remaining, when the provider reports one. */
+  balance: number | null;
+  used: number | null;
+  limit: number | null;
+  currency: string | null;
+  /** False when extra usage exists as a setting but is switched off. */
+  enabled: boolean | null;
+}
+
+/**
+ * Account-level usage for one provider, taken from that provider's own API.
+ *
+ * `available` is true only when at least one window or credit figure arrived.
+ * `reason` explains a gap (no login, API key instead of a plan, the CLI has
+ * no usage endpoint). Never fabricate numbers to fill a missing kind.
+ */
+export interface ProviderUsage {
+  provider: ProviderId;
+  available: boolean;
+  reason: string | null;
+  plan: string | null;
+  fetchedAt: string | null;
+  windows: ProviderUsageWindow[];
+  credits: ProviderUsageCredits | null;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Token usage                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -443,7 +495,7 @@ export function isPipelineState(value: unknown): value is PipelineState {
 
 export interface PromptPipelineRule {
   promptId: number;
-  /** Execute override. Null = inherit play/suite/settings. */
+  /** Execute provider for this step. Null until the step is configured. */
   provider: ProviderId | null;
   model: string | null;
   onDone: OnDoneAction;
@@ -453,6 +505,10 @@ export interface PromptPipelineRule {
   /** Required when onBlocked === "recover". */
   recoverProvider: ProviderId | null;
   recoverModel: string | null;
+  /** False until the prompt is added to the suite flowchart. */
+  enabled: boolean;
+  /** Sequence on the flowchart. Ignored when enabled is false. */
+  stepOrder: number;
 }
 
 export function defaultPromptPipelineRule(promptId: number): PromptPipelineRule {
@@ -465,7 +521,15 @@ export function defaultPromptPipelineRule(promptId: number): PromptPipelineRule 
     retryLimit: 1,
     recoverProvider: null,
     recoverModel: null,
+    enabled: false,
+    stepOrder: 0,
   };
+}
+
+export interface PipelineAvailablePrompt {
+  id: number;
+  title: string;
+  externalKey: string | null;
 }
 
 export interface SuitePipelineDefaults {
@@ -490,13 +554,76 @@ export interface SuitePipelineRun {
   startedAt: string;
   endedAt: string | null;
   stopReason: string | null;
+  /** Named pipeline execution that launched this suite, when there is one. */
+  pipelineRunId: string | null;
 }
 
 export interface SuitePipelineView {
   defaults: SuitePipelineDefaults;
+  /** Enabled flowchart steps, ordered by stepOrder. */
+  steps: PromptPipelineRule[];
+  /** Suite prompts that are not on the flowchart. */
+  available: PipelineAvailablePrompt[];
   rules: PromptPipelineRule[];
   active: SuitePipelineRun | null;
   latest: SuitePipelineRun | null;
+}
+
+/**
+ * A saved pipeline: an ordered set of suites in one workspace, played in
+ * sequence. Distinct from a suite flowchart (`SuitePipelineView`) and from a
+ * single execution (`PipelineRun`).
+ */
+export interface PipelineStage {
+  suiteId: number;
+  sortOrder: number;
+  programId: number;
+  programName: string;
+  programKey: string | null;
+  suiteName: string;
+  suiteKey: string | null;
+  promptCount: number;
+  stepCount: number;
+}
+
+export interface PipelineRun {
+  id: string;
+  pipelineId: number;
+  workspaceId: number;
+  state: PipelineState;
+  currentSuiteId: number | null;
+  currentSuiteRunId: string | null;
+  playProvider: ProviderId | null;
+  playModel: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  stopReason: string | null;
+}
+
+export interface PipelineRecord {
+  id: number;
+  workspaceId: number;
+  workspaceName: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  stages: PipelineStage[];
+  active: PipelineRun | null;
+  latest: PipelineRun | null;
+}
+
+export interface PipelineRunStage {
+  suiteId: number;
+  suiteName: string;
+  programName: string;
+  sortOrder: number;
+  suiteRun: SuitePipelineRun | null;
+}
+
+export interface PipelineRunDetail extends PipelineRun {
+  pipelineName: string;
+  stages: PipelineRunStage[];
 }
 
 export interface OperationsPrompt {
@@ -814,6 +941,24 @@ export function formatElapsed(ms: number): string {
   if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
+}
+
+/**
+ * Compact countdown to a reset instant. Null when the timestamp is missing
+ * or unparseable. Omits seconds: "3h 12m", "4d 8h", or "soon".
+ */
+export function formatResetIn(iso: string | null, now = Date.now()): string | null {
+  if (iso === null) return null;
+  const target = Date.parse(iso);
+  if (!Number.isFinite(target)) return null;
+  const totalSeconds = Math.max(0, Math.floor((target - now) / 1000));
+  if (totalSeconds < 60) return "soon";
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
 }
 
 export function formatTokens(count: number): string {

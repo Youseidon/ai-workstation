@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import type { AdapterEvent, ProviderId } from "@agent-console/shared";
+import type { AdapterEvent, ProviderId, ProviderUsage } from "@agent-console/shared";
 import { AsyncQueue } from "../lib/asyncQueue.ts";
 import { LineSplitter, tryParseJson } from "../lib/lines.ts";
 import { resolveBinary } from "../lib/process.ts";
+import { providerUsageUnavailable } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, RunOptions } from "./types.ts";
 
 export interface SpawnSpec {
@@ -69,6 +70,10 @@ export abstract class SpawnAdapter implements AgentAdapter {
     if (binary === null) return null;
     const { readVersion } = await import("../lib/process.ts");
     return readVersion(binary);
+  }
+
+  async getAccountUsage(): Promise<ProviderUsage> {
+    return providerUsageUnavailable(this.id, `${this.label} does not report account usage credits`);
   }
 
   async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {

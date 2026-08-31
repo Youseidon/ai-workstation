@@ -422,6 +422,41 @@ body > * {
   to { transform: translateY(100%); }
 }
 
+@keyframes ac-energy {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes ac-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.pipeline-desk {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 60%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / 28px 100%;
+}
+
+.pipeline-energy {
+  stroke-dasharray: 6 10;
+  animation: ac-energy 1.2s linear infinite;
+}
+
+[data-effects="reduced"] .pipeline-energy {
+  animation: none;
+  stroke-dasharray: none;
+}
+
+.pipeline-node-live {
+  animation: ac-float 3.6s ease-in-out infinite;
+}
+
+[data-effects="reduced"] .pipeline-node-live {
+  animation: none;
+}
+
 /* ==========================================================================
    Motion preferences
    --------------------------------------------------------------------------

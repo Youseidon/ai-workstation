@@ -43,7 +43,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -81,12 +81,80 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     const verificationContextMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verification-context$/);
     if(verificationContextMatch){if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else json(res,200,workspaces.suiteVerificationContext(id(verificationContextMatch[1]!)));return true;}
+    if(url.pathname==="/api/pipelines"){
+      if(method==="GET"){
+        const value=url.searchParams.get("workspace");
+        const workspaceId=value===null?undefined:id(value);
+        json(res,200,{pipelines:workspaces.listPipelines(workspaceId)});
+      } else if(method==="POST") json(res,201,{pipeline:workspaces.createPipeline(await body(req))});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const namedPipelineMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)$/);
+    if(namedPipelineMatch){
+      const pipelineId=id(namedPipelineMatch[1]!);
+      if(method==="GET") json(res,200,{pipeline:workspaces.getPipeline(pipelineId)});
+      else if(method==="PATCH") json(res,200,{pipeline:workspaces.updatePipeline(pipelineId,await body(req))});
+      else if(method==="DELETE"){workspaces.deletePipeline(pipelineId);res.writeHead(204);res.end();}
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const namedPipelineRunsMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/runs$/);
+    if(namedPipelineRunsMatch){
+      if(method!=="GET") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{runs:workspaces.listPipelineRuns(id(namedPipelineRunsMatch[1]!))});
+      return true;
+    }
+    const namedPipelinePlayMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/play$/);
+    if(namedPipelinePlayMatch){
+      if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{run:await pipelineScheduler.playNamed(id(namedPipelinePlayMatch[1]!),await body(req))});
+      return true;
+    }
+    const namedPipelinePauseMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/pause$/);
+    if(namedPipelinePauseMatch){
+      if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{run:await pipelineScheduler.pauseNamed(id(namedPipelinePauseMatch[1]!))});
+      return true;
+    }
+    const namedPipelineStopMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/stop$/);
+    if(namedPipelineStopMatch){
+      if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{run:await pipelineScheduler.stopNamed(id(namedPipelineStopMatch[1]!))});
+      return true;
+    }
     const suitePipelineMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pipeline$/);
     if(suitePipelineMatch){
       const suiteId=id(suitePipelineMatch[1]!);
       if(method==="GET")json(res,200,workspaces.pipeline(suiteId));
       else if(method==="PATCH"){workspaces.updateSuitePipelineDefaults(suiteId,await body(req));json(res,200,workspaces.pipeline(suiteId));}
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const suitePipelineStepsMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pipeline\/steps$/);
+    if(suitePipelineStepsMatch){
+      const suiteId=id(suitePipelineStepsMatch[1]!);
+      if(method==="POST"){
+        const input=await body(req);
+        const promptId=typeof input.promptId==="number"?input.promptId:0;
+        const home=workspaces.promptHome(promptId);
+        if(home.suiteId!==suiteId)throw new WorkspaceError(422,"validation_error","Prompt is not in this suite");
+        json(res,200,{rule:workspaces.addPipelineStep(promptId,input),pipeline:workspaces.pipeline(suiteId)});
+      } else if(method==="PUT"){
+        const input=await body(req);
+        const promptIds=Array.isArray(input.promptIds)?input.promptIds.filter((value):value is number=>typeof value==="number"):[];
+        json(res,200,{steps:workspaces.reorderPipelineSteps(suiteId,promptIds),pipeline:workspaces.pipeline(suiteId)});
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const pipelineStepMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/pipeline-step$/);
+    if(pipelineStepMatch){
+      if(method!=="DELETE")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const promptId=id(pipelineStepMatch[1]!);
+        workspaces.removePipelineStep(promptId);
+        json(res,200,{pipeline:workspaces.pipeline(workspaces.promptHome(promptId).suiteId)});
+      }
       return true;
     }
     const suitePlayMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/play$/);

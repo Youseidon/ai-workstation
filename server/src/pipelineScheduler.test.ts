@@ -30,6 +30,7 @@ function fixture(promptCount = 2) {
   for (let index = 0; index < promptCount; index++) {
     prompts.push(workspaces.createChild("prompt", suite.id, { title: unique(`p${index}`), content: `do ${index}` }) as PromptRecord);
   }
+  for (const prompt of prompts) workspaces.addPipelineStep(prompt.id, { provider: "claude" });
   return {
     dir,
     workspace,
@@ -130,13 +131,15 @@ test("missing rules are filled with today's manual-loop defaults", () => {
     const rule = workspaces.pipelineRule(ctx.prompts[0]!.id);
     assert.deepEqual(rule, {
       promptId: ctx.prompts[0]!.id,
-      provider: null,
+      provider: "claude",
       model: null,
       onDone: "continue",
       onBlocked: "wait",
       retryLimit: 1,
       recoverProvider: null,
       recoverModel: null,
+      enabled: true,
+      stepOrder: 0,
     });
     const snapshot = workspaces.operations(ctx.workspace.id);
     const prompt = snapshot.suites[0]?.prompts[0];
@@ -183,6 +186,35 @@ test("retry bounds and recover validation reject unknown chips", () => {
     );
     const rule = workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { onBlocked: "recover", recoverProvider: "cursor", recoverModel: "auto" });
     assert.equal(rule.recoverProvider, "cursor");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("flowchart order is independent of suite sort, and unlisted prompts are skipped", async () => {
+  const ctx = fixture(3);
+  const started = stubStarts();
+  try {
+    workspaces.removePipelineStep(ctx.prompts[1]!.id);
+    workspaces.reorderPipelineSteps(ctx.suite.id, [ctx.prompts[2]!.id, ctx.prompts[0]!.id]);
+    const playing = await pipelineScheduler.play(ctx.suite.id, {});
+    assert.equal(started[0]?.promptId, ctx.prompts[2]!.id);
+    await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[2]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    const mid = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(started[1]?.promptId, ctx.prompts[0]!.id);
+    await endStation({ runId: mid!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(workspaces.latestPipeline(ctx.suite.id)?.state, "COMPLETE");
+    assert.equal(workspaces.promptOutcome(ctx.prompts[1]!.id).status, "TODO");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("play fails when the flowchart is empty", async () => {
+  const ctx = fixture(1);
+  try {
+    workspaces.removePipelineStep(ctx.prompts[0]!.id);
+    await assert.rejects(() => pipelineScheduler.play(ctx.suite.id, { provider: "claude" }), (error: unknown) => error instanceof WorkspaceError && error.code === "empty_pipeline");
   } finally {
     ctx.cleanup();
   }
@@ -321,6 +353,8 @@ test("onBlocked recover is one-shot then recover_exhausted", async () => {
 test("onBlocked skip advances and does not satisfy dependents", async () => {
   const ctx = fixture(0);
   const started = stubStarts();
+  const firstKey = unique("A");
+  const secondKey = unique("B");
   try {
     workspaces.importProgram(ctx.workspace.id, {
       key: unique("P"),
@@ -328,21 +362,23 @@ test("onBlocked skip advances and does not satisfy dependents", async () => {
       overview: "",
       workspaceDescription: "",
       suites: [{
-        key: "S1",
+        key: unique("S"),
         name: unique("Imported suite"),
         prompts: [
-          { key: "S1-01", title: "First", content: "A", status: "TODO", completedAt: null, result: "", isGate: false },
-          { key: "S1-02", title: "Second", content: "B", status: "TODO", completedAt: null, result: "", isGate: false },
+          { key: firstKey, title: unique("First"), content: "A", status: "TODO", completedAt: null, result: "", isGate: false },
+          { key: secondKey, title: unique("Second"), content: "B", status: "TODO", completedAt: null, result: "", isGate: false },
         ],
       }],
-      dependencies: [{ promptKey: "S1-02", dependsOnKey: "S1-01" }],
+      dependencies: [{ promptKey: secondKey, dependsOnKey: firstKey }],
       gates: [],
       warnings: [],
     });
     const tree = workspaces.tree(ctx.workspace.id);
-    const suite = tree.programs.find((program) => program.suites.some((item) => item.externalKey === "S1"))!.suites.find((item) => item.externalKey === "S1")!;
-    const first = suite.prompts.find((prompt) => prompt.externalKey === "S1-01")!;
-    const second = suite.prompts.find((prompt) => prompt.externalKey === "S1-02")!;
+    const suite = tree.programs.flatMap((program) => program.suites).find((item) => item.prompts.some((prompt) => prompt.externalKey === firstKey))!;
+    const first = suite.prompts.find((prompt) => prompt.externalKey === firstKey)!;
+    const second = suite.prompts.find((prompt) => prompt.externalKey === secondKey)!;
+    workspaces.addPipelineStep(first.id, { provider: "claude" });
+    workspaces.addPipelineStep(second.id, { provider: "claude" });
     workspaces.upsertPipelineRule(first.id, { onBlocked: "skip" });
     const playing = await pipelineScheduler.play(suite.id, { provider: "claude" });
     assert.equal(started[0]?.promptId, first.id);
@@ -353,7 +389,7 @@ test("onBlocked skip advances and does not satisfy dependents", async () => {
     const options = workspaces.promptOptions(ctx.workspace.id);
     const secondOption = options.find((item) => item.id === second.id)!;
     assert.equal(secondOption.ready, false);
-    assert.ok(secondOption.blockedBy.includes("S1-01"));
+    assert.ok(secondOption.blockedBy.includes(firstKey));
     assert.equal(latest.state, "STOPPED");
     assert.equal(latest.stopReason, "blocked_on_dependencies");
   } finally {
@@ -363,6 +399,8 @@ test("onBlocked skip advances and does not satisfy dependents", async () => {
 
 test("operator skip of a TODO item does not unblock dependents", () => {
   const ctx = fixture(0);
+  const firstKey = unique("A");
+  const secondKey = unique("B");
   try {
     workspaces.importProgram(ctx.workspace.id, {
       key: unique("P"),
@@ -370,25 +408,25 @@ test("operator skip of a TODO item does not unblock dependents", () => {
       overview: "",
       workspaceDescription: "",
       suites: [{
-        key: "S1",
+        key: unique("S"),
         name: unique("Imported suite"),
         prompts: [
-          { key: "S1-01", title: "First", content: "A", status: "TODO", completedAt: null, result: "", isGate: false },
-          { key: "S1-02", title: "Second", content: "B", status: "TODO", completedAt: null, result: "", isGate: false },
+          { key: firstKey, title: unique("First"), content: "A", status: "TODO", completedAt: null, result: "", isGate: false },
+          { key: secondKey, title: unique("Second"), content: "B", status: "TODO", completedAt: null, result: "", isGate: false },
         ],
       }],
-      dependencies: [{ promptKey: "S1-02", dependsOnKey: "S1-01" }],
+      dependencies: [{ promptKey: secondKey, dependsOnKey: firstKey }],
       gates: [],
       warnings: [],
     });
     const tree = workspaces.tree(ctx.workspace.id);
-    const suite = tree.programs.find((program) => program.suites.some((item) => item.externalKey === "S1"))!.suites.find((item) => item.externalKey === "S1")!;
-    const first = suite.prompts.find((prompt) => prompt.externalKey === "S1-01")!;
-    const second = suite.prompts.find((prompt) => prompt.externalKey === "S1-02")!;
+    const suite = tree.programs.flatMap((program) => program.suites).find((item) => item.prompts.some((prompt) => prompt.externalKey === firstKey))!;
+    const first = suite.prompts.find((prompt) => prompt.externalKey === firstKey)!;
+    const second = suite.prompts.find((prompt) => prompt.externalKey === secondKey)!;
     workspaces.skipPrompt(first.id, "USER", "Operator skipped this station.");
     const secondOption = workspaces.promptOptions(ctx.workspace.id).find((item) => item.id === second.id)!;
     assert.equal(secondOption.ready, false);
-    assert.ok(secondOption.blockedBy.includes("S1-01"));
+    assert.ok(secondOption.blockedBy.includes(firstKey));
   } finally {
     ctx.cleanup();
   }
@@ -400,7 +438,8 @@ test("cannot Play two suites in one workspace", async () => {
   let suiteB: SuiteRecord | undefined;
   try {
     suiteB = workspaces.createChild("suite", ctx.program.id, { name: unique("suiteB"), overview: "" }) as SuiteRecord;
-    workspaces.createChild("prompt", suiteB.id, { title: unique("other"), content: "other" });
+    const other = workspaces.createChild("prompt", suiteB.id, { title: unique("other"), content: "other" }) as PromptRecord;
+    workspaces.addPipelineStep(other.id, { provider: "codex" });
     await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
     await assert.rejects(
       () => pipelineScheduler.play(suiteB!.id, { provider: "codex" }),
@@ -536,6 +575,8 @@ test("provider resolution uses station then play then suite then adapter", () =>
     retryLimit: 1,
     recoverProvider: null,
     recoverModel: null,
+    enabled: true,
+    stepOrder: 0,
   };
   const base: {
     recovering: boolean;
@@ -571,4 +612,140 @@ test("provider resolution uses station then play then suite then adapter", () =>
     playProvider: "claude",
   });
   assert.deepEqual(recover, { provider: "grok", model: "grok-4.6" });
+});
+
+test("schema version 11 creates named pipeline tables", () => {
+  const db = new Database(workspaces.databasePath, { readonly: true });
+  try {
+    const version = (db.prepare("SELECT MAX(version) version FROM schema_migration").get() as { version: number }).version;
+    assert.ok(version >= 11);
+    const names = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index')").all() as Array<{ name: string }>).map((row) => row.name));
+    assert.ok(names.has("pipeline"));
+    assert.ok(names.has("pipeline_stage"));
+    assert.ok(names.has("pipeline_run"));
+    assert.ok(names.has("pipeline_run_active_uq"));
+    const columns = db.prepare("PRAGMA table_info(suite_pipeline_run)").all() as Array<{ name: string }>;
+    assert.ok(columns.some((column) => column.name === "pipeline_run_id"));
+  } finally {
+    db.close();
+  }
+});
+
+test("named pipeline CRUD saves stages per workspace and keeps a run archive", async () => {
+  const ctx = fixture(1);
+  let otherDir: string | null = null;
+  try {
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("launch"),
+      description: "nightly",
+      suiteIds: [ctx.suite.id],
+    });
+    assert.equal(saved.workspaceId, ctx.workspace.id);
+    assert.equal(saved.stages.length, 1);
+    assert.equal(saved.stages[0]?.suiteId, ctx.suite.id);
+    assert.equal(saved.active, null);
+    const listed = workspaces.listPipelines(ctx.workspace.id);
+    assert.ok(listed.some((item) => item.id === saved.id));
+    const renamed = workspaces.updatePipeline(saved.id, { name: unique("launch-v2") });
+    assert.equal(renamed.stages.length, 1);
+    const empty = workspaces.updatePipeline(saved.id, { suiteIds: [] });
+    assert.equal(empty.stages.length, 0);
+    workspaces.updatePipeline(saved.id, { suiteIds: [ctx.suite.id] });
+
+    const other = workspaces.create({ name: unique("ws2"), description: "", workDirectory: (otherDir = mkdtempSync(join(tmpdir(), "pipe-"))) });
+    const otherProgram = workspaces.createChild("program", other.id, { name: unique("prog"), overview: "" }) as ProgramRecord;
+    const otherSuite = workspaces.createChild("suite", otherProgram.id, { name: unique("suite"), overview: "" }) as SuiteRecord;
+    assert.throws(
+      () => workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("cross"), suiteIds: [otherSuite.id] }),
+      (error: unknown) => error instanceof WorkspaceError && error.status === 422,
+    );
+    workspaces.remove(other.id);
+
+    workspaces.deletePipeline(saved.id);
+    assert.throws(() => workspaces.getPipeline(saved.id), (error: unknown) => error instanceof WorkspaceError && error.status === 404);
+  } finally {
+    ctx.cleanup();
+    if (otherDir !== null) rmSync(otherDir, { recursive: true, force: true });
+  }
+});
+
+test("named pipeline play advances suites, surfaces blocked, and keeps history", async () => {
+  const ctx = fixture(1);
+  stubStarts();
+  let suiteB: SuiteRecord | null = null;
+  try {
+    suiteB = workspaces.createChild("suite", ctx.program.id, { name: unique("suiteB"), overview: "" }) as SuiteRecord;
+    const promptB = workspaces.createChild("prompt", suiteB.id, { title: unique("b"), content: "second" }) as PromptRecord;
+    workspaces.addPipelineStep(promptB.id, { provider: "claude" });
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("mission"),
+      suiteIds: [ctx.suite.id, suiteB.id],
+    });
+    const playing = await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    assert.equal(playing.state, "PLAYING");
+    assert.equal(playing.currentSuiteId, ctx.suite.id);
+    const live = workspaces.getPipeline(saved.id);
+    assert.equal(live.active?.id, playing.id);
+
+    await endStation({
+      runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!,
+      promptId: ctx.prompts[0]!.id,
+      workspaceId: ctx.workspace.id,
+      outcome: "human",
+    });
+    assert.equal(workspaces.activeNamedPipelineRun(saved.id)?.state, "WAITING_HUMAN");
+
+    workspaces.respondToBlockedPrompt(ctx.prompts[0]!.id, { content: "go on" });
+    const resumed = await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    assert.equal(resumed.id, playing.id);
+    assert.equal(resumed.state, "PLAYING");
+
+    await endStation({
+      runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!,
+      promptId: ctx.prompts[0]!.id,
+      workspaceId: ctx.workspace.id,
+      outcome: "DONE",
+    });
+    const afterFirst = workspaces.activeNamedPipelineRun(saved.id);
+    assert.equal(afterFirst?.state, "PLAYING");
+    assert.equal(afterFirst?.currentSuiteId, suiteB.id);
+
+    await endStation({
+      runId: workspaces.activePipeline(suiteB.id)!.currentRunId!,
+      promptId: promptB.id,
+      workspaceId: ctx.workspace.id,
+      outcome: "DONE",
+    });
+    assert.equal(workspaces.activeNamedPipelineRun(saved.id), null);
+    const latest = workspaces.latestNamedPipelineRun(saved.id);
+    assert.equal(latest?.state, "COMPLETE");
+    const archive = workspaces.listPipelineRuns(saved.id);
+    assert.equal(archive.length, 1);
+    assert.equal(archive[0]?.stages.length, 2);
+    assert.equal(archive[0]?.stages[0]?.suiteRun?.state, "COMPLETE");
+    assert.equal(archive[0]?.stages[1]?.suiteRun?.state, "COMPLETE");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("named pipeline stop records operator_stop in the archive", async () => {
+  const ctx = fixture(1);
+  stubStarts();
+  try {
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("abort"),
+      suiteIds: [ctx.suite.id],
+    });
+    await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    const stopped = await pipelineScheduler.stopNamed(saved.id);
+    assert.equal(stopped.state, "STOPPED");
+    assert.equal(stopped.stopReason, "operator_stop");
+    assert.equal(workspaces.listPipelineRuns(saved.id)[0]?.state, "STOPPED");
+  } finally {
+    ctx.cleanup();
+  }
 });

@@ -1,4 +1,7 @@
-import type { AdapterEvent, TokenUsage } from "@agent-console/shared";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { oneLine } from "@agent-console/shared";
 import {
   describeEffectiveAccess,
@@ -6,6 +9,13 @@ import {
   effectiveGrokSandboxMode,
   settings,
 } from "../settings.ts";
+import {
+  fetchJson,
+  parseGrokCredits,
+  providerUsageOk,
+  providerUsageUnavailable,
+  writeJsonAtomic,
+} from "./accountUsage.ts";
 import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
 import type { RunOptions } from "./types.ts";
 
@@ -354,6 +364,46 @@ export class GrokAdapter extends SpawnAdapter {
     return "No XAI_API_KEY and no stored grok login — run `grok login` (or set GROK_ASSUME_AUTHENTICATED=true)";
   }
 
+  override async getAccountUsage(): Promise<ProviderUsage> {
+    const token = await resolveGrokAccessToken();
+    if (token === null) {
+      return providerUsageUnavailable(
+        "grok",
+        settings.grok.apiKey !== null
+          ? "Grok plan usage is only available for a `grok login` session, not an API key"
+          : "No Grok login found — run `grok login`",
+      );
+    }
+    let accessToken = token;
+    const headers = grokBillingHeaders(accessToken);
+    let response = await fetchJson("https://cli-chat-proxy.grok.com/v1/billing?format=credits", { headers });
+    if (response.status === 401 || response.status === 403) {
+      const refreshed = await refreshGrokAccessToken();
+      if (refreshed === null) {
+        return providerUsageUnavailable("grok", "Grok login expired — run `grok login`");
+      }
+      accessToken = refreshed;
+      response = await fetchJson("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+        headers: grokBillingHeaders(accessToken),
+      });
+    }
+    if (!response.ok) {
+      return providerUsageUnavailable("grok", `Grok billing request failed (HTTP ${response.status})`);
+    }
+    const parsed = parseGrokCredits(response.body);
+    // Grok's credits API is weekly (or legacy monthly). It does not report a
+    // daily window; skip rather than invent one from local session logs.
+    parsed.windows = parsed.windows.filter((window) => window.kind !== "daily");
+    if (parsed.plan === null) {
+      const settingsResponse = await fetchJson("https://cli-chat-proxy.grok.com/v1/settings", {
+        headers: grokBillingHeaders(accessToken),
+      });
+      const body = settingsResponse.body as { subscription_tier_display?: string; subscriptionTierDisplay?: string } | null;
+      parsed.plan = body?.subscription_tier_display ?? body?.subscriptionTierDisplay ?? null;
+    }
+    return providerUsageOk("grok", parsed);
+  }
+
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const consult = opts.permissionOverride === "consult";
     const args = [
@@ -376,5 +426,106 @@ export class GrokAdapter extends SpawnAdapter {
 
   protected createMapper(): StreamMapper {
     return new GrokMapper();
+  }
+}
+
+const GROK_DEFAULT_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+
+interface GrokAuthEntry {
+  slot: string;
+  key: string;
+  refreshToken: string | null;
+  expiresAt: string | null;
+  clientId: string;
+  issuer: string;
+}
+
+function grokAuthPath(): string {
+  const grokHome = process.env.GROK_HOME ?? join(homedir(), ".grok");
+  return join(grokHome, "auth.json");
+}
+
+function grokBillingHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+    "x-xai-token-auth": "xai-grok-cli",
+    "User-Agent": "xai-grok-cli",
+  };
+}
+
+function readGrokAuth(): { file: Record<string, unknown>; entry: GrokAuthEntry } | null {
+  const path = grokAuthPath();
+  if (!existsSync(path)) return null;
+  try {
+    const file = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    for (const [slot, raw] of Object.entries(file)) {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const entry = raw as Record<string, unknown>;
+      const key = typeof entry.key === "string" ? entry.key.trim() : "";
+      if (key === "") continue;
+      return {
+        file,
+        entry: {
+          slot,
+          key,
+          refreshToken: typeof entry.refresh_token === "string" ? entry.refresh_token : null,
+          expiresAt: typeof entry.expires_at === "string" ? entry.expires_at : null,
+          clientId: typeof entry.oidc_client_id === "string" ? entry.oidc_client_id : GROK_DEFAULT_CLIENT_ID,
+          issuer: typeof entry.oidc_issuer === "string" ? entry.oidc_issuer : "https://auth.x.ai",
+        },
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGrokAccessToken(): Promise<string | null> {
+  const auth = readGrokAuth();
+  if (auth === null) return null;
+  const expiresAt = auth.entry.expiresAt !== null ? Date.parse(auth.entry.expiresAt) : NaN;
+  if (Number.isFinite(expiresAt) && expiresAt < Date.now() + 60_000) {
+    return (await refreshGrokAccessToken()) ?? auth.entry.key;
+  }
+  return auth.entry.key;
+}
+
+async function refreshGrokAccessToken(): Promise<string | null> {
+  const auth = readGrokAuth();
+  if (auth?.entry.refreshToken == null || auth.entry.refreshToken === "") return null;
+  const tokenUrl = `${auth.entry.issuer.replace(/\/$/, "")}/oauth2/token`;
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: auth.entry.refreshToken,
+    client_id: auth.entry.clientId,
+  });
+  const response = await fetchJson(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: body.toString(),
+  });
+  if (!response.ok || response.body === null || typeof response.body !== "object") return null;
+  const payload = response.body as Record<string, unknown>;
+  const accessToken = typeof payload.access_token === "string" ? payload.access_token : "";
+  if (accessToken === "") return null;
+  const expiresIn = typeof payload.expires_in === "number" ? payload.expires_in : 6 * 60 * 60;
+  const refreshToken = typeof payload.refresh_token === "string" ? payload.refresh_token : auth.entry.refreshToken;
+  persistGrokAuth(auth.file, auth.entry.slot, {
+    key: accessToken,
+    refresh_token: refreshToken,
+    expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+  });
+  return accessToken;
+}
+
+function persistGrokAuth(file: Record<string, unknown>, slot: string, patch: Record<string, string>): void {
+  const current = (file[slot] ?? {}) as Record<string, unknown>;
+  file[slot] = { ...current, ...patch };
+  try {
+    writeJsonAtomic(grokAuthPath(), file);
+  } catch {
+    // Keep the in-memory token for this request even if the write fails.
   }
 }

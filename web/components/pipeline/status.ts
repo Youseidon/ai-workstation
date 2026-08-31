@@ -1,6 +1,8 @@
 import type {
   OperationsPrompt,
   OperationsSuite,
+  PipelineRun,
+  PipelineState,
   PromptOperationalState,
   PromptPipelineRule,
   OnDoneAction,
@@ -54,15 +56,42 @@ export function overrideChip(rule: PromptPipelineRule): string | null {
   return model === null ? rule.provider : `${rule.provider} · ${model}`;
 }
 
+export const PIPELINE_LABEL: Record<PipelineState, string> = {
+  PLAYING: "running",
+  WAITING_HUMAN: "blocked",
+  PAUSED: "paused",
+  COMPLETE: "complete",
+  STOPPED: "stopped",
+  INTERRUPTED: "interrupted",
+};
+
+export const PIPELINE_TONE: Record<PipelineState, Tone> = {
+  PLAYING: "info",
+  WAITING_HUMAN: "warning",
+  PAUSED: "caution",
+  COMPLETE: "success",
+  STOPPED: "neutral",
+  INTERRUPTED: "caution",
+};
+
+export function pipelineRunBadge(
+  run: PipelineRun | SuitePipelineRun | null | undefined,
+): { label: string; tone: Tone; pulse?: boolean } | null {
+  if (run == null) return null;
+  return {
+    label: PIPELINE_LABEL[run.state],
+    tone: PIPELINE_TONE[run.state],
+    pulse: run.state === "PLAYING",
+  };
+}
+
 export function pipelineBadge(
   suite: OperationsSuite,
 ): { label: string; tone: Tone; pulse?: boolean } | null {
   const active = suite.pipeline?.active;
   const latest = suite.pipeline?.latest;
-  if (active?.state === "PLAYING") return { label: "▶ playing", tone: "info", pulse: true };
-  if (active?.state === "WAITING_HUMAN") return { label: "waiting", tone: "warning" };
-  if (active?.state === "PAUSED") return { label: "paused", tone: "caution" };
-  if (latest?.state === "INTERRUPTED") return { label: "restart interrupted", tone: "caution" };
+  if (active != null) return pipelineRunBadge(active);
+  if (latest?.state === "INTERRUPTED") return { label: "interrupted", tone: "caution" };
   return null;
 }
 
@@ -92,7 +121,7 @@ export function workspaceOccupancy(workspaceId: number, runs: RunStatus[]): RunS
 export type PlayKind = "play" | "resume" | "hidden";
 
 export function playKind(
-  pipeline: SuitePipelineRun | null | undefined,
+  pipeline: Pick<SuitePipelineRun, "state" | "currentRunId"> | null | undefined,
   occupancy: RunStatus | null,
 ): PlayKind {
   if (pipeline == null) return "play";
@@ -105,11 +134,18 @@ export function playKind(
   return "play";
 }
 
-export function showPause(pipeline: SuitePipelineRun | null | undefined): boolean {
+export function namedPlayKind(run: Pick<PipelineRun, "state"> | null | undefined): PlayKind {
+  if (run == null) return "play";
+  if (run.state === "PLAYING") return "hidden";
+  if (run.state === "PAUSED" || run.state === "WAITING_HUMAN") return "resume";
+  return "play";
+}
+
+export function showPause(pipeline: { state: PipelineState } | null | undefined): boolean {
   return pipeline?.state === "PLAYING";
 }
 
-export function showStop(pipeline: SuitePipelineRun | null | undefined): boolean {
+export function showStop(pipeline: { state: PipelineState } | null | undefined): boolean {
   return pipeline?.state === "PLAYING" || pipeline?.state === "PAUSED" || pipeline?.state === "WAITING_HUMAN";
 }
 

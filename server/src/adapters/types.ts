@@ -1,4 +1,4 @@
-import type { AdapterEvent, ProviderId, ProviderInfo } from "@agent-console/shared";
+import type { AdapterEvent, ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
 import type { Logger } from "../lib/logger.ts";
 
 /**
@@ -48,6 +48,14 @@ export interface AgentAdapter {
   checkAvailability(): Promise<AvailabilityReport>;
   isAvailable(): Promise<boolean>;
   getVersion(): Promise<string | null>;
+  /**
+   * Account-level usage credits from this provider's own API.
+   *
+   * Return `available: false` when the provider has no usage endpoint, the
+   * login cannot see plan limits (API key instead of a subscription), or the
+   * request failed. Never invent a daily or weekly figure the API omitted.
+   */
+  getAccountUsage(): Promise<ProviderUsage>;
 
   run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void>;
   interrupt(runId: string): Promise<void>;
