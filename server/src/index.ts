@@ -14,7 +14,7 @@ import { runContexts } from "./runContext.ts";
 import { contextMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
-import { startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, startExecute, startVerifySuite } from "./runService.ts";
 
 const log = createLogger("server");
 
@@ -265,8 +265,8 @@ wss.on("connection", (ws: WebSocket) => {
       error instanceof Error ? error.message : fallback,
       error instanceof WorkspaceError ? error.fields?.detail ?? null : null,
     );
-    if (error instanceof WorkspaceError && error.code === "provider_unavailable") {
-      void detectProviders(true).then((providers) => send({ kind: "providers", providers }));
+    if (error instanceof ProviderUnavailableError) {
+      send({ kind: "providers", providers: error.providers });
     }
   };
 

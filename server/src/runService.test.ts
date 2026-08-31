@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { RunHandle } from "./runner.ts";
 import { runHub } from "./runHub.ts";
-import { startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, startExecute, startVerifySuite } from "./runService.ts";
 import { WorkspaceError } from "./workspaces.ts";
 
 function fakeHandle(runId: string): RunHandle {
@@ -54,6 +54,16 @@ test("startExecute refuses a second writer before checking the provider", async 
   } finally {
     runHub.end(executeId, "done");
   }
+});
+
+test("provider unavailable keeps the detection snapshot", () => {
+  const providers = [] as ProviderUnavailableError["providers"];
+  const error = new ProviderUnavailableError("claude", "detection failed", providers);
+  assert.equal(error.status, 409);
+  assert.equal(error.code, "provider_unavailable");
+  assert.equal(error.fields?.detail, "detection failed");
+  assert.equal(error.providers, providers);
+  assert.equal(error instanceof WorkspaceError, true);
 });
 
 test("startExecute rejects an unknown provider when the workspace is free", async () => {

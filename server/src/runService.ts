@@ -1,4 +1,4 @@
-import { isProviderId, type ProviderId } from "@agent-console/shared";
+import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { contextMarkdown } from "./agentContext.ts";
 import { config } from "./config.ts";
@@ -27,7 +27,13 @@ export interface StartVerifySuiteArgs {
   model: string | null;
 }
 
-/** Starts an execute-shaped run. Callers do not need a WebSocket. */
+export class ProviderUnavailableError extends WorkspaceError {
+  constructor(providerId: string, detail: string, readonly providers: ProviderInfo[]) {
+    super(409, "provider_unavailable", `Provider "${providerId}" is not available.`, { detail });
+  }
+}
+
+/** Saved, custom, or clarification execute. */
 export async function startExecute(args: StartExecuteArgs): Promise<{ runId: string }> {
   const workspaceId = args.workspaceId;
   const providerId = args.provider;
@@ -39,9 +45,6 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
 
   const busy = runHub.activeForWorkspace(workspaceId);
   if (busy !== undefined) {
-    // One workspace is one working directory. Two agents editing the same
-    // tree at once corrupt each other; the old per-connection guard happily
-    // allowed it as soon as you opened a second tab.
     throw new WorkspaceError(
       409,
       "workspace_busy",
@@ -56,7 +59,6 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
   let customDisplay = "";
   let clarificationId: number | null = null;
-  // Scoped to this run, not the connection: runs outlive the socket now.
   let activeContextRunId: string | null = null;
   const plannedRunId = newId("run");
 
@@ -136,7 +138,6 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
           clarificationAnswer,
         );
       }
-      // Deregisters and tells every client, not just the one that started it.
       runHub.end(runId, state);
     },
   });
@@ -225,12 +226,7 @@ async function requireAvailableProvider(providerId: string): Promise<ProviderId>
   const providers = await detectProviders(true);
   const info = providers.find((provider) => provider.id === providerId);
   if (info === undefined || !info.available) {
-    throw new WorkspaceError(
-      409,
-      "provider_unavailable",
-      `Provider "${providerId}" is not available.`,
-      { detail: info?.reason ?? "detection failed" },
-    );
+    throw new ProviderUnavailableError(providerId, info?.reason ?? "detection failed", providers);
   }
   return providerId;
 }
