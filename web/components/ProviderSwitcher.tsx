@@ -74,6 +74,11 @@ export function ProviderSwitcher({
                     ].join(" ")}
                   />
                   {provider.label}
+                  {provider.id === "cursor" && !compact && (
+                    <span className="text-[9px] font-normal uppercase tracking-wider text-fg-dim">
+                      no Ask
+                    </span>
+                  )}
                 </button>
 
                 <span aria-hidden className="my-1 w-px bg-current opacity-20" />
@@ -142,8 +147,14 @@ export function ProviderSwitcher({
 }
 
 function tooltipFor(provider: ProviderInfo): string {
-  if (!provider.available) return provider.reason ?? "not detected";
+  if (!provider.available) {
+    if (provider.id === "cursor") {
+      return `${provider.reason ?? "not detected"} · Cursor has no sandbox, so it cannot Ask.`;
+    }
+    return provider.reason ?? "not detected";
+  }
   const parts = [provider.version ?? "installed", provider.permissionMode];
   if (provider.binary !== null) parts.push(provider.binary);
+  if (provider.id === "cursor") parts.push("Cursor has no sandbox, so it cannot Ask.");
   return parts.join(" · ");
 }

@@ -136,7 +136,8 @@ export function OperationsView() {
   const providerInfo = console_.providers.find((item) => item.id === provider) ?? null;
   const models = useModelSelection(console_.providers);
   const selectedModel = models.resolve(provider);
-  const workspaceBusy = (id: number) => console_.runs.some((item) => item.workspace.id === id);
+  const workspaceBusy = (id: number) =>
+    console_.runs.some((item) => item.workspace.id === id && item.role === "execute");
 
   useEffect(() => {
     if (activePromptId === null) return;

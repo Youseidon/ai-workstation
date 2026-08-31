@@ -70,7 +70,6 @@ export function CommandBar({
       description: `${prompt.programName} / ${prompt.suiteName}`,
       badge: { text: state.text, tone: state.tone },
       note: prompt.blockedBy.length > 0 ? `waiting on ${prompt.blockedBy.join(", ")}` : undefined,
-      disabled: prompt.blockedBy.length > 0,
       keywords: prompt.status,
     };
   });

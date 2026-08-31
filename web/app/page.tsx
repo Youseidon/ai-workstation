@@ -5,6 +5,7 @@ import type { PromptOption, ProviderId, WorkspaceRecord } from "@agent-console/s
 import { AppNav } from "@/components/AppNav";
 import { CommandBar } from "@/components/CommandBar";
 import { Composer } from "@/components/Composer";
+import { ConsultBriefing } from "@/components/ConsultBriefing";
 import { LogPanel } from "@/components/LogPanel";
 import { ProviderSwitcher } from "@/components/ProviderSwitcher";
 import { SettingsPanel } from "@/components/SettingsPanel";
@@ -16,6 +17,9 @@ import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi } from "@/lib/workspacesApi";
+
+/** Matches server/src/runService.ts CONSULT_LIMIT. */
+const CONSULT_LIMIT = 3;
 
 export default function Page() {
   const console_ = useAgentConsole();
@@ -99,14 +103,25 @@ export default function Page() {
 
   // Scoped to the selected workspace: the server allows concurrent runs in
   // different workspaces, so a run elsewhere must not disable this composer.
-  const activeRun =
+  // A consult in this workspace does not own the writer slot.
+  const writerRun =
     workspaceId === null
       ? null
-      : console_.runs.find((item) => item.workspace.id === workspaceId) ?? null;
-  const running = activeRun !== null;
+      : console_.runs.find((item) => item.workspace.id === workspaceId && item.role === "execute") ?? null;
+  const consults =
+    workspaceId === null
+      ? []
+      : console_.runs.filter((item) => item.workspace.id === workspaceId && item.role === "consult");
+  const lastConsult =
+    console_.lastConsult !== null && console_.lastConsult.workspace.id === workspaceId
+      ? console_.lastConsult
+      : null;
+  const running = writerRun !== null;
+  const inputDisabled =
+    connection !== "open" || workspaceId === null || activeWorkspace?.workDirectoryExists === false;
 
-  /** Why the composer cannot send right now, in words rather than a grey box. */
-  const blockedReason = useMemo<string | null>(() => {
+  /** Why Run cannot start. A live writer is Stop, not a blocked reason. */
+  const runBlockedReason = useMemo<string | null>(() => {
     if (connection !== "open") return "backend disconnected";
     if (workspaceId === null) return "choose a workspace";
     if (activeWorkspace?.workDirectoryExists === false) return "working directory is missing";
@@ -118,6 +133,22 @@ export default function Page() {
     }
     return null;
   }, [connection, workspaceId, activeWorkspace, selectedInfo, selected, savedPrompt]);
+
+  /** Ask is independent of the writer lock and of prompt `ready`. */
+  const askBlockedReason = useMemo<string | null>(() => {
+    if (connection !== "open") return "backend disconnected";
+    if (workspaceId === null) return "choose a workspace";
+    if (activeWorkspace?.workDirectoryExists === false) return "working directory is missing";
+    if (selected === "cursor") return "Cursor has no sandbox, so it cannot Ask.";
+    if (selectedInfo?.available !== true) return `${selected} is not available`;
+    if (consults.length >= CONSULT_LIMIT) return "3 consults already running";
+    return null;
+  }, [connection, workspaceId, activeWorkspace, selected, selectedInfo, consults.length]);
+
+  const writerItems = useMemo(
+    () => console_.items.filter((item) => !console_.consultIds.includes(item.runId)),
+    [console_.items, console_.consultIds],
+  );
 
   const recover = async () => {
     if (savedPrompt === null || workspaceId === null) return;
@@ -148,6 +179,18 @@ export default function Page() {
     if (!started) toast.error("Could not start the run", "The agent connection is unavailable.");
   };
 
+  const ask = (prompt: string) => {
+    if (workspaceId === null) return;
+    const source =
+      savedPrompt !== null
+        ? prompt !== ""
+          ? { promptId: savedPrompt.id, prompt }
+          : { promptId: savedPrompt.id }
+        : { prompt };
+    const started = console_.startConsult(workspaceId, selected, source, models.resolve(selected));
+    if (!started) toast.error("Could not start the consult", "The agent connection is unavailable.");
+  };
+
   return (
     <main className="flex h-full flex-col bg-surface-0">
       <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface-1 px-4 py-2.5">
@@ -156,7 +199,7 @@ export default function Page() {
         <ProviderSwitcher
           providers={providers}
           selected={selected}
-          disabled={running}
+          disabled={false}
           models={models}
           onSelect={setPreferred}
           onRefresh={() => void console_.refreshProviders()}
@@ -200,32 +243,45 @@ export default function Page() {
         prompts={promptOptions}
         savedPromptId={savedPromptId}
         onPrompt={setSavedPromptId}
-        disabled={running}
+        disabled={false}
         activeWorkspace={activeWorkspace}
         onRecover={() => void recover()}
       />
 
-      <LogPanel items={items} workdir={activeWorkspace?.workDirectory ?? workdir} />
+      <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? workdir} />
+
+      {(consults.length > 0 || lastConsult !== null) && (
+        <ConsultBriefing
+          consults={consults}
+          lastConsult={lastConsult}
+          itemsFor={console_.itemsFor}
+          workdir={activeWorkspace?.workDirectory ?? workdir}
+          onStop={(runId) => console_.interrupt(runId)}
+        />
+      )}
 
       <StatusBar
         connection={connection}
         provider={selectedInfo}
         model={models.resolve(selected)}
-        run={activeRun}
+        run={writerRun}
         lastRun={lastRun}
         workdir={activeWorkspace?.workDirectory ?? workdir}
       />
 
       <Composer
-        disabled={blockedReason !== null || running}
+        disabled={inputDisabled}
         running={running}
+        writer={writerRun === null ? null : { provider: writerRun.provider, model: writerRun.model }}
         providers={providers}
         models={models}
         selected={selected}
-        blockedReason={blockedReason}
+        runBlockedReason={runBlockedReason}
+        askBlockedReason={askBlockedReason}
         savedPrompt={savedPrompt}
         onSubmit={send}
-        onInterrupt={() => console_.interrupt(activeRun?.runId)}
+        onAsk={ask}
+        onInterrupt={() => console_.interrupt(writerRun?.runId)}
         onClearSavedPrompt={() => setSavedPromptId(null)}
         onTarget={(provider, model) => {
           setPreferred(provider);
@@ -239,7 +295,7 @@ export default function Page() {
         <SettingsPanel
           serverUrl={SERVER_URL}
           onClose={() => setSettingsOpen(false)}
-          runInProgress={running}
+          runInProgress={console_.runs.length > 0}
         />
       )}
     </main>
