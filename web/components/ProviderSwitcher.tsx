@@ -14,6 +14,8 @@ interface Props {
   models: ModelSelection;
   onSelect(provider: ProviderId): void;
   onRefresh(): void;
+  /** Tighter pills for the rail header. */
+  compact?: boolean;
 }
 
 /**
@@ -28,12 +30,13 @@ export function ProviderSwitcher({
   models,
   onSelect,
   onRefresh,
+  compact = false,
 }: Props) {
   const [openMenu, setOpenMenu] = useState<ProviderId | null>(null);
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex flex-wrap items-center gap-1 rounded-md border border-line bg-surface-1 p-1">
+      <div className={["flex flex-wrap items-center gap-1 rounded-md border border-line bg-surface-1", compact ? "p-0.5" : "p-1"].join(" ")}>
         {providers.map((provider) => {
           const isSelected = provider.id === selected;
           const isDisabled = disabled || !provider.available;
@@ -57,7 +60,8 @@ export function ProviderSwitcher({
                   onClick={() => onSelect(provider.id)}
                   title={tooltipFor(provider)}
                   className={[
-                    "flex items-center gap-2 rounded-l py-1.5 pl-3 pr-2 text-xs transition-colors",
+                    "flex items-center gap-2 rounded-l transition-colors",
+                    compact ? "gap-1.5 py-1 pl-2 pr-1.5 text-[10px]" : "py-1.5 pl-3 pr-2 text-xs",
                     isDisabled ? "cursor-not-allowed" : "cursor-pointer",
                     isSelected ? "" : "hover:text-fg",
                   ].join(" ")}
@@ -88,7 +92,8 @@ export function ProviderSwitcher({
                   aria-haspopup="listbox"
                   aria-expanded={openMenu === provider.id}
                   className={[
-                    "flex max-w-[13ch] cursor-pointer items-center gap-1 rounded-r py-1.5 pl-2 pr-2 text-[11px] transition-colors",
+                    "flex max-w-[13ch] cursor-pointer items-center gap-1 rounded-r transition-colors",
+                    compact ? "max-w-[10ch] py-1 pl-1.5 pr-1.5 text-[10px]" : "py-1.5 pl-2 pr-2 text-[11px]",
                     isSelected ? "" : "hover:text-fg",
                     pinned ? "" : "opacity-70",
                   ].join(" ")}
@@ -122,14 +127,16 @@ export function ProviderSwitcher({
           <span className="px-3 py-1.5 text-xs text-fg-muted">detecting providers…</span>
         )}
       </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        title="Re-run provider detection"
-        className="rounded border border-line px-2 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
-      >
-        ↻
-      </button>
+      {!compact && (
+        <button
+          type="button"
+          onClick={onRefresh}
+          title="Re-run provider detection"
+          className="rounded border border-line px-2 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+        >
+          ↻
+        </button>
+      )}
     </div>
   );
 }

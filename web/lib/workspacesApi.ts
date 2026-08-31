@@ -1,7 +1,12 @@
-import type { AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PromptActivity, PromptOption, PromptRemark, PromptStatusEvent, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+import type { AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
-  constructor(message: string, public fields?: Record<string, string>) { super(message); }
+  constructor(
+    message: string,
+    public fields?: Record<string, string>,
+    public code?: string,
+    public status?: number,
+  ) { super(message); }
 }
 
 async function request<T>(serverUrl: string, path: string, init?: RequestInit): Promise<T> {
@@ -9,7 +14,7 @@ async function request<T>(serverUrl: string, path: string, init?: RequestInit): 
   if (!response.ok) {
     let data: ApiErrorBody | null = null;
     try { data = await response.json() as ApiErrorBody; } catch { /* use status text */ }
-    throw new ApiError(data?.error.message ?? response.statusText, data?.error.fields);
+    throw new ApiError(data?.error.message ?? response.statusText, data?.error.fields, data?.error.code, response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -40,4 +45,10 @@ export const workspaceApi = {
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
+  pipeline(serverUrl:string,suiteId:number){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`);},
+  updatePipelineDefaults(serverUrl:string,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null}){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`,{method:"PATCH",...json(value)});},
+  playSuite(serverUrl:string,suiteId:number,value:{provider?:ProviderId|null;model?:string|null}={}){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/play`,{method:"POST",...json(value)}).then(r=>r.pipeline);},
+  pauseSuite(serverUrl:string,suiteId:number){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/pause`,{method:"POST",...json({})}).then(r=>r.pipeline);},
+  stopSuite(serverUrl:string,suiteId:number){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/stop`,{method:"POST",...json({})}).then(r=>r.pipeline);},
+  patchPipelineRule(serverUrl:string,promptId:number,value:Partial<Omit<PromptPipelineRule,"promptId">>){return request<{rule:PromptPipelineRule}>(serverUrl,`/api/prompts/${promptId}/pipeline-rule`,{method:"PATCH",...json(value)}).then(r=>r.rule);},
 };
