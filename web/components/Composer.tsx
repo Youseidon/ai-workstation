@@ -17,15 +17,19 @@ import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 
 interface Props {
+  /** Hard lock on the textarea: connection, workspace, missing directory. */
   disabled: boolean;
+  /** True when an execute writer owns this workspace. */
   running: boolean;
+  writer: { provider: ProviderId; model: string | null } | null;
   providers: ProviderInfo[];
   models: ModelSelection;
   selected: ProviderId;
-  /** Reason the composer is unavailable, shown instead of a bare disabled box. */
-  blockedReason: string | null;
+  runBlockedReason: string | null;
+  askBlockedReason: string | null;
   savedPrompt: PromptOption | null;
   onSubmit(prompt: string): void;
+  onAsk(prompt: string): void;
   onInterrupt(): void;
   onTarget(provider: ProviderId, model: string | null): void;
   onClearSavedPrompt(): void;
@@ -34,26 +38,27 @@ interface Props {
 /**
  * The composer.
  *
- * One card that owns everything a run needs: who it goes to, what context is
- * attached, and the single primary action. The previous version was a bare
- * textarea in a strip, and in saved-prompt mode it submitted the literal string
- * "saved prompt" while showing only a one-line title — so you could not see
- * what you were about to run.
+ * Run stays the primary execute action. Ask is a consult: it is available
+ * while a writer owns the workspace, and it does not require a ready work item.
  */
 export function Composer({
   disabled,
   running,
+  writer,
   providers,
   models,
   selected,
-  blockedReason,
+  runBlockedReason,
+  askBlockedReason,
   savedPrompt,
   onSubmit,
+  onAsk,
   onInterrupt,
   onTarget,
   onClearSavedPrompt,
 }: Props) {
   const [value, setValue] = useState("");
+  const [askQuestion, setAskQuestion] = useState("");
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
@@ -122,8 +127,37 @@ export function Composer({
     });
   };
 
+  const hasAskText = savedPrompt !== null || value.trim() !== "" || askQuestion.trim() !== "";
+  const canRun = !running && runBlockedReason === null && (savedPrompt !== null || value.trim() !== "");
+  const canAsk = askBlockedReason === null && hasAskText;
+
+  const ask = () => {
+    if (!canAsk) return;
+    if (savedPrompt !== null) {
+      onAsk(askQuestion.trim());
+      setAskQuestion("");
+      return;
+    }
+    if (value.trim() === "") return;
+    onAsk(value.trim());
+    setValue("");
+    setCaret(0);
+  };
+
   const submit = () => {
-    if (disabled) return;
+    if (running) {
+      ask();
+      return;
+    }
+    // A typed research question is an Ask, even when the attached item could Run.
+    if (savedPrompt !== null && askQuestion.trim() !== "" && canAsk) {
+      ask();
+      return;
+    }
+    if (!canRun) {
+      if (canAsk) ask();
+      return;
+    }
     if (savedPrompt !== null) {
       onSubmit("");
       return;
@@ -134,7 +168,7 @@ export function Composer({
     setCaret(0);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (open) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -165,7 +199,15 @@ export function Composer({
 
   const theme = providerTheme[selected];
   const activeLabel = modelLabel(selected, models.resolve(selected));
-  const canSend = !disabled && (savedPrompt !== null || value.trim() !== "");
+  const writerLabel =
+    writer === null
+      ? null
+      : [writer.provider, modelLabel(writer.provider, writer.model)].filter((part) => part !== null).join(" · ");
+  const placeholder = disabled
+    ? (runBlockedReason ?? askBlockedReason ?? "waiting for the backend…")
+    : writer !== null
+      ? `ask ${selected} about this tree…`
+      : `ask ${selected} to do something…`;
 
   return (
     <div className="relative border-t border-line bg-surface-1 px-4 py-3">
@@ -216,6 +258,13 @@ export function Composer({
         </div>
       )}
 
+      {writer !== null && writerLabel !== null && (
+        <div className="mb-2 rounded-md bg-caution/10 px-2.5 py-1.5 text-[11px] text-caution ring-1 ring-inset ring-caution/30">
+          A writer ({writerLabel}) is in this workspace. You are reading a live tree. Files may be
+          mid-edit. Do not treat a partial file as final.
+        </div>
+      )}
+
       {/* Target and attached context ---------------------------------------- */}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className={cn("flex items-center gap-1.5 text-xs font-medium", theme.text)}>
@@ -243,10 +292,17 @@ export function Composer({
           </span>
         )}
 
-        {blockedReason !== null && <Badge tone="warning">{blockedReason}</Badge>}
+        {!running && runBlockedReason !== null && <Badge tone="warning">{runBlockedReason}</Badge>}
+        {askBlockedReason !== null && (running || askBlockedReason !== runBlockedReason) && (
+          <Badge tone="warning">{askBlockedReason}</Badge>
+        )}
 
         <span className="ml-auto text-[10px] text-fg-dim">
-          {savedPrompt === null ? "@ switches model · ⏎ send · ⇧⏎ newline · / focus" : "⏎ run"}
+          {savedPrompt === null
+            ? `@ switches model · ⏎ ${running ? "ask" : "send"} · ⇧⏎ newline · / focus`
+            : running
+              ? "⏎ ask"
+              : "⏎ run"}
         </span>
       </div>
 
@@ -258,13 +314,7 @@ export function Composer({
           value={value}
           disabled={disabled}
           aria-label="Prompt"
-          placeholder={
-            disabled
-              ? running
-                ? "an agent is working in this workspace — stop it to send another"
-                : (blockedReason ?? "waiting for the backend…")
-              : `ask ${selected} to do something…`
-          }
+          placeholder={placeholder}
           onChange={(event) => sync(event.target)}
           onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
           onClick={(event) => setCaret(event.currentTarget.selectionStart)}
@@ -300,22 +350,43 @@ export function Composer({
           ) : (
             <p className="px-3 py-2.5 text-[11px] leading-relaxed text-fg-dim">
               The agent loads this item&apos;s authoritative context from the database at run time — its
-              text is never pasted into the transcript.
+              text is never pasted into the transcript. Ask reads it even when the item is not ready.
             </p>
           )}
+          <input
+            type="text"
+            value={askQuestion}
+            disabled={disabled}
+            aria-label="Research question"
+            placeholder={`optional question — Ask ${selected} about this item`}
+            onChange={(event) => setAskQuestion(event.target.value)}
+            onKeyDown={onKeyDown}
+            className="w-full border-t border-line bg-transparent px-3 py-2 text-[13px] text-fg placeholder:text-fg-dim focus:outline-none disabled:opacity-50"
+          />
         </div>
       )}
 
       <div className="mt-2 flex items-center justify-end gap-2">
+        <span className="mr-auto text-[10px] text-fg-dim">repo-only · best effort on Claude/Grok</span>
         {running ? (
           <Button variant="danger" onClick={onInterrupt}>
             ■ Stop
           </Button>
         ) : (
-          <Button variant="primary" onClick={submit} disabled={!canSend}>
+          <Button variant="primary" onClick={submit} disabled={!canRun}>
             {savedPrompt === null ? "Send ⏎" : "Run work item"}
           </Button>
         )}
+        <span className="inline-flex" title={askBlockedReason ?? undefined}>
+          <Button
+            variant="secondary"
+            onClick={ask}
+            disabled={!canAsk}
+            className={canAsk ? theme.active : undefined}
+          >
+            Ask
+          </Button>
+        </span>
       </div>
     </div>
   );

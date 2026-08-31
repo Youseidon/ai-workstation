@@ -52,6 +52,10 @@ interface ConsoleState {
   runs: RunStatus[];
   /** Kept after a run ends so the status bar can show the final numbers. */
   lastRun: RunStatus | null;
+  /** Last consult that ended, so the briefing pane can stay open. */
+  lastConsult: RunStatus | null;
+  /** Every consult runId seen this session — writer LogPanel excludes these. */
+  consultIds: string[];
   /** Advances whenever durable operations/prompt data should be re-read. */
   operationsRevision: number;
 }
@@ -69,8 +73,14 @@ const initialState: ConsoleState = {
   items: [],
   runs: [],
   lastRun: null,
+  lastConsult: null,
+  consultIds: [],
   operationsRevision: 0,
 };
+
+function rememberConsultId(ids: string[], runId: string): string[] {
+  return ids.includes(runId) ? ids : [...ids, runId];
+}
 
 /** The transcript line that stands in for a run's instruction. */
 function sourceText(source: RunSource): string {
@@ -112,11 +122,14 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       // is not evidence the run stopped, either. The next `hello` is what
       // settles which runs still exist.
       if (action.value === "disconnected" && state.runs.length > 0) {
+        const lastExecute = [...state.runs].reverse().find((run) => run.role === "execute");
+        const lastConsultLive = [...state.runs].reverse().find((run) => run.role === "consult");
         return {
           ...state,
           connection: action.value,
           runs: [],
-          lastRun: state.runs[state.runs.length - 1] ?? state.lastRun,
+          lastRun: lastExecute ?? state.lastRun,
+          lastConsult: lastConsultLive ?? state.lastConsult,
         };
       }
       return { ...state, connection: action.value };
@@ -163,6 +176,11 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             workdir: message.workdir,
             items: [...finished, ...replayed],
             runs: message.activeRuns.map(toRunStatus),
+            consultIds: message.activeRuns.reduce(
+              (ids, snapshot) =>
+                (snapshot.role ?? "execute") === "consult" ? rememberConsultId(ids, snapshot.runId) : ids,
+              state.consultIds,
+            ),
           };
         }
 
@@ -180,6 +198,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
         case "run_started": {
           // `hello` may already have replayed this run; keep one entry.
           if (state.runs.some((run) => run.runId === message.runId)) return state;
+          const role = message.role ?? "execute";
           return {
             ...state,
             items: appendPrompt(state.items, {
@@ -194,7 +213,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
                 runId: message.runId,
                 provider: message.provider,
                 model: message.model,
-                role: message.role ?? "execute",
+                role,
                 permissionMode: null,
                 state: "starting",
                 elapsedMs: 0,
@@ -205,6 +224,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
                 startedAt: new Date().toISOString(),
               },
             ],
+            consultIds: role === "consult" ? rememberConsultId(state.consultIds, message.runId) : state.consultIds,
           };
         }
 
@@ -229,11 +249,12 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
         case "run_ended": {
           const ended = state.runs.find((run) => run.runId === message.runId);
           if (ended === undefined) return state;
-          return {
-            ...state,
-            runs: state.runs.filter((run) => run.runId !== message.runId),
-            lastRun: { ...ended, state: message.state, detail: null },
-          };
+          const remaining = state.runs.filter((run) => run.runId !== message.runId);
+          const closed = { ...ended, state: message.state, detail: null };
+          if (ended.role === "consult") {
+            return { ...state, runs: remaining, lastConsult: closed };
+          }
+          return { ...state, runs: remaining, lastRun: closed };
         }
 
         case "pong":
@@ -248,8 +269,8 @@ const RECONNECT_MAX_MS = 5000;
 
 interface AgentConsoleApi extends ConsoleState {
   /**
-   * The run to show in single-run UI. Prefer the oldest execute so a consult
-   * started first on a quiet tree cannot hide a writer from StatusBar.
+   * The execute writer for single-run UI. Prefer execute so a consult cannot
+   * hide a writer; StatusBar falls back for consult-only.
    */
   run: RunStatus | null;
   /** Transcript lines belonging to one run. */
