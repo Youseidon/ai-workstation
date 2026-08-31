@@ -248,8 +248,8 @@ const RECONNECT_MAX_MS = 5000;
 
 interface AgentConsoleApi extends ConsoleState {
   /**
-   * The run to show in single-run UI. The oldest live run, since the workspace
-   * lock means concurrent runs are in different workspaces.
+   * The run to show in single-run UI. Prefer the oldest execute so a consult
+   * started first on a quiet tree cannot hide a writer from StatusBar.
    */
   run: RunStatus | null;
   /** Transcript lines belonging to one run. */
@@ -375,7 +375,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AgentConsoleApi>(() => {
-    const run = state.runs[0] ?? null;
+    const run = state.runs.find((entry) => entry.role === "execute") ?? state.runs[0] ?? null;
     return {
       ...state,
       run,

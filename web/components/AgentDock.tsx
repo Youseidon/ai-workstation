@@ -12,7 +12,7 @@ import type { LogItem } from "@/lib/log";
 import { Button } from "./ui/Button";
 import { StatusDot } from "./ui/Badge";
 import { AgentAvatar } from "./AgentAvatar";
-import { agentState, ACTIVITY_LABEL } from "@/lib/agentState";
+import { agentState, ACTIVITY_LABEL, consultQuestion } from "@/lib/agentState";
 
 /**
  * The agent's presence, on every page.
@@ -30,10 +30,13 @@ export function AgentDock() {
 
   if (runs.length === 0) return null;
 
+  const executes = runs.filter((run) => run.role === "execute");
+  const consults = runs.filter((run) => run.role === "consult");
+
   return (
     <div className="relative z-30 border-t border-line bg-surface-1/80 backdrop-blur-md">
       <div className="flex flex-col divide-y divide-line">
-        {runs.map((run) => (
+        {executes.map((run) => (
           <DockRow
             key={run.runId}
             run={run}
@@ -45,6 +48,18 @@ export function AgentDock() {
             showTranscriptLink={pathname !== "/"}
           />
         ))}
+        {consults.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 px-4 py-1.5">
+            {consults.map((run) => (
+              <AskChip
+                key={run.runId}
+                run={run}
+                onStop={() => interrupt(run.runId)}
+                stale={connection !== "open"}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -127,6 +142,47 @@ function DockRow({
         </Button>
       </span>
     </div>
+  );
+}
+
+/**
+ * Quieter than a working row: a consult is reading, not occupying the writer
+ * seat. Stop still names this run so it cannot interrupt the writer by accident.
+ */
+export function AskChip({
+  run,
+  onStop,
+  stale = false,
+}: {
+  run: RunStatus;
+  onStop(): void;
+  stale?: boolean;
+}) {
+  const theme = providerTheme[run.provider];
+  const question = consultQuestion(run);
+
+  return (
+    <span className={cn("inline-flex h-7 max-w-full items-center gap-1.5 rounded-full pl-2 pr-1 text-[11px] ring-1 ring-inset", theme.chip)}>
+      <Link
+        href={`/?workspace=${run.workspace.id}`}
+        className="flex min-w-0 items-center gap-1.5 opacity-70"
+        title={question}
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("agent-console:focus-consult", { detail: { runId: run.runId } }));
+        }}
+      >
+        <AgentAvatar provider={run.provider} activity="thinking" size={16} title={`${run.provider} asking`} />
+        <span className="min-w-0 truncate">asking · {question || "research"}</span>
+      </Link>
+      <button
+        type="button"
+        onClick={onStop}
+        disabled={stale}
+        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-danger ring-1 ring-inset ring-danger/40 hover:bg-danger/15 disabled:pointer-events-none disabled:opacity-40"
+      >
+        Stop
+      </button>
+    </span>
   );
 }
 

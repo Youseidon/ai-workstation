@@ -1,7 +1,8 @@
 "use client";
 
 import { formatElapsed, formatTokens, modelLabel, type ProviderInfo } from "@agent-console/shared";
-import type { ConnectionState, RunStatus } from "@/lib/useAgentConsole";
+import { preferExecuteRun } from "@/lib/agentState";
+import { useAgentConsole, type ConnectionState, type RunStatus } from "@/lib/useAgentConsole";
 import { providerTheme } from "@/lib/providerTheme";
 
 interface Props {
@@ -15,8 +16,15 @@ interface Props {
 }
 
 export function StatusBar({ connection, provider, model, run, lastRun, workdir }: Props) {
-  const active = run ?? lastRun;
-  const theme = provider ? providerTheme[provider.id] : null;
+  const { runs } = useAgentConsole();
+  // A consult must not occupy the bar when a writer is live in the same workspace.
+  const displayed = preferExecuteRun(run, runs);
+  const active = displayed ?? lastRun;
+  const theme = displayed
+    ? providerTheme[displayed.provider]
+    : provider
+      ? providerTheme[provider.id]
+      : null;
   const usage = active?.usage ?? null;
   // Cursor does not report usage: show nothing rather than a fabricated zero.
   const showTokens = usage !== null && provider?.reportsTokens !== false;
@@ -45,24 +53,25 @@ export function StatusBar({ connection, provider, model, run, lastRun, workdir }
 
       <span className="text-fg-dim">│</span>
 
-      {run !== null ? (
+      {displayed !== null ? (
         <span className="flex items-center gap-2">
           <span className="inline-block size-1.5 animate-pulse rounded-full bg-current text-success" />
           <span className="text-fg">
-            Running (<span className={theme?.text ?? ""}>{run.provider}</span>
-            {modelLabel(run.provider, run.model) !== null && (
-              <span className="text-fg-muted"> · {modelLabel(run.provider, run.model)}</span>
+            {displayed.role === "consult" ? "Asking" : "Running"} (
+            <span className={theme?.text ?? ""}>{displayed.provider}</span>
+            {modelLabel(displayed.provider, displayed.model) !== null && (
+              <span className="text-fg-muted"> · {modelLabel(displayed.provider, displayed.model)}</span>
             )}
             )…
           </span>
-          <span className="tabular-nums text-fg-muted">{formatElapsed(run.elapsedMs)}</span>
+          <span className="tabular-nums text-fg-muted">{formatElapsed(displayed.elapsedMs)}</span>
           {showTokens && usage !== null && (
             <span className="tabular-nums text-fg-muted">
               · ↓{formatTokens(usage.totalTokens)} tokens
             </span>
           )}
-          {run.detail !== null && (
-            <span className="max-w-[28ch] truncate text-fg-dim">· {run.detail}</span>
+          {displayed.detail !== null && (
+            <span className="max-w-[28ch] truncate text-fg-dim">· {displayed.detail}</span>
           )}
         </span>
       ) : (
@@ -88,7 +97,9 @@ export function StatusBar({ connection, provider, model, run, lastRun, workdir }
       )}
 
       <span className="ml-auto flex items-center gap-3 text-fg-dim">
-        {provider && <span title="permission / approval mode">{provider.permissionMode}</span>}
+        {(displayed?.permissionMode ?? provider?.permissionMode) && (
+          <span title="permission / approval mode">{displayed?.permissionMode ?? provider?.permissionMode}</span>
+        )}
         {workdir !== null && (
           <span className="max-w-[42ch] truncate" title={workdir}>
             {workdir}

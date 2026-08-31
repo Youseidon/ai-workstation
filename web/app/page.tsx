@@ -102,7 +102,9 @@ export default function Page() {
   const activeRun =
     workspaceId === null
       ? null
-      : console_.runs.find((item) => item.workspace.id === workspaceId) ?? null;
+      : console_.runs.find((item) => item.workspace.id === workspaceId && item.role === "execute") ??
+        console_.runs.find((item) => item.workspace.id === workspaceId) ??
+        null;
   const running = activeRun !== null;
 
   /** Why the composer cannot send right now, in words rather than a grey box. */
@@ -225,7 +227,9 @@ export default function Page() {
         blockedReason={blockedReason}
         savedPrompt={savedPrompt}
         onSubmit={send}
-        onInterrupt={() => console_.interrupt(activeRun?.runId)}
+        onInterrupt={() => {
+          if (activeRun !== null) console_.interrupt(activeRun.runId);
+        }}
         onClearSavedPrompt={() => setSavedPromptId(null)}
         onTarget={(provider, model) => {
           setPreferred(provider);

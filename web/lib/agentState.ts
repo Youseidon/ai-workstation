@@ -22,8 +22,10 @@ export type AgentActivity =
 export interface AgentState {
   provider: ProviderId;
   activity: AgentActivity;
-  /** The live run, when there is one. */
+  /** The live execute run, when there is one. Consults live in `consults`. */
   run: RunStatus | null;
+  consults: RunStatus[];
+  consultCount: number;
   /** One line of plain English about what is happening right now. */
   caption: string;
   available: boolean;
@@ -31,8 +33,49 @@ export interface AgentState {
   model: string | null;
 }
 
+export interface ProviderRuns {
+  execute: RunStatus | null;
+  consults: RunStatus[];
+}
+
 /** How long a finished run keeps showing its outcome before going idle. */
 const AFTERGLOW_MS = 8000;
+
+const ACTIVITY_RANK: Record<AgentActivity, number> = {
+  error: 6,
+  tooling: 5,
+  speaking: 4,
+  thinking: 3,
+  starting: 2,
+  done: 1,
+  idle: 0,
+  offline: 0,
+};
+
+/**
+ * A provider can be writing and asking at once. `runs.find(provider)` would
+ * hide the consult (or the writer) depending on insertion order.
+ */
+export function runsForProvider(provider: ProviderId, runs: RunStatus[]): ProviderRuns {
+  const mine = runs.filter((entry) => entry.provider === provider);
+  return {
+    execute: mine.find((entry) => entry.role === "execute") ?? null,
+    consults: mine.filter((entry) => entry.role === "consult"),
+  };
+}
+
+/** Status bar occupancy: a writer beats a consult in the same workspace. */
+export function preferExecuteRun(run: RunStatus | null, runs: RunStatus[]): RunStatus | null {
+  if (run === null) return null;
+  if (run.role === "execute") return run;
+  return runs.find((entry) => entry.workspace.id === run.workspace.id && entry.role === "execute") ?? run;
+}
+
+/** One-line consult question for Dock/Fleet chips. */
+export function consultQuestion(run: RunStatus): string {
+  const raw = run.source.type === "consult" ? run.source.question : (run.detail ?? "research");
+  return raw.replace(/\s+/g, " ").trim();
+}
 
 /**
  * Reads the tail of the transcript for one run.
@@ -69,6 +112,31 @@ function readTail(items: LogItem[], runId: string): { activity: AgentActivity; c
   return null;
 }
 
+function liveProjection(run: RunStatus, items: LogItem[]): { activity: AgentActivity; caption: string } {
+  const tail = readTail(items, run.runId);
+  if (tail !== null) return tail;
+  return {
+    activity: run.state === "starting" ? "starting" : "thinking",
+    caption: run.detail ?? (run.state === "starting" ? "starting up…" : "working…"),
+  };
+}
+
+function busiestConsult(consults: RunStatus[], items: LogItem[]): RunStatus {
+  let best = consults[0]!;
+  let bestRank = -1;
+  let bestElapsed = -1;
+  for (const consult of consults) {
+    const { activity } = liveProjection(consult, items);
+    const rank = ACTIVITY_RANK[activity];
+    if (rank > bestRank || (rank === bestRank && consult.elapsedMs > bestElapsed)) {
+      best = consult;
+      bestRank = rank;
+      bestElapsed = consult.elapsedMs;
+    }
+  }
+  return best;
+}
+
 export function agentState(
   provider: ProviderInfo,
   runs: RunStatus[],
@@ -76,23 +144,20 @@ export function agentState(
   lastRun: RunStatus | null,
   now: number = Date.now(),
 ): AgentState {
-  const run = runs.find((entry) => entry.provider === provider.id) ?? null;
+  const { execute, consults } = runsForProvider(provider.id, runs);
+  const focus = execute ?? (consults.length > 0 ? busiestConsult(consults, items) : null);
   const base = {
     provider: provider.id,
-    run,
+    run: execute,
+    consults,
+    consultCount: consults.length,
     available: provider.available,
     reason: provider.reason,
-    model: run?.model ?? provider.model,
+    model: focus?.model ?? provider.model,
   };
 
-  if (run !== null) {
-    const tail = readTail(items, run.runId);
-    if (tail !== null) return { ...base, ...tail };
-    return {
-      ...base,
-      activity: run.state === "starting" ? "starting" : "thinking",
-      caption: run.detail ?? (run.state === "starting" ? "starting up…" : "working…"),
-    };
+  if (focus !== null) {
+    return { ...base, ...liveProjection(focus, items) };
   }
 
   if (!provider.available) {

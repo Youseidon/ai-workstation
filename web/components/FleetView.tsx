@@ -8,6 +8,7 @@ import { providerTheme } from "@/lib/providerTheme";
 import { ACTIVITY_LABEL, agentState, type AgentState } from "@/lib/agentState";
 import { useAgentConsole } from "@/lib/agentConsole";
 import { AgentAvatar } from "./AgentAvatar";
+import { AskChip } from "./AgentDock";
 import { Badge, type Tone } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { CountUp } from "./CountUp";
@@ -22,6 +23,13 @@ const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
   done: "success",
   error: "danger",
 };
+
+function fleetSummary(writing: number, asking: number): string {
+  if (writing === 0 && asking === 0) return "All agents idle.";
+  if (writing > 0 && asking > 0) return `${writing} writing · ${asking} asking`;
+  if (writing > 0) return `${writing} agent${writing === 1 ? "" : "s"} writing.`;
+  return `${asking} agent${asking === 1 ? "" : "s"} asking.`;
+}
 
 /**
  * Every agent at once: who is working, on what, for how long, and at what cost.
@@ -38,8 +46,9 @@ export function FleetView() {
     [providers, runs, items, lastRun],
   );
 
-  const working = agents.filter((agent) => agent.run !== null);
-  const totalTokens = working.reduce((sum, agent) => sum + (agent.run?.usage?.totalTokens ?? 0), 0);
+  const writing = runs.filter((run) => run.role === "execute").length;
+  const asking = runs.filter((run) => run.role === "consult").length;
+  const totalTokens = runs.reduce((sum, run) => sum + (run.usage?.totalTokens ?? 0), 0);
 
   return (
     <div className="mx-auto w-full max-w-6xl p-5">
@@ -47,23 +56,33 @@ export function FleetView() {
         <div>
           <h2 className="text-lg text-fg">Fleet</h2>
           <p className="mt-0.5 text-xs text-fg-dim">
-            {connection === "open"
-              ? working.length === 0
-                ? "All agents idle."
-                : `${working.length} agent${working.length === 1 ? "" : "s"} working.`
-              : "Reconnecting to the backend…"}
+            {connection === "open" ? fleetSummary(writing, asking) : "Reconnecting to the backend…"}
           </p>
         </div>
         <dl className="ml-auto flex gap-6">
           <Stat label="available" value={agents.filter((agent) => agent.available).length} />
-          <Stat label="working" value={working.length} />
+          {asking > 0 ? (
+            <>
+              {writing > 0 && <Stat label="writing" value={writing} />}
+              <Stat label="asking" value={asking} />
+            </>
+          ) : (
+            <Stat label="working" value={writing} />
+          )}
           <Stat label="tokens in flight" value={totalTokens} format={formatTokens} />
         </dl>
       </header>
 
       <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {agents.map((agent) => (
-          <AgentCard key={agent.provider} agent={agent} onStop={() => interrupt(agent.run?.runId)} />
+          <AgentCard
+            key={agent.provider}
+            agent={agent}
+            onStop={() => {
+              if (agent.run !== null) interrupt(agent.run.runId);
+            }}
+            onStopConsult={(runId) => interrupt(runId)}
+          />
         ))}
       </ul>
     </div>
@@ -89,9 +108,17 @@ function Stat({
   );
 }
 
-function AgentCard({ agent, onStop }: { agent: AgentState; onStop(): void }) {
+function AgentCard({
+  agent,
+  onStop,
+  onStopConsult,
+}: {
+  agent: AgentState;
+  onStop(): void;
+  onStopConsult(runId: string): void;
+}) {
   const theme = providerTheme[agent.provider];
-  const busy = agent.run !== null;
+  const busy = agent.run !== null || agent.consultCount > 0;
   const label = modelLabel(agent.provider, agent.model);
 
   return (
@@ -137,7 +164,7 @@ function AgentCard({ agent, onStop }: { agent: AgentState; onStop(): void }) {
         <span className="line-clamp-2">{agent.caption}</span>
       </p>
 
-      {agent.run !== null ? (
+      {agent.run !== null && (
         <>
           <dl className="mt-2 grid grid-cols-2 gap-2 border-t border-line pt-3 text-[11px]">
             <div>
@@ -169,7 +196,22 @@ function AgentCard({ agent, onStop }: { agent: AgentState; onStop(): void }) {
             </Button>
           </div>
         </>
-      ) : (
+      )}
+
+      {agent.consultCount > 0 && (
+        <div className={cn("flex flex-col gap-1.5", agent.run !== null ? "mt-3" : "mt-2 border-t border-line pt-3")}>
+          <div className="text-[10px] uppercase tracking-wider text-fg-dim">
+            {agent.consultCount} asking
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {agent.consults.map((consult) => (
+              <AskChip key={consult.runId} run={consult} onStop={() => onStopConsult(consult.runId)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {agent.run === null && agent.consultCount === 0 && (
         <div className="mt-2 border-t border-line pt-3 text-[11px] text-fg-dim">
           {agent.available ? "Ready to take work." : "Configure it in Settings, then re-run detection."}
         </div>
