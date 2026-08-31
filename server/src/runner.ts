@@ -43,9 +43,8 @@ export interface StartRunArgs {
 }
 
 export function runRoleStartError(role: RunRole, provider: string): string | null {
-  if (role !== "consult") return null;
-  if (provider === "cursor") return "Cursor cannot run as a consult; it has no sandbox.";
-  return "Consult runs are not enabled yet.";
+  if (role === "consult" && provider === "cursor") return "Cursor cannot run as a consult; it has no sandbox.";
+  return null;
 }
 
 /**

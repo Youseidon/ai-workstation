@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { RunHandle } from "./runner.ts";
 import { runHub } from "./runHub.ts";
-import { ProviderUnavailableError, startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 import { WorkspaceError } from "./workspaces.ts";
 
 function fakeHandle(runId: string): RunHandle {
@@ -82,6 +82,7 @@ test("runService starts without a socket and does not interrupt", () => {
   assert.doesNotMatch(source, /import\s+(?:type\s+)?\{[^}]*\bWebSocket\b/);
   assert.equal(startExecute.length, 1);
   assert.equal(startVerifySuite.length, 1);
+  assert.equal(startConsult.length, 1);
   assert.doesNotMatch(source, /\brunHub\.stop\b|\.interrupt\s*\(/);
 });
 
@@ -98,6 +99,78 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
   assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));
   assert.ok(firstIndex(onEnd, "runHub.end") < firstIndex(onEnd, "onExecuteEnded"));
+});
+
+test("startConsult does not take the writer lock and forces the consult sandbox", () => {
+  const body = functionBody(readFileSync(new URL("./runService.ts", import.meta.url), "utf8"), "startConsult");
+  assert.doesNotMatch(body, /activeForWorkspace|activePipelineForWorkspace|beginAgentRun|onExecuteEnded/);
+  assert.match(body, /consultsForWorkspace/);
+  assert.match(body, /beginConsultRun/);
+  assert.match(body, /permissionOverride:\s*"consult"/);
+  assert.doesNotMatch(body, /permissionOverride:\s*"inherit"/);
+  assert.doesNotMatch(body, /hostAccess/);
+  const cap = firstIndex(body, "consultsForWorkspace");
+  const cursor = firstIndex(body, 'args.provider === "cursor"');
+  const provider = firstIndex(body, "requireAvailableProvider");
+  const begin = firstIndex(body, "beginConsultRun");
+  const launch = firstIndex(body, "startRun(");
+  assert.ok(cursor < cap && cap < provider && provider < begin && begin < launch);
+});
+
+test("startConsult does not 409 when an execute owns the workspace", async () => {
+  const executeId = "run_svc_consult_lock";
+  try {
+    runHub.start({
+      handle: fakeHandle(executeId),
+      workspace,
+      source: { type: "custom", displayText: "write" },
+      role: "execute",
+      permissionMode: null,
+    });
+    await assert.rejects(
+      () => startConsult({ workspaceId: workspace.id, provider: "not-a-provider", model: null, prompt: "why?" }),
+      (error: unknown) =>
+        error instanceof WorkspaceError &&
+        error.status === 422 &&
+        error.code === "unknown_provider",
+    );
+  } finally {
+    runHub.end(executeId, "done");
+  }
+});
+
+test("startConsult rejects Cursor with 422 consult_not_supported", async () => {
+  await assert.rejects(
+    () => startConsult({ workspaceId: workspace.id, provider: "cursor", model: null, prompt: "why?" }),
+    (error: unknown) =>
+      error instanceof WorkspaceError &&
+      error.status === 422 &&
+      error.code === "consult_not_supported",
+  );
+});
+
+test("startConsult caps concurrent consults per workspace at 3", async () => {
+  const ids = ["run_c1", "run_c2", "run_c3"];
+  try {
+    for (const runId of ids) {
+      runHub.start({
+        handle: { ...fakeHandle(runId), role: "consult", permissionMode: "plan" },
+        workspace,
+        source: { type: "consult", promptId: null, promptKey: null, title: null, question: "ask" },
+        role: "consult",
+        permissionMode: "plan",
+      });
+    }
+    await assert.rejects(
+      () => startConsult({ workspaceId: workspace.id, provider: "claude", model: null, prompt: "why?" }),
+      (error: unknown) =>
+        error instanceof WorkspaceError &&
+        error.status === 422 &&
+        error.code === "consult_limit",
+    );
+  } finally {
+    for (const runId of ids) runHub.end(runId, "done");
+  }
 });
 
 test("startVerifySuite lock, persist, launch, and finish happen in order", () => {

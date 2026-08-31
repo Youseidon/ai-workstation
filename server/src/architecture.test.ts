@@ -19,6 +19,7 @@ test("the WebSocket handler does not take the writer lock or start runs", () => 
   assert.doesNotMatch(source,/\bstartRun\s*\(/);
   assert.match(source,/\bstartExecute\b/);
   assert.match(source,/\bstartVerifySuite\b/);
+  assert.match(source,/\bstartConsult\b/);
   const mapper=source.slice(source.indexOf("mapStartError"),source.indexOf("handleRun"));
   assert.doesNotMatch(mapper,/\bdetectProviders\b/);
   assert.match(mapper,/\bProviderUnavailableError\b/);

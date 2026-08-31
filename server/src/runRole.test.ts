@@ -48,12 +48,12 @@ test("unknown run roles are malformed", () => {
   assert.equal(isRunRole(null), false);
 });
 
-test("consult starts are rejected at the start boundary", () => {
+test("consult starts are allowed except for Cursor", () => {
   assert.equal(runRoleStartError("execute", "claude"), null);
   assert.equal(runRoleStartError("execute", "cursor"), null);
-  assert.equal(runRoleStartError("consult", "claude"), "Consult runs are not enabled yet.");
-  assert.equal(runRoleStartError("consult", "codex"), "Consult runs are not enabled yet.");
-  assert.equal(runRoleStartError("consult", "grok"), "Consult runs are not enabled yet.");
+  assert.equal(runRoleStartError("consult", "claude"), null);
+  assert.equal(runRoleStartError("consult", "codex"), null);
+  assert.equal(runRoleStartError("consult", "grok"), null);
 });
 
 test("cursor consults are rejected", () => {
