@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runContexts } from "./runContext.ts";
-import { contextMarkdown } from "./agentContext.ts";
+import { consultWorkspaceMarkdown, contextMarkdown } from "./agentContext.ts";
 
 test("run context tokens are unique, scoped, revocable, and expire", async () => {
   const first=runContexts.create("run-1",1,2);
@@ -34,4 +34,35 @@ test("agent context is composed from records without directing the agent to prom
   assert.match(markdown,/exact action only the human can take/);
   assert.match(markdown,/Do not search for a Markdown prompt file/);
   assert.doesNotMatch(markdown,/PREAMBLE\.md|TRACKER\.md/);
+});
+
+test("consult context has a live-tree banner and no completion protocol", () => {
+  const markdown=contextMarkdown({
+    workspace:{id:1,name:"Example",workDirectory:"/tmp",description:"Shared rules"},
+    program:{id:1,externalKey:"migration",name:"Migration",overview:"Replace the legacy service."},
+    suite:{id:1,externalKey:"S4",name:"Money path",overview:""},
+    prompt:{id:2,suiteId:1,title:"Checkout",content:"Implement checkout.",sortOrder:0,createdAt:"",updatedAt:"",externalKey:"S4-02",status:"BLOCKED",completedAt:null,result:"Need a payment decision.",isGate:false},
+    dependencies:[{externalKey:"S4-01",title:"Cart",status:"DONE",result:"33/33 green"}],gate:null,
+    history:{remarks:[],events:[]},
+    clarifications:[],
+  },"consult",{liveWriter:{provider:"claude",model:"opus"},question:"Why is S4-02 blocked?"});
+  assert.match(markdown,/## Live tree/);
+  assert.match(markdown,/A writer \(claude · opus\) is in this workspace/);
+  assert.match(markdown,/Do not implement, edit, or run mutating commands/);
+  assert.match(markdown,/You cannot post remarks or status/);
+  assert.match(markdown,/Why is S4-02 blocked\?/);
+  assert.doesNotMatch(markdown,/Completion and blocker protocol/);
+  assert.doesNotMatch(markdown,/## Progress API/);
+});
+
+test("custom consult context has no fake work item", () => {
+  const markdown=consultWorkspaceMarkdown({
+    workspace:{name:"Example",workDirectory:"/tmp",description:"Shared rules"},
+    question:"What owns auth?",
+  });
+  assert.match(markdown,/Research consult/);
+  assert.match(markdown,/What owns auth\?/);
+  assert.match(markdown,/Shared rules/);
+  assert.doesNotMatch(markdown,/Work item/);
+  assert.doesNotMatch(markdown,/Completion and blocker protocol/);
 });

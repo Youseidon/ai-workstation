@@ -118,7 +118,7 @@ export function OperationsView() {
   const sessions = useMemo(() => {
     if (suite === null) return [];
     const visible = new Set(prompts.map((item) => item.prompt.id));
-    return suite.sessions.filter((item) => visible.has(item.promptId));
+    return suite.sessions.filter((item) => item.promptId !== null && visible.has(item.promptId));
   }, [suite, prompts]);
 
   // Fall back to the first row rather than storing a correction in state.

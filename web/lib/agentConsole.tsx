@@ -83,6 +83,8 @@ function sourceText(source: RunSource): string {
       return `Verifying suite ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`;
     case "saved":
       return `Selected saved prompt: ${source.promptKey === null ? "" : `${source.promptKey} — `}${source.title}\n${source.programName} / ${source.suiteName}`;
+    case "consult":
+      return `Consulting: ${source.question}`;
   }
 }
 
@@ -258,6 +260,12 @@ interface AgentConsoleApi extends ConsoleState {
     source: { prompt: string } | { promptId: number },
     model: string | null,
   ): boolean;
+  startConsult(
+    workspaceId: number,
+    provider: ProviderId,
+    source: { prompt: string } | { promptId: number } | { prompt: string; promptId: number },
+    model: string | null,
+  ): boolean;
   askClarification(
     workspaceId: number,
     provider: ProviderId,
@@ -374,6 +382,8 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
       itemsFor: (runId) => state.items.filter((item) => item.runId === runId),
       startRun: (workspaceId, provider, source, model) =>
         send({ kind: "run", workspaceId, provider, ...source, model, role: "execute" }),
+      startConsult: (workspaceId, provider, source, model) =>
+        send({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }),
       askClarification: (workspaceId, provider, promptId, question, model) =>
         send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model, role: "execute" }),
       verifySuite: (suiteId, provider, model) => send({ kind: "verify_suite", suiteId, provider, model }),

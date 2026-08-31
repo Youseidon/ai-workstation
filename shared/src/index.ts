@@ -419,7 +419,7 @@ export interface HumanInputRequest {
 
 export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
 export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
-export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus; programName:string; suiteName:string }
+export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number|null; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus|null; programName:string; suiteName:string }
 
 export type PromptOperationalState = "WORKING" | "AWAITING_RESPONSE" | "RECOVERY_NEEDED" | "FAILED" | "READY" | "WAITING_DEPENDENCY" | "COMPLETE" | "SKIPPED";
 
@@ -533,7 +533,7 @@ export interface OperationsSuite {
     latest: SuitePipelineRun | null;
   } | null;
 }
-export interface OperationsSession { id:string; workspaceId:number; promptId:number; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
+export interface OperationsSession { id:string; workspaceId:number; promptId:number|null; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
 export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[] }
 export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
 /** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
@@ -719,7 +719,8 @@ export type RunSource =
   | { type: "custom"; displayText: string }
   | { type: "saved"; promptId: number; promptKey: string | null; title: string; programName: string; suiteName: string }
   | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
-  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string };
+  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string }
+  | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string };
 
 export interface ServerRunStartedMessage {
   kind: "run_started";

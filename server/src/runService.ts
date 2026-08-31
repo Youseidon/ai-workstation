@@ -1,6 +1,6 @@
 import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
-import { contextMarkdown } from "./agentContext.ts";
+import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner } from "./agentContext.ts";
 import { config } from "./config.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -9,6 +9,8 @@ import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
+
+const CONSULT_LIMIT = 3;
 
 const log = createLogger("run");
 
@@ -21,6 +23,15 @@ export interface StartExecuteArgs {
   mode?: "execute" | "clarify";
   question?: string;
   pipelineRunId?: string;
+}
+
+export interface StartConsultArgs {
+  workspaceId: number;
+  provider: string;
+  model: string | null;
+  prompt?: string;
+  promptId?: number;
+  question?: string;
 }
 
 export interface StartVerifySuiteArgs {
@@ -196,6 +207,106 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   return { runId: handle.runId };
 }
 
+/** Research consult: forced sandbox, no writer lock, no prompt status mutation. */
+export async function startConsult(args: StartConsultArgs): Promise<{ runId: string }> {
+  if (args.provider === "cursor") {
+    throw new WorkspaceError(422, "consult_not_supported", "Cursor cannot run as a consult; it has no sandbox.");
+  }
+
+  const workspaceId = args.workspaceId;
+  if (runHub.consultsForWorkspace(workspaceId).length >= CONSULT_LIMIT) {
+    throw new WorkspaceError(
+      422,
+      "consult_limit",
+      "This workspace already has 3 consults running.",
+      { detail: "Stop a consult before starting another." },
+    );
+  }
+
+  const provider = await requireAvailableProvider(args.provider);
+  const workspace = workspaces.get(workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+
+  const questionText = [args.question, args.prompt]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find((value) => value !== "") ?? "";
+
+  let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
+  if (args.promptId !== undefined) {
+    savedPrompt = workspaces.resolvePrompt(workspaceId, args.promptId);
+  } else if (questionText === "") {
+    throw new WorkspaceError(422, "validation_error", "Prompt is empty");
+  }
+
+  const question = questionText !== ""
+    ? questionText
+    : `Research ${savedPrompt!.externalKey ?? savedPrompt!.title}`;
+
+  const plannedRunId = newId("run");
+  const promptId = savedPrompt?.id ?? null;
+  const credential = runContexts.create(plannedRunId, workspaceId, promptId, undefined, question);
+  try {
+    workspaces.beginConsultRun({
+      runId: plannedRunId,
+      workspaceId,
+      promptId,
+      provider,
+      model: args.model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  const writer = runHub.activeExecuteForWorkspace(workspaceId);
+  const liveBanner = liveTreeBanner(writer === undefined ? null : { provider: writer.provider, model: writer.model });
+  const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
+  let resolvedPrompt =
+    `${liveBanner}Answer a research question about this working tree. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable. The tree may be changing under you if a writer is active.\n\nBefore answering, retrieve the authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nDo not post remarks or status. You cannot use the Progress API.\n\n## Question\n\n${question}`;
+  if (savedPrompt === null && workspace.description.trim() !== "") {
+    resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
+  }
+
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(provider),
+    prompt: resolvedPrompt,
+    cwd: workspace.workDirectory,
+    model: args.model,
+    role: "consult",
+    permissionOverride: "consult",
+    onEvent: (event) => {
+      workspaces.recordAgentEvent(plannedRunId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state) => {
+      workspaces.finishAgentRun(runId, state);
+      runContexts.complete(runId);
+      runHub.end(runId, state);
+    },
+  });
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: {
+      type: "consult",
+      promptId,
+      promptKey: savedPrompt?.externalKey ?? null,
+      title: savedPrompt?.title ?? null,
+      question,
+    },
+    role: "consult",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("consult failed", error));
+  return { runId: handle.runId };
+}
+
 /**
  * Runs an agent verification of a whole suite.
  *
@@ -254,6 +365,20 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
   });
   void handle.done.catch((error: unknown) => log.error("verification failed", error));
   return { runId: handle.runId };
+}
+
+export function consultContextText(workspaceId: number, promptId: number | null, question: string): string {
+  const writer = runHub.activeExecuteForWorkspace(workspaceId);
+  const liveWriter = writer === undefined ? null : { provider: writer.provider, model: writer.model };
+  if (promptId === null) {
+    const workspace = workspaces.get(workspaceId);
+    return consultWorkspaceMarkdown({
+      workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+      question,
+      liveWriter,
+    });
+  }
+  return contextMarkdown(workspaces.agentContext(workspaceId, promptId), "consult", { liveWriter, question });
 }
 
 async function requireAvailableProvider(providerId: string): Promise<ProviderId> {

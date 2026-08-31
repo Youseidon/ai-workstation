@@ -14,7 +14,7 @@ import { runContexts } from "./runContext.ts";
 import { contextMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
-import { ProviderUnavailableError, startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 
 const log = createLogger("server");
 
@@ -107,11 +107,22 @@ const httpServer = createServer((req, res) => {
       const memory=runContexts.authenticate(runId,token);if(!memory)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");
       const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
+      if(persisted.role==="consult"&&(operation==="remarks"||operation==="status"))throw new WorkspaceError(403,"consult_read_only","Consult runs cannot post remarks or status.");
       if(operation==="context"&&req.method==="GET"){
+        if(persisted.role==="consult"){
+          const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question);
+          if(req.headers.accept?.includes("application/json"))sendJson(res,200,{purpose:"consult",markdown});
+          else{res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(markdown);}
+          return;
+        }
+        if(memory.promptId===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
         const context=workspaces.agentContext(memory.workspaceId,memory.promptId);
         if(req.headers.accept?.includes("application/json"))sendJson(res,200,context);else{const api=`## Progress API\n\nThis run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.\n\nPost a remark with:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"What changed or was discovered"}'\n\`\`\`\n\nAllowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.\n\nBefore finishing, post exactly one terminal prompt status. For success:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'\n\`\`\`\n\nBLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'\n\`\`\`\n\nEvery requestId must be unique for this run.\n\n`;res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(`${contextMarkdown(context)}\n\n${api}`);}return;
       }
-      if(operation==="state"&&req.method==="GET"){sendJson(res,200,workspaces.promptHistory(memory.promptId));return;}
+      if(operation==="state"&&req.method==="GET"){
+        if(memory.promptId===null){sendJson(res,200,{events:[],remarks:[],runs:[]});return;}
+        sendJson(res,200,workspaces.promptHistory(memory.promptId));return;
+      }
       if((operation==="remarks"||operation==="status")&&req.method==="POST"){
         void readJsonBody(req).then(body=>{
           const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):workspaces.updateAgentStatus(runId,body);
@@ -286,6 +297,21 @@ wss.on("connection", (ws: WebSocket) => {
     }
   };
 
+  const handleConsult = async (
+    workspaceId: number,
+    prompt: string | undefined,
+    promptId: number | undefined,
+    providerId: string,
+    model: string | null,
+    question?: string,
+  ): Promise<void> => {
+    try {
+      await startConsult({ workspaceId, prompt, promptId, provider: providerId, model, question });
+    } catch (error) {
+      mapStartError(error, "Unable to start consult");
+    }
+  };
+
   const handleVerifySuite = async (suiteId: number, providerId: string, model: string | null): Promise<void> => {
     try {
       await startVerifySuite({ suiteId, provider: providerId, model });
@@ -311,12 +337,17 @@ wss.on("connection", (ws: WebSocket) => {
         }
         const hasPrompt = typeof parsed.prompt === "string" && parsed.prompt.trim() !== "";
         const hasPromptId = Number.isSafeInteger(parsed.promptId) && (parsed.promptId ?? 0) > 0;
-        if (hasPrompt === hasPromptId) { sendError("Supply exactly one of prompt or promptId."); return; }
+        if (parsed.role !== undefined && !isRunRole(parsed.role)) { sendError("Unknown run role."); return; }
+        const role = parsed.role ?? "execute";
+        if (role === "consult") {
+          if (!hasPrompt && !hasPromptId) { sendError("Supply a prompt or promptId."); return; }
+        } else if (hasPrompt === hasPromptId) {
+          sendError("Supply exactly one of prompt or promptId.");
+          return;
+        }
         const mode=parsed.mode??"execute";
         if(mode!=="execute"&&mode!=="clarify"){sendError("Unknown run mode.");return;}
         if(mode==="clarify"&&(!hasPromptId||typeof parsed.question!=="string"||parsed.question.trim()==="")){sendError("Clarification requires a saved prompt and a question.");return;}
-        if (parsed.role !== undefined && !isRunRole(parsed.role)) { sendError("Unknown run role."); return; }
-        const role = parsed.role ?? "execute";
         const roleError = runRoleStartError(role, parsed.provider);
         if (roleError !== null) { sendError(roleError); return; }
         // An absent/blank model means "fall back to the configured one"; a
@@ -330,7 +361,11 @@ wss.on("connection", (ws: WebSocket) => {
           sendError(`Model id is too long (max ${MAX_MODEL_LENGTH} characters).`);
           return;
         }
-        void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question);
+        if (role === "consult") {
+          void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question);
+        } else {
+          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question);
+        }
         return;
       }
       case "verify_suite": {
