@@ -63,7 +63,7 @@ async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"
       workspaces.preparePromptForSuccessor(args.promptId,id,rendered);
       const successorProvider=args.successorProvider??args.sourceProvider;const successorModel=args.successorModel??args.sourceModel;
       if(args.namedPipelineId!==undefined){
-        const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:successorProvider,model:successorModel});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);workspaces.updateHandoff(id,{successorRunId:suite?.currentRunId??null});
+        const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:successorProvider,model:successorModel,preferPlayTarget:true});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);workspaces.updateHandoff(id,{successorRunId:suite?.currentRunId??null});
       }else{
         const {startExecute}=await import("./runService.ts");const result=await startExecute({workspaceId:args.workspaceId,promptId:args.promptId,provider:successorProvider,model:successorModel});workspaces.updateHandoff(id,{successorRunId:result.runId});
       }

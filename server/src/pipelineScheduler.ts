@@ -59,6 +59,7 @@ function optionalNamedPipelineRunId(input: Record<string, unknown>): string | nu
 
 export function resolveExecuteTarget(args: {
   recovering: boolean;
+  preferPlayTarget?: boolean;
   rule: PromptPipelineRule;
   playProvider: ProviderId | null;
   playModel: string | null;
@@ -70,6 +71,12 @@ export function resolveExecuteTarget(args: {
     return {
       provider: args.rule.recoverProvider,
       model: args.rule.recoverModel ?? getAdapter(args.rule.recoverProvider).model,
+    };
+  }
+  if (args.preferPlayTarget && args.playProvider !== null) {
+    return {
+      provider: args.playProvider,
+      model: args.playModel ?? getAdapter(args.playProvider).model,
     };
   }
   const provider = args.rule.provider ?? args.playProvider ?? args.defaultProvider;
@@ -121,12 +128,13 @@ async function syncNamedFromSuite(suiteRun: SuitePipelineRun): Promise<void> {
   }
 }
 
-async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number): Promise<SuitePipelineRun> {
+async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number, preferPlayTarget = false): Promise<SuitePipelineRun> {
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
   const rule = workspaces.pipelineRule(promptId);
   const defaults = workspaces.suitePipelineDefaults(live.suiteId);
   const target = resolveExecuteTarget({
     recovering: live.recovering,
+    preferPlayTarget,
     rule,
     playProvider: live.playProvider,
     playModel: live.playModel,
@@ -156,7 +164,7 @@ async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number)
   }
 }
 
-async function advance(pipeline: SuitePipelineRun): Promise<SuitePipelineRun> {
+async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Promise<SuitePipelineRun> {
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
   const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId);
   const next = ready[0];
@@ -169,7 +177,7 @@ async function advance(pipeline: SuitePipelineRun): Promise<SuitePipelineRun> {
       currentRunId: null,
     });
     if (updated.state === "PAUSED") return updated;
-    return startCurrentStation(updated, next.id);
+    return startCurrentStation(updated, next.id, preferPlayTarget);
   }
   const unfinished = workspaces.remainingPipelinePromptIds(live.suiteId).filter((promptId) => {
     const status=workspaces.promptOutcome(promptId).status;
@@ -257,7 +265,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
   await terminate(live, "STOPPED", `unexpected_status:${posted.status}`);
 }
 
-async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined): Promise<SuitePipelineRun> {
+async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined, preferPlayTarget = false): Promise<SuitePipelineRun> {
   const patch: { state: "PLAYING"; playProvider?: ProviderId | null; playModel?: string | null; endedAt: null; stopReason: null } = {
     state: "PLAYING",
     endedAt: null,
@@ -271,10 +279,10 @@ async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | nul
   if (live.currentPromptId !== null) {
     const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId);
     if (ready.some((prompt) => prompt.id === live.currentPromptId)) {
-      return startCurrentStation(live, live.currentPromptId);
+      return startCurrentStation(live, live.currentPromptId, preferPlayTarget);
     }
   }
-  return advance(live);
+  return advance(live, preferPlayTarget);
 }
 
 async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
@@ -289,6 +297,7 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   const playProvider = optionalPlayProvider(body, "provider", "provider" in body) as ProviderId | null | undefined;
   const playModel = optionalPlayProvider(body, "model", "model" in body) as string | null | undefined;
   const namedRunId = optionalNamedPipelineRunId(body);
+  const preferPlayTarget = body.preferPlayTarget === true;
   const owner = workspaces.activePipelineForWorkspace(suite.workspaceId);
   const active = workspaces.activePipeline(suiteId);
   const busy = runHub.activeExecuteForWorkspace(suite.workspaceId);
@@ -314,7 +323,7 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
         if (!ready) throw new WorkspaceError(422, "prompt_not_ready", "The waiting station is not ready to resume");
       }
       log.info(`resume suite=${suiteId} from=${active.state}`);
-      return resume(active, playProvider, playModel);
+      return resume(active, playProvider, playModel, preferPlayTarget);
     }
   }
   if (owner !== null && owner.suiteId !== suiteId) {
@@ -332,7 +341,7 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
     pipelineRunId: namedRunId,
   });
   log.info(`play suite=${suiteId} pipeline=${created.id}`);
-  return advance(created);
+  return advance(created, preferPlayTarget);
 }
 
 async function pauseSuiteUnlocked(suiteId: number): Promise<SuitePipelineRun> {
@@ -361,7 +370,7 @@ async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipel
   return { stopped, interruptId };
 }
 
-async function startNextNamedStage(named: PipelineRun): Promise<PipelineRun> {
+async function startNextNamedStage(named: PipelineRun, preferPlayTarget = false): Promise<PipelineRun> {
   const pipeline = workspaces.getPipeline(named.pipelineId);
   const currentIndex = named.currentSuiteId === null ? -1 : pipeline.stages.findIndex((stage) => stage.suiteId === named.currentSuiteId);
   const next = pipeline.stages[currentIndex + 1];
@@ -376,6 +385,7 @@ async function startNextNamedStage(named: PipelineRun): Promise<PipelineRun> {
   const body: Record<string, unknown> = { pipelineRunId: named.id };
   if (named.playProvider !== null) body.provider = named.playProvider;
   if (named.playModel !== null) body.model = named.playModel;
+  if (preferPlayTarget) body.preferPlayTarget = true;
   try {
     const suiteRun = await playSuiteUnlocked(next.suiteId, body);
     return workspaces.updateNamedPipelineRun(named.id, {
@@ -411,6 +421,7 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   }
   const playProvider = optionalPlayProvider(body, "provider", "provider" in body) as ProviderId | null | undefined;
   const playModel = optionalPlayProvider(body, "model", "model" in body) as string | null | undefined;
+  const preferPlayTarget = body.preferPlayTarget === true;
   const active = workspaces.activeNamedPipelineRun(pipelineId);
   if (active !== null) {
     if (active.state === "PLAYING") {
@@ -420,11 +431,12 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
     if (playProvider !== undefined) patch.playProvider = playProvider;
     if (playModel !== undefined) patch.playModel = playModel;
     const live = Object.keys(patch).length > 0 ? workspaces.updateNamedPipelineRun(active.id, patch) : active;
-    if (live.currentSuiteId === null) return startNextNamedStage(live);
+    if (live.currentSuiteId === null) return startNextNamedStage(live, preferPlayTarget);
     log.info(`named-resume pipeline=${pipelineId} from=${live.state} suite=${live.currentSuiteId}`);
     const suiteBody: Record<string, unknown> = { pipelineRunId: live.id };
     if (live.playProvider !== null) suiteBody.provider = live.playProvider;
     if (live.playModel !== null) suiteBody.model = live.playModel;
+    if (preferPlayTarget) suiteBody.preferPlayTarget = true;
     const suiteRun = await playSuiteUnlocked(live.currentSuiteId, suiteBody);
     return workspaces.updateNamedPipelineRun(live.id, {
       state: suiteRun.state,
@@ -450,7 +462,7 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
     playModel: playModel === undefined ? null : playModel,
   });
   log.info(`play named pipeline=${pipelineId} run=${created.id}`);
-  return startNextNamedStage(created);
+  return startNextNamedStage(created, preferPlayTarget);
 }
 
 export const pipelineScheduler = {

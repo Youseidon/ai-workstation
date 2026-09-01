@@ -731,6 +731,39 @@ test("named pipeline play advances suites, surfaces blocked, and keeps history",
   }
 });
 
+test("named pipeline handoff target overrides the current station provider once", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { provider: "grok", model: "grok-4.5" });
+    workspaces.upsertPipelineRule(ctx.prompts[1]!.id, { provider: "grok", model: "grok-4.5" });
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("handoff-target"),
+      suiteIds: [ctx.suite.id],
+    });
+
+    await pipelineScheduler.playNamed(saved.id, {
+      provider: "claude",
+      model: "claude-sonnet-5",
+      preferPlayTarget: true,
+    });
+    assert.equal(started[0]?.provider, "claude");
+    assert.equal(started[0]?.model, "claude-sonnet-5");
+
+    await endStation({
+      runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!,
+      promptId: ctx.prompts[0]!.id,
+      workspaceId: ctx.workspace.id,
+      outcome: "DONE",
+    });
+    assert.equal(started[1]?.provider, "grok");
+    assert.equal(started[1]?.model, "grok-4.5");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test("named pipeline stop records operator_stop in the archive", async () => {
   const ctx = fixture(1);
   stubStarts();
