@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { TextArea } from "@/components/ui/Field";
 import { cn } from "@/lib/cn";
+import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
 
 type DetailTab = "overview" | "sessions" | "activity";
@@ -278,6 +279,10 @@ export function WorkItemDetail({
                     >
                       {run.state.toLowerCase()}
                     </Badge>
+                    <Badge tone="neutral">{run.role}</Badge>
+                    {sessionEndReason(run.state, run.events) !== null && (
+                      <Badge tone="neutral">{sessionEndReason(run.state, run.events)}</Badge>
+                    )}
                   </div>
                   <div className="mt-1 text-[10px] text-fg-dim">
                     {new Date(run.startedAt).toLocaleString()} · {run.events.length} events

@@ -1473,6 +1473,12 @@ export const workspaces = {
     db.prepare("INSERT INTO prompt_status_event(prompt_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,`Automatic continuation prepared by handoff ${handoffId}`,now);
     db.prepare("INSERT INTO prompt_remark(prompt_id,kind,content,actor_type,created_at) VALUES(?,'PROGRESS',?,'SYSTEM',?)").run(promptId,`${briefMarkdown}\n\nHandoff: ${handoffId}`,now);
   })()); },
+  preparePromptForHandoffRetry(promptId:number,handoffId:string):void { sqliteGuard(()=>db.transaction(()=>{
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+    const now=new Date().toISOString();db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
+    db.prepare("INSERT INTO prompt_status_event(prompt_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,`Retrying successor from existing handoff ${handoffId}`,now);
+  })()); },
   suitePipelineForRun(runId:string):SuitePipelineRun|null { const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE current_run_id=? ORDER BY started_at DESC LIMIT 1").get(runId) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null; },
   close(): void { db.close(); },
 };

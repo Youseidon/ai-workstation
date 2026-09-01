@@ -26,6 +26,7 @@ import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole, type RunStatus } from "@/lib/agentConsole";
 import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { sessionEndReason } from "@/lib/sessionEndReason";
 
 type Pane = "list" | "detail";
 
@@ -366,6 +367,10 @@ export function ActivityView() {
                         </Badge>
                       )}
                       <Badge tone={stateTone(row.state)}>{normalizeState(row.state).toLowerCase()}</Badge>
+                      <Badge tone="neutral">{row.role}</Badge>
+                      {sessionEndReason(row.state, row.events) !== null && (
+                        <Badge tone="neutral">{sessionEndReason(row.state, row.events)}</Badge>
+                      )}
                     </span>
                   </div>
                   <div className="mt-1 truncate text-xs text-fg-muted">
@@ -399,6 +404,9 @@ export function ActivityView() {
                       {normalizeState(selected.state).toLowerCase()}
                     </Badge>
                     <Badge tone="neutral">{selected.role}</Badge>
+                    {sessionEndReason(selected.state, selected.events) !== null && (
+                      <Badge tone="neutral">{sessionEndReason(selected.state, selected.events)}</Badge>
+                    )}
                     {selected.live && (
                       <Badge tone="info" dot pulse>
                         live
@@ -436,6 +444,9 @@ export function ActivityView() {
               <dl className="grid gap-3 rounded-panel border border-line bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-3">
                 <Meta label="Provider" value={selected.provider} />
                 <Meta label="Model" value={selected.model ?? "default"} />
+                {sessionEndReason(selected.state, selected.events) !== null && (
+                  <Meta label="End reason" value={sessionEndReason(selected.state, selected.events)!} />
+                )}
                 <Meta label="Started" value={new Date(selected.startedAt).toLocaleString()} />
                 <Meta
                   label="Ended"

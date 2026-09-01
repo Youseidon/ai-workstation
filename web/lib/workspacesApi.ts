@@ -46,7 +46,7 @@ export const workspaceApi = {
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
-  startHandoff(serverUrl:string,id:number,value:{handoffProvider:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number}){return request<{started:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},
+  startHandoff(serverUrl:string,id:number,value:{handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number;reuseHandoffId?:string}){return request<{started:boolean;reused?:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},
   pipeline(serverUrl:string,suiteId:number){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`);},
   updatePipelineDefaults(serverUrl:string,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null}){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`,{method:"PATCH",...json(value)});},
   addPipelineStep(serverUrl:string,suiteId:number,value:{promptId:number;provider?:ProviderId|null;model?:string|null}){return request<{rule:PromptPipelineRule;pipeline:SuitePipelineView}>(serverUrl,`/api/suites/${suiteId}/pipeline/steps`,{method:"POST",...json(value)});},

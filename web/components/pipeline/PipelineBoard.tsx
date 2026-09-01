@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import type {
   OperationsPrompt,
   OperationsSnapshot,
+  HandoffRecord,
   PipelineRecord,
   PipelineRunDetail,
   ProgramRecord,
@@ -73,6 +74,7 @@ export function PipelineBoard() {
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffProvider, setHandoffProvider] = useState<ProviderId>("claude");
   const [successorProvider, setSuccessorProvider] = useState<ProviderId>("claude");
+  const [reusableHandoff, setReusableHandoff] = useState<HandoffRecord | null>(null);
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
 
@@ -91,6 +93,9 @@ export function PipelineBoard() {
 
   const expandedForWorkspace = useRef<number | null>(null);
   const lastWorkspaceId = useRef<number | null>(workspaceId);
+  const currentWorkspaceId = useRef<number | null>(workspaceId);
+  currentWorkspaceId.current = workspaceId;
+  const [catalogWorkspaceId, setCatalogWorkspaceId] = useState<number | null>(null);
 
   const refreshCatalog = useCallback(async () => {
     const target = workspaceId;
@@ -105,9 +110,11 @@ export function PipelineBoard() {
       workspaceApi.operations(SERVER_URL, target),
       workspaceApi.listPipelines(SERVER_URL, target),
     ]);
+    if (currentWorkspaceId.current !== target) return target;
     setTree(nextTree);
     setSnapshot(operations);
     setPipelines(named);
+    setCatalogWorkspaceId(target);
     if (expandedForWorkspace.current !== target) {
       expandedForWorkspace.current = target;
       setExpandedPrograms(new Set(nextTree.programs.map((program) => program.id)));
@@ -146,7 +153,9 @@ export function PipelineBoard() {
       .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Pipeline desk could not be loaded."));
   }, [refreshCatalog, console_.operationsRevision]);
 
-  const pipeline = pipelines.find((item) => item.id === pipelineId) ?? null;
+  const pipeline = catalogWorkspaceId === workspaceId
+    ? pipelines.find((item) => item.id === pipelineId && item.workspaceId === workspaceId) ?? null
+    : null;
 
   const dirty =
     pipeline === null
@@ -219,11 +228,11 @@ export function PipelineBoard() {
   useEffect(() => {
     const next = new URLSearchParams();
     if (workspaceId !== null) next.set("workspace", String(workspaceId));
-    if (pipelineId !== null) next.set("pipeline", String(pipelineId));
-    if (activeSuiteId !== null) next.set("suite", String(activeSuiteId));
+    if (pipeline !== null) next.set("pipeline", String(pipeline.id));
+    if (catalogWorkspaceId === workspaceId && activeSuiteId !== null) next.set("suite", String(activeSuiteId));
     const query = next.toString();
-    window.history.replaceState(null, "", query === "" ? "/pipeline" : `/pipeline?${query}`);
-  }, [workspaceId, pipelineId, activeSuiteId]);
+    window.history.replaceState(window.history.state, "", query === "" ? "/pipeline" : `/pipeline?${query}`);
+  }, [workspaceId, pipeline, catalogWorkspaceId, activeSuiteId]);
 
   const live = pipeline?.active ?? pipeline?.latest ?? null;
   const occupancy =
@@ -290,6 +299,10 @@ export function PipelineBoard() {
     if (previous === null) return;
     setPipelineId(null);
     setSuiteId(null);
+    setCatalogWorkspaceId(null);
+    setTree(null);
+    setSnapshot(null);
+    setPipelines([]);
     setDraftSuiteIds([]);
     setDraftName("Untitled pipeline");
     setRuns([]);
@@ -404,7 +417,8 @@ export function PipelineBoard() {
                   if (kind === "resume" && resumeItem !== null) {
                     const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
                     const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
-                    setHandoffProvider(readOnly);setSuccessorProvider(available);setHandoffOpen(true);return;
+                    setHandoffProvider(readOnly);setSuccessorProvider(available);setReusableHandoff(null);
+                    void act(async()=>{const activity=await workspaceApi.activity(SERVER_URL,resumeItem.prompt.id);const latestExecute=activity.sessions.find((session)=>session.role==="execute");const reusable=latestExecute===undefined?null:activity.handoffs.find((handoff)=>handoff.state==="READY"&&handoff.recommendation==="CONTINUE"&&handoff.successorRunId===latestExecute.id)??null;setReusableHandoff(reusable);setHandoffOpen(true);});return;
                   }
                   void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
                 }}
@@ -822,15 +836,15 @@ export function PipelineBoard() {
           open
           onClose={() => setHandoffOpen(false)}
           title={`Continue ${resumeItem.prompt.externalKey ?? resumeItem.prompt.title}`}
-          description="A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline."
+          description={reusableHandoff===null?"A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline.":`The existing ${reusableHandoff.provider} handoff is ready. Resuming will reuse it and start only the selected developer agent.`}
           size="md"
-          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{await workspaceApi.startHandoff(SERVER_URL,resumeItem.prompt.id,{handoffProvider,handoffModel:models.resolve(handoffProvider),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},"Handoff started")}>Prepare handoff and continue</Button></>}
+          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{await workspaceApi.startHandoff(SERVER_URL,resumeItem.prompt.id,{...(reusableHandoff===null?{handoffProvider,handoffModel:models.resolve(handoffProvider)}:{reuseHandoffId:reusableHandoff.id}),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},reusableHandoff===null?"Handoff started":"Existing handoff reused")}>{reusableHandoff===null?"Prepare handoff and continue":"Continue with existing handoff"}</Button></>}
         >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
+          <div className={`grid gap-4 ${reusableHandoff===null?"sm:grid-cols-2":""}`}>
+            {reusableHandoff===null&&<label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>}
             <label className="space-y-1.5 text-xs text-fg-muted"><span>Successor developer agent</span><select value={successorProvider} onChange={(event)=>setSuccessorProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available).map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
           </div>
-          <p className="mt-4 text-xs leading-5 text-fg-dim">Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.</p>
+          <p className="mt-4 text-xs leading-5 text-fg-dim">{reusableHandoff===null?"Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.":`Prepared by ${reusableHandoff.provider}${reusableHandoff.completedAt===null?"":` on ${new Date(reusableHandoff.completedAt).toLocaleString()}`}. No handoff agent will run again.`}</p>
         </Modal>
       )}
     </main>

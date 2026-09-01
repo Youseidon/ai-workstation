@@ -5,7 +5,7 @@ import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
-import { workspaces } from "./workspaces.ts";
+import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const log=createLogger("handoff");
 const MAX_GENERATIONS=3;
@@ -51,6 +51,20 @@ export async function scheduleHandoff(args:{workspaceId:number;promptId:number;s
   const saved=workspaces.resolvePrompt(args.workspaceId,args.promptId);
   runHub.start({handle,workspace:{id:args.workspaceId,name:workspaces.get(args.workspaceId).name,workDirectory:workspaces.get(args.workspaceId).workDirectory},source:{type:"handoff",handoffId:id,promptId:args.promptId,promptKey:saved.externalKey,title:saved.title,sourceRunId:args.sourceRunId},role:"handoff",permissionMode:handle.permissionMode});
   void handle.done.catch(error=>log.error("run failed",error));return true;
+}
+
+export async function resumeReadyHandoff(args:{handoffId:string;promptId:number;failedSuccessorRunId:string;successorProvider:ProviderId;successorModel:string|null;namedPipelineId?:number}):Promise<string>{
+  const record=workspaces.handoffById(args.handoffId);
+  if(record===null||record.promptId!==args.promptId||record.state!=="READY"||record.recommendation!=="CONTINUE"||record.successorRunId!==args.failedSuccessorRunId)throw new WorkspaceError(409,"handoff_not_reusable","The saved handoff is not available for this failed successor run");
+  workspaces.preparePromptForHandoffRetry(args.promptId,record.id);
+  let runId:string;
+  if(args.namedPipelineId!==undefined){
+    const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:args.successorProvider,model:args.successorModel,preferPlayTarget:true});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);runId=suite?.currentRunId??"";
+  }else{
+    const {startExecute}=await import("./runService.ts");runId=(await startExecute({workspaceId:record.workspaceId,promptId:args.promptId,provider:args.successorProvider,model:args.successorModel})).runId;
+  }
+  if(runId==="")throw new WorkspaceError(409,"successor_not_started","The successor run did not start");
+  workspaces.updateHandoff(record.id,{successorRunId:runId});runHub.operationsChanged();return runId;
 }
 
 async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"error",answer:string,args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<void>{

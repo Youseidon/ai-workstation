@@ -12,7 +12,7 @@ import {
   settings,
 } from "./settings.ts";
 import { claudePermissionConfig } from "./adapters/claude.ts";
-import { CursorAdapter } from "./adapters/cursor.ts";
+import { CursorAdapter, cursorAgentArgs } from "./adapters/cursor.ts";
 import { createLogger } from "./lib/logger.ts";
 
 function withHostAccess<T>(enabled: boolean, fn: () => T): T {
@@ -177,4 +177,16 @@ test("cursor adapter fails fast on a consult override", async () => {
     },
     /no sandbox/,
   );
+});
+
+test("cursor adapter uses the supported long model flag", () => {
+  const args = cursorAgentArgs({
+    prompt: "do the work",
+    outputFormat: "stream-json",
+    force: false,
+    model: "claude-sonnet-5",
+    extraArgs: [],
+  });
+  assert.deepEqual(args, ["-p", "--output-format", "stream-json", "--model", "claude-sonnet-5", "do the work"]);
+  assert.equal(args.includes("-m"), false);
 });
