@@ -4,6 +4,8 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
+import { isProviderId } from "@agent-console/shared";
+import { scheduleHandoff } from "./handoffCoordinator.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -262,6 +264,17 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;
+      if(!isProviderId(handoffProvider)||!isProviderId(successorProvider))throw new WorkspaceError(422,"validation_error","Choose valid handoff and successor providers");
+      if(handoffProvider==="cursor")throw new WorkspaceError(422,"handoff_not_supported","Cursor cannot guarantee a read-only handoff");
+      const sourceRunId=workspaces.latestExecuteRunId(promptId);const source=workspaces.runSummary(sourceRunId);
+      const namedPipelineId=typeof input.pipelineId==="number"&&Number.isSafeInteger(input.pipelineId)&&input.pipelineId>0?input.pipelineId:undefined;
+      const started=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
+      if(!started)throw new WorkspaceError(409,"handoff_not_started","A handoff already exists for this run, the attempt limit was reached, or the selected provider is unavailable");
+      json(res,202,{started:true});return true;
+    }
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;
   } catch (error) { failure(res, error); return true; }
 }

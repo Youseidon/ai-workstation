@@ -72,7 +72,7 @@ export function ThemeToggle() {
         <div
           role="dialog"
           aria-label="Appearance"
-          className="glass absolute right-0 top-full z-40 mt-2 w-60 animate-slide-up rounded-lg p-2 shadow-xl"
+          className="glass absolute bottom-full left-0 z-40 mb-2 w-60 animate-slide-up rounded-lg p-2 shadow-xl"
         >
           <p className="px-2 pb-1.5 pt-1 text-[10px] uppercase tracking-wider text-fg-dim">Theme</p>
           {THEMES.map((option) => (

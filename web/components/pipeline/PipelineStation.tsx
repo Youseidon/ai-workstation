@@ -91,6 +91,9 @@ export function PipelineStation({
           {item.prompt.blockedBy.length > 0 && state === "WAITING_DEPENDENCY" && (
             <div className="mt-1 text-[10px] text-fg-dim">waiting on {item.prompt.blockedBy.join(", ")}</div>
           )}
+          {item.latestHandoff !== null && (item.latestHandoff.state === "QUEUED" || item.latestHandoff.state === "RUNNING") && (
+            <div className="mt-1 text-[10px] text-info">preparing handoff with {item.latestHandoff.provider}</div>
+          )}
           </button>
 
           {working && !recovering && occupancy !== null && (

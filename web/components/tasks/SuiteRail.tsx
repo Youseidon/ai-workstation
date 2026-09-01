@@ -37,28 +37,19 @@ export function SuiteRail({
             return haystack.includes(needle);
           });
 
-    const byWorkspace = new Map<string, Map<string, OperationsSuite[]>>();
+    // Scoped to the global workspace — group by program only.
+    const byProgram = new Map<string, OperationsSuite[]>();
     for (const suite of visible) {
-      const workspace = suite.workspaceName;
-      const program = suite.programName;
-      let programs = byWorkspace.get(workspace);
-      if (programs === undefined) {
-        programs = new Map();
-        byWorkspace.set(workspace, programs);
-      }
-      const list = programs.get(program) ?? [];
+      const list = byProgram.get(suite.programName) ?? [];
       list.push(suite);
-      programs.set(program, list);
+      byProgram.set(suite.programName, list);
     }
-    return [...byWorkspace.entries()].map(([workspace, programs]) => ({
-      workspace,
-      programs: [...programs.entries()].map(([program, items]) => ({ program, items })),
-    }));
+    return [...byProgram.entries()].map(([program, items]) => ({ program, items }));
   }, [suites, query]);
 
   return (
-    <aside className="flex min-h-0 flex-col border-line bg-surface-1 xl:border-r">
-      <div className="border-b border-line p-3">
+    <aside className="flex h-full min-h-0 flex-1 flex-col overflow-hidden border-line bg-surface-1 xl:border-r">
+      <div className="shrink-0 border-b border-line p-3">
         <label className="block">
           <span className="sr-only">Search suites</span>
           <input
@@ -71,7 +62,7 @@ export function SuiteRail({
         </label>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
         {loading ? (
           <div className="space-y-2">
             <Skeleton className="h-16 w-full" />
@@ -84,11 +75,10 @@ export function SuiteRail({
         ) : groups.length === 0 ? (
           <p className="text-xs text-fg-dim">No suites match “{query.trim()}”.</p>
         ) : (
-          groups.map(({ workspace, programs }) =>
-            programs.map(({ program, items }) => (
-              <div key={`${workspace}::${program}`} className="mb-4">
+          groups.map(({ program, items }) => (
+              <div key={program} className="mb-4">
                 <div className="mb-1.5 truncate px-1 text-[10px] uppercase tracking-wider text-fg-dim">
-                  {workspace} › {program}
+                  {program}
                 </div>
                 {items.map((entry) => {
                   const done = entry.counts.COMPLETE;
@@ -150,7 +140,7 @@ export function SuiteRail({
                   );
                 })}
               </div>
-            )),
+            ),
           )
         )}
       </div>

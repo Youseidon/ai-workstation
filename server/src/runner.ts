@@ -34,7 +34,7 @@ export interface StartRunArgs {
   runId?: string;
   adapter: AgentAdapter;
   prompt: string;
-  cwd?: string;
+  cwd: string;
   /** Model picked in the UI for this run; falls back to the adapter's setting. */
   model?: string | null;
   role?: RunRole;
@@ -44,7 +44,7 @@ export interface StartRunArgs {
 }
 
 export function runRoleStartError(role: RunRole, provider: string): string | null {
-  if (role === "consult" && provider === "cursor") return "Cursor cannot run as a consult; it has no sandbox.";
+  if ((role === "consult" || role === "handoff") && provider === "cursor") return `Cursor cannot run as a ${role}; it has no sandbox.`;
   return null;
 }
 
@@ -58,13 +58,13 @@ export function startRun(args: StartRunArgs): RunHandle {
   const runId = args.runId ?? newId("run");
   const provider = adapter.id;
   const log = createLogger(`${provider}:${runId.slice(4, 12)}`);
-  const cwd = args.cwd ?? settings.workdir;
+  const cwd = args.cwd;
   // Resolved once: settings could change mid-run, but a run reports the model
   // it actually started with from its first event to its last.
   const model = args.model ?? adapter.model;
   const role = args.role ?? "execute";
   const permissionOverride: PermissionOverride =
-    role === "consult" ? "consult" : (args.permissionOverride ?? "inherit");
+    role === "consult" ? "consult" : role === "handoff" ? "handoff" : (args.permissionOverride ?? "inherit");
   const resolvedPermission = permissionForRun(provider, permissionOverride);
   const permissionMode = permissionOverride === "inherit" ? null : resolvedPermission.mode;
 

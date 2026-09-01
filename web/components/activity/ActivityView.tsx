@@ -24,6 +24,7 @@ import { cn } from "@/lib/cn";
 import { applyEvent, type LogItem } from "@/lib/log";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole, type RunStatus } from "@/lib/agentConsole";
+import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 type Pane = "list" | "detail";
@@ -79,6 +80,8 @@ function promptIdFromSource(source: RunSource): number | null {
       return source.promptId;
     case "consult":
       return source.promptId;
+    case "handoff":
+      return source.promptId;
     default:
       return null;
   }
@@ -92,6 +95,8 @@ function titleFromSource(source: RunSource): string {
       return source.promptKey === null ? source.title : `${source.promptKey} — ${source.title}`;
     case "consult":
       return (source.title ?? source.question) || "(consult)";
+    case "handoff":
+      return `Handoff · ${source.promptKey ?? source.title}`;
     case "verification":
       return source.promptKey === null
         ? `Verify · ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`
@@ -168,13 +173,13 @@ function workItemHref(row: ActivityRow): string | null {
 export function ActivityView() {
   const console_ = useAgentConsole();
   const { runs, operationsRevision, itemsFor } = console_;
+  const { workspaceId } = useWorkspace();
 
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("list");
 
-  const [workspaceFilter, setWorkspaceFilter] = useState<string>("all");
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [stateFilter, setStateFilter] = useState<string>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
@@ -215,21 +220,16 @@ export function ActivityView() {
     return [...liveRows, ...historical];
   }, [sessions, runs]);
 
-  const workspaces = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const row of rows) map.set(row.workspaceId, row.workspaceName);
-    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [rows]);
-
   const filtered = useMemo(() => {
     return rows.filter((row) => {
-      if (workspaceFilter !== "all" && String(row.workspaceId) !== workspaceFilter) return false;
+      if (workspaceId !== null && row.workspaceId !== workspaceId) return false;
+      if (workspaceId === null) return false;
       if (providerFilter !== "all" && row.provider !== providerFilter) return false;
       if (stateFilter !== "all" && normalizeState(row.state) !== stateFilter) return false;
       if (roleFilter !== "all" && row.role !== roleFilter) return false;
       return true;
     });
-  }, [rows, workspaceFilter, providerFilter, stateFilter, roleFilter]);
+  }, [rows, workspaceId, providerFilter, stateFilter, roleFilter]);
 
   const activeId =
     filtered.some((row) => row.id === selectedId) ? selectedId : filtered[0]?.id ?? null;
@@ -286,18 +286,6 @@ export function ActivityView() {
           )}
         >
           <div className="grid grid-cols-2 gap-2 border-b border-line p-3">
-            <Select
-              label="Workspace"
-              value={workspaceFilter}
-              onChange={(event) => setWorkspaceFilter(event.target.value)}
-            >
-              <option value="all">All</option>
-              {workspaces.map(([id, name]) => (
-                <option key={id} value={String(id)}>
-                  {name}
-                </option>
-              ))}
-            </Select>
             <Select
               label="Provider"
               value={providerFilter}

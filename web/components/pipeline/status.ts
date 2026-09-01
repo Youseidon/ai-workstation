@@ -137,7 +137,7 @@ export function playKind(
 export function namedPlayKind(run: Pick<PipelineRun, "state"> | null | undefined): PlayKind {
   if (run == null) return "play";
   if (run.state === "PLAYING") return "hidden";
-  if (run.state === "PAUSED" || run.state === "WAITING_HUMAN") return "resume";
+  if (run.state === "PAUSED" || run.state === "WAITING_HUMAN" || run.state === "INTERRUPTED" || run.state === "STOPPED") return "resume";
   return "play";
 }
 

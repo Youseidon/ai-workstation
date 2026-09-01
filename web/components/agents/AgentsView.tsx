@@ -65,7 +65,7 @@ function enabledKey(id: ProviderId): string {
 
 /**
  * Manage every agent in one place: on/off, model, live work, plan usage, and
- * the provider's own settings — without leaving for the global settings modal.
+ * the provider's own settings.
  */
 export function AgentsView() {
   const { providers, runs, items, lastRun, connection, interrupt, refreshProviders } =
@@ -107,6 +107,9 @@ export function AgentsView() {
     });
   }, [drafts, snapshot]);
 
+  const generalFields = snapshot?.fields.filter((field) => field.group === "General") ?? [];
+  const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
+
   const saveDrafts = useCallback(
     async (keys: string[]) => {
       if (keys.length === 0 || snapshot === null) return;
@@ -143,7 +146,9 @@ export function AgentsView() {
             ? "No changes to save."
             : `Saved ${result.changed.length} setting${result.changed.length === 1 ? "" : "s"}.`,
         );
-        if (keys.some((key) => key.endsWith(".enabled"))) await refreshProviders();
+        if (keys.some((key) => key.endsWith(".enabled") || key === "hostAccess")) {
+          await refreshProviders();
+        }
       }
     },
     [drafts, dialogs, refreshProviders, save, snapshot],
@@ -196,6 +201,62 @@ export function AgentsView() {
             {notice !== null ? ` · ${notice}` : ""}
           </p>
         </header>
+
+        {generalFields.length > 0 && (
+          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
+            <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Runtime</h2>
+            <p className="mt-1 text-[11px] text-fg-dim">
+              Shared with every provider. Host access is required for docker compose and other host sockets.
+            </p>
+            {generalFields.map((field) => (
+              <SettingRow
+                key={field.key}
+                field={field}
+                draft={drafts[field.key]}
+                disabled={saving}
+                onChange={(key, value) => {
+                  setNotice(null);
+                  setDrafts((current) => ({ ...current, [key]: value }));
+                }}
+                onRevert={(key) => {
+                  setNotice(null);
+                  void reset([key]);
+                  setDrafts((current) => {
+                    const next = { ...current };
+                    delete next[key];
+                    return next;
+                  });
+                }}
+              />
+            ))}
+            {generalDirty.length > 0 && (
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDrafts((current) => {
+                      const next = { ...current };
+                      for (const key of generalDirty) delete next[key];
+                      return next;
+                    });
+                  }}
+                  disabled={saving}
+                >
+                  Discard
+                </Button>
+                <Button
+                  size="sm"
+                  variant="success"
+                  onClick={() => void saveDrafts(generalDirty)}
+                  loading={saving}
+                >
+                  Save {generalDirty.length}
+                </Button>
+              </div>
+            )}
+          </section>
+        )}
 
         <ul className="grid gap-3 xl:grid-cols-2">
           {agents.map((agent) => {

@@ -30,7 +30,7 @@ export function claudePermissionConfig(override: PermissionOverride): {
   disableSandboxForHostAccess: boolean;
   disallowedTools: string[] | undefined;
 } {
-  if (override === "consult") {
+  if (override !== "inherit") {
     return {
       permissionMode: "plan",
       allowDangerouslySkipPermissions: false,

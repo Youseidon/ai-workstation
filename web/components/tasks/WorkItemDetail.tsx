@@ -158,6 +158,25 @@ export function WorkItemDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {tab === "overview" && (
           <div className="space-y-4">
+            {item.latestHandoff !== null && (
+              <div className="rounded-panel border border-info/30 bg-info/5 p-4">
+                <div className="text-[10px] uppercase tracking-wider text-info">
+                  Handoff · {item.latestHandoff.state.toLowerCase().replaceAll("_", " ")}
+                </div>
+                {item.latestHandoff.recommendation !== null && (
+                  <div className="mt-1 text-xs text-fg-muted">
+                    Recommendation: {item.latestHandoff.recommendation.toLowerCase().replaceAll("_", " ")}
+                  </div>
+                )}
+                {item.latestHandoff.brief !== null && (
+                  <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+                    <div><div className="mb-1 text-fg-dim">Completed</div>{item.latestHandoff.brief.completedWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
+                    <div><div className="mb-1 text-fg-dim">Pending</div>{item.latestHandoff.brief.pendingWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
+                  </div>
+                )}
+                {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>

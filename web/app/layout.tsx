@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AppShell } from "@/components/shell/AppShell";
 import { ThemeScript } from "@/components/ThemeScript";
 import { DialogProvider } from "@/components/ui/Dialogs";
 import { ToastProvider } from "@/components/ui/Toast";
 import { AgentConsoleProvider } from "@/lib/agentConsole";
+import { WorkspaceProvider, WorkspaceUrlSync } from "@/lib/workspaceContext";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -49,7 +51,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
              * transcript of a run that is still going.
              */}
             <AgentConsoleProvider>
-              <AppShell>{children}</AppShell>
+              <WorkspaceProvider>
+                <Suspense fallback={null}>
+                  <WorkspaceUrlSync />
+                </Suspense>
+                <AppShell>{children}</AppShell>
+              </WorkspaceProvider>
             </AgentConsoleProvider>
           </DialogProvider>
         </ToastProvider>

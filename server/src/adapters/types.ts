@@ -5,7 +5,7 @@ import type { Logger } from "../lib/logger.ts";
  * "consult" forces the provider's read-only sandbox and ignores Host access.
  * Adapters must not read settings.hostAccess when this is "consult".
  */
-export type PermissionOverride = "inherit" | "consult";
+export type PermissionOverride = "inherit" | "consult" | "handoff";
 
 export interface RunOptions {
   /** Correlates every event of one run, and is the key for `interrupt()`. */

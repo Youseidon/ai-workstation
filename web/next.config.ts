@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   // The event schema lives in a workspace package of raw TypeScript, shared
   // verbatim with the server so the two can never drift.
   transpilePackages: ["@agent-console/shared"],
+  // Hide the Next.js "N" route/bundler indicator in the bottom-left corner.
+  // Compile and runtime errors still surface; this only removes the badge.
+  devIndicators: false,
   env: {
     NEXT_PUBLIC_AGENT_SERVER_URL:
       process.env.NEXT_PUBLIC_AGENT_SERVER_URL ?? "http://127.0.0.1:4000",

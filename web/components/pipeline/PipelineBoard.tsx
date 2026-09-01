@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type {
   OperationsPrompt,
@@ -11,7 +12,6 @@ import type {
   PromptPipelineRule,
   ProviderId,
   SuitePipelineView,
-  WorkspaceRecord,
   WorkspaceTree,
 } from "@agent-console/shared";
 import { modelLabel, PROVIDER_IDS } from "@agent-console/shared";
@@ -30,10 +30,12 @@ import { agentState, type AgentActivity } from "@/lib/agentState";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { providerTheme } from "@/lib/providerTheme";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { useWorkspace } from "@/lib/workspaceContext";
 import { ModelMenu } from "@/components/ModelMenu";
-import { PageChrome, useOpenSettings } from "@/components/shell/chrome";
+import { PageChrome } from "@/components/shell/chrome";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
+import { SnakeFlow } from "./SnakeFlow";
 import {
   LABEL,
   namedPlayKind,
@@ -54,8 +56,8 @@ export function PipelineBoard() {
   const dialogs = useDialogs();
   const params = useSearchParams();
   const models = useModelSelection(console_.providers);
+  const { workspaceId, status: workspaceStatus } = useWorkspace();
 
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [snapshot, setSnapshot] = useState<OperationsSnapshot | null>(null);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
@@ -63,19 +65,17 @@ export function PipelineBoard() {
   const [view, setView] = useState<SuitePipelineView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const openSettings = useOpenSettings();
   const [configId, setConfigId] = useState<number | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(true);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffProvider, setHandoffProvider] = useState<ProviderId>("claude");
+  const [successorProvider, setSuccessorProvider] = useState<ProviderId>("claude");
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
 
-  const [workspaceId, setWorkspaceId] = useState<number | null>(() => {
-    const value = Number(params.get("workspace"));
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  });
   const [pipelineId, setPipelineId] = useState<number | null>(() => {
     const value = Number(params.get("pipeline"));
     return Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -90,16 +90,10 @@ export function PipelineBoard() {
   const suiteBootstrapped = useRef(false);
 
   const expandedForWorkspace = useRef<number | null>(null);
+  const lastWorkspaceId = useRef<number | null>(workspaceId);
 
   const refreshCatalog = useCallback(async () => {
-    const listed = await workspaceApi.list(SERVER_URL);
-    setWorkspaces(listed);
-    let target = workspaceId ?? listed[0]?.id ?? null;
-    if (workspaceId === null && suiteId !== null) {
-      const all = await workspaceApi.operations(SERVER_URL);
-      const home = all.suites.find((item) => item.id === suiteId);
-      if (home !== undefined) target = home.workspaceId;
-    }
+    const target = workspaceId;
     if (target === null) {
       setTree(null);
       setSnapshot(null);
@@ -114,7 +108,6 @@ export function PipelineBoard() {
     setTree(nextTree);
     setSnapshot(operations);
     setPipelines(named);
-    if (workspaceId !== target) setWorkspaceId(target);
     if (expandedForWorkspace.current !== target) {
       expandedForWorkspace.current = target;
       setExpandedPrograms(new Set(nextTree.programs.map((program) => program.id)));
@@ -240,8 +233,12 @@ export function PipelineBoard() {
   const kind = namedPlayKind(live);
   const firstAvailable = console_.providers.find((item) => item.available)?.id ?? "claude";
   const suiteOps = activeSuiteId === null ? null : (operationsById.get(activeSuiteId) ?? null);
+  const resumeSuiteOps = live?.currentSuiteId === null || live?.currentSuiteId === undefined ? null : (operationsById.get(live.currentSuiteId) ?? null);
+  const resumeSuiteRun = resumeSuiteOps?.pipeline?.active ?? resumeSuiteOps?.pipeline?.latest ?? null;
+  const resumeItem = resumeSuiteRun?.currentPromptId == null ? null : (resumeSuiteOps?.prompts.find((item) => item.prompt.id === resumeSuiteRun.currentPromptId) ?? null);
   const steps = view?.steps ?? [];
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
+  const flowSteps = steps.filter((step) => byId.has(step.promptId));
 
   const crew = useMemo(() => {
     return PROVIDER_IDS.map((id) => {
@@ -284,16 +281,22 @@ export function PipelineBoard() {
     }
   };
 
-  const selectWorkspace = (id: number) => {
-    setWorkspaceId(id);
+  // Global beacon switched projects — drop local draft/selection for the old one.
+  // Skip the first assignment from boot/URL so deep links keep pipeline/suite.
+  useEffect(() => {
+    if (lastWorkspaceId.current === workspaceId) return;
+    const previous = lastWorkspaceId.current;
+    lastWorkspaceId.current = workspaceId;
+    if (previous === null) return;
     setPipelineId(null);
     setSuiteId(null);
     setDraftSuiteIds([]);
     setDraftName("Untitled pipeline");
     setRuns([]);
+    setView(null);
     appliedPipelineId.current = null;
     suiteBootstrapped.current = true;
-  };
+  }, [workspaceId]);
 
   const selectPipeline = (id: number | null) => {
     setPipelineId(id);
@@ -397,18 +400,18 @@ export function PipelineBoard() {
                 variant="success"
                 disabled={playBlocked !== null || busy}
                 title={playBlocked ?? undefined}
-                onClick={() =>
-                  void act(async () => {
-                    await workspaceApi.playPipeline(SERVER_URL, pipelineId!);
-                  }, kind === "resume" ? "Resumed" : "Pipeline is running")
-                }
+                onClick={() => {
+                  if (kind === "resume" && resumeItem !== null) {
+                    const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
+                    const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
+                    setHandoffProvider(readOnly);setSuccessorProvider(available);setHandoffOpen(true);return;
+                  }
+                  void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
+                }}
               >
                 {kind === "resume" ? "Resume" : "Play"}
               </Button>
             )}
-            <Button size="sm" variant="secondary" onClick={openSettings}>
-              ⚙ Settings
-            </Button>
           </div>
         }
       />
@@ -418,26 +421,18 @@ export function PipelineBoard() {
           {loadError}
         </div>
       )}
+      {loadError === null && workspaceStatus === "empty" && (
+        <div role="status" className="border-b border-line bg-surface-1 px-4 py-2 text-xs text-fg-muted">
+          No workspaces yet.{" "}
+          <Link href="/workspaces" className="text-accent hover:underline">
+            Create one
+          </Link>{" "}
+          before building a pipeline.
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]">
         <aside className="min-h-0 overflow-y-auto border-r border-line bg-surface-1 p-3">
-          <label className="mb-1 block text-[10px] uppercase tracking-[0.18em] text-fg-dim">Workspace</label>
-          {workspaces.length === 0 ? (
-            <Skeleton className="h-9 w-full" />
-          ) : (
-            <select
-              value={workspaceId ?? ""}
-              onChange={(event) => selectWorkspace(Number(event.target.value))}
-              className="mb-4 h-9 w-full rounded-md bg-surface-2 px-2 text-[13px] text-fg ring-1 ring-inset ring-line focus:outline-none focus:ring-2 focus:ring-accent/70"
-            >
-              {workspaces.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          )}
-
           <div className="mb-1 flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Pipelines</div>
             <button
@@ -674,58 +669,61 @@ export function PipelineBoard() {
                   </div>
                 ) : null}
 
-                {steps.length === 0 ? (
+                {flowSteps.length === 0 ? (
                   <div className="rounded-panel border border-dashed border-line bg-surface-1/70 px-6 py-12 text-center text-sm text-fg-dim">
-                    This suite has no pipeline yet. Add work items above — they will run left to right, each with its own model.
+                    This suite has no pipeline yet. Add work items above — they snake across the desk, each with its own model.
                   </div>
                 ) : (
-                  <ol className="flex flex-col gap-0 lg:flex-row lg:flex-wrap lg:items-stretch">
-                    {steps.map((step, index) => {
+                  <SnakeFlow
+                    items={flowSteps}
+                    getKey={(step) => step.promptId}
+                    isLiveIndex={(index) => view?.active?.currentPromptId === flowSteps[index]?.promptId}
+                    wrapItem={(node, step) => (
+                      <div
+                        draggable
+                        onDragStart={() => setDragId(step.promptId)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={() => {
+                          if (dragId === null || dragId === step.promptId) return;
+                          const ids = steps.map((entry) => entry.promptId);
+                          const from = ids.indexOf(dragId);
+                          const to = ids.indexOf(step.promptId);
+                          if (from === -1 || to === -1) return;
+                          ids.splice(from, 1);
+                          ids.splice(to, 0, dragId);
+                          setDragId(null);
+                          void act(async () => {
+                            const result = await workspaceApi.reorderPipelineSteps(SERVER_URL, suiteOps.id, ids);
+                            setView(result.pipeline);
+                          });
+                        }}
+                      >
+                        {node}
+                      </div>
+                    )}
+                    renderCard={(step, index) => {
                       const item = byId.get(step.promptId);
                       if (item === undefined) return null;
                       const liveRun = stationOccupancy(item, console_.runs, view?.active);
                       const current = view?.active?.currentPromptId === step.promptId;
                       return (
-                        <li
-                          key={step.promptId}
-                          className="flex min-w-0 flex-1 items-stretch lg:max-w-sm"
-                          draggable
-                          onDragStart={() => setDragId(step.promptId)}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={() => {
-                            if (dragId === null || dragId === step.promptId) return;
-                            const ids = steps.map((entry) => entry.promptId);
-                            const from = ids.indexOf(dragId);
-                            const to = ids.indexOf(step.promptId);
-                            if (from === -1 || to === -1) return;
-                            ids.splice(from, 1);
-                            ids.splice(to, 0, dragId);
-                            setDragId(null);
+                        <FlowNode
+                          index={index}
+                          item={item}
+                          rule={step}
+                          current={current}
+                          occupancy={liveRun}
+                          onConfig={() => setConfigId(step.promptId)}
+                          onRemove={() =>
                             void act(async () => {
-                              const result = await workspaceApi.reorderPipelineSteps(SERVER_URL, suiteOps.id, ids);
+                              const result = await workspaceApi.removePipelineStep(SERVER_URL, step.promptId);
                               setView(result.pipeline);
-                            });
-                          }}
-                        >
-                          <FlowNode
-                            index={index}
-                            last={index === steps.length - 1}
-                            item={item}
-                            rule={step}
-                            current={current}
-                            occupancy={liveRun}
-                            onConfig={() => setConfigId(step.promptId)}
-                            onRemove={() =>
-                              void act(async () => {
-                                const result = await workspaceApi.removePipelineStep(SERVER_URL, step.promptId);
-                                setView(result.pipeline);
-                              })
-                            }
-                          />
-                        </li>
+                            })
+                          }
+                        />
                       );
-                    })}
-                  </ol>
+                    }}
+                  />
                 )}
               </div>
             )}
@@ -818,6 +816,23 @@ export function PipelineBoard() {
           />
         </Modal>
       )}
+
+      {handoffOpen && resumeItem !== null && pipelineId !== null && (
+        <Modal
+          open
+          onClose={() => setHandoffOpen(false)}
+          title={`Continue ${resumeItem.prompt.externalKey ?? resumeItem.prompt.title}`}
+          description="A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline."
+          size="md"
+          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{await workspaceApi.startHandoff(SERVER_URL,resumeItem.prompt.id,{handoffProvider,handoffModel:models.resolve(handoffProvider),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},"Handoff started")}>Prepare handoff and continue</Button></>}
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
+            <label className="space-y-1.5 text-xs text-fg-muted"><span>Successor developer agent</span><select value={successorProvider} onChange={(event)=>setSuccessorProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available).map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
+          </div>
+          <p className="mt-4 text-xs leading-5 text-fg-dim">Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.</p>
+        </Modal>
+      )}
     </main>
   );
 }
@@ -854,7 +869,6 @@ function Banner({ tone, children }: { tone: "caution" | "warning"; children: str
 
 function FlowNode({
   index,
-  last,
   item,
   rule,
   current,
@@ -863,7 +877,6 @@ function FlowNode({
   onRemove,
 }: {
   index: number;
-  last: boolean;
   item: OperationsPrompt;
   rule: PromptPipelineRule;
   current: boolean;
@@ -875,62 +888,54 @@ function FlowNode({
   const who = overrideChip(rule);
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col lg:flex-row lg:items-center">
-      <div
-        className={cn(
-          "relative min-w-0 flex-1 rounded-panel border bg-surface-2 p-3",
-          current ? "border-accent/50 ring-1 ring-accent/30" : "border-line",
+    <div
+      className={cn(
+        "relative h-full min-w-0 rounded-panel border bg-surface-2 p-3",
+        current ? "border-accent/50 ring-1 ring-accent/30" : "border-line",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        {rule.provider !== null ? (
+          <AgentAvatar
+            provider={rule.provider}
+            size={28}
+            activity={occupancy !== null ? "tooling" : item.operationalState === "COMPLETE" ? "done" : "idle"}
+          />
+        ) : (
+          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
+            {index + 1}
+          </span>
         )}
-      >
-        <div className="flex items-start gap-2">
-          {rule.provider !== null ? (
-            <AgentAvatar
-              provider={rule.provider}
-              size={28}
-              activity={occupancy !== null ? "tooling" : item.operationalState === "COMPLETE" ? "done" : "idle"}
-            />
-          ) : (
-            <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
-              {index + 1}
-            </span>
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="truncate text-[13px] text-fg">{item.prompt.externalKey ?? item.prompt.title}</div>
-                {item.prompt.externalKey !== null && (
-                  <div className="truncate text-[11px] text-fg-dim">{item.prompt.title}</div>
-                )}
-              </div>
-              <Badge tone={TONE[item.operationalState]}>{LABEL[item.operationalState]}</Badge>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="truncate text-[13px] text-fg">{item.prompt.externalKey ?? item.prompt.title}</div>
+              {item.prompt.externalKey !== null && (
+                <div className="truncate text-[11px] text-fg-dim">{item.prompt.title}</div>
+              )}
             </div>
-            <div className={cn("mt-2 text-xs", theme?.text ?? "text-fg-muted")}>{who ?? "No provider — open config"}</div>
-            <div className="mt-1 text-[10px] text-fg-dim">
-              {onDoneChip(rule.onDone)} · {onBlockedChip(rule)}
-            </div>
-            {occupancy !== null && (
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
-                <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
-                running
-              </div>
-            )}
+            <Badge tone={TONE[item.operationalState]}>{LABEL[item.operationalState]}</Badge>
           </div>
-        </div>
-        <div className="mt-3 flex gap-1">
-          <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
-            Config
-          </Button>
-          <Button size="sm" variant="ghost" aria-label="Remove from flow" onClick={onRemove}>
-            Remove
-          </Button>
+          <div className={cn("mt-2 text-xs", theme?.text ?? "text-fg-muted")}>{who ?? "No provider — open config"}</div>
+          <div className="mt-1 text-[10px] text-fg-dim">
+            {onDoneChip(rule.onDone)} · {onBlockedChip(rule)}
+          </div>
+          {occupancy !== null && (
+            <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
+              <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
+              running
+            </div>
+          )}
         </div>
       </div>
-      {!last && (
-        <div className="flex h-6 items-center justify-center text-fg-dim lg:h-auto lg:w-8 lg:px-0" aria-hidden>
-          <span className="lg:hidden">↓</span>
-          <span className="hidden lg:inline">→</span>
-        </div>
-      )}
+      <div className="mt-3 flex gap-1">
+        <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
+          Config
+        </Button>
+        <Button size="sm" variant="ghost" aria-label="Remove from flow" onClick={onRemove}>
+          Remove
+        </Button>
+      </div>
     </div>
   );
 }

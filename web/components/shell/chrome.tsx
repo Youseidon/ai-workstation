@@ -2,7 +2,6 @@
 
 import {
   createContext,
-  useCallback,
   useContext,
   useLayoutEffect,
   useMemo,
@@ -18,21 +17,18 @@ export interface ChromePage {
 
 interface ChromeDispatch {
   setPage(page: ChromePage): void;
-  openSettings(): void;
-  closeSettings(): void;
 }
 
 const EMPTY: ChromePage = { title: "", breadcrumb: null, actions: null };
 
 const ChromeDispatchContext = createContext<ChromeDispatch | null>(null);
 const ChromePageContext = createContext<ChromePage>(EMPTY);
-const ChromeSettingsContext = createContext(false);
 
 /**
  * Pages publish their title, breadcrumb and toolbar actions into the top bar
  * through this context rather than portals — one tree, one owner.
  *
- * Dispatch, page claim and settings are separate contexts so that:
+ * Dispatch and page claim are separate contexts so that:
  * - PageChrome (dispatch only) does not re-render when the claim updates
  * - AppShell / Sidebar do not re-render when a page publishes actions
  * - only TopBar re-renders for claim changes
@@ -41,22 +37,12 @@ const ChromeSettingsContext = createContext(false);
  */
 export function ChromeProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState<ChromePage>(EMPTY);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const dispatch = useMemo<ChromeDispatch>(
-    () => ({
-      setPage,
-      openSettings: () => setSettingsOpen(true),
-      closeSettings: () => setSettingsOpen(false),
-    }),
-    [],
-  );
+  const dispatch = useMemo<ChromeDispatch>(() => ({ setPage }), []);
 
   return (
     <ChromeDispatchContext.Provider value={dispatch}>
-      <ChromeSettingsContext.Provider value={settingsOpen}>
-        <ChromePageContext.Provider value={page}>{children}</ChromePageContext.Provider>
-      </ChromeSettingsContext.Provider>
+      <ChromePageContext.Provider value={page}>{children}</ChromePageContext.Provider>
     </ChromeDispatchContext.Provider>
   );
 }
@@ -69,23 +55,6 @@ export function useChromeDispatch(): ChromeDispatch {
 
 export function useChromePage(): ChromePage {
   return useContext(ChromePageContext);
-}
-
-export function useChromeSettingsOpen(): boolean {
-  return useContext(ChromeSettingsContext);
-}
-
-/** @deprecated Prefer the split hooks; kept for call sites that need everything. */
-export function useChrome(): ChromeDispatch & { page: ChromePage; settingsOpen: boolean } {
-  return {
-    ...useChromeDispatch(),
-    page: useChromePage(),
-    settingsOpen: useChromeSettingsOpen(),
-  };
-}
-
-export function useChromeState(): { page: ChromePage; settingsOpen: boolean } {
-  return { page: useChromePage(), settingsOpen: useChromeSettingsOpen() };
 }
 
 /**
@@ -114,10 +83,4 @@ export function PageChrome({
   }, [setPage]);
 
   return null;
-}
-
-/** Stable helper for pages that only need to open settings from a local button. */
-export function useOpenSettings(): () => void {
-  const { openSettings } = useChromeDispatch();
-  return useCallback(() => openSettings(), [openSettings]);
 }

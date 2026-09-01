@@ -3,7 +3,6 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
 import { config } from "./config.ts";
-import { settings } from "./settings.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -81,7 +80,6 @@ async function broadcastSettingsChange(): Promise<void> {
   const providers = await detectProviders(true);
   const message: ServerMessage = {
     kind: "settings_updated",
-    workdir: settings.workdir,
     providers,
   };
   const payload = JSON.stringify(message);
@@ -107,7 +105,7 @@ const httpServer = createServer((req, res) => {
       const memory=runContexts.authenticate(runId,token);if(!memory)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");
       const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
-      if(persisted.role==="consult"&&(operation==="remarks"||operation==="status"))throw new WorkspaceError(403,"consult_read_only","Consult runs cannot post remarks or status.");
+      if(persisted.role!=="execute"&&(operation==="remarks"||operation==="status"))throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks or status.");
       if(operation==="context"&&req.method==="GET"){
         if(persisted.role==="consult"){
           const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question);
@@ -141,14 +139,14 @@ const httpServer = createServer((req, res) => {
   }
 
   if (url.pathname === "/api/health") {
-    sendJson(res, 200, { ok: true, workdir: settings.workdir, workdirExists: settings.workdirExists });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
   if (url.pathname === "/api/providers") {
     const force = url.searchParams.get("refresh") === "1";
     detectProviders(force)
-      .then((providers) => sendJson(res, 200, { workdir: settings.workdir, providers }))
+      .then((providers) => sendJson(res, 200, { providers }))
       .catch((error: unknown) => {
         log.error("provider detection failed", error);
         sendJson(res, 500, { error: "provider detection failed" });
@@ -274,7 +272,6 @@ wss.on("connection", (ws: WebSocket) => {
   void detectProviders().then((providers) => {
     send({
       kind: "hello",
-      workdir: settings.workdir,
       providers,
       // Whatever is already running, with its transcript, so a page that opens
       // mid-run repaints it instead of showing an empty log.
@@ -450,7 +447,7 @@ httpServer.on("error", (error: NodeJS.ErrnoException) => {
 httpServer.listen(config.port, config.host, () => {
   log.info(`http  http://${config.host}:${config.port}`);
   log.info(`ws    ws://${config.host}:${config.port}/ws`);
-  log.info(`workdir ${settings.workdir}${settings.workdirExists ? "" : "  (MISSING)"}`);
+  log.info(`workspaces ${workspaces.list().length}`);
   void detectProviders(true).then((providers) => {
     for (const provider of providers) {
       const status = provider.available

@@ -47,7 +47,6 @@ export interface RunStatus {
 interface ConsoleState {
   connection: ConnectionState;
   providers: ProviderInfo[];
-  workdir: string | null;
   items: LogItem[];
   /** Every run in flight, oldest first. Empty when nothing is running. */
   runs: RunStatus[];
@@ -63,14 +62,13 @@ interface ConsoleState {
 
 type Action =
   | { type: "connection"; value: ConnectionState }
-  | { type: "providers"; providers: ProviderInfo[]; workdir?: string }
+  | { type: "providers"; providers: ProviderInfo[] }
   | { type: "server"; message: ServerMessage }
   | { type: "clear" };
 
 const initialState: ConsoleState = {
   connection: "connecting",
   providers: [],
-  workdir: null,
   items: [],
   runs: [],
   lastRun: null,
@@ -98,6 +96,8 @@ function sourceText(source: RunSource): string {
       return `Selected saved prompt: ${source.promptKey === null ? "" : `${source.promptKey} — `}${source.title}\n${source.programName} / ${source.suiteName}`;
     case "consult":
       return `Consulting: ${source.question}`;
+    case "handoff":
+      return `Preparing handoff for ${source.promptKey ?? source.title}`;
   }
 }
 
@@ -141,7 +141,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       return {
         ...state,
         providers: action.providers,
-        workdir: action.workdir ?? state.workdir,
       };
 
     case "clear":
@@ -176,7 +175,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           return {
             ...state,
             providers: message.providers,
-            workdir: message.workdir,
             items: [...finished, ...replayed],
             runs: message.activeRuns.map(toRunStatus),
             consultIds: message.activeRuns.reduce(
@@ -191,9 +189,9 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           return { ...state, providers: message.providers };
 
         case "settings_updated":
-          // Another tab (or this one) changed settings: adopt the new workdir
-          // and re-detected providers without a reload.
-          return { ...state, providers: message.providers, workdir: message.workdir };
+          // Another tab (or this one) changed provider settings: re-detected
+          // providers without a reload.
+          return { ...state, providers: message.providers };
 
         case "operations_changed":
           return { ...state, operationsRevision: state.operationsRevision + 1 };
@@ -333,8 +331,8 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
         cache: "no-store",
       });
       if (!response.ok) return;
-      const body = (await response.json()) as { providers: ProviderInfo[]; workdir: string };
-      dispatch({ type: "providers", providers: body.providers, workdir: body.workdir });
+      const body = (await response.json()) as { providers: ProviderInfo[] };
+      dispatch({ type: "providers", providers: body.providers });
     } catch {
       // The socket's `hello` is the other path to this data.
     }

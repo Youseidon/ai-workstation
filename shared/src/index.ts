@@ -13,7 +13,7 @@ export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
-export const RUN_ROLES = ["execute", "consult"] as const;
+export const RUN_ROLES = ["execute", "consult", "handoff"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
 export function isRunRole(value: unknown): value is RunRole {
@@ -555,9 +555,6 @@ export interface SettingsSnapshot {
   groups: string[];
   /** Where overrides are persisted on the server. */
   storagePath: string;
-  /** Resolved AGENT_WORKDIR and whether it exists on disk. */
-  workdir: string;
-  workdirExists: boolean;
 }
 
 /** Patch sent to `PUT /api/settings`. Omitted keys are left unchanged. */
@@ -845,6 +842,7 @@ export interface OperationsPrompt {
   latestIntervention: string|null;
   lastActivityAt: string;
   sessionCount: number;
+  latestHandoff: HandoffRecord | null;
   /** Always present; missing DB rows are filled with defaults. */
   pipelineRule: PromptPipelineRule;
 }
@@ -961,6 +959,45 @@ export interface PromptActivity {
   events: PromptStatusEvent[];
   clarifications: ClarificationExchange[];
   sessions: AgentSession[];
+  handoffs: HandoffRecord[];
+}
+
+export const HANDOFF_STATES = ["QUEUED", "RUNNING", "READY", "FAILED", "SUPERSEDED"] as const;
+export type HandoffState = (typeof HANDOFF_STATES)[number];
+export const HANDOFF_RECOMMENDATIONS = ["CONTINUE", "WAIT_FOR_HUMAN", "RETRY_LATER", "DO_NOT_CONTINUE"] as const;
+export type HandoffRecommendation = (typeof HANDOFF_RECOMMENDATIONS)[number];
+
+export interface HandoffBrief {
+  version: 1;
+  originalObjective: string;
+  terminationReason: string;
+  completedWork: string[];
+  pendingWork: string[];
+  verificationPassed: string[];
+  verificationFailed: string[];
+  blockers: Array<{ description: string; requiresHuman: boolean; requiredAction: string | null }>;
+  importantFiles: string[];
+  decisionsAndAssumptions: string[];
+  recommendation: HandoffRecommendation;
+  successorInstructions: string;
+}
+
+export interface HandoffRecord {
+  id: string;
+  workspaceId: number;
+  promptId: number;
+  sourceRunId: string;
+  handoffRunId: string | null;
+  successorRunId: string | null;
+  provider: ProviderId;
+  model: string | null;
+  state: HandoffState;
+  recommendation: HandoffRecommendation | null;
+  brief: HandoffBrief | null;
+  briefMarkdown: string;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
 }
 
 export interface PromptImportPreview {
@@ -1041,7 +1078,6 @@ export type ClientMessage =
 
 export interface ServerHelloMessage {
   kind: "hello";
-  workdir: string;
   providers: ProviderInfo[];
   /** Every run in flight right now, with its transcript, for replay. */
   activeRuns: RunSnapshot[];
@@ -1063,7 +1099,8 @@ export type RunSource =
   | { type: "saved"; promptId: number; promptKey: string | null; title: string; programName: string; suiteName: string }
   | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
   | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
-  | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string };
+  | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
+  | { type: "handoff"; handoffId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string };
 
 export interface ServerRunStartedMessage {
   kind: "run_started";
@@ -1117,10 +1154,9 @@ export interface ServerPongMessage {
   kind: "pong";
 }
 
-/** Broadcast to every tab when settings change, so open panels stay in sync. */
+/** Broadcast to every tab when provider settings change, so open panels stay in sync. */
 export interface ServerSettingsUpdatedMessage {
   kind: "settings_updated";
-  workdir: string;
   providers: ProviderInfo[];
 }
 

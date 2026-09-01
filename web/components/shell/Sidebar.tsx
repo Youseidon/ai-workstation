@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { useAgentConsole } from "@/lib/useAgentConsole";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useOpenSettings } from "./chrome";
+import { WorkspaceBeacon } from "./WorkspaceBeacon";
 
 const STORAGE_KEY = "agent-console.sidebar-collapsed";
 
@@ -125,11 +125,12 @@ function readCollapsed(): boolean {
 export function Sidebar() {
   const pathname = usePathname();
   const { connection } = useAgentConsole();
-  const openSettings = useOpenSettings();
   const [collapsed, setCollapsed] = useState(false);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    // Restore the collapsed preference after mount (SSR has no localStorage).
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client preference hydrate
     setCollapsed(readCollapsed());
     setReady(true);
   }, []);
@@ -152,23 +153,25 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex h-full shrink-0 flex-col border-r border-line bg-surface-1 transition-[width] duration-200",
+        // z-20 keeps footer popovers (theme menu) above the main column when they overflow the rail.
+        "relative z-20 flex h-full shrink-0 flex-col border-r border-line bg-surface-1 transition-[width] duration-200",
         collapsed ? "w-14" : "w-56",
         !ready && "opacity-0",
       )}
     >
-      <div className={cn("flex h-12 items-center border-b border-line", collapsed ? "justify-center px-1" : "gap-2 px-3")}>
-        {!collapsed && (
-          <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-muted">
-            Agent Console
-          </span>
+      <div
+        className={cn(
+          "flex border-b border-line",
+          collapsed ? "flex-col items-center gap-1 px-1 py-2" : "h-14 items-center gap-1 px-2",
         )}
+      >
+        <WorkspaceBeacon collapsed={collapsed} />
         <button
           type="button"
           onClick={toggle}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded={!collapsed}
-          className="flex size-8 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-surface-2 hover:text-fg"
+          className="flex size-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-surface-2 hover:text-fg"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
             {collapsed ? (
@@ -223,27 +226,6 @@ export function Sidebar() {
 
         <div className={cn("flex items-center gap-1", collapsed ? "flex-col" : "")}>
           <ThemeToggle />
-          <button
-            type="button"
-            onClick={openSettings}
-            title="Settings"
-            className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-fg-dim ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
-              <path
-                d="M8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4Z"
-                stroke="currentColor"
-                strokeWidth="1.4"
-              />
-              <path
-                d="M2.8 8.7V7.3l1.3-.4.5-1.2-1-1 1-1 1.2.5 1.2-.5.4-1.3h1.4l.4 1.3 1.2.5 1.2-.5 1 1-1 1 .5 1.2 1.3.4v1.4l-1.3.4-.5 1.2 1 1-1 1-1.2-.5-1.2.5-.4 1.3H7.3l-.4-1.3-1.2-.5-1.2.5-1-1 1-1-.5-1.2-1.3-.4Z"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinejoin="round"
-              />
-            </svg>
-            {!collapsed && <span>Settings</span>}
-          </button>
         </div>
       </div>
     </aside>

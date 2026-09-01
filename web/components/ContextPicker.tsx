@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { Badge, type Tone } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { Combobox, type ComboboxItem } from "./ui/Combobox";
+
 /** How a saved prompt reads at a glance. */
 export function promptState(prompt: PromptOption): { text: string; tone: Tone } {
   if (prompt.currentRun?.processActive === true) return { text: "agent working", tone: "info" };
@@ -20,11 +21,8 @@ export function promptState(prompt: PromptOption): { text: string; tone: Tone } 
   }
 }
 
-
 interface Props {
-  workspaces: WorkspaceRecord[];
   workspaceId: number | null;
-  onWorkspace(id: number): void;
   prompts: PromptOption[];
   savedPromptId: number | null;
   onPrompt(id: number | null): void;
@@ -34,13 +32,11 @@ interface Props {
 }
 
 /**
- * Workspace and work-item chips for the composer's own header — context is
- * chosen where you act, not five strips above the box.
+ * Work-item chip for the composer's header. Workspace is chosen in the sidebar
+ * beacon — only the prompt within that project is picked here.
  */
 export function ContextPicker({
-  workspaces,
   workspaceId,
-  onWorkspace,
   prompts,
   savedPromptId,
   onPrompt,
@@ -48,15 +44,6 @@ export function ContextPicker({
   activeWorkspace,
   onRecover,
 }: Props) {
-  const workspaceItems: ComboboxItem<number>[] = workspaces.map((workspace) => ({
-    value: workspace.id,
-    label: workspace.name,
-    description: workspace.workDirectory,
-    badge: workspace.workDirectoryExists
-      ? undefined
-      : { text: "missing directory", tone: "danger" as Tone },
-  }));
-
   const promptItems: ComboboxItem<number>[] = prompts.map((prompt) => {
     const state = promptState(prompt);
     return {
@@ -76,26 +63,12 @@ export function ContextPicker({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Combobox
-        label="Workspace"
-        value={workspaceId}
-        items={workspaceItems}
-        onChange={onWorkspace}
-        disabled={disabled}
-        placeholder={workspaces.length === 0 ? "No workspaces yet" : "Workspace"}
-        emptyText="No workspaces match."
-        className="w-44"
-        widthClass="w-[22rem]"
-      />
-
-      <span aria-hidden className="text-fg-dim">▸</span>
-
-      <Combobox
         label="Work item"
         value={savedPromptId}
         items={promptItems}
         onChange={(id) => onPrompt(id)}
         disabled={disabled || workspaceId === null}
-        placeholder="Custom prompt"
+        placeholder={workspaceId === null ? "Choose a workspace first" : "Custom prompt"}
         emptyText="This workspace has no saved work items."
         className="w-56"
         widthClass="w-[30rem]"

@@ -182,12 +182,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       }
       runHub.end(runId, state);
       if (mode === "execute" && endedPromptId !== undefined) {
-        void pipelineScheduler.onExecuteEnded({
-          runId,
-          workspaceId: endedWorkspaceId,
-          promptId: endedPromptId,
-          processState: state,
-        });
+        void pipelineScheduler.onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state});
       }
     },
   });

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PromptOption, WorkspaceRecord } from "@agent-console/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import type { PromptOption } from "@agent-console/shared";
 import { Composer } from "@/components/Composer";
 import { ConsultBriefing } from "@/components/ConsultBriefing";
 import { ContextPicker } from "@/components/ContextPicker";
@@ -14,6 +15,7 @@ import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { usePreferredProvider } from "@/lib/usePreferredProvider";
 import { SERVER_URL } from "@/lib/serverUrl";
+import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 /** Matches server/src/runService.ts CONSULT_LIMIT. */
@@ -27,47 +29,24 @@ const EXAMPLES = [
 
 export default function Page() {
   const console_ = useAgentConsole();
-  const { providers, connection, items, workdir, operationsRevision } = console_;
+  const { providers, connection, items, operationsRevision } = console_;
   const toast = useToast();
   const dialogs = useDialogs();
   const { selected, setPreferred } = usePreferredProvider(providers);
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [workspaceLoading, setWorkspaceLoading] = useState(true);
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const {
+    workspaceId,
+    workspace: activeWorkspace,
+    status: workspaceStatus,
+    error: workspaceError,
+    refresh: refreshWorkspaces,
+  } = useWorkspace();
   const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
-  const [savedPromptId, setSavedPromptId] = useState<number | null>(null);
-
-  const refreshWorkspaces = useCallback(() => {
-    return workspaceApi
-      .list(SERVER_URL)
-      .then((list) => {
-        setWorkspaceError(null);
-        setWorkspaces(list);
-        const params = new URLSearchParams(window.location.search);
-        const requestedWorkspace = Number(params.get("workspace"));
-        const requestedPrompt = Number(params.get("prompt"));
-        const remembered = Number(localStorage.getItem("agent-console.workspace"));
-        setWorkspaceId(
-          list.some((w) => w.id === requestedWorkspace)
-            ? requestedWorkspace
-            : list.some((w) => w.id === remembered)
-              ? remembered
-              : list[0]?.id ?? null,
-        );
-        if (Number.isSafeInteger(requestedPrompt) && requestedPrompt > 0) {
-          setSavedPromptId(requestedPrompt);
-        }
-      })
-      .catch((error: unknown) => {
-        setWorkspaceError(error instanceof Error ? error.message : "Workspaces could not be loaded.");
-      })
-      .finally(() => setWorkspaceLoading(false));
-  }, []);
-
-  useEffect(() => {
-    void refreshWorkspaces();
-  }, [refreshWorkspaces]);
+  const [savedPromptId, setSavedPromptId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const requested = Number(new URLSearchParams(window.location.search).get("prompt"));
+    return Number.isSafeInteger(requested) && requested > 0 ? requested : null;
+  });
+  const lastWorkspaceId = useRef<number | null>(null);
 
   const refreshPrompts = useCallback(
     (id: number) =>
@@ -79,14 +58,24 @@ export default function Page() {
   );
 
   useEffect(() => {
-    if (workspaceId === null) return;
-    localStorage.setItem("agent-console.workspace", String(workspaceId));
+    /* Prompt catalog for the selected workspace; reset when the beacon changes. */
+    /* eslint-disable react-hooks/set-state-in-effect -- scoped catalog sync */
+    if (workspaceId === null) {
+      setPromptOptions([]);
+      return;
+    }
+    if (lastWorkspaceId.current !== null && lastWorkspaceId.current !== workspaceId) {
+      setSavedPromptId(null);
+      setPromptOptions([]);
+    }
+    lastWorkspaceId.current = workspaceId;
     void refreshPrompts(workspaceId);
+    /* eslint-enable react-hooks/set-state-in-effect */
     const timer = setInterval(() => void refreshPrompts(workspaceId), 60_000);
     return () => clearInterval(timer);
   }, [workspaceId, refreshPrompts, operationsRevision]);
 
-  const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null;
+  const workspaceLoading = workspaceStatus === "loading";
   const savedPrompt = promptOptions.find((p) => p.id === savedPromptId) ?? null;
 
   const selectedInfo = useMemo(
@@ -190,13 +179,7 @@ export default function Page() {
 
   const context = (
     <ContextPicker
-      workspaces={workspaces}
       workspaceId={workspaceId}
-      onWorkspace={(id) => {
-        setSavedPromptId(null);
-        setPromptOptions([]);
-        setWorkspaceId(id);
-      }}
       prompts={promptOptions}
       savedPromptId={savedPromptId}
       onPrompt={setSavedPromptId}
@@ -218,7 +201,7 @@ export default function Page() {
       askBlockedReason={askBlockedReason}
       savedPrompt={savedPrompt}
       context={context}
-      workdir={activeWorkspace?.workDirectory ?? workdir}
+      workdir={activeWorkspace?.workDirectory ?? null}
       onSubmit={send}
       onAsk={ask}
       onInterrupt={() => console_.interrupt(writerRun?.runId)}
@@ -246,13 +229,17 @@ export default function Page() {
       {workspaceError !== null && (
         <div role="alert" className="flex items-center gap-3 border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
           <span className="min-w-0 flex-1">The workspace library is unavailable: {workspaceError}</span>
-          <Button size="sm" variant="secondary" onClick={() => { setWorkspaceLoading(true); void refreshWorkspaces(); }}>Retry</Button>
+          <Button size="sm" variant="secondary" onClick={() => void refreshWorkspaces()}>Retry</Button>
         </div>
       )}
 
-      {!workspaceLoading && workspaceError === null && workspaces.length === 0 && (
+      {!workspaceLoading && workspaceStatus === "empty" && (
         <div role="status" className="border-b border-line bg-surface-1 px-4 py-2 text-xs text-fg-muted">
-          No workspaces yet. Add one from the Workspaces page before starting an agent.
+          No workspaces yet.{" "}
+          <Link href="/workspaces" className="text-accent hover:underline">
+            Create one
+          </Link>{" "}
+          before starting an agent.
         </div>
       )}
 
@@ -284,14 +271,14 @@ export default function Page() {
         </div>
       ) : (
         <>
-          <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? workdir} />
+          <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? null} />
           <div className="flex flex-col gap-2 px-3 pb-3 pt-1">
             {(consults.length > 0 || lastConsult !== null) && (
               <ConsultBriefing
                 consults={consults}
                 lastConsult={lastConsult}
                 itemsFor={console_.itemsFor}
-                workdir={activeWorkspace?.workDirectory ?? workdir}
+                workdir={activeWorkspace?.workDirectory ?? null}
                 onStop={(runId) => console_.interrupt(runId)}
               />
             )}

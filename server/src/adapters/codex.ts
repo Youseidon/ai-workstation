@@ -288,7 +288,7 @@ export class CodexAdapter extends SpawnAdapter {
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const args = ["exec", "--json", "--color", "never", "-C", opts.cwd];
-    args.push("-s", opts.permissionOverride === "consult" ? "read-only" : effectiveCodexSandboxMode());
+    args.push("-s", opts.permissionOverride !== "inherit" ? "read-only" : effectiveCodexSandboxMode());
     if (settings.codex.skipGitRepoCheck) args.push("--skip-git-repo-check");
     const model = opts.model ?? settings.codex.model;
     if (model !== null) args.push("-m", model);

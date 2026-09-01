@@ -205,14 +205,26 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Ambient backdrop: a faint grid plus two colour washes. Fixed and behind
-   everything, pointer-transparent, and dropped entirely when effects are off —
-   it is atmosphere, never information. */
+/*
+ * Ambient backdrop: a faint grid plus two colour washes. Fixed and behind
+ * everything, pointer-transparent, and dropped entirely when effects are off —
+ * it is atmosphere, never information.
+ *
+ * `isolation: isolate` keeps the wash inside body's stacking context so
+ * z-index: -1 cannot slip behind the page chrome. Do NOT use
+ * `body > * { position: relative; z-index: 1 }` for this — that rule beats
+ * Tailwind's `.fixed` / `.z-[60]` on portaled toasts and modals (specificity
+ * 0,1,1 vs 0,1,0) and pins them in document flow off-screen.
+ */
+body {
+  isolation: isolate;
+}
+
 body::before {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: -1;
   pointer-events: none;
   background:
     radial-gradient(ellipse 80% 55% at 15% -10%, var(--wash-a), transparent 70%),
@@ -223,12 +235,6 @@ body::before {
 
 [data-effects="reduced"] body::before {
   background: none;
-}
-
-/* Everything the app renders sits above the backdrop. */
-body > * {
-  position: relative;
-  z-index: 1;
 }
 
 /* A visible, consistent focus ring. Keyboard users get it; mouse users do not. */

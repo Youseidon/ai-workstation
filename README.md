@@ -28,7 +28,7 @@ counts, all rendered as a scrolling terminal-style log.
 
 ```bash
 npm install
-cp .env.example .env      # then edit AGENT_WORKDIR
+cp .env.example .env
 npm run dev               # starts the WebSocket backend and the Next.js frontend
 ```
 
@@ -122,32 +122,31 @@ mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_AR
 
 ---
 
-## Settings page
+## Provider settings
 
 Everything in `.env` that is safe to change while the server is running is also
-editable from the **⚙ settings** button in the header — working directory,
-per-provider default model, permission/sandbox mode, binary name, extra CLI
-arguments, and API keys. (Day-to-day model switching happens in the header, not
-here; the `Model` field only supplies the fallback.) Changes are saved to `.agent-console/settings.json` (mode `0600`,
+editable from the **Agents** page — per-provider default model, permission/sandbox
+mode, binary name, extra CLI arguments, API keys, and host access. (Day-to-day
+model switching happens in the header, not here; the `Model` field only supplies
+the fallback.) Changes are saved to `.agent-console/settings.json` (mode `0600`,
 gitignored) and survive restarts.
 
 - **Layering** — `.env` supplies the default for every field; saved overrides sit
-  on top. A field edited back to its `.env` value drops the override entirely,
-  and **reset all to .env** clears the file.
+  on top. A field edited back to its `.env` value drops the override entirely.
 - **No restart** — adapters read settings through getters at run time, so a
   change applies to the next run. Provider detection re-runs on save, so
   switching `CODEX_BIN` or adding an API key updates the switcher immediately.
 - **Every open tab stays in sync** — saving broadcasts `settings_updated` over
-  the WebSocket with the new working directory and re-detected providers.
+  the WebSocket with the re-detected providers.
 - **Secrets stay server-side** — `password` fields are write-only. The browser
   is told whether a key is set, never its value.
 - **Dangerous values are called out** — selecting `bypassPermissions`,
   `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, or turning on
   **Host access (Docker)** is flagged inline and asks for confirmation before saving.
 
-The panel is generated from the field table in `server/src/settings.ts`. Adding a
-new tunable is one entry there — label, group, type, `.env` variable, options,
-description — and it appears in the UI with no frontend change.
+The Agents page is generated from the field table in `server/src/settings.ts`.
+Adding a new tunable is one entry there — label, group, type, `.env` variable,
+options, description — and it appears in the UI with no frontend change.
 
 `REST: GET /api/settings` · `PUT /api/settings` (partial patch) ·
 `POST /api/settings/reset` (`{"keys": [...]}` or `{}` for everything).
@@ -161,11 +160,10 @@ prompts. The console lets you select a workspace and either type a custom
 prompt or choose one of those saved prompts.
 
 Data is stored in `.agent-console/console.sqlite`. The browser only uses the
-REST API; it never reads or writes SQLite directly. On first start, the server
-creates a **Default workspace** from the effective `AGENT_WORKDIR`, preserving
-the previous single-directory setup. `AGENT_WORKDIR` is therefore the seed and
-legacy fallback; each run resolves its real directory from the selected
-workspace.
+REST API; it never reads or writes SQLite directly. There is no default
+workspace: create one on the Workspaces page, pointing it at an existing
+directory, before you can add programs, suites, or run an agent. Each run
+uses that workspace's directory as `cwd`.
 
 Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
 CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
@@ -202,15 +200,15 @@ they are boot-time only and live in `config.ts`.
 The agents have different permission systems, and the console does
 not paper over that — it shows each provider's effective mode in the status bar
 and in the switcher tooltip. Defaults are set in `.env.example` and can be
-changed at any time from the settings page:
+changed at any time from the Agents page:
 
 | Provider | Env var | Default | What it means |
 |---|---|---|---|
 | **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
 | Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
-| Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to `AGENT_WORKDIR`, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
+| Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
 | Cursor | `CURSOR_FORCE` | `true` | Cursor has no sandbox: `--force` means it will not stop to ask. Set `false` to keep approvals on (headless runs may then stall). |
-| Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to `AGENT_WORKDIR`. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
+| Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to the selected workspace directory. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
 
 `CLAUDE_PERMISSION_MODE=default` and `GROK_PERMISSION_MODE=default` are a poor
 fit for a headless console: prompts have nowhere to go, so tool calls get denied
@@ -218,15 +216,14 @@ or the run stalls. Use `acceptEdits`, `plan`, or `dontAsk`.
 
 **Docker / compose.** Codex's default `workspace-write` sandbox cannot connect to
 `/var/run/docker.sock` even when your user is in the `docker` group — that is a
-sandbox deny, not a missing CLI. Turn on **Host access (Docker)** in settings
-(or set `AGENT_HOST_ACCESS=true` and restart the server). The OS user that runs
-this console still has to be in the `docker` group, or Docker itself will refuse
-the socket.
+sandbox deny, not a missing CLI. Turn on **Host access (Docker)** on the Agents
+page (or set `AGENT_HOST_ACCESS=true` and restart the server). The OS user that
+runs this console still has to be in the `docker` group, or Docker itself will
+refuse the socket.
 
-All providers receive the same `cwd` — `AGENT_WORKDIR`, which defaults to the
-scratch `workspace/` directory in this repo. Relative paths resolve against the
-repo root. **Point it at the project you want worked on, and remember the agents
-can read and write there.**
+Each run uses the selected workspace's directory as `cwd`. Relative paths on a
+workspace resolve against the repo root. **Point a workspace at the project you
+want worked on, and remember the agents can read and write there.**
 
 ---
 
@@ -252,7 +249,7 @@ web/
   lib/useSettings.ts     settings REST client
   lib/log.ts             event stream → transcript projection
   components/            switcher, log panel, log entry, status bar, prompt input,
-                         settings panel (rendered from the server's field table)
+                         Agents page (rendered from the server's field table)
 ```
 
 **Provider adapter pattern.** Every adapter implements:
@@ -308,14 +305,14 @@ Configuration comes from two layers:
 
 1. **`.env` at the repo root**, read by both processes (the frontend picks it up
    through `web/next.config.ts`). See `.env.example` for the annotated list.
-2. **`.agent-console/settings.json`**, written by the settings page, layered on
+2. **`.agent-console/settings.json`**, written by the Agents page, layered on
    top of `.env`. Delete the file to go back to pure `.env` behaviour.
 
 API keys are read server-side only and are never sent to the browser — the client
 only ever sees `available`, `reason`, `version`, `permissionMode`, and `model`,
 plus a boolean for whether each key is set.
 
-Note that keys saved through the settings page are stored in
+Note that keys saved through the Agents page are stored in
 `.agent-console/settings.json` in plain text (file mode `0600`). If you would
 rather not have them on disk in that form, leave those fields empty and use
 `.env` or your provider's own login (`claude`, `codex login`, `grok login`).
@@ -328,13 +325,13 @@ rather not have them on disk in that form, leave those fields empty and use
 trusted network without adding authentication.**
 
 It has no auth system by design, and anyone who can reach the port can run
-arbitrary code and file operations in `AGENT_WORKDIR` through four different
-agents with four different permission models — including modes that disable
-sandboxing entirely. The settings endpoints are unauthenticated too: reaching the
-port is enough to repoint the working directory, disable a sandbox, or read
-whether an API key is configured. The server binds `127.0.0.1` by default and rejects
-WebSocket upgrades from origins outside `ALLOWED_ORIGINS`, but neither of those
-is an authentication mechanism.
+arbitrary code and file operations in any configured workspace through four
+different agents with four different permission models — including modes that
+disable sandboxing entirely. The settings endpoints are unauthenticated too:
+reaching the port is enough to disable a sandbox or read whether an API key is
+configured. The server binds `127.0.0.1` by default and rejects WebSocket
+upgrades from origins outside `ALLOWED_ORIGINS`, but neither of those is an
+authentication mechanism.
 
 ---
 

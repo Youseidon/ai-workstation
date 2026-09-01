@@ -12,17 +12,16 @@ import {
   type TaskUsageRow,
   type UsageReport,
   type UsageTotals,
-  type WorkspaceRecord,
 } from "@agent-console/shared";
 import { CountUp } from "@/components/CountUp";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Select } from "@/components/ui/Field";
 import { Skeleton } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole } from "@/lib/useAgentConsole";
+import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 type Tab = "suites" | "tasks" | "sessions";
@@ -52,27 +51,22 @@ function sessionTitle(session: SessionUsageRow): string {
 
 export function ReportView() {
   const { operationsRevision } = useAgentConsole();
+  const { workspaceId } = useWorkspace();
   const [report, setReport] = useState<UsageReport | null>(null);
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [workspaceFilter, setWorkspaceFilter] = useState<string>("all");
   const [tab, setTab] = useState<Tab>("suites");
   const [expandedSuite, setExpandedSuite] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    void workspaceApi
-      .list(SERVER_URL)
-      .then(setWorkspaces)
-      .catch(() => {
-        /* workspace filter is optional */
-      });
-  }, []);
-
   const refresh = useCallback(async () => {
+    if (workspaceId === null) {
+      setReport(null);
+      setLoadError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const workspaceId = workspaceFilter === "all" ? undefined : Number(workspaceFilter);
       const nextReport = await workspaceApi.report(SERVER_URL, workspaceId);
       setReport(nextReport);
       setLoadError(null);
@@ -81,9 +75,11 @@ export function ReportView() {
     } finally {
       setLoading(false);
     }
-  }, [workspaceFilter]);
+  }, [workspaceId]);
 
   useEffect(() => {
+    // Server report: refresh on mount, workspace change, and operations revision.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async catalog fetch
     void refresh();
   }, [refresh, operationsRevision]);
 
@@ -121,19 +117,6 @@ export function ReportView() {
             {loadError !== null && <p className="mt-1 text-xs text-danger">{loadError}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Select
-              aria-label="Workspace"
-              value={workspaceFilter}
-              onChange={(event) => setWorkspaceFilter(event.target.value)}
-              className="w-44"
-            >
-              <option value="all">All workspaces</option>
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={String(workspace.id)}>
-                  {workspace.name}
-                </option>
-              ))}
-            </Select>
             <Button size="sm" variant="ghost" onClick={() => void refresh()} loading={loading && report !== null}>
               Refresh
             </Button>

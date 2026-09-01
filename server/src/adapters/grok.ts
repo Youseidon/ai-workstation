@@ -405,7 +405,7 @@ export class GrokAdapter extends SpawnAdapter {
   }
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
-    const consult = opts.permissionOverride === "consult";
+    const consult = opts.permissionOverride !== "inherit";
     const args = [
       "--output-format", "streaming-json",
       "--cwd", opts.cwd,

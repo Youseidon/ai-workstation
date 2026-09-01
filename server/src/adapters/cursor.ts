@@ -336,7 +336,7 @@ export class CursorAdapter extends SpawnAdapter {
   }
 
   override async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {
-    if (opts.permissionOverride === "consult") {
+    if (opts.permissionOverride !== "inherit") {
       throw new Error("Cursor cannot run as a consult; it has no sandbox.");
     }
     yield* super.run(prompt, opts);

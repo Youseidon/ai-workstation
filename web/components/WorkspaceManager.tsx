@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ProgramRecord,
   PromptRecord,
@@ -9,6 +9,7 @@ import type {
   WorkspaceTree,
 } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
+import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -33,6 +34,11 @@ type Kind = "program" | "suite" | "prompt";
 export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const toast = useToast();
   const dialogs = useDialogs();
+  const { workspaceId: globalWorkspaceId, setWorkspaceId, refresh: refreshGlobal } = useWorkspace();
+  const globalIdRef = useRef(globalWorkspaceId);
+  useEffect(() => {
+    globalIdRef.current = globalWorkspaceId;
+  }, [globalWorkspaceId]);
   const [items, setItems] = useState<WorkspaceRecord[] | null>(null);
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [programId, setProgramId] = useState<number | null>(null);
@@ -51,11 +57,16 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
         .list(serverUrl)
         .then(async (list) => {
           setItems(list);
-          const id = select ?? list[0]?.id;
+          const preferred = select ?? globalIdRef.current;
+          const id =
+            preferred !== null && preferred !== undefined && list.some((item) => item.id === preferred)
+              ? preferred
+              : list[0]?.id;
           setTree(id === undefined ? null : await workspaceApi.tree(serverUrl, id));
+          await refreshGlobal();
         })
         .catch(() => setItems([])),
-    [serverUrl],
+    [serverUrl, refreshGlobal],
   );
 
   useEffect(() => {
@@ -87,6 +98,7 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
     setProgramId(null);
     setSuiteId(null);
     setPromptId(null);
+    setWorkspaceId(id);
     try {
       setTree(await workspaceApi.tree(serverUrl, id));
     } catch (error) {

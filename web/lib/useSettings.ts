@@ -60,9 +60,9 @@ function describe(error: unknown): string {
 }
 
 /**
- * Talks to the server's settings endpoints. The panel is rendered from the
- * snapshot's field descriptors, so a new server-side setting shows up in the UI
- * without any frontend change.
+ * Talks to the server's settings endpoints. The Agents page is rendered from
+ * the snapshot's field descriptors, so a new server-side setting shows up in
+ * the UI without any frontend change.
  */
 export function useSettings(serverUrl: string) {
   const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null);

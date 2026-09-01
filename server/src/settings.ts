@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   ProviderId,
   SettingField,
@@ -17,9 +17,9 @@ const log = createLogger("settings");
 
 /*
  * Every tunable lives in one table. `.env` supplies the default for each field;
- * overrides saved from the settings page are persisted to a JSON file and layered
+ * overrides saved from the Agents page are persisted to a JSON file and layered
  * on top. Adapters read through the `settings` accessor at run time, so a change
- * applies to the next run without restarting the server — and the settings page
+ * applies to the next run without restarting the server — and the Agents page
  * is generated from this table, so adding a knob is a one-entry change.
  */
 
@@ -45,17 +45,6 @@ function option(value: string, label: string, hint: string | null, danger = fals
 export const GROUPS = ["General", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI"] as const;
 
 const FIELDS: FieldDef[] = [
-  {
-    key: "workdir",
-    label: "Default workspace directory (legacy)",
-    group: "General",
-    type: "path",
-    envVar: "AGENT_WORKDIR",
-    fallback: "./workspace",
-    placeholder: "/absolute/path or ./relative-to-repo",
-    description:
-      "Used to seed the Default workspace on a new database. Runs now use the directory selected on the Workspaces page.",
-  },
   {
     key: "statusIntervalMs",
     label: "Status heartbeat (ms)",
@@ -543,13 +532,6 @@ function argvList(key: string): string[] {
 /* -------------------------------------------------------------------------- */
 
 export const settings = {
-  get workdir(): string {
-    const value = text("workdir") || "./workspace";
-    return isAbsolute(value) ? value : resolve(config.repoRoot, value);
-  },
-  get workdirExists(): boolean {
-    return existsSync(this.workdir);
-  },
   get statusIntervalMs(): number {
     return count("statusIntervalMs") || 1000;
   },
@@ -695,8 +677,6 @@ export function snapshot(): SettingsSnapshot {
     fields: FIELDS.map(describeField),
     groups: [...GROUPS],
     storagePath: STORAGE_PATH,
-    workdir: settings.workdir,
-    workdirExists: settings.workdirExists,
   };
 }
 
@@ -842,7 +822,7 @@ export function permissionForRun(
   provider: ProviderId,
   override: PermissionOverride,
 ): { mode: string; hostAccessApplied: boolean } {
-  if (override === "consult") {
+  if (override !== "inherit") {
     switch (provider) {
       case "claude":
         return { mode: "plan", hostAccessApplied: false };
@@ -851,7 +831,7 @@ export function permissionForRun(
       case "grok":
         return { mode: "plan · sandbox: workspace", hostAccessApplied: false };
       case "cursor":
-        return { mode: "consult-not-supported", hostAccessApplied: false };
+        return { mode: "read-only-not-supported", hostAccessApplied: false };
     }
   }
   switch (provider) {
