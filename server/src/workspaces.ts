@@ -975,6 +975,13 @@ export const workspaces = {
   recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior run to recover");return run.id; },
   latestExecuteRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_handoff","This work item has no prior developer run");return run.id; },
   runSummary(runId:string):{id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string} { const run=db.prepare("SELECT id,workspace_id workspaceId,prompt_id promptId,provider,model,state FROM agent_run WHERE id=?").get(runId) as {id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string}|undefined;if(!run)throw new WorkspaceError(404,"not_found","Run not found");return run; },
+  runProducedWork(runId:string):boolean {
+    const rows=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=?").all(runId) as Array<{event_json:string}>;
+    return rows.some(row=>{
+      const event=JSON.parse(row.event_json) as NormalizedEvent;
+      return event.type==="assistant_text"||event.type==="tool_use"||event.type==="tool_result";
+    });
+  },
   recoverPrompt(promptId:number,expectedRunId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status,result FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"];result:string}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");

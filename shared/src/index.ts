@@ -67,10 +67,10 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
   cursor: [
     { id: null, label: "default", hint: "whatever cursor-agent picks" },
     { id: "auto", label: "auto", hint: "Cursor routes the request" },
-    { id: "sonnet-4.5", label: "sonnet 4.5", hint: "Anthropic" },
-    { id: "opus-4.1", label: "opus 4.1", hint: "Anthropic, slower" },
-    { id: "gpt-5", label: "gpt-5", hint: "OpenAI" },
-    { id: "grok", label: "grok", hint: "xAI" },
+    { id: "claude-sonnet-5-medium", label: "sonnet 5", hint: "Anthropic, balanced" },
+    { id: "claude-opus-4-8-high", label: "opus 4.8", hint: "Anthropic, high effort" },
+    { id: "gpt-5.6-terra-medium", label: "5.6 terra", hint: "OpenAI, balanced" },
+    { id: "cursor-grok-4.5-medium", label: "grok 4.5", hint: "xAI, balanced" },
   ],
   // Reported by `grok models` on a logged-in CLI.
   grok: [

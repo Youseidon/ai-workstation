@@ -264,6 +264,19 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/retry-launch$/);
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);const input=await body(req);const provider=input.provider;
+      if(!isProviderId(provider))throw new WorkspaceError(422,"validation_error","Choose a valid successor provider");
+      const pipelineId=typeof input.pipelineId==="number"&&Number.isSafeInteger(input.pipelineId)&&input.pipelineId>0?input.pipelineId:null;
+      if(pipelineId===null)throw new WorkspaceError(422,"validation_error","pipelineId is required");
+      const runId=workspaces.recoveryRunId(promptId);const source=workspaces.runSummary(runId);
+      if(source.state!=="ERROR"||workspaces.runProducedWork(runId))throw new WorkspaceError(409,"handoff_required","This run produced work; prepare a handoff before continuing");
+      workspaces.recoverPrompt(promptId,runId);
+      const {pipelineScheduler}=await import("./pipelineScheduler.ts");
+      const run=await pipelineScheduler.playNamed(pipelineId,{provider,model:typeof input.model==="string"?input.model:null,preferPlayTarget:true});
+      json(res,202,{started:true,run});return true;
+    }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;
