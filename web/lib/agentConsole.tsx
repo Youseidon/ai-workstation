@@ -22,6 +22,7 @@ import type {
   TokenUsage,
   WorkspaceRecord,
 } from "@agent-console/shared";
+import { mergeUsage } from "@agent-console/shared";
 import { appendPrompt, applyEvent, type LogItem } from "./log";
 import { SERVER_URL } from "./serverUrl";
 
@@ -90,7 +91,9 @@ function sourceText(source: RunSource): string {
     case "clarification":
       return `Clarifying ${source.promptKey ?? source.title}: ${source.question}`;
     case "verification":
-      return `Verifying suite ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`;
+      return source.promptKey === null
+        ? `Verifying suite ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`
+        : `Verifying ${source.promptKey} in ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`;
     case "saved":
       return `Selected saved prompt: ${source.promptKey === null ? "" : `${source.promptKey} — `}${source.title}\n${source.programName} / ${source.suiteName}`;
     case "consult":
@@ -240,7 +243,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             ...current,
             state: event.payload.state,
             elapsedMs: event.payload.elapsedMs,
-            usage: event.payload.usage ?? current.usage,
+            usage: mergeUsage(current.usage, event.payload.usage),
             detail: event.payload.detail ?? current.detail,
           };
           return { ...state, items, runs };
@@ -270,7 +273,7 @@ const RECONNECT_MAX_MS = 5000;
 interface AgentConsoleApi extends ConsoleState {
   /**
    * The execute writer for single-run UI. Prefer execute so a consult cannot
-   * hide a writer; StatusBar falls back for consult-only.
+   * hide a writer; TopBar falls back for consult-only.
    */
   run: RunStatus | null;
   /** Transcript lines belonging to one run. */
@@ -294,8 +297,8 @@ interface AgentConsoleApi extends ConsoleState {
     question: string,
     model: string | null,
   ): boolean;
-  /** Starts a server-side agent verification of a whole suite. */
-  verifySuite(suiteId: number, provider: ProviderId, model: string | null): boolean;
+  /** Starts a server-side agent verification of a suite, or one work item inside it. */
+  verifySuite(suiteId: number, provider: ProviderId, model: string | null, promptId?: number | null): boolean;
   /** Stops a run by id, or the primary run when called with no argument. */
   interrupt(runId?: string): boolean;
   clearLog(): void;
@@ -407,7 +410,8 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
         send({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }),
       askClarification: (workspaceId, provider, promptId, question, model) =>
         send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model, role: "execute" }),
-      verifySuite: (suiteId, provider, model) => send({ kind: "verify_suite", suiteId, provider, model }),
+      verifySuite: (suiteId, provider, model, promptId) =>
+        send({ kind: "verify_suite", suiteId, provider, model, promptId: promptId ?? null }),
       interrupt: (runId) => {
         const target = runId ?? run?.runId;
         if (target === undefined) return false;

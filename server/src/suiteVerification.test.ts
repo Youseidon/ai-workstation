@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactWorkItem, deriveVerdict, normalizeCheck, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
+import { compactWorkItem, deriveVerdict, dossierHeading, normalizeCheck, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 
 test("suite dossier keeps verification context and drops reporting boilerplate",()=>{
   const result=compactWorkItem("Intro.\n\n## Objective\nShip it.\n\n## Verification\n```bash\nnpm test\n```\n\n## Report\nWrite a long summary.\n\n## Stripe runtime and evidence policy\nRepeated policy.");
@@ -9,6 +9,19 @@ test("suite dossier keeps verification context and drops reporting boilerplate",
 
 test("suite dossier deduplicates commands in first-seen order",()=>{
   assert.deepEqual(uniqueCommands(["```bash\nnpm test\nnpm run build\n```","```sh\nnpm test\n```"]),["npm test","npm run build"]);
+});
+
+test("prompt-scoped dossier names the work item in the heading", () => {
+  const suite = { key: "S0", name: "Foundation" };
+  assert.equal(dossierHeading(suite), "# Independent verification: S0 — Foundation");
+  assert.equal(
+    dossierHeading(suite, { promptKey: "S0-01", title: "Repository restructure" }),
+    "# Independent verification: S0 — Foundation › S0-01 — Repository restructure",
+  );
+  assert.equal(
+    dossierHeading(suite, { promptKey: null, title: "Untitled item" }),
+    "# Independent verification: S0 — Foundation › Untitled item",
+  );
 });
 
 test("report parsing survives the shapes agents actually emit", () => {

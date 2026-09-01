@@ -62,6 +62,7 @@ function toUsage(usage: CodexUsage | undefined): TokenUsage | null {
   if (!usage) return null;
   const inputTokens = usage.input_tokens ?? 0;
   const outputTokens = usage.output_tokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return null;
   return {
     inputTokens,
     outputTokens,

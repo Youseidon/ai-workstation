@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { AgentDock } from "@/components/AgentDock";
+import { AppShell } from "@/components/shell/AppShell";
 import { ThemeScript } from "@/components/ThemeScript";
 import { DialogProvider } from "@/components/ui/Dialogs";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -49,11 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
              * transcript of a run that is still going.
              */}
             <AgentConsoleProvider>
-              <div className="flex h-dvh flex-col">
-                <div className="min-h-0 flex-1">{children}</div>
-                {/* Renders nothing while idle, so it takes no space. */}
-                <AgentDock />
-              </div>
+              <AppShell>{children}</AppShell>
             </AgentConsoleProvider>
           </DialogProvider>
         </ToastProvider>

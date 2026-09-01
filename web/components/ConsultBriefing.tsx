@@ -11,8 +11,9 @@ import { Button } from "./ui/Button";
 /**
  * Transcript for consult runs. The writer LogPanel never renders these events.
  *
- * Opens while a consult is live, or with the last consult in this workspace
- * after it ends. Multiple live consults are tabs, not stacked transcripts.
+ * Collapses to a one-line strip when docked above the composer; expands to show
+ * tabs and the consult LogPanel. Opens while a consult is live, or with the
+ * last consult in this workspace after it ends.
  */
 export function ConsultBriefing({
   consults,
@@ -29,6 +30,7 @@ export function ConsultBriefing({
 }) {
   const tabs = consults.length > 0 ? consults : lastConsult !== null ? [lastConsult] : [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(true);
   const active = tabs.find((tab) => tab.runId === selectedId) ?? tabs[tabs.length - 1] ?? null;
 
   if (active === null) return null;
@@ -39,27 +41,34 @@ export function ConsultBriefing({
   return (
     <section
       aria-label="Consult briefing"
-      className="flex h-56 shrink-0 flex-col border-t border-line bg-surface-1"
+      className="flex shrink-0 flex-col border border-line bg-surface-1 shadow-sm"
     >
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-left"
+      >
+        <span aria-hidden className="text-[10px] text-fg-dim">{expanded ? "▾" : "▸"}</span>
         <span className="text-[10px] uppercase tracking-wider text-fg-dim">Asking</span>
         {tabs.map((tab) => {
           const tabTheme = providerTheme[tab.provider];
           const isActive = tab.runId === active.runId;
-          const caption = tab.source.type === "consult" ? tab.source.question : null;
           return (
-            <button
+            <span
               key={tab.runId}
-              type="button"
-              onClick={() => setSelectedId(tab.runId)}
-              title={caption ?? undefined}
+              role="presentation"
+              onClick={(event) => {
+                event.stopPropagation();
+                setSelectedId(tab.runId);
+                setExpanded(true);
+              }}
               className={cn(
                 "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
-                isActive ? tabTheme.active : "text-fg-muted ring-transparent hover:bg-surface-2",
+                isActive ? tabTheme.active : "text-fg-muted ring-transparent",
               )}
             >
-              {tab.provider} · asking
-            </button>
+              {tab.provider}
+            </span>
           );
         })}
         {question !== null && (
@@ -67,17 +76,28 @@ export function ConsultBriefing({
             {question}
           </span>
         )}
-        <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-2">
           {live ? (
-            <Button size="sm" variant="danger" onClick={() => onStop(active.runId)}>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={(event) => {
+                event.stopPropagation();
+                onStop(active.runId);
+              }}
+            >
               Stop
             </Button>
           ) : (
             <span className="text-[10px] uppercase tracking-wider text-fg-dim">{active.state}</span>
           )}
         </span>
-      </div>
-      <LogPanel items={itemsFor(active.runId)} workdir={workdir} />
+      </button>
+      {expanded && (
+        <div className="flex h-48 flex-col border-t border-line">
+          <LogPanel items={itemsFor(active.runId)} workdir={workdir} />
+        </div>
+      )}
     </section>
   );
 }

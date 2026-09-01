@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
-import { oneLine } from "@agent-console/shared";
+import { mergeUsage, oneLine } from "@agent-console/shared";
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   describeEffectiveAccess,
@@ -83,6 +83,7 @@ function toUsage(raw: RawUsage | undefined): TokenUsage | null {
   const cached = raw.cache_read_input_tokens ?? 0;
   const inputTokens = (raw.input_tokens ?? 0) + cached + (raw.cache_creation_input_tokens ?? 0);
   const outputTokens = raw.output_tokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return null;
   return {
     inputTokens,
     outputTokens,
@@ -323,6 +324,7 @@ export class ClaudeAdapter implements AgentAdapter {
             currentMessageId = id;
           },
           streamedBlocks,
+          isSettled: () => settled,
           markSettled: () => {
             settled = true;
           },
@@ -432,6 +434,9 @@ export class ClaudeAdapter implements AgentAdapter {
             };
           }
         }
+        if (state.usage !== null) {
+          yield { type: "status", payload: { state: "running", usage: state.usage, detail: "usage" } };
+        }
         if (message.error) {
           yield {
             type: "error",
@@ -474,8 +479,9 @@ export class ClaudeAdapter implements AgentAdapter {
       }
 
       case "result": {
+        if (state.isSettled()) return;
         state.markSettled();
-        const finalUsage = toUsage(message.usage as RawUsage) ?? state.usage;
+        const finalUsage = mergeUsage(state.usage, toUsage(message.usage as RawUsage));
         state.setUsage(finalUsage);
         if (message.subtype !== "success") {
           const detail = "errors" in message && Array.isArray(message.errors)
@@ -532,6 +538,7 @@ interface MapperState {
   getMessageId(): string;
   setMessageId(id: string): void;
   streamedBlocks: Set<string>;
+  isSettled(): boolean;
   markSettled(): void;
 }
 

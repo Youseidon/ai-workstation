@@ -4,6 +4,8 @@ import {
   classifyUsageWindow,
   parseClaudeUsage,
   parseCodexRateLimits,
+  parseCursorPeriodUsage,
+  parseCursorPlanName,
   parseGrokCredits,
 } from "./adapters/accountUsage.ts";
 
@@ -104,4 +106,70 @@ test("parseGrokCredits reads the weekly pool and skips fabricating a daily windo
   assert.equal(parsed.windows[0]?.usedPercent, 34);
   assert.equal(parsed.credits?.limit, 50);
   assert.equal(parsed.credits?.used, 3);
+});
+
+test("parseCursorPeriodUsage maps the billing cycle from totalPercentUsed", () => {
+  const parsed = parseCursorPeriodUsage({
+    billingCycleStart: "1788224377000",
+    billingCycleEnd: "1790816377000",
+    planUsage: {
+      totalSpend: 1005,
+      includedSpend: 1005,
+      remaining: 995,
+      limit: 2000,
+      autoPercentUsed: 2.23,
+      apiPercentUsed: 0,
+      totalPercentUsed: 2.07,
+    },
+    spendLimitUsage: { limitType: "user" },
+  });
+  assert.equal(parsed.windows.length, 1);
+  assert.equal(parsed.windows[0]?.kind, "monthly");
+  // Spend-page "Included in Pro" uses totalPercentUsed, not includedSpend/limit (~50%).
+  assert.equal(parsed.windows[0]?.usedPercent, 2.07);
+  assert.equal(parsed.windows[0]?.resetsAt, "2026-10-01T00:59:37.000Z");
+  assert.equal(parsed.windows[0]?.durationMinutes, 30 * 24 * 60);
+  // No on-demand spend limit → no credits line (avoid conflicting $ figures).
+  assert.equal(parsed.credits, null);
+});
+
+test("parseCursorPeriodUsage prefers on-demand spend limits for credits when present", () => {
+  const parsed = parseCursorPeriodUsage({
+    billingCycleStart: "2026-09-01T00:00:00Z",
+    billingCycleEnd: "2026-10-01T00:00:00Z",
+    planUsage: {
+      includedSpend: 500,
+      remaining: 1500,
+      limit: 2000,
+      totalPercentUsed: 25,
+    },
+    spendLimitUsage: {
+      limitType: "user",
+      individualLimit: 10000,
+      individualUsed: 2500,
+      individualRemaining: 7500,
+    },
+  });
+  assert.equal(parsed.windows[0]?.kind, "monthly");
+  assert.equal(parsed.windows[0]?.usedPercent, 25);
+  assert.equal(parsed.credits?.limit, 100);
+  assert.equal(parsed.credits?.used, 25);
+  assert.equal(parsed.credits?.balance, 75);
+});
+
+test("parseCursorPeriodUsage does not invent daily or weekly windows", () => {
+  const parsed = parseCursorPeriodUsage({
+    billingCycleStart: "1788224377000",
+    billingCycleEnd: "1790816377000",
+    planUsage: { includedSpend: 0, remaining: 2000, limit: 2000, totalPercentUsed: 0 },
+  });
+  assert.deepEqual(
+    parsed.windows.map((window) => window.kind),
+    ["monthly"],
+  );
+});
+
+test("parseCursorPlanName reads planInfo.planName", () => {
+  assert.equal(parseCursorPlanName({ planInfo: { planName: "Pro", price: "$20/mo" } }), "Pro");
+  assert.equal(parseCursorPlanName({}), null);
 });

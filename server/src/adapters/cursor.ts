@@ -1,6 +1,22 @@
-import type { AdapterEvent, TokenUsage } from "@agent-console/shared";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { oneLine } from "@agent-console/shared";
+import {
+  cursorAuthJsonPath,
+  cursorLoginPresent,
+  fetchCursorDashboard,
+  refreshCursorAccessToken,
+  resolveCursorAccessToken,
+} from "../lib/cursorAuth.ts";
 import { describeEffectiveAccess, effectiveCursorForce, settings } from "../settings.ts";
+import {
+  parseCursorPeriodUsage,
+  parseCursorPlanName,
+  providerUsageOk,
+  providerUsageUnavailable,
+} from "./accountUsage.ts";
 import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
 import type { RunOptions } from "./types.ts";
 
@@ -266,17 +282,57 @@ export class CursorAdapter extends SpawnAdapter {
   protected async checkAuth(): Promise<string | null> {
     if (process.env.CURSOR_API_KEY) return null;
     if (settings.cursor.assumeAuthenticated) return null;
-    const { existsSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const { homedir } = await import("node:os");
     const markers = [
+      cursorAuthJsonPath(),
       join(homedir(), ".cursor", "cli-config.json"),
       join(homedir(), ".cursor", "cli.json"),
       join(homedir(), ".config", "cursor-agent"),
       join(homedir(), ".local", "share", "cursor-agent"),
     ];
     if (markers.some((marker) => existsSync(marker))) return null;
+    if (cursorLoginPresent()) return null;
     return "No Cursor login detected — run `cursor-agent login` (or set CURSOR_ASSUME_AUTHENTICATED=true)";
+  }
+
+  override async getAccountUsage(): Promise<ProviderUsage> {
+    const token = await resolveCursorAccessToken();
+    if (token === null) {
+      return providerUsageUnavailable(
+        "cursor",
+        process.env.CURSOR_API_KEY
+          ? "Cursor plan usage is only available for a `cursor-agent login` session, not an API key"
+          : "No Cursor login found — run `cursor-agent login`",
+      );
+    }
+
+    let accessToken = token;
+    let response = await fetchCursorDashboard("GetCurrentPeriodUsage", accessToken);
+    if (response.status === 401 || response.status === 403) {
+      const refreshed = await refreshCursorAccessToken();
+      if (refreshed === null) {
+        return providerUsageUnavailable("cursor", "Cursor login expired — run `cursor-agent login`");
+      }
+      accessToken = refreshed;
+      response = await fetchCursorDashboard("GetCurrentPeriodUsage", accessToken);
+    }
+    if (!response.ok) {
+      return providerUsageUnavailable(
+        "cursor",
+        response.status === 429
+          ? "Cursor usage endpoint rate-limited — try again shortly"
+          : `Cursor usage request failed (HTTP ${response.status})`,
+      );
+    }
+
+    const parsed = parseCursorPeriodUsage(response.body);
+    // Cursor's dashboard API is billing-cycle only — parseCursorPeriodUsage
+    // already maps that single cycle and does not invent extra windows.
+
+    let plan: string | null = null;
+    const planResponse = await fetchCursorDashboard("GetPlanInfo", accessToken);
+    if (planResponse.ok) plan = parseCursorPlanName(planResponse.body);
+
+    return providerUsageOk("cursor", { ...parsed, plan });
   }
 
   override async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {

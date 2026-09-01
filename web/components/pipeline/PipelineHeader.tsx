@@ -2,7 +2,7 @@
 
 import { useEffect, type ReactNode } from "react";
 import type { OperationsSuite, ProviderId, ProviderInfo, SuitePipelineRun } from "@agent-console/shared";
-import { ProviderSwitcher } from "@/components/ProviderSwitcher";
+import { AgentPicker } from "@/components/AgentPicker";
 import { Button } from "@/components/ui/Button";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { cn } from "@/lib/cn";
@@ -14,11 +14,11 @@ export function PipelineHeader({
   suite,
   pipeline,
   occupancy,
-  playProvider,
-  providers,
-  models,
-  onSelectProvider,
-  onRefreshProviders,
+  playProvider: _playProvider,
+  providers: _providers,
+  models: _models,
+  onSelectProvider: _onSelectProvider,
+  onRefreshProviders: _onRefreshProviders,
   playBlockedReason,
   busy,
   onPlay,
@@ -124,15 +124,7 @@ export function PipelineHeader({
 
       <div className="mt-2">
         <div className="mb-1 text-[10px] uppercase tracking-wider text-fg-dim">Play with</div>
-        <ProviderSwitcher
-          compact
-          providers={providers}
-          selected={playProvider}
-          disabled={false}
-          models={models}
-          onSelect={onSelectProvider}
-          onRefresh={onRefreshProviders}
-        />
+        <AgentPicker compact />
       </div>
 
       {pipeline?.state === "PAUSED" && (

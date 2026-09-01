@@ -38,6 +38,8 @@ export interface StartVerifySuiteArgs {
   suiteId: number;
   provider: string;
   model: string | null;
+  /** When set, verify only this work item inside the suite. */
+  promptId?: number | null;
 }
 
 export class ProviderUnavailableError extends WorkspaceError {
@@ -308,7 +310,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
 }
 
 /**
- * Runs an agent verification of a whole suite.
+ * Runs an agent verification of a suite, or of one work item inside it.
  *
  * The dossier is built here rather than in the browser, and the run is
  * recorded before it starts, so its events persist and its report survives
@@ -326,13 +328,15 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
   if (busy !== undefined) {
     throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}). Stop it before verifying.`);
   }
-  const context = workspaces.suiteVerificationContext(args.suiteId);
+  const scopePromptId = args.promptId ?? null;
+  const context = workspaces.suiteVerificationContext(args.suiteId, scopePromptId);
   const verificationId = workspaces.beginSuiteVerification({
     runId: plannedRunId,
     suiteId: args.suiteId,
     provider,
     model: args.model,
     stats: context.stats,
+    scopePromptId: context.scopePromptId,
   });
 
   // The agent's closing message is the report; keep the last full one.
@@ -359,7 +363,14 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
   runHub.start({
     handle,
     workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
-    source: { type: "verification", verificationId, suiteId: suite.id, suiteKey: suite.key, suiteName: suite.name },
+    source: {
+      type: "verification",
+      verificationId,
+      suiteId: suite.id,
+      suiteKey: suite.key,
+      suiteName: suite.name,
+      promptKey: context.scopePromptKey,
+    },
     role: "execute",
     permissionMode: handle.permissionMode,
   });

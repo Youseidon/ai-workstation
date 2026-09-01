@@ -1,16 +1,15 @@
-import { Suspense } from "react";
-import { OperationsView } from "./OperationsView";
+import { redirect } from "next/navigation";
 
-/**
- * `useSearchParams` makes the tree below it client-rendered, so it needs a
- * Suspense boundary. Reading the deep-link parameters this way — rather than
- * poking at `window.location` inside an effect — is what lets the view derive
- * its selection during render instead of correcting it afterwards.
- */
-export default function OperationsPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-sm text-fg-dim">Loading operations…</div>}>
-      <OperationsView />
-    </Suspense>
-  );
+export default async function OperationsRedirect({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v === "string") q.set(k, v);
+  }
+  const qs = q.toString();
+  redirect(qs ? `/tasks?${qs}` : "/tasks");
 }

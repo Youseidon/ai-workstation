@@ -6,7 +6,6 @@ import { cn } from "@/lib/cn";
 import { Badge, type Tone } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { Combobox, type ComboboxItem } from "./ui/Combobox";
-
 /** How a saved prompt reads at a glance. */
 export function promptState(prompt: PromptOption): { text: string; tone: Tone } {
   if (prompt.currentRun?.processActive === true) return { text: "agent working", tone: "info" };
@@ -21,6 +20,7 @@ export function promptState(prompt: PromptOption): { text: string; tone: Tone } 
   }
 }
 
+
 interface Props {
   workspaces: WorkspaceRecord[];
   workspaceId: number | null;
@@ -34,14 +34,10 @@ interface Props {
 }
 
 /**
- * Where a run's context is chosen: which workspace, and which work item.
- *
- * This used to be a one-line strip of native selects wedged between the status
- * bar and the composer — below the transcript, nowhere near either the thing it
- * configured or the place you act. Selection belongs at the top, with the
- * composer at the bottom for doing.
+ * Workspace and work-item chips for the composer's own header — context is
+ * chosen where you act, not five strips above the box.
  */
-export function CommandBar({
+export function ContextPicker({
   workspaces,
   workspaceId,
   onWorkspace,
@@ -78,23 +74,21 @@ export function CommandBar({
   const savedRun = savedPrompt?.currentRun ?? null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-surface-1 px-4 py-2">
-      <label className="text-[10px] uppercase tracking-wider text-fg-dim">Workspace</label>
+    <div className="flex flex-wrap items-center gap-2">
       <Combobox
         label="Workspace"
         value={workspaceId}
         items={workspaceItems}
         onChange={onWorkspace}
         disabled={disabled}
-        placeholder={workspaces.length === 0 ? "No workspaces yet" : "Choose a workspace"}
+        placeholder={workspaces.length === 0 ? "No workspaces yet" : "Workspace"}
         emptyText="No workspaces match."
-        className="w-56"
-        widthClass="w-[24rem]"
+        className="w-44"
+        widthClass="w-[22rem]"
       />
 
       <span aria-hidden className="text-fg-dim">▸</span>
 
-      <label className="text-[10px] uppercase tracking-wider text-fg-dim">Work item</label>
       <Combobox
         label="Work item"
         value={savedPromptId}
@@ -103,8 +97,8 @@ export function CommandBar({
         disabled={disabled || workspaceId === null}
         placeholder="Custom prompt"
         emptyText="This workspace has no saved work items."
-        className="w-72"
-        widthClass="w-[34rem]"
+        className="w-56"
+        widthClass="w-[30rem]"
         leading={
           <button
             type="button"
@@ -138,7 +132,7 @@ export function CommandBar({
               agent working · {savedRun.provider}
             </Badge>
             <Link
-              href="/operations?view=sessions"
+              href="/activity"
               className="rounded-md px-2 py-1 text-xs text-info ring-1 ring-inset ring-info/30 transition-colors hover:bg-info/10"
             >
               View session

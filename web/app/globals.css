@@ -482,3 +482,11 @@ body > * {
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
 }
+
+/* --------------------------------------------------------------------------
+   App shell helpers (layout only — no token value changes)
+   -------------------------------------------------------------------------- */
+
+.shell-rail-active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}

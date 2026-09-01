@@ -1,5 +1,6 @@
 import type { ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
 import { PROVIDER_IDS } from "@agent-console/shared";
+import { settings } from "../settings.ts";
 import { providerUsageUnavailable } from "./accountUsage.ts";
 import { ClaudeAdapter } from "./claude.ts";
 import { CodexAdapter } from "./codex.ts";
@@ -26,22 +27,30 @@ export function getAdapter(id: ProviderId): AgentAdapter {
   return adapters[id];
 }
 
+/** Settings toggles override detection so a disabled agent never starts a run. */
+function applyEnabledGate(info: ProviderInfo): ProviderInfo {
+  if (!settings[info.id].enabled) {
+    return { ...info, available: false, reason: "Turned off on the Agents page" };
+  }
+  return info;
+}
+
 export async function detectProviders(force = false): Promise<ProviderInfo[]> {
   if (!force && cache !== null && Date.now() - cache.at < DETECTION_TTL_MS) {
-    return cache.providers;
+    return cache.providers.map(applyEnabledGate);
   }
   const providers = await Promise.all(
     PROVIDER_IDS.map((id) => toProviderInfo(adapters[id])),
   );
   cache = { at: Date.now(), providers };
-  return providers;
+  return providers.map(applyEnabledGate);
 }
 
 export async function getProviderInfo(id: ProviderId): Promise<ProviderInfo> {
   const providers = await detectProviders();
   const found = providers.find((provider) => provider.id === id);
   if (found) return found;
-  return toProviderInfo(adapters[id]);
+  return applyEnabledGate(await toProviderInfo(adapters[id]));
 }
 
 const USAGE_TTL_MS = 60_000;

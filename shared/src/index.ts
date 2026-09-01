@@ -130,8 +130,9 @@ export interface ProviderInfo {
  *
  * Names follow the window, not a wish: Claude and Codex expose a short session
  * window (typically 5 hours) and a weekly cap, not a calendar day. Grok's
- * billing API is weekly-only. Callers must skip kinds the provider omitted
- * rather than inventing a daily figure.
+ * billing API is weekly-only. Cursor reports a billing-cycle (typically monthly)
+ * included allowance. Callers must skip kinds the provider omitted rather than
+ * inventing a daily figure.
  */
 export const USAGE_WINDOW_KINDS = ["session", "daily", "weekly", "monthly"] as const;
 export type UsageWindowKind = (typeof USAGE_WINDOW_KINDS)[number];
@@ -194,6 +195,203 @@ export function emptyUsage(): TokenUsage {
     reasoningOutputTokens: 0,
     totalTokens: 0,
   };
+}
+
+/** True when a usage object carries a non-zero token count. */
+export function isMeaningfulUsage(usage: TokenUsage | null | undefined): usage is TokenUsage {
+  return usage !== null && usage !== undefined && usage.totalTokens > 0;
+}
+
+/**
+ * Combine two usage snapshots. Empty/zero payloads never clobber a real count;
+ * when both are meaningful, keep the larger total (handles incremental vs final).
+ */
+export function mergeUsage(current: TokenUsage | null, next: TokenUsage | null): TokenUsage | null {
+  if (!isMeaningfulUsage(next)) return current;
+  if (!isMeaningfulUsage(current)) return next;
+  return next.totalTokens >= current.totalTokens ? next : current;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cost estimation (API list-price proxy)                                      */
+/* -------------------------------------------------------------------------- */
+
+/** USD per million tokens for one price tier. */
+export interface TokenRates {
+  inputPerMTok: number;
+  outputPerMTok: number;
+  /** Cache-read input; defaults to ~10% of input when omitted in lookup tables. */
+  cachedInputPerMTok: number;
+}
+
+export interface CostEstimate {
+  /** Null when the session has no reported usage. */
+  usd: number | null;
+  rates: TokenRates | null;
+  /** How the rates were chosen. */
+  rateSource: "model" | "provider_default" | "none";
+}
+
+/**
+ * Approximate public API list prices ($ / MTok). Subscription plans (Max,
+ * Plus, Cursor Pro, …) are not metered this way — treat figures as a relative
+ * spend signal, not an invoice.
+ */
+const PROVIDER_DEFAULT_RATES: Record<ProviderId, TokenRates> = {
+  claude: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
+  codex: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
+  cursor: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
+  grok: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 },
+};
+
+/** Model-id substrings → rates. First match wins; order matters (more specific first). */
+const MODEL_RATE_RULES: Array<{ provider?: ProviderId; match: RegExp; rates: TokenRates }> = [
+  { provider: "claude", match: /opus|fable/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
+  { provider: "claude", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
+  { provider: "claude", match: /haiku/i, rates: { inputPerMTok: 1, outputPerMTok: 5, cachedInputPerMTok: 0.1 } },
+  { provider: "codex", match: /mini|luna/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
+  { provider: "codex", match: /terra|5\.4(?!-mini)/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
+  { provider: "codex", match: /sol|5\.5|5\.6/i, rates: { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25 } },
+  { provider: "cursor", match: /opus/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
+  { provider: "cursor", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
+  { provider: "cursor", match: /gpt|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
+  { provider: "cursor", match: /grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
+  { provider: "grok", match: /4\.6|4\.5|grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
+];
+
+export function ratesForModel(provider: string, modelId: string | null): { rates: TokenRates; source: "model" | "provider_default" } | null {
+  if (!isProviderId(provider)) return null;
+  if (modelId !== null && modelId !== "") {
+    for (const rule of MODEL_RATE_RULES) {
+      if (rule.provider !== undefined && rule.provider !== provider) continue;
+      if (rule.match.test(modelId)) return { rates: rule.rates, source: "model" };
+    }
+  }
+  return { rates: PROVIDER_DEFAULT_RATES[provider], source: "provider_default" };
+}
+
+export function estimateCost(usage: TokenUsage | null, provider: string, modelId: string | null): CostEstimate {
+  if (usage === null) return { usd: null, rates: null, rateSource: "none" };
+  const resolved = ratesForModel(provider, modelId);
+  if (resolved === null) return { usd: null, rates: null, rateSource: "none" };
+  const { rates, source } = resolved;
+  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  const uncached = Math.max(0, usage.inputTokens - cached);
+  // Reasoning is reported separately for display; most providers already fold it
+  // into outputTokens, so we do not add it again.
+  const usd =
+    (uncached * rates.inputPerMTok +
+      cached * rates.cachedInputPerMTok +
+      usage.outputTokens * rates.outputPerMTok) /
+    1_000_000;
+  return { usd, rates, rateSource: source };
+}
+
+export function formatUsd(amount: number, digits = 2): string {
+  if (!Number.isFinite(amount)) return "—";
+  if (amount === 0) return "$0";
+  if (amount > 0 && amount < 0.01) return "<$0.01";
+  return `$${amount.toFixed(digits)}`;
+}
+
+export const USAGE_REPORT_PRICING_NOTE =
+  "Estimated from public API list rates ($/MTok). Plan subscriptions are not billed this way — use the numbers to compare relative spend.";
+
+export interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  estimatedUsd: number;
+  sessionCount: number;
+  sessionsWithUsage: number;
+  sessionsWithoutUsage: number;
+}
+
+export function emptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    estimatedUsd: 0,
+    sessionCount: 0,
+    sessionsWithUsage: 0,
+    sessionsWithoutUsage: 0,
+  };
+}
+
+export function addUsageToTotals(totals: UsageTotals, usage: TokenUsage | null, usd: number | null): void {
+  totals.sessionCount += 1;
+  if (usage === null) {
+    totals.sessionsWithoutUsage += 1;
+    return;
+  }
+  totals.sessionsWithUsage += 1;
+  totals.inputTokens += usage.inputTokens;
+  totals.outputTokens += usage.outputTokens;
+  totals.cachedInputTokens += usage.cachedInputTokens;
+  totals.reasoningOutputTokens += usage.reasoningOutputTokens;
+  totals.totalTokens += usage.totalTokens;
+  if (usd !== null) totals.estimatedUsd += usd;
+}
+
+export interface SessionUsageRow {
+  id: string;
+  workspaceId: number;
+  workspaceName: string;
+  promptId: number | null;
+  promptKey: string | null;
+  promptTitle: string;
+  suiteId: number | null;
+  suiteName: string;
+  programId: number | null;
+  programName: string;
+  provider: string;
+  model: string | null;
+  role: RunRole;
+  state: string;
+  startedAt: string;
+  endedAt: string | null;
+  usage: TokenUsage | null;
+  cost: CostEstimate;
+}
+
+export interface TaskUsageRow {
+  promptId: number;
+  promptKey: string | null;
+  promptTitle: string;
+  suiteId: number;
+  suiteName: string;
+  programId: number;
+  programName: string;
+  workspaceId: number;
+  workspaceName: string;
+  totals: UsageTotals;
+  sessionIds: string[];
+}
+
+export interface SuiteUsageRow {
+  suiteId: number;
+  suiteName: string;
+  programId: number;
+  programName: string;
+  workspaceId: number;
+  workspaceName: string;
+  totals: UsageTotals;
+  tasks: TaskUsageRow[];
+}
+
+export interface UsageReport {
+  generatedAt: string;
+  pricingNote: string;
+  totals: UsageTotals;
+  byProvider: Array<{ provider: string; totals: UsageTotals }>;
+  suites: SuiteUsageRow[];
+  unassigned: { totals: UsageTotals; sessionIds: string[] };
+  sessions: SessionUsageRow[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -281,6 +479,17 @@ export type NormalizedEvent =
   | (EventBase & { type: "error"; payload: ErrorPayload });
 
 export type NormalizedEventType = NormalizedEvent["type"];
+
+/** Best usage from a run's status/result events (ignores zeroed terminal noise). */
+export function usageFromEvents(events: readonly NormalizedEvent[]): TokenUsage | null {
+  let usage: TokenUsage | null = null;
+  for (const event of events) {
+    if ((event.type === "status" || event.type === "result") && event.payload.usage !== null) {
+      usage = mergeUsage(usage, event.payload.usage);
+    }
+  }
+  return usage;
+}
 
 /**
  * What adapters yield: everything except the fields the runner stamps on
@@ -717,6 +926,8 @@ export interface SuiteVerificationRecord {
   /** The agent's full written report, kept verbatim even if parsing fails. */
   reportMarkdown: string;
   stats: SuiteVerificationStats | null;
+  /** When set, the verification covered one work item rather than the whole suite. */
+  scopePromptId: number | null;
   startedAt: string;
   endedAt: string | null;
   items: SuiteVerificationItem[];
@@ -738,8 +949,11 @@ export interface SuiteVerificationBadge {
 }
 
 export interface SuiteVerificationContext {
-  suiteId:number; prompt:string;
-  stats:SuiteVerificationStats;
+  suiteId: number;
+  prompt: string;
+  stats: SuiteVerificationStats;
+  scopePromptId: number | null;
+  scopePromptKey: string | null;
 }
 export interface PromptActivity {
   item: OperationsPrompt;
@@ -814,6 +1028,8 @@ export interface ClientVerifySuiteMessage {
   suiteId: number;
   provider: ProviderId;
   model: string | null;
+  /** When set, verify only this work item inside the suite. */
+  promptId?: number | null;
 }
 
 export type ClientMessage =
@@ -846,7 +1062,7 @@ export type RunSource =
   | { type: "custom"; displayText: string }
   | { type: "saved"; promptId: number; promptKey: string | null; title: string; programName: string; suiteName: string }
   | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
-  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string }
+  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
   | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string };
 
 export interface ServerRunStartedMessage {

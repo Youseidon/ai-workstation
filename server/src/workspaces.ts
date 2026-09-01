@@ -1,13 +1,13 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { defaultPromptPipelineRule, isOnBlockedAction, isOnDoneAction, isProviderId, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
-import { compactWorkItem, deriveVerdict, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
+import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 
 const databasePath = resolve(config.repoRoot, ".agent-console/console.sqlite");
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
@@ -351,6 +351,12 @@ migrate();
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(11,?)").run(new Date().toISOString());
   }
+  const afterEleven = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterEleven < 12) {
+    // Optional scope lets a verification cover one work item without a new table.
+    db.exec(`ALTER TABLE suite_verification ADD COLUMN scope_prompt_id INTEGER REFERENCES prompt(id) ON DELETE SET NULL;`);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(12,?)").run(new Date().toISOString());
+  }
 }
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -372,6 +378,7 @@ function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord
     summary:parse(row.summary_json,{total:0,verified:0,warnings:0,failed:0,unverified:0}),
     reportMarkdown:(row.report_markdown as string)??"",
     stats:parse<SuiteVerificationStats|null>(row.stats_json,null),
+    scopePromptId:(row.scope_prompt_id as number|null)??null,
     startedAt:row.started_at as string,
     endedAt:row.ended_at as string|null,
     items,
@@ -679,6 +686,56 @@ export const workspaces = {
   },
   latestRunActivity(promptId:number):AgentRunActivity|null { const run=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as Omit<AgentRunActivity,"events">|undefined;if(!run)return null;const rows=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id").all(run.id) as Array<{event_json:string}>;return{...run,events:rows.map(row=>JSON.parse(row.event_json) as NormalizedEvent)}; },
   sessions():AgentSession[] { const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id ORDER BY r.started_at DESC`).all() as Array<Omit<AgentSession,"events">>;const events=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id");return rows.map(run=>({...run,events:(events.all(run.id) as Array<{event_json:string}>).map(row=>JSON.parse(row.event_json) as NormalizedEvent)})); },
+  /**
+   * Token + estimated-cost rollup for the report page. Pulls usage from run
+   * events without shipping full transcripts to the client.
+   */
+  usageReport(workspaceId?:number):UsageReport {
+    if(workspaceId!==undefined)this.get(workspaceId);
+    const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,s.id suiteId,COALESCE(s.name,'') suiteName,g.id programId,COALESCE(g.name,'') programName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id WHERE (? IS NULL OR r.workspace_id=?) ORDER BY r.started_at DESC`).all(workspaceId??null,workspaceId??null) as Array<{id:string;workspaceId:number;workspaceName:string;promptId:number|null;promptKey:string|null;promptTitle:string;suiteId:number|null;suiteName:string;programId:number|null;programName:string;provider:string;model:string|null;role:string;state:string;startedAt:string;endedAt:string|null}>;
+    const eventsStmt=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id");
+    const sessions:SessionUsageRow[]=rows.map(row=>{
+      const events=(eventsStmt.all(row.id) as Array<{event_json:string}>).map(entry=>JSON.parse(entry.event_json) as NormalizedEvent);
+      const usage=usageFromEvents(events);
+      const cost=estimateCost(usage,row.provider,row.model);
+      return{id:row.id,workspaceId:row.workspaceId,workspaceName:row.workspaceName,promptId:row.promptId,promptKey:row.promptKey,promptTitle:row.promptTitle,suiteId:row.suiteId,suiteName:row.suiteName,programId:row.programId,programName:row.programName,provider:row.provider,model:row.model,role:isRunRole(row.role)?row.role:"execute",state:row.state,startedAt:row.startedAt,endedAt:row.endedAt,usage,cost};
+    });
+    const totals=emptyUsageTotals();
+    const byProviderMap=new Map<string,UsageTotals>();
+    const suiteMap=new Map<number,SuiteUsageRow>();
+    const unassignedIds:string[]=[];
+    const unassignedTotals=emptyUsageTotals();
+    for(const session of sessions){
+      addUsageToTotals(totals,session.usage,session.cost.usd);
+      let providerTotals=byProviderMap.get(session.provider);
+      if(providerTotals===undefined){providerTotals=emptyUsageTotals();byProviderMap.set(session.provider,providerTotals);}
+      addUsageToTotals(providerTotals,session.usage,session.cost.usd);
+      if(session.promptId===null||session.suiteId===null||session.programId===null){
+        unassignedIds.push(session.id);
+        addUsageToTotals(unassignedTotals,session.usage,session.cost.usd);
+        continue;
+      }
+      let suite=suiteMap.get(session.suiteId);
+      if(suite===undefined){
+        suite={suiteId:session.suiteId,suiteName:session.suiteName,programId:session.programId,programName:session.programName,workspaceId:session.workspaceId,workspaceName:session.workspaceName,totals:emptyUsageTotals(),tasks:[]};
+        suiteMap.set(session.suiteId,suite);
+      }
+      addUsageToTotals(suite.totals,session.usage,session.cost.usd);
+      let task=suite.tasks.find(entry=>entry.promptId===session.promptId);
+      if(task===undefined){
+        task={promptId:session.promptId,promptKey:session.promptKey,promptTitle:session.promptTitle,suiteId:session.suiteId,suiteName:session.suiteName,programId:session.programId,programName:session.programName,workspaceId:session.workspaceId,workspaceName:session.workspaceName,totals:emptyUsageTotals(),sessionIds:[]};
+        suite.tasks.push(task);
+      }
+      addUsageToTotals(task.totals,session.usage,session.cost.usd);
+      task.sessionIds.push(session.id);
+    }
+    for(const suite of suiteMap.values()){
+      suite.tasks.sort((a,b)=>b.totals.estimatedUsd-a.totals.estimatedUsd||b.totals.totalTokens-a.totals.totalTokens);
+    }
+    const suites=[...suiteMap.values()].sort((a,b)=>b.totals.estimatedUsd-a.totals.estimatedUsd||b.totals.totalTokens-a.totals.totalTokens);
+    const byProvider=[...byProviderMap.entries()].map(([provider,providerTotals])=>({provider,totals:providerTotals})).sort((a,b)=>b.totals.estimatedUsd-a.totals.estimatedUsd||b.totals.totalTokens-a.totals.totalTokens);
+    return{generatedAt:new Date().toISOString(),pricingNote:USAGE_REPORT_PRICING_NOTE,totals,byProvider,suites,unassigned:{totals:unassignedTotals,sessionIds:unassignedIds},sessions};
+  },
   operations(workspaceId?:number):OperationsSnapshot {
     const workspaceRows=workspaceId===undefined?this.list():[this.get(workspaceId)];
     const intervention=db.prepare("SELECT content FROM prompt_remark WHERE prompt_id=? AND kind IN ('BLOCKER','DECISION_NEEDED') ORDER BY id DESC LIMIT 1");
@@ -707,11 +764,11 @@ export const workspaces = {
    * Records an agent verification as it starts, so the run is a first-class
    * object from the beginning rather than something reconstructed afterwards.
    */
-  beginSuiteVerification(args:{runId:string;suiteId:number;provider:string;model:string|null;stats:SuiteVerificationStats}):number {
+  beginSuiteVerification(args:{runId:string;suiteId:number;provider:string;model:string|null;stats:SuiteVerificationStats;scopePromptId?:number|null}):number {
     const suite=this.suiteHeader(args.suiteId);
     return sqliteGuard(()=>Number(db.prepare(
-      "INSERT INTO suite_verification(suite_id,workspace_id,kind,run_id,provider,model,state,summary_json,stats_json,started_at) VALUES(?,?,'AGENT',?,?,?,'RUNNING','{}',?,?)",
-    ).run(args.suiteId,suite.workspaceId,args.runId,args.provider,args.model,JSON.stringify(args.stats),new Date().toISOString()).lastInsertRowid));
+      "INSERT INTO suite_verification(suite_id,workspace_id,kind,run_id,provider,model,state,summary_json,stats_json,scope_prompt_id,started_at) VALUES(?,?,'AGENT',?,?,?,'RUNNING','{}',?,?,?)",
+    ).run(args.suiteId,suite.workspaceId,args.runId,args.provider,args.model,JSON.stringify(args.stats),args.scopePromptId??null,new Date().toISOString()).lastInsertRowid));
   },
 
   recordVerificationEvent(verificationId:number,event:NormalizedEvent):void {
@@ -803,20 +860,30 @@ export const workspaces = {
     return rows.map(hydrateVerification);
   },
 
-  suiteVerificationContext(suiteId:number):SuiteVerificationContext {
+  suiteVerificationContext(suiteId:number,promptId?:number|null):SuiteVerificationContext {
     const suite=db.prepare(`SELECT s.id,s.external_key key,s.name,g.name programName,w.name workspaceName FROM suite s JOIN program g ON g.id=s.program_id JOIN workspace w ON w.id=g.workspace_id WHERE s.id=?`).get(suiteId) as {id:number;key:string|null;name:string;programName:string;workspaceName:string}|undefined;
     if(!suite)throw new WorkspaceError(404,"not_found","Suite not found");
-    const rows=db.prepare(`SELECT p.id,p.external_key promptKey,p.title,p.content,p.status,p.result,
+    const allRows=db.prepare(`SELECT p.id,p.external_key promptKey,p.title,p.content,p.status,p.result,
       (SELECT group_concat(COALESCE(pr.external_key,pr.title),', ') FROM prompt_dependency d JOIN prompt pr ON pr.id=d.depends_on_prompt_id WHERE d.prompt_id=p.id) dependencies,
       (SELECT content FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='VERIFICATION' ORDER BY r.id DESC LIMIT 1) latestVerification,
       (SELECT content FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='COMPLETION' ORDER BY r.id DESC LIMIT 1) latestCompletion
       FROM prompt p WHERE p.suite_id=? ORDER BY p.sort_order,p.id`).all(suiteId) as Array<{id:number;promptKey:string|null;title:string;content:string;status:PromptRecord["status"];result:string;dependencies:string|null;latestVerification:string|null;latestCompletion:string|null}>;
+    const scope=promptId===undefined||promptId===null?null:allRows.find(row=>row.id===promptId)??null;
+    if(promptId!==undefined&&promptId!==null&&scope===null)throw new WorkspaceError(404,"not_found","Work item not found in this suite");
+    const rows=scope===null?allRows:[scope];
     if(rows.length===0)throw new WorkspaceError(409,"empty_suite","Suite has no work items to verify");
     const compact=rows.map(row=>compactWorkItem(row.content));const commands=uniqueCommands(compact);
     const dossiers=rows.map((row,index)=>{const evidence=[row.result.trim(),row.latestVerification?.trim(),row.latestCompletion?.trim()].filter((value,i,all):value is string=>!!value&&all.indexOf(value)===i).slice(0,2);return `## ${row.promptKey??row.title} — ${row.title}\n\nStatus: ${row.status}\nDependencies: ${row.dependencies??"none"}\n\n${compact[index]}${evidence.length?`\n\n### Recorded evidence (lead only; independently confirm)\n\n${evidence.join("\n\n")}`:""}`;});
     const manifest=commands.length?commands.map((command,index)=>`${index+1}. \`${command}\``).join("\n"):"No explicit shell commands were found. Derive the smallest decisive checks from the acceptance criteria below.";
-    const prompt=`# Independent verification: ${suite.key??suite.name} — ${suite.name}\n\nVerify this suite against the current working tree and runtime. This dossier is authoritative context; do not read orchestration databases, prompt history, chat transcripts, or prior agent logs. Do not edit files, implement fixes, or change work-item statuses.\n\nWork efficiently: read repository instructions once, run shared setup once, reuse healthy services, and execute the smallest decisive check for each acceptance criterion. Recorded evidence is only a lead and must not be accepted without a fresh observable check. Inspect implementation details only when required by an acceptance criterion or when a command fails. Keep tool output focused; avoid dumping large files or logs.\n\n## Deduplicated command manifest\n\n${manifest}\n\nRun applicable shared commands once, then map their results to every relevant item. You may adjust a stale command to the repository's documented equivalent, but state the substitution.\n\n## Work-item dossiers\n\n${dossiers.join("\n\n---\n\n")}\n\n## Required response\n\nReturn only: (1) a compact table with item, PASS/FAIL/UNVERIFIED, decisive commands, and evidence; (2) shared checks; (3) discrepancies from recorded evidence; and (4) one overall suite verdict. Do not narrate exploration.`;
-    return{suiteId,stats:{workItems:rows.length,sourceCharacters:rows.reduce((sum,row)=>sum+row.content.length,0),dossierCharacters:prompt.length,uniqueCommands:commands.length},prompt};
+    const heading=dossierHeading(suite,scope===null?null:{promptKey:scope.promptKey,title:scope.title});
+    const scopeNote=scope===null
+      ?"Verify this suite against the current working tree and runtime."
+      :"Verify this single work item against the current working tree and runtime.";
+    const responseNote=scope===null
+      ?"Return only: (1) a compact table with item, PASS/FAIL/UNVERIFIED, decisive commands, and evidence; (2) shared checks; (3) discrepancies from recorded evidence; and (4) one overall suite verdict. Do not narrate exploration."
+      :"Return only: (1) a compact table with this item, PASS/FAIL/UNVERIFIED, decisive commands, and evidence; (2) shared checks; (3) discrepancies from recorded evidence; and (4) one overall verdict for this item. Do not narrate exploration.";
+    const prompt=`${heading}\n\n${scopeNote} This dossier is authoritative context; do not read orchestration databases, prompt history, chat transcripts, or prior agent logs. Do not edit files, implement fixes, or change work-item statuses.\n\nWork efficiently: read repository instructions once, run shared setup once, reuse healthy services, and execute the smallest decisive check for each acceptance criterion. Recorded evidence is only a lead and must not be accepted without a fresh observable check. Inspect implementation details only when required by an acceptance criterion or when a command fails. Keep tool output focused; avoid dumping large files or logs.\n\n## Deduplicated command manifest\n\n${manifest}\n\nRun applicable shared commands once, then map their results to every relevant item. You may adjust a stale command to the repository's documented equivalent, but state the substitution.\n\n## Work-item dossiers\n\n${dossiers.join("\n\n---\n\n")}\n\n## Required response\n\n${responseNote}`;
+    return{suiteId,stats:{workItems:rows.length,sourceCharacters:rows.reduce((sum,row)=>sum+row.content.length,0),dossierCharacters:prompt.length,uniqueCommands:commands.length},prompt,scopePromptId:scope?.id??null,scopePromptKey:scope?.promptKey??null};
   },
   promptActivity(promptId:number):PromptActivity {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");

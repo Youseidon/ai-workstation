@@ -135,7 +135,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/pipelines" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }
@@ -323,9 +323,14 @@ wss.on("connection", (ws: WebSocket) => {
     }
   };
 
-  const handleVerifySuite = async (suiteId: number, providerId: string, model: string | null): Promise<void> => {
+  const handleVerifySuite = async (
+    suiteId: number,
+    providerId: string,
+    model: string | null,
+    promptId?: number | null,
+  ): Promise<void> => {
     try {
-      await startVerifySuite({ suiteId, provider: providerId, model });
+      await startVerifySuite({ suiteId, provider: providerId, model, promptId });
     } catch (error) {
       mapStartError(error, "Unable to start verification");
     }
@@ -384,7 +389,17 @@ wss.on("connection", (ws: WebSocket) => {
         if (parsed.model !== undefined && parsed.model !== null && typeof parsed.model !== "string") { sendError("Model must be a string."); return; }
         const verifyModel = typeof parsed.model === "string" ? parsed.model.trim() : "";
         if (verifyModel.length > MAX_MODEL_LENGTH) { sendError(`Model id is too long (max ${MAX_MODEL_LENGTH} characters).`); return; }
-        void handleVerifySuite(parsed.suiteId, parsed.provider, verifyModel === "" ? null : verifyModel);
+        const hasPromptId = parsed.promptId !== undefined && parsed.promptId !== null;
+        if (hasPromptId && (!Number.isSafeInteger(parsed.promptId) || (parsed.promptId ?? 0) <= 0)) {
+          sendError("A valid work item is required.");
+          return;
+        }
+        void handleVerifySuite(
+          parsed.suiteId,
+          parsed.provider,
+          verifyModel === "" ? null : verifyModel,
+          hasPromptId ? parsed.promptId : null,
+        );
         return;
       }
       case "interrupt": {

@@ -43,7 +43,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -199,6 +199,14 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(url.pathname==="/api/sessions"){
       if(method==="GET")json(res,200,{sessions:workspaces.sessions()});
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    if(url.pathname==="/api/report"){
+      if(method==="GET"){
+        const workspaceParam=url.searchParams.get("workspace");
+        const workspaceId=workspaceParam===null||workspaceParam===""?undefined:id(workspaceParam);
+        json(res,200,{report:workspaces.usageReport(workspaceId)});
+      }else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
     if(url.pathname==="/api/prompts/human-input"){

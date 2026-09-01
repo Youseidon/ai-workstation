@@ -8,6 +8,7 @@ import type {
   StatusPayload,
   TokenUsage,
 } from "@agent-console/shared";
+import { isMeaningfulUsage, mergeUsage } from "@agent-console/shared";
 import { permissionForRun, settings } from "./settings.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -75,6 +76,9 @@ export function startRun(args: StartRunArgs): RunHandle {
 
   const elapsed = () => Date.now() - startedAt;
 
+  const stampUsage = (incoming: TokenUsage | null | undefined): TokenUsage | null =>
+    isMeaningfulUsage(incoming) ? incoming : usage;
+
   const stamp = (event: AdapterEvent): NormalizedEvent => {
     const base = { id: newId("evt"), runId, provider, model, timestamp: new Date().toISOString() };
     switch (event.type) {
@@ -82,7 +86,7 @@ export function startRun(args: StartRunArgs): RunHandle {
         const payload: StatusPayload = {
           state: event.payload.state ?? "running",
           elapsedMs: event.payload.elapsedMs ?? elapsed(),
-          usage: event.payload.usage ?? usage,
+          usage: stampUsage(event.payload.usage),
           detail: event.payload.detail ?? null,
         };
         return { ...base, type: "status", payload };
@@ -91,7 +95,7 @@ export function startRun(args: StartRunArgs): RunHandle {
         const payload: ResultPayload = {
           state: event.payload.state ?? "done",
           elapsedMs: event.payload.elapsedMs ?? elapsed(),
-          usage: event.payload.usage ?? usage,
+          usage: stampUsage(event.payload.usage),
           text: event.payload.text ?? null,
           exitCode: event.payload.exitCode ?? null,
         };
@@ -119,7 +123,7 @@ export function startRun(args: StartRunArgs): RunHandle {
   const emit = (event: AdapterEvent) => {
     const normalized = stamp(event);
     if (normalized.type === "status" || normalized.type === "result") {
-      if (normalized.payload.usage !== null) usage = normalized.payload.usage;
+      usage = mergeUsage(usage, normalized.payload.usage);
     }
     args.onEvent(normalized);
   };

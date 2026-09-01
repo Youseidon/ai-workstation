@@ -4,4 +4,5 @@ export { DialogProvider, useDialogs, type ConfirmOptions, type PromptOptions } f
 export { Select, TextArea, TextInput } from "./Field";
 export { Modal, type ModalProps, type ModalSize } from "./Modal";
 export { Skeleton, Spinner } from "./Spinner";
+export { Switch, type SwitchProps } from "./Switch";
 export { ToastProvider, useToast, type ToastOptions, type ToastTone } from "./Toast";

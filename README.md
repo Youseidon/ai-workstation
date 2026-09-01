@@ -72,9 +72,11 @@ per provider. Nothing is hardcoded to an install path.
   version comes from `codex --version`. Auth is satisfied by `OPENAI_API_KEY` or
   by `auth.json` under `$CODEX_HOME` (default `~/.codex`).
 - **Cursor** — same `$PATH` lookup for `CURSOR_BIN` (default `cursor-agent`).
-  Auth is satisfied by `CURSOR_API_KEY` or by a login marker under `~/.cursor` /
-  `~/.config/cursor-agent` / `~/.local/share/cursor-agent`. If that heuristic is
-  wrong for your install, set `CURSOR_ASSUME_AUTHENTICATED=true`.
+  Auth is satisfied by `CURSOR_API_KEY` or by a login under `~/.config/cursor/auth.json`
+  / `~/.cursor` / `~/.config/cursor-agent` / `~/.local/share/cursor-agent`. Plan usage
+  (billing-cycle included allowance) is fetched from Cursor's dashboard API using the
+  login token — not an API key. If the login heuristic is wrong for your install, set
+  `CURSOR_ASSUME_AUTHENTICATED=true`.
 - **Grok** — same `$PATH` lookup for `GROK_BIN` (default `grok`). Auth is
   satisfied by `XAI_API_KEY` or by `auth.json` under `$GROK_HOME` (default
   `~/.grok`). If that heuristic is wrong for your install, set

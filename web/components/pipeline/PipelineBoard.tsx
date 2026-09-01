@@ -15,9 +15,7 @@ import type {
   WorkspaceTree,
 } from "@agent-console/shared";
 import { modelLabel, PROVIDER_IDS } from "@agent-console/shared";
-import { AppNav } from "@/components/AppNav";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { SettingsPanel } from "@/components/SettingsPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -33,6 +31,7 @@ import { useModelSelection } from "@/lib/useModelSelection";
 import { providerTheme } from "@/lib/providerTheme";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { ModelMenu } from "@/components/ModelMenu";
+import { PageChrome, useOpenSettings } from "@/components/shell/chrome";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
 import {
@@ -64,7 +63,7 @@ export function PipelineBoard() {
   const [view, setView] = useState<SuitePipelineView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useOpenSettings();
   const [configId, setConfigId] = useState<number | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(true);
@@ -148,7 +147,7 @@ export function PipelineBoard() {
 
   useEffect(() => {
     // Server catalog: refresh on mount and when the socket says operations changed.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async catalog fetch, same pattern as OperationsView
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async catalog fetch, same pattern as TasksView
     void refreshCatalog()
       .then(() => setLoadError(null))
       .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Pipeline desk could not be loaded."));
@@ -347,71 +346,72 @@ export function PipelineBoard() {
 
   return (
     <main className="flex h-full flex-col bg-surface-0 text-fg">
-      <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface-1 px-4 py-2.5">
-        <h1 className="text-xs uppercase tracking-[0.2em] text-fg-muted">agent console</h1>
-        <AppNav active="pipeline" />
-        <div className="ml-auto flex flex-wrap items-center gap-3">
-          <CrewStrip crew={crew} />
-          {live !== null && (
-            <Badge tone={PIPELINE_TONE[live.state]} dot pulse={live.state === "PLAYING"} uppercase>
-              {PIPELINE_LABEL[live.state]}
-            </Badge>
-          )}
-          {showPause(live) && (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy || pipelineId === null}
-              onClick={() =>
-                void act(async () => {
-                  await workspaceApi.pausePipeline(SERVER_URL, pipelineId!);
-                }, "Paused — current step will finish.")
-              }
-            >
-              Pause
+      <PageChrome
+        title="Pipeline"
+        actions={
+          <div className="flex flex-wrap items-center gap-3">
+            <CrewStrip crew={crew} />
+            {live !== null && (
+              <Badge tone={PIPELINE_TONE[live.state]} dot pulse={live.state === "PLAYING"} uppercase>
+                {PIPELINE_LABEL[live.state]}
+              </Badge>
+            )}
+            {showPause(live) && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy || pipelineId === null}
+                onClick={() =>
+                  void act(async () => {
+                    await workspaceApi.pausePipeline(SERVER_URL, pipelineId!);
+                  }, "Paused — current step will finish.")
+                }
+              >
+                Pause
+              </Button>
+            )}
+            {showStop(live) && (
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={busy || pipelineId === null}
+                onClick={() =>
+                  void act(async () => {
+                    const confirmed = await dialogs.confirm({
+                      title: "Stop this pipeline?",
+                      description: "Stops auto-advance. The current agent, if running, is interrupted.",
+                      confirmLabel: "Stop pipeline",
+                      tone: "danger",
+                    });
+                    if (!confirmed) return;
+                    await workspaceApi.stopPipeline(SERVER_URL, pipelineId!);
+                  }, "Pipeline stopped")
+                }
+              >
+                Stop
+              </Button>
+            )}
+            {kind !== "hidden" && (
+              <Button
+                size="sm"
+                variant="success"
+                disabled={playBlocked !== null || busy}
+                title={playBlocked ?? undefined}
+                onClick={() =>
+                  void act(async () => {
+                    await workspaceApi.playPipeline(SERVER_URL, pipelineId!);
+                  }, kind === "resume" ? "Resumed" : "Pipeline is running")
+                }
+              >
+                {kind === "resume" ? "Resume" : "Play"}
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" onClick={openSettings}>
+              ⚙ Settings
             </Button>
-          )}
-          {showStop(live) && (
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={busy || pipelineId === null}
-              onClick={() =>
-                void act(async () => {
-                  const confirmed = await dialogs.confirm({
-                    title: "Stop this pipeline?",
-                    description: "Stops auto-advance. The current agent, if running, is interrupted.",
-                    confirmLabel: "Stop pipeline",
-                    tone: "danger",
-                  });
-                  if (!confirmed) return;
-                  await workspaceApi.stopPipeline(SERVER_URL, pipelineId!);
-                }, "Pipeline stopped")
-              }
-            >
-              Stop
-            </Button>
-          )}
-          {kind !== "hidden" && (
-            <Button
-              size="sm"
-              variant="success"
-              disabled={playBlocked !== null || busy}
-              title={playBlocked ?? undefined}
-              onClick={() =>
-                void act(async () => {
-                  await workspaceApi.playPipeline(SERVER_URL, pipelineId!);
-                }, kind === "resume" ? "Resumed" : "Pipeline is running")
-              }
-            >
-              {kind === "resume" ? "Resume" : "Play"}
-            </Button>
-          )}
-          <Button size="sm" variant="secondary" onClick={() => setSettingsOpen(true)}>
-            ⚙ Settings
-          </Button>
-        </div>
-      </header>
+          </div>
+        }
+      />
 
       {loadError !== null && (
         <div role="alert" className="border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
@@ -817,10 +817,6 @@ export function PipelineBoard() {
             autoFocus
           />
         </Modal>
-      )}
-
-      {settingsOpen && (
-        <SettingsPanel serverUrl={SERVER_URL} onClose={() => setSettingsOpen(false)} runInProgress={console_.runs.length > 0} />
       )}
     </main>
   );

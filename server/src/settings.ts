@@ -79,6 +79,15 @@ const FIELDS: FieldDef[] = [
   },
 
   {
+    key: "claude.enabled",
+    label: "Enabled",
+    group: "Claude Code",
+    type: "boolean",
+    envVar: "CLAUDE_ENABLED",
+    fallback: true,
+    description: "When off, Claude Code is hidden from the agent picker and cannot start runs.",
+  },
+  {
     key: "claude.apiKey",
     label: "ANTHROPIC_API_KEY",
     group: "Claude Code",
@@ -139,6 +148,15 @@ const FIELDS: FieldDef[] = [
     description: "Stop the run after this many assistant turns. 0 means no limit.",
   },
 
+  {
+    key: "codex.enabled",
+    label: "Enabled",
+    group: "Codex CLI",
+    type: "boolean",
+    envVar: "CODEX_ENABLED",
+    fallback: true,
+    description: "When off, Codex CLI is hidden from the agent picker and cannot start runs.",
+  },
   {
     key: "codex.apiKey",
     label: "OPENAI_API_KEY",
@@ -208,6 +226,15 @@ const FIELDS: FieldDef[] = [
   },
 
   {
+    key: "cursor.enabled",
+    label: "Enabled",
+    group: "Cursor CLI",
+    type: "boolean",
+    envVar: "CURSOR_ENABLED",
+    fallback: true,
+    description: "When off, Cursor CLI is hidden from the agent picker and cannot start runs.",
+  },
+  {
     key: "cursor.binary",
     label: "Binary",
     group: "Cursor CLI",
@@ -271,6 +298,15 @@ const FIELDS: FieldDef[] = [
     description: "Appended verbatim to the cursor-agent invocation. Quoted tokens are respected.",
   },
 
+  {
+    key: "grok.enabled",
+    label: "Enabled",
+    group: "Grok CLI",
+    type: "boolean",
+    envVar: "GROK_ENABLED",
+    fallback: true,
+    description: "When off, Grok CLI is hidden from the agent picker and cannot start runs.",
+  },
   {
     key: "grok.apiKey",
     label: "XAI_API_KEY",
@@ -527,6 +563,9 @@ export const settings = {
   },
 
   claude: {
+    get enabled(): boolean {
+      return flag("claude.enabled");
+    },
     get apiKey(): string | null {
       return optionalText("claude.apiKey");
     },
@@ -545,6 +584,9 @@ export const settings = {
   },
 
   codex: {
+    get enabled(): boolean {
+      return flag("codex.enabled");
+    },
     get apiKey(): string | null {
       return optionalText("codex.apiKey");
     },
@@ -566,6 +608,9 @@ export const settings = {
   },
 
   cursor: {
+    get enabled(): boolean {
+      return flag("cursor.enabled");
+    },
     get binary(): string {
       return text("cursor.binary") || "cursor-agent";
     },
@@ -587,6 +632,9 @@ export const settings = {
   },
 
   grok: {
+    get enabled(): boolean {
+      return flag("grok.enabled");
+    },
     get apiKey(): string | null {
       return optionalText("grok.apiKey");
     },

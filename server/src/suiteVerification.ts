@@ -14,6 +14,17 @@ export function uniqueCommands(contents:string[]):string[] {
   return commands;
 }
 
+/** Suite-wide vs single-item dossier title. Kept pure so the scoped form is unit-tested. */
+export function dossierHeading(
+  suite: { key: string | null; name: string },
+  scope: { promptKey: string | null; title: string } | null = null,
+): string {
+  const suiteLabel = `${suite.key ?? suite.name} — ${suite.name}`;
+  if (scope === null) return `# Independent verification: ${suiteLabel}`;
+  const itemLabel = scope.promptKey === null ? scope.title : `${scope.promptKey} — ${scope.title}`;
+  return `# Independent verification: ${suiteLabel} › ${itemLabel}`;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Report parsing                                                              */
 /* -------------------------------------------------------------------------- */

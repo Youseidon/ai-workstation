@@ -90,6 +90,8 @@ export function isoFromUnknown(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
   if (text === "") return null;
+  // Cursor billing-cycle fields arrive as millisecond epoch strings.
+  if (/^\d{10,}$/.test(text)) return isoFromUnixSeconds(Number(text));
   const parsed = Date.parse(text);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
@@ -295,6 +297,112 @@ function durationMinutesBetween(start: string | null, end: string | null): numbe
 function grokCents(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record ? asNumber(record.val) : asNumber(value);
+  if (raw === null) return null;
+  return raw / 100;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cursor — POST …/DashboardService/GetCurrentPeriodUsage                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Cursor reports a billing-cycle allowance (typically ~30 days), not Claude-
+ * style session/weekly caps. Map the cycle length via classifyUsageWindow and
+ * never invent a daily/weekly window the API did not provide.
+ */
+export function parseCursorPeriodUsage(payload: unknown): {
+  windows: ProviderUsageWindow[];
+  credits: ProviderUsageCredits | null;
+} {
+  const root = asRecord(payload) ?? {};
+  const planUsage = asRecord(root.planUsage);
+  const spendLimit = asRecord(root.spendLimitUsage);
+  const start = isoFromUnknown(root.billingCycleStart);
+  const end = isoFromUnknown(root.billingCycleEnd);
+  const duration = durationMinutesBetween(start, end);
+  const kind = classifyUsageWindow(duration) ?? "monthly";
+
+  const windows: ProviderUsageWindow[] = [];
+  if (planUsage) {
+    const used = cursorIncludedPercent(planUsage);
+    const next = windowOf(kind, used ?? (end !== null ? 0 : null), end, duration);
+    if (next) windows.push(next);
+  }
+
+  const credits = cursorCredits(planUsage, spendLimit);
+  return { windows, credits };
+}
+
+export function parseCursorPlanName(payload: unknown): string | null {
+  const root = asRecord(payload) ?? {};
+  const planInfo = asRecord(root.planInfo);
+  return typeof planInfo?.planName === "string" ? planInfo.planName : null;
+}
+
+/**
+ * Prefer totalPercentUsed — that is what cursor.com/dashboard/spending
+ * ("Included in Pro") renders. includedSpend/limit can diverge sharply
+ * (e.g. ~50% vs ~2%) and matches an older/alternate displayMessage, not the
+ * spending page bar.
+ */
+function cursorIncludedPercent(planUsage: Record<string, unknown>): number | null {
+  const total = usedPercent(planUsage.totalPercentUsed);
+  if (total !== null) return total;
+  const included = asNumber(planUsage.includedSpend);
+  const limit = asNumber(planUsage.limit);
+  if (included !== null && limit !== null && limit > 0) {
+    return clampPercent(Math.round((included / limit) * 10_000) / 100);
+  }
+  const remaining = asNumber(planUsage.remaining);
+  if (remaining !== null && limit !== null && limit > 0) {
+    return clampPercent(Math.round(((limit - remaining) / limit) * 10_000) / 100);
+  }
+  return null;
+}
+
+function cursorCredits(
+  planUsage: Record<string, unknown> | null,
+  spendLimit: Record<string, unknown> | null,
+): ProviderUsageCredits | null {
+  // Only surface on-demand spend-limit dollars. Plan includedSpend/limit cents
+  // disagree with the spending-page percent and confuse the credits line.
+  void planUsage;
+  const individualLimit = centsToDollars(spendLimit?.individualLimit);
+  const individualUsed = centsToDollars(spendLimit?.individualUsed);
+  const individualRemaining = centsToDollars(spendLimit?.individualRemaining);
+  if (individualLimit !== null || individualUsed !== null || individualRemaining !== null) {
+    const used =
+      individualUsed ??
+      (individualLimit !== null && individualRemaining !== null
+        ? Math.max(0, individualLimit - individualRemaining)
+        : null);
+    return {
+      balance: individualRemaining,
+      used,
+      limit: individualLimit,
+      currency: "USD",
+      enabled: individualLimit !== null ? individualLimit > 0 : true,
+    };
+  }
+
+  const pooledLimit = centsToDollars(spendLimit?.pooledLimit);
+  const pooledUsed = centsToDollars(spendLimit?.pooledUsed);
+  const pooledRemaining = centsToDollars(spendLimit?.pooledRemaining);
+  if (pooledLimit !== null || pooledUsed !== null || pooledRemaining !== null) {
+    return {
+      balance: pooledRemaining,
+      used: pooledUsed,
+      limit: pooledLimit,
+      currency: "USD",
+      enabled: pooledLimit !== null ? pooledLimit > 0 : true,
+    };
+  }
+
+  return null;
+}
+
+function centsToDollars(value: unknown): number | null {
+  const raw = asNumber(value);
   if (raw === null) return null;
   return raw / 100;
 }

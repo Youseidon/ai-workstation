@@ -1,33 +1,36 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PromptOption, ProviderId, WorkspaceRecord } from "@agent-console/shared";
-import { AppNav } from "@/components/AppNav";
-import { CommandBar } from "@/components/CommandBar";
+import type { PromptOption, WorkspaceRecord } from "@agent-console/shared";
 import { Composer } from "@/components/Composer";
 import { ConsultBriefing } from "@/components/ConsultBriefing";
+import { ContextPicker } from "@/components/ContextPicker";
 import { LogPanel } from "@/components/LogPanel";
-import { ProviderSwitcher } from "@/components/ProviderSwitcher";
-import { SettingsPanel } from "@/components/SettingsPanel";
-import { StatusBar } from "@/components/StatusBar";
+import { PageChrome } from "@/components/shell/chrome";
 import { Button } from "@/components/ui/Button";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { useToast } from "@/components/ui/Toast";
 import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
+import { usePreferredProvider } from "@/lib/usePreferredProvider";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 /** Matches server/src/runService.ts CONSULT_LIMIT. */
 const CONSULT_LIMIT = 3;
 
+const EXAMPLES = [
+  "Summarise the repo layout and the main entry points.",
+  "Run the test suite and report anything that fails.",
+  "Find TODOs and open questions in the latest work items.",
+];
+
 export default function Page() {
   const console_ = useAgentConsole();
-  const { providers, connection, items, workdir, lastRun, operationsRevision } = console_;
+  const { providers, connection, items, workdir, operationsRevision } = console_;
   const toast = useToast();
   const dialogs = useDialogs();
-  const [preferred, setPreferred] = useState<ProviderId | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const { selected, setPreferred } = usePreferredProvider(providers);
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -86,14 +89,6 @@ export default function Page() {
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null;
   const savedPrompt = promptOptions.find((p) => p.id === savedPromptId) ?? null;
 
-  // Derived, not stored: honour the user's pick while it is usable, otherwise
-  // fall back to the first available provider until they choose again.
-  const selected = useMemo<ProviderId>(() => {
-    const picked = providers.find((provider) => provider.id === preferred);
-    if (picked?.available === true) return picked.id;
-    return providers.find((provider) => provider.available)?.id ?? preferred ?? "claude";
-  }, [providers, preferred]);
-
   const selectedInfo = useMemo(
     () => providers.find((provider) => provider.id === selected),
     [providers, selected],
@@ -150,6 +145,8 @@ export default function Page() {
     [console_.items, console_.consultIds],
   );
 
+  const empty = writerItems.length === 0 && consults.length === 0 && lastConsult === null;
+
   const recover = async () => {
     if (savedPrompt === null || workspaceId === null) return;
     const confirmed = await dialogs.confirm({
@@ -191,33 +188,60 @@ export default function Page() {
     if (!started) toast.error("Could not start the consult", "The agent connection is unavailable.");
   };
 
+  const context = (
+    <ContextPicker
+      workspaces={workspaces}
+      workspaceId={workspaceId}
+      onWorkspace={(id) => {
+        setSavedPromptId(null);
+        setPromptOptions([]);
+        setWorkspaceId(id);
+      }}
+      prompts={promptOptions}
+      savedPromptId={savedPromptId}
+      onPrompt={setSavedPromptId}
+      disabled={false}
+      activeWorkspace={activeWorkspace}
+      onRecover={() => void recover()}
+    />
+  );
+
+  const composer = (
+    <Composer
+      disabled={inputDisabled}
+      running={running}
+      writer={writerRun === null ? null : { provider: writerRun.provider, model: writerRun.model }}
+      providers={providers}
+      models={models}
+      selected={selected}
+      runBlockedReason={runBlockedReason}
+      askBlockedReason={askBlockedReason}
+      savedPrompt={savedPrompt}
+      context={context}
+      workdir={activeWorkspace?.workDirectory ?? workdir}
+      onSubmit={send}
+      onAsk={ask}
+      onInterrupt={() => console_.interrupt(writerRun?.runId)}
+      onClearSavedPrompt={() => setSavedPromptId(null)}
+      onTarget={(provider, model) => {
+        setPreferred(provider);
+        // A bare `@grok` picks the provider at the model it was already going
+        // to use — that should not turn an inherited setting into a pin.
+        if (model !== models.resolve(provider)) models.select(provider, model);
+      }}
+    />
+  );
+
   return (
     <main className="flex h-full flex-col bg-surface-0">
-      <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface-1 px-4 py-2.5">
-        <h1 className="text-xs uppercase tracking-[0.2em] text-fg-muted">agent console</h1>
-        <AppNav active="console" />
-        <ProviderSwitcher
-          providers={providers}
-          selected={selected}
-          disabled={false}
-          models={models}
-          onSelect={setPreferred}
-          onRefresh={() => void console_.refreshProviders()}
-        />
-        <div className="ml-auto flex items-center gap-2">
+      <PageChrome
+        title="Chat"
+        actions={
           <Button size="sm" variant="ghost" onClick={console_.clearLog} disabled={items.length === 0}>
             Clear log
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => setSettingsOpen(true)}
-            title="Configure providers, permissions and the working directory"
-          >
-            ⚙ Settings
-          </Button>
-        </div>
-      </header>
+        }
+      />
 
       {workspaceError !== null && (
         <div role="alert" className="flex items-center gap-3 border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
@@ -232,71 +256,48 @@ export default function Page() {
         </div>
       )}
 
-      <CommandBar
-        workspaces={workspaces}
-        workspaceId={workspaceId}
-        onWorkspace={(id) => {
-          setSavedPromptId(null);
-          setPromptOptions([]);
-          setWorkspaceId(id);
-        }}
-        prompts={promptOptions}
-        savedPromptId={savedPromptId}
-        onPrompt={setSavedPromptId}
-        disabled={false}
-        activeWorkspace={activeWorkspace}
-        onRecover={() => void recover()}
-      />
-
-      <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? workdir} />
-
-      {(consults.length > 0 || lastConsult !== null) && (
-        <ConsultBriefing
-          consults={consults}
-          lastConsult={lastConsult}
-          itemsFor={console_.itemsFor}
-          workdir={activeWorkspace?.workDirectory ?? workdir}
-          onStop={(runId) => console_.interrupt(runId)}
-        />
-      )}
-
-      <StatusBar
-        connection={connection}
-        provider={selectedInfo}
-        model={models.resolve(selected)}
-        run={writerRun}
-        lastRun={lastRun}
-        workdir={activeWorkspace?.workDirectory ?? workdir}
-      />
-
-      <Composer
-        disabled={inputDisabled}
-        running={running}
-        writer={writerRun === null ? null : { provider: writerRun.provider, model: writerRun.model }}
-        providers={providers}
-        models={models}
-        selected={selected}
-        runBlockedReason={runBlockedReason}
-        askBlockedReason={askBlockedReason}
-        savedPrompt={savedPrompt}
-        onSubmit={send}
-        onAsk={ask}
-        onInterrupt={() => console_.interrupt(writerRun?.runId)}
-        onClearSavedPrompt={() => setSavedPromptId(null)}
-        onTarget={(provider, model) => {
-          setPreferred(provider);
-          // A bare `@grok` picks the provider at the model it was already going
-          // to use — that should not turn an inherited setting into a pin.
-          if (model !== models.resolve(provider)) models.select(provider, model);
-        }}
-      />
-
-      {settingsOpen && (
-        <SettingsPanel
-          serverUrl={SERVER_URL}
-          onClose={() => setSettingsOpen(false)}
-          runInProgress={console_.runs.length > 0}
-        />
+      {empty ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4 pb-8">
+          <div className="max-w-xl text-center">
+            <h2 className="text-xl font-semibold text-fg">Talk to an agent</h2>
+            <p className="mt-1.5 text-sm text-fg-muted">
+              Run a custom prompt, or attach a work item and send it into the working tree.
+            </p>
+          </div>
+          <div className="flex max-w-2xl flex-wrap justify-center gap-2">
+            {EXAMPLES.map((example) => (
+              <button
+                key={example}
+                type="button"
+                disabled={inputDisabled || runBlockedReason !== null}
+                onClick={() => {
+                  setSavedPromptId(null);
+                  send(example);
+                }}
+                className="rounded-full bg-surface-2 px-3 py-1.5 text-left text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-3 hover:text-fg disabled:opacity-40"
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+          <div className="w-full max-w-3xl">{composer}</div>
+        </div>
+      ) : (
+        <>
+          <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? workdir} />
+          <div className="flex flex-col gap-2 px-3 pb-3 pt-1">
+            {(consults.length > 0 || lastConsult !== null) && (
+              <ConsultBriefing
+                consults={consults}
+                lastConsult={lastConsult}
+                itemsFor={console_.itemsFor}
+                workdir={activeWorkspace?.workDirectory ?? workdir}
+                onStop={(runId) => console_.interrupt(runId)}
+              />
+            )}
+            {composer}
+          </div>
+        </>
       )}
     </main>
   );
