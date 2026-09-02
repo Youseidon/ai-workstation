@@ -577,9 +577,18 @@ export interface PromptRecord {
   completedAt: string | null;
   result: string;
   isGate: boolean;
+  /** Set when this prompt was spawned by another prompt's decompose call. */
+  parentPromptId: number | null;
+  /** Run order among siblings under the same parent. Meaningless without a parent. */
+  childOrder: number;
 }
 
 export type PromptStatus = "TODO" | "IN_PROGRESS" | "DONE" | "BLOCKED" | "SKIPPED";
+
+/** Terminal stations have no remaining work to summarize for a successor. */
+export function promptNeedsHandoff(status: PromptStatus): boolean {
+  return status !== "DONE" && status !== "SKIPPED";
+}
 
 export interface SuiteRecord {
   id: number;
@@ -633,6 +642,8 @@ export interface PromptOption {
   blockedBy: string[];
   currentRun: PromptRunSummary | null;
   recoverable: boolean;
+  parentPromptId: number | null;
+  childOrder: number;
 }
 
 export interface PromptRunSummary {
@@ -736,6 +747,7 @@ export interface PipelineAvailablePrompt {
   id: number;
   title: string;
   externalKey: string | null;
+  status: PromptStatus;
 }
 
 export interface SuitePipelineDefaults {
@@ -832,6 +844,68 @@ export interface PipelineRunDetail extends PipelineRun {
   stages: PipelineRunStage[];
 }
 
+/** Per-named-pipeline flowchart for one suite stage. */
+export interface PipelineFlowchartView {
+  pipelineId: number;
+  suiteId: number;
+  defaults: SuitePipelineDefaults;
+  /** Enabled steps on this pipeline's flowchart, ordered by stepOrder. */
+  steps: PromptPipelineRule[];
+  /** Suite prompts not yet on this pipeline's flowchart. */
+  available: PipelineAvailablePrompt[];
+  rules: PromptPipelineRule[];
+  active: SuitePipelineRun | null;
+  latest: SuitePipelineRun | null;
+}
+
+export interface PipelineDashboardSummary {
+  pipelineCount: number;
+  activePipelineCount: number;
+  totalSteps: number;
+  completedSteps: number;
+  pendingSteps: number;
+  attentionCount: number;
+  runsLast7Days: number;
+  avgRunDurationMs: number | null;
+}
+
+export interface PipelineDashboardItem {
+  pipeline: PipelineRecord;
+  completedSteps: number;
+  totalSteps: number;
+  attentionCount: number;
+  lastRunDurationMs: number | null;
+}
+
+/** A pipeline step that needs operator attention (blocked, recovery, failed). */
+export interface PipelineBlockedStation {
+  pipelineId: number;
+  pipelineName: string;
+  suiteId: number;
+  suiteName: string;
+  promptId: number;
+  promptKey: string | null;
+  promptTitle: string;
+  operationalState: PromptOperationalState;
+  latestIntervention: string | null;
+}
+
+export interface PipelineThroughputDay {
+  /** ISO date YYYY-MM-DD (UTC). */
+  date: string;
+  complete: number;
+  stopped: number;
+  total: number;
+}
+
+export interface PipelineDashboard {
+  generatedAt: string;
+  summary: PipelineDashboardSummary;
+  pipelines: PipelineDashboardItem[];
+  blockedStations: PipelineBlockedStation[];
+  throughput: PipelineThroughputDay[];
+}
+
 export interface OperationsPrompt {
   prompt: PromptOption;
   workspace: Pick<WorkspaceRecord,"id"|"name"|"workDirectory"|"workDirectoryExists">;
@@ -840,11 +914,29 @@ export interface OperationsPrompt {
   operationalState: PromptOperationalState;
   attention: boolean;
   latestIntervention: string|null;
+  /** Dynamically created when an agent posts BLOCKED with a required human action. */
+  humanIntervention: HumanInterventionStep | null;
   lastActivityAt: string;
   sessionCount: number;
   latestHandoff: HandoffRecord | null;
   /** Always present; missing DB rows are filled with defaults. */
   pipelineRule: PromptPipelineRule;
+  /**
+   * Sub-steps this prompt spawned by decomposing itself. Empty for an
+   * ordinary prompt and for a sub-step itself (nesting is one level deep).
+   * Never a pipeline "step" on its own — the outer flowchart never lists these.
+   */
+  children: OperationsPrompt[];
+}
+
+export interface HumanInterventionStep {
+  id: string;
+  promptId: number;
+  requiredAction: string;
+  status: "PENDING" | "COMPLETE";
+  requestedAt: string;
+  response: string | null;
+  completedAt: string | null;
 }
 export interface OperationsSuite {
   id: number;
@@ -960,6 +1052,8 @@ export interface PromptActivity {
   clarifications: ClarificationExchange[];
   sessions: AgentSession[];
   handoffs: HandoffRecord[];
+  /** True when the latest execute run failed before meaningful work; pipeline resume can skip handoff. */
+  directRetry: boolean;
 }
 
 export const HANDOFF_STATES = ["QUEUED", "RUNNING", "READY", "FAILED", "SUPERSEDED"] as const;

@@ -9,6 +9,6 @@ export function operationalState(prompt:PromptOption):PromptOperationalState {
   if(prompt.status==="DONE")return "COMPLETE";
   if(prompt.status==="SKIPPED")return "SKIPPED";
   if(prompt.blockedBy.length>0)return "WAITING_DEPENDENCY";
-  if(prompt.status==="TODO")return "READY";
+  if(prompt.status==="TODO")return prompt.ready?"READY":"WAITING_DEPENDENCY";
   return "FAILED";
 }

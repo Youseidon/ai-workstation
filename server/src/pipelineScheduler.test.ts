@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import type { ProgramRecord, PromptPipelineRule, PromptRecord, ProviderId, SuiteRecord } from "@agent-console/shared";
+import { promptNeedsHandoff, type ProgramRecord, type PromptPipelineRule, type PromptRecord, type ProviderId, type SuiteRecord } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
 import { pipelineScheduler, resolveExecuteTarget, setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { runContexts } from "./runContext.ts";
@@ -16,9 +16,61 @@ import type { RunHandle } from "./runner.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 let seq = 0;
+
+test("completed stations bypass resume handoff", () => {
+  assert.equal(promptNeedsHandoff("DONE"), false);
+  assert.equal(promptNeedsHandoff("SKIPPED"), false);
+  assert.equal(promptNeedsHandoff("IN_PROGRESS"), true);
+  assert.equal(promptNeedsHandoff("BLOCKED"), true);
+  assert.equal(promptNeedsHandoff("TODO"), true);
+});
+
+test("restart after terminal status resumes exactly once at the next station", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("terminal-restart"),
+      suiteIds: [ctx.suite.id],
+    });
+    addNamedSteps(saved.id, ctx.prompts);
+    await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    const firstRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(firstRunId, {
+      requestId: randomUUID(),
+      expectedStatus: "IN_PROGRESS",
+      status: "DONE",
+      reason: "complete before provider exit",
+      verificationSummary: "verified",
+    });
+    workspaces.finishAgentRun(firstRunId, "done");
+
+    // Reproduce a server restart before onExecuteEnded can advance the rail.
+    workspaces.interruptPipelinesOnRestart();
+    const interrupted = workspaces.latestNamedPipelineRun(saved.id);
+    assert.equal(interrupted?.state, "INTERRUPTED");
+    assert.equal(interrupted?.currentSuiteId, ctx.suite.id);
+
+    const resumed = await pipelineScheduler.playNamed(saved.id);
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(started.length, 2);
+    assert.equal(started[0]?.promptId, ctx.prompts[0]!.id);
+    assert.equal(started[1]?.promptId, ctx.prompts[1]!.id);
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "DONE");
+    assert.equal(workspaces.promptOutcome(ctx.prompts[1]!.id).status, "IN_PROGRESS");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 function unique(prefix: string): string {
   seq += 1;
   return `${prefix}-${process.pid}-${Date.now()}-${seq}`;
+}
+
+function addNamedSteps(pipelineId: number, prompts: PromptRecord[]) {
+  for (const prompt of prompts) workspaces.addNamedPipelineStep(pipelineId, prompt.id, { provider: "claude" });
 }
 
 function fixture(promptCount = 2) {
@@ -397,6 +449,234 @@ test("onBlocked skip advances and does not satisfy dependents", async () => {
   }
 });
 
+test("decompose hands off to sub-steps in order, then resumes the parent for final integration", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const runId = playing.currentRunId!;
+    assert.equal(started.length, 1);
+    assert.equal(started[0]?.promptId, parent.id);
+
+    const result = workspaces.decomposePrompt(runId, {
+      requestId: randomUUID(),
+      resumeBrief: "Established X and Y; two slices remain.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    assert.equal(result.children.length, 2);
+    assert.equal(workspaces.promptOutcome(parent.id).status, "TODO");
+    const decomposedOptions = new Map(workspaces.promptOptions(ctx.workspace.id).map((item) => [item.id, item]));
+    assert.equal(decomposedOptions.get(parent.id)?.ready, false);
+    assert.equal(decomposedOptions.get(result.children[0]!.id)?.ready, true);
+    assert.equal(decomposedOptions.get(result.children[1]!.id)?.ready, false);
+
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: parent.id, processState: "done" });
+
+    // The first sub-step is now the running station, never the parent itself.
+    assert.equal(started.length, 2);
+    const childA = result.children[0]!.id;
+    assert.equal(started[1]?.promptId, childA);
+    const runA = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: runA, promptId: childA, workspaceId: ctx.workspace.id, outcome: "DONE" });
+
+    // Second sub-step runs next; the parent still has not resumed.
+    assert.equal(started.length, 3);
+    const childB = result.children[1]!.id;
+    assert.equal(started[2]?.promptId, childB);
+    assert.equal(workspaces.promptOutcome(parent.id).status, "TODO");
+    const runB = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: runB, promptId: childB, workspaceId: ctx.workspace.id, outcome: "DONE" });
+
+    // Both sub-steps are done: the parent itself runs again for the real finish.
+    assert.equal(started.length, 4);
+    assert.equal(started[3]?.promptId, parent.id);
+    assert.equal(workspaces.promptOutcome(parent.id).status, "IN_PROGRESS");
+
+    const finalRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: finalRunId, promptId: parent.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(workspaces.promptOutcome(parent.id).status, "DONE");
+    assert.equal(workspaces.latestPipeline(ctx.suite.id)!.state, "COMPLETE");
+
+    // Sub-steps nest under the station in the board view; they are never their own flowchart step.
+    const snapshot = workspaces.operations(ctx.workspace.id);
+    const suiteOps = snapshot.suites.find((item) => item.id === ctx.suite.id)!;
+    assert.equal(suiteOps.prompts.length, 1);
+    assert.equal(suiteOps.prompts[0]!.children.length, 2);
+    assert.deepEqual(suiteOps.prompts[0]!.children.map((item) => item.prompt.id), [childA, childB]);
+    const pipelineView = workspaces.pipeline(ctx.suite.id);
+    assert.equal(pipelineView.available.some((item) => item.id === childA || item.id === childB), false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a blocked sub-step applies the parent's on_blocked policy, not its own", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    workspaces.upsertPipelineRule(parent.id, { onBlocked: "wait" });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const result = workspaces.decomposePrompt(playing.currentRunId!, {
+      requestId: randomUUID(),
+      resumeBrief: "One slice is enough to demonstrate the blocked path.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    workspaces.finishAgentRun(playing.currentRunId!, "done");
+    await pipelineScheduler.onExecuteEnded({ runId: playing.currentRunId!, workspaceId: ctx.workspace.id, promptId: parent.id, processState: "done" });
+
+    const childA = result.children[0]!.id;
+    const runA = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: runA, promptId: childA, workspaceId: ctx.workspace.id, outcome: "human" });
+
+    // The station's on_blocked="wait" applies to the sub-step, not a default.
+    const waiting = workspaces.latestPipeline(ctx.suite.id)!;
+    assert.equal(waiting.state, "WAITING_HUMAN");
+    assert.equal(waiting.currentPromptId, childA);
+    assert.equal(workspaces.promptOutcome(childA).status, "BLOCKED");
+    // The parent is untouched: still mid-decompose, not itself blocked.
+    assert.equal(workspaces.promptOutcome(parent.id).status, "TODO");
+    assert.equal(started.length, 2);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+function beginRun(runId: string, workspaceId: number, promptId: number): void {
+  workspaces.beginAgentRun({
+    runId,
+    workspaceId,
+    promptId,
+    provider: "claude",
+    model: null,
+    tokenHash: `hash-${runId}`,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    role: "execute",
+  });
+}
+
+test("a sub-step that decomposes runs its grandchildren before resuming", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const children = workspaces.decomposePrompt(playing.currentRunId!, {
+      requestId: randomUUID(),
+      resumeBrief: "The first slice may need a second split.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    workspaces.finishAgentRun(playing.currentRunId!, "done");
+    await pipelineScheduler.onExecuteEnded({ runId: playing.currentRunId!, workspaceId: ctx.workspace.id, promptId: parent.id, processState: "done" });
+
+    const childA = children.children[0]!.id;
+    const childARun = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    const grandchildren = workspaces.decomposePrompt(childARun, {
+      requestId: randomUUID(),
+      resumeBrief: "Split A into two independently verifiable pieces.",
+      children: [
+        { title: unique("grandchild-a"), content: "Do A1" },
+        { title: unique("grandchild-b"), content: "Do A2" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    workspaces.finishAgentRun(childARun, "done");
+    await pipelineScheduler.onExecuteEnded({ runId: childARun, workspaceId: ctx.workspace.id, promptId: childA, processState: "done" });
+
+    assert.equal(started.at(-1)?.promptId, grandchildren.children[0]!.id);
+    let runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId, promptId: grandchildren.children[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(started.at(-1)?.promptId, grandchildren.children[1]!.id);
+    runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId, promptId: grandchildren.children[1]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+
+    assert.equal(started.at(-1)?.promptId, childA);
+    assert.equal(workspaces.promptOutcome(childA).status, "IN_PROGRESS");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("play resumes a stopped decomposed station at its next child", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const result = workspaces.decomposePrompt(playing.currentRunId!, {
+      requestId: randomUUID(),
+      resumeBrief: "Resume at the first child after an interruption.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    workspaces.finishAgentRun(playing.currentRunId!, "done");
+    workspaces.updatePipelineRun(playing.id, {
+      state: "STOPPED",
+      stopReason: "start_failed",
+      endedAt: new Date().toISOString(),
+      currentRunId: null,
+    });
+
+    const resumed = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(started.at(-1)?.promptId, result.children[0]!.id);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("decompose validates child count and refuses a third level of nesting", () => {
+  const ctx = fixture(1);
+  try {
+    const top = ctx.prompts[0]!.id;
+    beginRun("run-decompose-validate", ctx.workspace.id, top);
+    assert.throws(() => workspaces.decomposePrompt("run-decompose-validate", {
+      requestId: randomUUID(),
+      resumeBrief: "not enough children",
+      children: [{ title: "only one", content: "..." }],
+    }), (error: unknown) => error instanceof WorkspaceError && error.code === "validation_error");
+
+    // depth 0 -> 1: allowed.
+    const first = workspaces.decomposePrompt("run-decompose-validate", {
+      requestId: randomUUID(),
+      resumeBrief: "splitting once",
+      children: [{ title: unique("child-a"), content: "a" }, { title: unique("child-b"), content: "b" }],
+    }) as { children: Array<{ id: number }> };
+    const child = first.children[0]!.id;
+
+    // depth 1 -> 2: still allowed.
+    beginRun("run-decompose-child", ctx.workspace.id, child);
+    const second = workspaces.decomposePrompt("run-decompose-child", {
+      requestId: randomUUID(),
+      resumeBrief: "splitting the sub-step once more",
+      children: [{ title: unique("grandchild-a"), content: "a" }, { title: unique("grandchild-b"), content: "b" }],
+    }) as { children: Array<{ id: number }> };
+    const grandchild = second.children[0]!.id;
+
+    // depth 2 -> 3: refused.
+    beginRun("run-decompose-grandchild", ctx.workspace.id, grandchild);
+    assert.throws(() => workspaces.decomposePrompt("run-decompose-grandchild", {
+      requestId: randomUUID(),
+      resumeBrief: "should not be allowed",
+      children: [{ title: unique("great-a"), content: "a" }, { title: unique("great-b"), content: "b" }],
+    }), (error: unknown) => error instanceof WorkspaceError && error.code === "decompose_depth_exceeded");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test("operator skip of a TODO item does not unblock dependents", () => {
   const ctx = fixture(0);
   const firstKey = unique("A");
@@ -677,12 +957,13 @@ test("named pipeline play advances suites, surfaces blocked, and keeps history",
   try {
     suiteB = workspaces.createChild("suite", ctx.program.id, { name: unique("suiteB"), overview: "" }) as SuiteRecord;
     const promptB = workspaces.createChild("prompt", suiteB.id, { title: unique("b"), content: "second" }) as PromptRecord;
-    workspaces.addPipelineStep(promptB.id, { provider: "claude" });
     const saved = workspaces.createPipeline({
       workspaceId: ctx.workspace.id,
       name: unique("mission"),
       suiteIds: [ctx.suite.id, suiteB.id],
     });
+    addNamedSteps(saved.id, ctx.prompts);
+    workspaces.addNamedPipelineStep(saved.id, promptB.id, { provider: "claude" });
     const playing = await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
     assert.equal(playing.state, "PLAYING");
     assert.equal(playing.currentSuiteId, ctx.suite.id);
@@ -735,13 +1016,13 @@ test("named pipeline handoff target overrides the current station provider once"
   const ctx = fixture(2);
   const started = stubStarts();
   try {
-    workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { provider: "grok", model: "grok-4.5" });
-    workspaces.upsertPipelineRule(ctx.prompts[1]!.id, { provider: "grok", model: "grok-4.5" });
     const saved = workspaces.createPipeline({
       workspaceId: ctx.workspace.id,
       name: unique("handoff-target"),
       suiteIds: [ctx.suite.id],
     });
+    workspaces.upsertNamedPipelineRule(saved.id, ctx.prompts[0]!.id, { provider: "grok", model: "grok-4.5" });
+    workspaces.upsertNamedPipelineRule(saved.id, ctx.prompts[1]!.id, { provider: "grok", model: "grok-4.5" });
 
     await pipelineScheduler.playNamed(saved.id, {
       provider: "claude",
@@ -773,6 +1054,7 @@ test("named pipeline stop records operator_stop in the archive", async () => {
       name: unique("abort"),
       suiteIds: [ctx.suite.id],
     });
+    addNamedSteps(saved.id, ctx.prompts);
     await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
     const stopped = await pipelineScheduler.stopNamed(saved.id);
     assert.equal(stopped.state, "STOPPED");

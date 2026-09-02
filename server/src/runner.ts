@@ -27,6 +27,8 @@ export interface RunHandle {
   role: RunRole;
   permissionMode: string | null;
   interrupt(): Promise<void>;
+  /** Stop the provider after it has posted its authoritative terminal status. */
+  complete?(): Promise<void>;
   done: Promise<Extract<RunState, "done" | "interrupted" | "error">>;
 }
 
@@ -73,6 +75,7 @@ export function startRun(args: StartRunArgs): RunHandle {
   let usage: TokenUsage | null = null;
   let finished = false;
   let interruptRequested = false;
+  let completionRequested = false;
 
   const elapsed = () => Date.now() - startedAt;
 
@@ -144,7 +147,7 @@ export function startRun(args: StartRunArgs): RunHandle {
     let finalState: Extract<RunState, "done" | "interrupted" | "error"> = "done";
     let sawResult = false;
     try {
-      for await (const event of adapter.run(prompt, {
+      for await (const incoming of adapter.run(prompt, {
         runId,
         cwd,
         model,
@@ -152,6 +155,9 @@ export function startRun(args: StartRunArgs): RunHandle {
         log,
         permissionOverride,
       })) {
+        const event = completionRequested && incoming.type === "result"
+          ? { ...incoming, payload: { ...incoming.payload, state: "done" as const } }
+          : incoming;
         if (event.type === "result") {
           sawResult = true;
           finalState = event.payload.state ?? "done";
@@ -161,11 +167,11 @@ export function startRun(args: StartRunArgs): RunHandle {
         emit(event);
       }
       if (!sawResult) {
-        finalState = interruptRequested ? "interrupted" : "done";
+        finalState = completionRequested ? "done" : interruptRequested ? "interrupted" : "done";
         emit({ type: "result", payload: { state: finalState } });
       }
     } catch (error) {
-      finalState = interruptRequested ? "interrupted" : "error";
+      finalState = completionRequested ? "done" : interruptRequested ? "interrupted" : "error";
       log.error("adapter threw", error);
       if (finalState === "error") {
         emit({
@@ -205,6 +211,20 @@ export function startRun(args: StartRunArgs): RunHandle {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, INTERRUPT_GRACE_MS));
       if (!finished) {
         log.warn("graceful interrupt did not finish the run; aborting");
+        abortController.abort();
+      }
+    },
+    async complete() {
+      if (finished) return;
+      completionRequested = true;
+      log.info("terminal status posted; stopping provider");
+      // The provider transports only expose cancellation. At this point the
+      // database status is authoritative, so cancellation is translated to a
+      // successful process end by the runner.
+      void adapter.interrupt(runId).catch((error: unknown) => log.warn("completion stop failed", error));
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, INTERRUPT_GRACE_MS));
+      if (!finished) {
+        log.warn("provider did not stop after terminal status; aborting");
         abortController.abort();
       }
     },

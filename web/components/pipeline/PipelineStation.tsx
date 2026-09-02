@@ -11,6 +11,7 @@ import { useAgentConsole, type RunStatus } from "@/lib/agentConsole";
 import { agentState } from "@/lib/agentState";
 import { providerTheme } from "@/lib/providerTheme";
 import type { ModelSelection } from "@/lib/useModelSelection";
+import { PipelineSubSteps } from "./PipelineSubStep";
 import { RecoverySiding } from "./RecoverySiding";
 import { StationRules } from "./RuleChip";
 import type { RulePatch } from "./RulePopover";
@@ -27,6 +28,7 @@ export function PipelineStation({
   providers,
   models,
   onSelect,
+  onSelectChild,
   onChangeRule,
 }: {
   item: OperationsPrompt;
@@ -39,6 +41,8 @@ export function PipelineStation({
   providers: ProviderInfo[];
   models: ModelSelection;
   onSelect(): void;
+  /** Defaults to `onSelect` (ignoring which sub-step) when not supplied. */
+  onSelectChild?(promptId: number): void;
   onChangeRule(patch: RulePatch): void;
 }) {
   const rule = item.pipelineRule;
@@ -95,6 +99,8 @@ export function PipelineStation({
             <div className="mt-1 text-[10px] text-info">preparing handoff with {item.latestHandoff.provider}</div>
           )}
           </button>
+
+          <PipelineSubSteps items={item.children} onSelect={onSelectChild ?? onSelect} />
 
           {working && !recovering && occupancy !== null && (
             <div className="mt-2">

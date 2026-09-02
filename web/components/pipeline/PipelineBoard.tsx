@@ -2,20 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   OperationsPrompt,
+  HumanInterventionStep,
   OperationsSnapshot,
   HandoffRecord,
+  PipelineFlowchartView,
+  PipelineBlockedStation,
   PipelineRecord,
   PipelineRunDetail,
   ProgramRecord,
   PromptPipelineRule,
   ProviderId,
-  SuitePipelineView,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { modelLabel, PROVIDER_IDS } from "@agent-console/shared";
+import { modelLabel, promptNeedsHandoff, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -36,6 +38,8 @@ import { ModelMenu } from "@/components/ModelMenu";
 import { PageChrome } from "@/components/shell/chrome";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
+import { PipelineOverview } from "./PipelineOverview";
+import { PipelineSubSteps } from "./PipelineSubStep";
 import { SnakeFlow } from "./SnakeFlow";
 import {
   LABEL,
@@ -51,7 +55,26 @@ import {
   TONE,
 } from "./status";
 
-export function PipelineBoard() {
+export function PipelineBoard({
+  workbenchPipelineId,
+  isNew = false,
+  editing: editingProp,
+  onEditingChange,
+}: {
+  workbenchPipelineId?: number;
+  isNew?: boolean;
+  editing?: boolean;
+  onEditingChange?: (editing: boolean) => void;
+} = {}) {
+  const router = useRouter();
+  const workbench = workbenchPipelineId !== undefined || isNew;
+
+  useEffect(() => {
+    if (workbenchPipelineId !== undefined) {
+      setPipelineId(workbenchPipelineId);
+      appliedPipelineId.current = null;
+    }
+  }, [workbenchPipelineId]);
   const console_ = useAgentConsole();
   const toast = useToast();
   const dialogs = useDialogs();
@@ -63,7 +86,10 @@ export function PipelineBoard() {
   const [snapshot, setSnapshot] = useState<OperationsSnapshot | null>(null);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [runs, setRuns] = useState<PipelineRunDetail[]>([]);
-  const [view, setView] = useState<SuitePipelineView | null>(null);
+  const [view, setView] = useState<PipelineFlowchartView | null>(null);
+  const [viewSuiteId, setViewSuiteId] = useState<number | null>(null);
+  const [hideCompleted, setHideCompleted] = useState(false);
+  const [blockedStations, setBlockedStations] = useState<PipelineBlockedStation[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [configId, setConfigId] = useState<number | null>(null);
@@ -80,9 +106,13 @@ export function PipelineBoard() {
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
 
   const [pipelineId, setPipelineId] = useState<number | null>(() => {
+    if (workbenchPipelineId !== undefined) return workbenchPipelineId;
     const value = Number(params.get("pipeline"));
     return Number.isSafeInteger(value) && value > 0 ? value : null;
   });
+  const [editingInternal, setEditingInternal] = useState(isNew);
+  const editing = editingProp ?? editingInternal;
+  const setEditing = onEditingChange ?? setEditingInternal;
   const [suiteId, setSuiteId] = useState<number | null>(() => {
     const value = Number(params.get("suite"));
     return Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -157,6 +187,7 @@ export function PipelineBoard() {
   const pipeline = catalogWorkspaceId === workspaceId
     ? pipelines.find((item) => item.id === pipelineId && item.workspaceId === workspaceId) ?? null
     : null;
+  const live = pipeline?.active ?? pipeline?.latest ?? null;
 
   const dirty =
     pipeline === null
@@ -199,7 +230,7 @@ export function PipelineBoard() {
         suiteName: home?.suite.name ?? ops?.name ?? saved?.suiteName ?? "Suite",
         suiteKey: home?.suite.externalKey ?? ops?.key ?? saved?.suiteKey ?? null,
         promptCount: home?.suite.prompts.length ?? ops?.prompts.length ?? saved?.promptCount ?? 0,
-        stepCount: saved?.stepCount ?? ops?.prompts.filter((item) => item.pipelineRule.enabled).length ?? 0,
+        stepCount: saved?.stepCount ?? 0,
         operations: ops,
         providers,
       },
@@ -208,34 +239,73 @@ export function PipelineBoard() {
 
   const activeSuiteId = stages.some((stage) => stage.suiteId === suiteId)
     ? suiteId
-    : (stages[0]?.suiteId ?? null);
+    : stages.some((stage) => stage.suiteId === live?.currentSuiteId)
+      ? (live?.currentSuiteId ?? null)
+      : (stages[0]?.suiteId ?? null);
+
+  const showEditor = isNew || editing;
 
   useEffect(() => {
-    if (activeSuiteId === null) return;
+    if (activeSuiteId === null || pipelineId === null) {
+      setView(null);
+      setViewSuiteId(null);
+      return;
+    }
+    const requestedSuite = activeSuiteId;
+    const requestedPipeline = pipelineId;
+    setView(null);
+    setViewSuiteId(null);
     let disposed = false;
     void workspaceApi
-      .pipeline(SERVER_URL, activeSuiteId)
+      .pipelineFlowchart(SERVER_URL, requestedPipeline, requestedSuite, showEditor)
       .then((next) => {
-        if (!disposed) setView(next);
+        if (!disposed && requestedSuite === activeSuiteId && requestedPipeline === pipelineId) {
+          setView(next);
+          setViewSuiteId(requestedSuite);
+        }
       })
       .catch(() => {
-        if (!disposed) setView(null);
+        if (!disposed) {
+          setView(null);
+          setViewSuiteId(null);
+        }
       });
     return () => {
       disposed = true;
     };
-  }, [activeSuiteId, console_.operationsRevision]);
+  }, [activeSuiteId, pipelineId, showEditor, console_.operationsRevision]);
 
   useEffect(() => {
+    if (workspaceId === null || pipelineId === null || !workbench) {
+      setBlockedStations([]);
+      return;
+    }
+    let disposed = false;
+    void workspaceApi
+      .pipelineDashboard(SERVER_URL, workspaceId)
+      .then((data) => {
+        if (!disposed) {
+          setBlockedStations(data.blockedStations.filter((station) => station.pipelineId === pipelineId));
+        }
+      })
+      .catch(() => {
+        if (!disposed) setBlockedStations([]);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [workspaceId, pipelineId, workbench, console_.operationsRevision]);
+
+  useEffect(() => {
+    if (workbench) return;
     const next = new URLSearchParams();
     if (workspaceId !== null) next.set("workspace", String(workspaceId));
     if (pipeline !== null) next.set("pipeline", String(pipeline.id));
     if (catalogWorkspaceId === workspaceId && activeSuiteId !== null) next.set("suite", String(activeSuiteId));
     const query = next.toString();
     window.history.replaceState(window.history.state, "", query === "" ? "/pipeline" : `/pipeline?${query}`);
-  }, [workspaceId, pipeline, catalogWorkspaceId, activeSuiteId]);
+  }, [workbench, workspaceId, pipeline, catalogWorkspaceId, activeSuiteId]);
 
-  const live = pipeline?.active ?? pipeline?.latest ?? null;
   const occupancy =
     workspaceId === null
       ? null
@@ -246,9 +316,22 @@ export function PipelineBoard() {
   const resumeSuiteOps = live?.currentSuiteId === null || live?.currentSuiteId === undefined ? null : (operationsById.get(live.currentSuiteId) ?? null);
   const resumeSuiteRun = resumeSuiteOps?.pipeline?.active ?? resumeSuiteOps?.pipeline?.latest ?? null;
   const resumeItem = resumeSuiteRun?.currentPromptId == null ? null : (resumeSuiteOps?.prompts.find((item) => item.prompt.id === resumeSuiteRun.currentPromptId) ?? null);
-  const steps = view?.steps ?? [];
+  const steps = viewSuiteId === activeSuiteId ? (view?.steps ?? []) : [];
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
-  const flowSteps = steps.filter((step) => byId.has(step.promptId));
+  const flowSteps = steps.filter((step) => {
+    if (!byId.has(step.promptId)) return false;
+    if (!hideCompleted) return true;
+    const item = byId.get(step.promptId);
+    return item?.operationalState !== "COMPLETE" && item?.operationalState !== "SKIPPED";
+  });
+  const displayedSteps = flowSteps.flatMap((step) => {
+    const item = byId.get(step.promptId);
+    if (item?.humanIntervention === null || item?.humanIntervention === undefined) return [{ kind: "prompt" as const, step }];
+    return [
+      { kind: "prompt" as const, step },
+      { kind: "human" as const, step: item.humanIntervention, item },
+    ];
+  });
 
   const crew = useMemo(() => {
     return PROVIDER_IDS.map((id) => {
@@ -268,11 +351,12 @@ export function PipelineBoard() {
     if (draftSuiteIds.length === 0) return "add at least one suite";
     if (dirty) return "save changes first";
     if (stages.some((stage) => stage.stepCount === 0)) return "every suite needs at least one step";
+    if (resumeItem?.humanIntervention?.status === "PENDING") return "complete the human intervention step first";
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
       return "workspace has a writer";
     }
     return null;
-  }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live]);
+  }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live, resumeItem]);
 
   const act = async (operation: () => Promise<void>, success?: string) => {
     setBusy(true);
@@ -353,6 +437,7 @@ export function PipelineBoard() {
     setDraftName(saved.name);
     setDraftSuiteIds(saved.stages.map((stage) => stage.suiteId));
     appliedPipelineId.current = saved.id;
+    if (isNew) router.replace(`/pipeline/${saved.id}?edit=1`);
     try {
       setRuns(await workspaceApi.pipelineRuns(SERVER_URL, saved.id));
     } catch {
@@ -415,11 +500,11 @@ export function PipelineBoard() {
                 disabled={playBlocked !== null || busy}
                 title={playBlocked ?? undefined}
                 onClick={() => {
-                  if (kind === "resume" && resumeItem !== null) {
+                  if (kind === "resume" && resumeItem !== null && promptNeedsHandoff(resumeItem.prompt.status)) {
                     const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
                     const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
                     setHandoffProvider(readOnly);setSuccessorProvider(available);setReusableHandoff(null);setDirectRetry(false);
-                    void act(async()=>{const activity=await workspaceApi.activity(SERVER_URL,resumeItem.prompt.id);const latestExecute=activity.sessions.find((session)=>session.role==="execute");const producedWork=latestExecute?.events.some((event)=>event.type==="assistant_text"||event.type==="tool_use"||event.type==="tool_result")??false;const retry=latestExecute?.state==="ERROR"&&!producedWork;const reusable=latestExecute===undefined?null:activity.handoffs.find((handoff)=>handoff.state==="READY"&&handoff.recommendation==="CONTINUE"&&handoff.successorRunId===latestExecute.id)??null;setSuccessorProvider((latestExecute?.provider as ProviderId|undefined)??available);setDirectRetry(retry);setReusableHandoff(reusable);setHandoffOpen(true);});return;
+                    void act(async()=>{const activity=await workspaceApi.activity(SERVER_URL,resumeItem.prompt.id);const latestExecute=activity.sessions.find((session)=>session.role==="execute");const reusable=latestExecute===undefined?null:activity.handoffs.find((handoff)=>handoff.state==="READY"&&handoff.recommendation==="CONTINUE"&&handoff.successorRunId===latestExecute.id)??null;setSuccessorProvider((latestExecute?.provider as ProviderId|undefined)??available);setDirectRetry(activity.directRetry);setReusableHandoff(reusable);setHandoffOpen(true);});return;
                   }
                   void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
                 }}
@@ -446,8 +531,16 @@ export function PipelineBoard() {
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]">
+      <div
+        className={cn(
+          "grid min-h-0 flex-1",
+          showEditor ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]" : "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_280px]",
+        )}
+      >
+        {showEditor && (
         <aside className="min-h-0 overflow-y-auto border-r border-line bg-surface-1 p-3">
+          {!workbench && (
+          <>
           <div className="mb-1 flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Pipelines</div>
             <button
@@ -496,6 +589,16 @@ export function PipelineBoard() {
               );
             })}
           </div>
+          </>
+          )}
+
+          {workbench && (
+            <div className="mb-3">
+              <Link href="/pipeline" className="text-[11px] text-accent hover:underline">
+                ← All pipelines
+              </Link>
+            </div>
+          )}
 
           <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-fg-dim">Programs</div>
           {tree === null ? (
@@ -571,29 +674,75 @@ export function PipelineBoard() {
             })
           )}
         </aside>
+        )}
 
         <section className="pipeline-desk min-h-0 overflow-auto p-5">
           <div className="mx-auto max-w-6xl space-y-6">
+            {workbench && pipeline !== null && !showEditor && (
+              <PipelineOverview pipeline={pipeline} snapshot={snapshot} runs={runs} blockedStations={blockedStations} />
+            )}
+
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <div className="text-[10px] uppercase tracking-[0.22em] text-accent">Pipeline</div>
-                <h2 className="mt-1 text-2xl tracking-tight text-fg">{draftName}</h2>
+                {showEditor ? (
+                  <label className="mt-1 block">
+                    <span className="sr-only">Pipeline name</span>
+                    <input
+                      type="text"
+                      value={draftName}
+                      onChange={(event) => setDraftName(event.target.value)}
+                      maxLength={200}
+                      aria-label="Pipeline name"
+                      className="w-full min-w-64 rounded-md border border-line bg-surface-2 px-3 py-1.5 text-2xl tracking-tight text-fg outline-none transition-colors focus:border-accent"
+                    />
+                  </label>
+                ) : (
+                  <h2 className="mt-1 text-2xl tracking-tight text-fg">{draftName}</h2>
+                )}
                 <p className="mt-1 text-xs text-fg-dim">
                   {tree?.name ?? "Choose a workspace"} · {stages.length} suite{stages.length === 1 ? "" : "s"}
                   {dirty ? " · unsaved" : ""}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                {workbench && pipelineId !== null && !isNew && (
+                  <Button
+                    size="sm"
+                    variant={showEditor ? "primary" : "secondary"}
+                    disabled={busy || (showEditor && draftName.trim() === "")}
+                    onClick={() => {
+                      if (!showEditor) {
+                        setEditing(true);
+                        return;
+                      }
+                      if (!dirty) {
+                        setEditing(false);
+                        return;
+                      }
+                      void act(async () => {
+                        await persist(draftName);
+                        setEditing(false);
+                      }, "Pipeline changes saved");
+                    }}
+                  >
+                    {showEditor ? (dirty ? "Save and finish" : "Done editing") : "Edit pipeline"}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={busy || !dirty}
+                  disabled={busy || !dirty || draftName.trim() === ""}
                   onClick={() => {
+                    if (pipelineId !== null) {
+                      void act(async () => { await persist(draftName); }, "Pipeline changes saved");
+                      return;
+                    }
                     setSaveName(draftName === "Untitled pipeline" ? "" : draftName);
                     setSaveOpen(true);
                   }}
                 >
-                  Save pipeline
+                  {pipelineId === null ? "Save pipeline" : "Save changes"}
                 </Button>
                 {pipelineId !== null && (
                   <Button
@@ -622,7 +771,7 @@ export function PipelineBoard() {
             </div>
 
             {live?.state === "WAITING_HUMAN" && (
-              <Banner tone="warning">Blocked — a station is waiting for you. Answer it, then Resume.</Banner>
+              <Banner tone="warning">Blocked — complete the Human intervention step below before resuming.</Banner>
             )}
             {live?.state === "PAUSED" && (
               <Banner tone="caution">Paused — the current station will finish, then the rail holds.</Banner>
@@ -641,25 +790,42 @@ export function PipelineBoard() {
             />
 
             {suiteOps === null ? (
-              <p className="text-sm text-fg-dim">Select a suite to wire its steps and agents.</p>
+              <p className="text-sm text-fg-dim">Select a suite on the rail to inspect its steps.</p>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-4" key={activeSuiteId ?? "none"}>
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">
-                    {suiteOps.programName} · flowchart
+                    {suiteOps.programName} · {showEditor ? "flowchart" : "steps"}
                   </div>
                   <h3 className="mt-1 text-lg text-fg">
                     {suiteOps.key !== null && `${suiteOps.key} — `}
                     {suiteOps.name}
                   </h3>
                   <p className="mt-1 text-xs text-fg-dim">
-                    Drag to set order. The gear on a step picks its agent. Work items not on this flow still run from Operations or Console.
+                    {showEditor
+                      ? "Drag to set order. Only incomplete work items appear in Add remaining. Completed and skipped count as done."
+                      : "Steps configured for this pipeline. Edit pipeline to change suites or wiring."}
                   </p>
                 </div>
 
-                {view?.available.length ? (
+                {pipelineId === null ? (
+                  <p className="text-sm text-fg-dim">Save this pipeline first, then add steps to each suite.</p>
+                ) : (
+                  <>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] uppercase tracking-wider text-fg-dim">Flowchart steps</div>
+                  <button
+                    type="button"
+                    onClick={() => setHideCompleted((current) => !current)}
+                    className="text-[11px] text-accent hover:underline"
+                  >
+                    {hideCompleted ? "Show completed" : "Hide completed"}
+                  </button>
+                </div>
+
+                {showEditor && view?.available.length ? (
                   <div>
-                    <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">Add to flow</div>
+                    <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">Add remaining work</div>
                     <div className="flex flex-wrap gap-2">
                       {view.available.map((prompt) => (
                         <button
@@ -668,11 +834,15 @@ export function PipelineBoard() {
                           disabled={busy}
                           onClick={() =>
                             void act(async () => {
-                              const result = await workspaceApi.addPipelineStep(SERVER_URL, suiteOps.id, {
-                                promptId: prompt.id,
-                                provider: firstAvailable,
-                              });
-                              setView(result.pipeline);
+                              const result = await workspaceApi.addPipelineFlowchartStep(
+                                SERVER_URL,
+                                pipelineId,
+                                suiteOps.id,
+                                { promptId: prompt.id, provider: firstAvailable },
+                                true,
+                              );
+                              setView(result.flowchart);
+                              setViewSuiteId(suiteOps.id);
                             })
                           }
                           className="rounded-full px-3 py-1 text-xs text-fg-muted ring-1 ring-inset ring-line hover:bg-surface-2 hover:text-fg"
@@ -684,39 +854,69 @@ export function PipelineBoard() {
                   </div>
                 ) : null}
 
-                {flowSteps.length === 0 ? (
+                {displayedSteps.length === 0 ? (
                   <div className="rounded-panel border border-dashed border-line bg-surface-1/70 px-6 py-12 text-center text-sm text-fg-dim">
-                    This suite has no pipeline yet. Add work items above — they snake across the desk, each with its own model.
+                    {hideCompleted
+                      ? "No incomplete steps on this flowchart. Show completed or add remaining work above."
+                      : showEditor
+                        ? "This suite has no steps on this pipeline yet. Add remaining work items above."
+                        : "This suite has no steps on this pipeline yet. Edit pipeline to add steps."}
                   </div>
                 ) : (
                   <SnakeFlow
-                    items={flowSteps}
-                    getKey={(step) => step.promptId}
-                    isLiveIndex={(index) => view?.active?.currentPromptId === flowSteps[index]?.promptId}
-                    wrapItem={(node, step) => (
+                    items={displayedSteps}
+                    getKey={(entry) => entry.kind === "prompt" ? `prompt-${entry.step.promptId}` : entry.step.id}
+                    isLiveIndex={(index) => {
+                      const entry = displayedSteps[index];
+                      return entry?.kind === "prompt" && view?.active?.currentPromptId === entry.step.promptId;
+                    }}
+                    wrapItem={
+                      showEditor
+                        ? (node, entry) => entry.kind === "human" ? node : (
                       <div
                         draggable
-                        onDragStart={() => setDragId(step.promptId)}
+                        onDragStart={() => setDragId(entry.step.promptId)}
                         onDragOver={(event) => event.preventDefault()}
                         onDrop={() => {
-                          if (dragId === null || dragId === step.promptId) return;
+                          if (dragId === null || dragId === entry.step.promptId || pipelineId === null) return;
                           const ids = steps.map((entry) => entry.promptId);
                           const from = ids.indexOf(dragId);
-                          const to = ids.indexOf(step.promptId);
+                          const to = ids.indexOf(entry.step.promptId);
                           if (from === -1 || to === -1) return;
                           ids.splice(from, 1);
                           ids.splice(to, 0, dragId);
                           setDragId(null);
                           void act(async () => {
-                            const result = await workspaceApi.reorderPipelineSteps(SERVER_URL, suiteOps.id, ids);
-                            setView(result.pipeline);
+                            const result = await workspaceApi.reorderPipelineFlowchartSteps(
+                              SERVER_URL,
+                              pipelineId,
+                              suiteOps.id,
+                              ids,
+                              true,
+                            );
+                            setView(result.flowchart);
+                            setViewSuiteId(suiteOps.id);
                           });
                         }}
                       >
                         {node}
                       </div>
-                    )}
-                    renderCard={(step, index) => {
+                    )
+                        : undefined
+                    }
+                    renderCard={(entry, index) => {
+                      if (entry.kind === "human") {
+                        return (
+                          <HumanInterventionNode
+                            step={entry.step}
+                            busy={busy}
+                            onRespond={(content) => act(async () => {
+                              await workspaceApi.respond(SERVER_URL, entry.step.promptId, content);
+                            }, "Human response recorded")}
+                          />
+                        );
+                      }
+                      const step = entry.step;
                       const item = byId.get(step.promptId);
                       if (item === undefined) return null;
                       const liveRun = stationOccupancy(item, console_.runs, view?.active);
@@ -728,17 +928,27 @@ export function PipelineBoard() {
                           rule={step}
                           current={current}
                           occupancy={liveRun}
+                          readOnly={!showEditor}
                           onConfig={() => setConfigId(step.promptId)}
                           onRemove={() =>
                             void act(async () => {
-                              const result = await workspaceApi.removePipelineStep(SERVER_URL, step.promptId);
-                              setView(result.pipeline);
+                              const result = await workspaceApi.removePipelineFlowchartStep(
+                                SERVER_URL,
+                                pipelineId,
+                                suiteOps.id,
+                                step.promptId,
+                                true,
+                              );
+                              setView(result.flowchart);
+                              setViewSuiteId(suiteOps.id);
                             })
                           }
                         />
                       );
                     }}
                   />
+                )}
+                  </>
                 )}
               </div>
             )}
@@ -788,8 +998,13 @@ export function PipelineBoard() {
           onClose={() => setConfigId(null)}
           onChange={(patch) =>
             void act(async () => {
-              await workspaceApi.patchPipelineRule(SERVER_URL, configId, patch);
-              if (activeSuiteId !== null) setView(await workspaceApi.pipeline(SERVER_URL, activeSuiteId));
+              if (pipelineId === null) return;
+              await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, configId, patch);
+              if (activeSuiteId !== null) {
+                const next = await workspaceApi.pipelineFlowchart(SERVER_URL, pipelineId, activeSuiteId, true);
+                setView(next);
+                setViewSuiteId(activeSuiteId);
+              }
             })
           }
         />
@@ -882,12 +1097,58 @@ function Banner({ tone, children }: { tone: "caution" | "warning"; children: str
   );
 }
 
+function HumanInterventionNode({
+  step,
+  busy,
+  onRespond,
+}: {
+  step: HumanInterventionStep;
+  busy: boolean;
+  onRespond(content: string): Promise<void>;
+}) {
+  const [response, setResponse] = useState("");
+  const complete = step.status === "COMPLETE";
+  return (
+    <div className={cn("relative h-full min-w-0 rounded-panel border p-3", complete ? "border-success/40 bg-success/5" : "border-warning/50 bg-warning/5 ring-1 ring-warning/20")}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-[13px] text-fg">Human intervention</div>
+          <div className="mt-0.5 text-[10px] uppercase tracking-wider text-fg-dim">Required before AI continues</div>
+        </div>
+        <Badge tone={complete ? "success" : "warning"}>{complete ? "Responded" : "Action required"}</Badge>
+      </div>
+      <div className="mt-3 whitespace-pre-wrap text-xs leading-5 text-fg-muted">{step.requiredAction}</div>
+      {complete ? (
+        <div className="mt-3 border-t border-line pt-3 text-xs leading-5 text-fg-dim">
+          <span className="text-fg-muted">Human response:</span> {step.response}
+        </div>
+      ) : (
+        <div className="mt-3 space-y-2">
+          <label className="block text-[11px] text-fg-muted" htmlFor={`${step.id}-response`}>Your response or decision</label>
+          <textarea
+            id={`${step.id}-response`}
+            value={response}
+            onChange={(event) => setResponse(event.target.value)}
+            rows={4}
+            placeholder="Record the decision or action taken…"
+            className="w-full resize-y rounded-md border border-line bg-surface-2 px-2.5 py-2 text-xs text-fg outline-none focus:border-warning"
+          />
+          <Button size="sm" variant="primary" disabled={busy || response.trim() === ""} onClick={() => void onRespond(response.trim())}>
+            Submit response
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FlowNode({
   index,
   item,
   rule,
   current,
   occupancy,
+  readOnly = false,
   onConfig,
   onRemove,
 }: {
@@ -896,6 +1157,7 @@ function FlowNode({
   rule: PromptPipelineRule;
   current: boolean;
   occupancy: ReturnType<typeof stationOccupancy>;
+  readOnly?: boolean;
   onConfig(): void;
   onRemove(): void;
 }) {
@@ -943,6 +1205,8 @@ function FlowNode({
           )}
         </div>
       </div>
+      <PipelineSubSteps items={item.children} />
+      {!readOnly && (
       <div className="mt-3 flex gap-1">
         <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
           Config
@@ -951,6 +1215,7 @@ function FlowNode({
           Remove
         </Button>
       </div>
+      )}
     </div>
   );
 }

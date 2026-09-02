@@ -19,7 +19,7 @@ test("agent context is composed from records without directing the agent to prom
     workspace:{id:1,name:"Example",workDirectory:"/tmp",description:"Shared rules"},
     program:{id:1,externalKey:"migration",name:"Migration",overview:"Replace the legacy service."},
     suite:{id:1,externalKey:"S4",name:"Money path",overview:""},
-    prompt:{id:2,suiteId:1,title:"Checkout",content:"Implement checkout.",sortOrder:0,createdAt:"",updatedAt:"",externalKey:"S4-02",status:"TODO",completedAt:null,result:"",isGate:false},
+    prompt:{id:2,suiteId:1,title:"Checkout",content:"Implement checkout.",sortOrder:0,createdAt:"",updatedAt:"",externalKey:"S4-02",status:"TODO",completedAt:null,result:"",isGate:false,parentPromptId:null,childOrder:0},
     dependencies:[{externalKey:"S4-01",title:"Cart",status:"DONE",result:"33/33 green"}],gate:null,
     history:{remarks:[{id:1,promptId:2,runId:"prior",kind:"BLOCKER",content:"Need a payment decision.",actorType:"AGENT",createdAt:"2026-08-28T00:00:00.000Z"},{id:2,promptId:2,runId:null,kind:"HUMAN_RESPONSE",content:"Use Stripe test mode.",actorType:"USER",createdAt:"2026-08-28T00:01:00.000Z"}],events:[]},
     clarifications:[],
@@ -29,6 +29,9 @@ test("agent context is composed from records without directing the agent to prom
   assert.match(markdown,/Implement checkout/);
   assert.match(markdown,/Need a payment decision/);
   assert.match(markdown,/Use Stripe test mode/);
+  assert.match(markdown,/assess whether the remaining work can realistically be completed and verified/);
+  assert.match(markdown,/use the Progress API's decompose operation early/);
+  assert.match(markdown,/reserve the resumed parent run for integration and final verification/);
   assert.match(markdown,/Incomplete implementation, a large remaining scope/);
   assert.match(markdown,/Do not repeat an earlier blocker/);
   assert.match(markdown,/exact action only the human can take/);
@@ -41,7 +44,7 @@ test("consult context has a live-tree banner and no completion protocol", () => 
     workspace:{id:1,name:"Example",workDirectory:"/tmp",description:"Shared rules"},
     program:{id:1,externalKey:"migration",name:"Migration",overview:"Replace the legacy service."},
     suite:{id:1,externalKey:"S4",name:"Money path",overview:""},
-    prompt:{id:2,suiteId:1,title:"Checkout",content:"Implement checkout.",sortOrder:0,createdAt:"",updatedAt:"",externalKey:"S4-02",status:"BLOCKED",completedAt:null,result:"Need a payment decision.",isGate:false},
+    prompt:{id:2,suiteId:1,title:"Checkout",content:"Implement checkout.",sortOrder:0,createdAt:"",updatedAt:"",externalKey:"S4-02",status:"BLOCKED",completedAt:null,result:"Need a payment decision.",isGate:false,parentPromptId:null,childOrder:0},
     dependencies:[{externalKey:"S4-01",title:"Cart",status:"DONE",result:"33/33 green"}],gate:null,
     history:{remarks:[],events:[]},
     clarifications:[],

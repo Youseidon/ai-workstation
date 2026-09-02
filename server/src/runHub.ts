@@ -207,4 +207,14 @@ export const runHub = {
     await run.handle.done;
     return true;
   },
+
+  /** Stops a provider that has already posted DONE/BLOCKED, without recording a false interruption. */
+  async complete(runId: string): Promise<boolean> {
+    const run = runs.get(runId);
+    if (run === undefined) return false;
+    if (run.handle.complete) await run.handle.complete();
+    else await run.handle.interrupt();
+    await run.handle.done;
+    return true;
+  },
 };

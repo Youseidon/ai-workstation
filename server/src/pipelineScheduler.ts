@@ -128,9 +128,15 @@ async function syncNamedFromSuite(suiteRun: SuitePipelineRun): Promise<void> {
   }
 }
 
+function namedPipelineIdFor(live: SuitePipelineRun): number | undefined {
+  if (live.pipelineRunId === null) return undefined;
+  return workspaces.namedPipelineRunById(live.pipelineRunId)?.pipelineId;
+}
+
 async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number, preferPlayTarget = false): Promise<SuitePipelineRun> {
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
-  const rule = workspaces.pipelineRule(promptId);
+  const pipelineId = namedPipelineIdFor(live);
+  const rule = workspaces.pipelineRule(promptId, pipelineId);
   const defaults = workspaces.suitePipelineDefaults(live.suiteId);
   const target = resolveExecuteTarget({
     recovering: live.recovering,
@@ -166,7 +172,8 @@ async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number,
 
 async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Promise<SuitePipelineRun> {
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
-  const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId);
+  const pipelineId = namedPipelineIdFor(live);
+  const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId, pipelineId);
   const next = ready[0];
   if (next !== undefined) {
     log.info(`advance suite=${live.suiteId} prompt=${next.id}`);
@@ -179,18 +186,36 @@ async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Pr
     if (updated.state === "PAUSED") return updated;
     return startCurrentStation(updated, next.id, preferPlayTarget);
   }
-  const unfinished = workspaces.remainingPipelinePromptIds(live.suiteId).filter((promptId) => {
+  const unfinished = workspaces.remainingPipelinePromptIds(live.suiteId, pipelineId).filter((promptId) => {
     const status=workspaces.promptOutcome(promptId).status;
     return status !== "DONE" && status !== "SKIPPED";
   });
-  if (unfinished.length > 0) return terminate(live, "STOPPED", "blocked_on_dependencies");
+  if (unfinished.length > 0) {
+    // The blocking step is a station whose depth-first sub-step run isn't
+    // finished yet, not a station genuinely waiting on another station.
+    const blockingPromptId = unfinished[0]!;
+    const child = workspaces.nextOpenChild(blockingPromptId);
+    if (child !== null) {
+      log.info(`advance suite=${live.suiteId} prompt=${blockingPromptId} sub-step=${child.id}`);
+      const updated = workspaces.updatePipelineRun(live.id, {
+        attempt: 0,
+        recovering: false,
+        currentPromptId: child.id,
+        currentRunId: null,
+      });
+      if (updated.state === "PAUSED") return updated;
+      return startCurrentStation(updated, child.id, preferPlayTarget);
+    }
+    return terminate(live, "STOPPED", "blocked_on_dependencies");
+  }
   return terminate(live, "COMPLETE", null);
 }
 
 async function applyOnDone(pipeline: SuitePipelineRun, rule: PromptPipelineRule): Promise<SuitePipelineRun> {
   if (rule.onDone === "stop") return terminate(pipeline, "STOPPED", "on_done_stop");
+  const pipelineId = namedPipelineIdFor(pipeline);
   if (rule.onDone === "skip_rest") {
-    for (const promptId of workspaces.remainingPipelinePromptIds(pipeline.suiteId)) {
+    for (const promptId of workspaces.remainingPipelinePromptIds(pipeline.suiteId, pipelineId)) {
       const status=workspaces.promptOutcome(promptId).status;
       if (status === "DONE" || status === "SKIPPED") continue;
       workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skip_rest");
@@ -248,8 +273,31 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
   if (live.currentRunId !== runId) return;
   workspaces.updatePipelineRun(live.id, { currentRunId: null });
   const posted = workspaces.promptOutcome(promptId);
-  const rule = ruleByRun.get(runId) ?? workspaces.pipelineRule(promptId);
+  const pipelineId = namedPipelineIdFor(live);
+  const rule = ruleByRun.get(runId) ?? workspaces.pipelineRule(promptId, pipelineId);
   ruleByRun.delete(runId);
+  if (posted.status === "TODO") {
+    // The run decomposed this prompt into sub-steps instead of finishing it;
+    // hand off to the first one.
+    await advance(live);
+    return;
+  }
+  const parentId = workspaces.parentPromptId(promptId);
+  if (parentId !== null) {
+    // This run belonged to a sub-step. Its own on_done/on_blocked outcome
+    // never stops or skip-rests the station's own rule — that policy is
+    // reserved for the station (the parent) actually finishing.
+    if (posted.status === "DONE" || posted.status === "SKIPPED") {
+      await advance(live);
+      return;
+    }
+    if (posted.status === "BLOCKED") {
+      await applyOnBlocked(live, rule, promptId, posted.result);
+      return;
+    }
+    await terminate(live, "STOPPED", `unexpected_status:${posted.status}`);
+    return;
+  }
   if (posted.status === "DONE") {
     await applyOnDone(live, rule);
     return;
@@ -277,7 +325,8 @@ async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | nul
   await syncNamedFromSuite(live);
   if (live.currentRunId !== null && runHub.has(live.currentRunId)) return live;
   if (live.currentPromptId !== null) {
-    const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId);
+    const pipelineId = namedPipelineIdFor(live);
+    const ready = workspaces.readyPromptsInSuite(live.workspaceId, live.suiteId, pipelineId);
     if (ready.some((prompt) => prompt.id === live.currentPromptId)) {
       return startCurrentStation(live, live.currentPromptId, preferPlayTarget);
     }
@@ -291,12 +340,13 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
   }
-  if (workspaces.enabledPipelineSteps(suiteId).length === 0) {
+  const namedRunId = optionalNamedPipelineRunId(body);
+  const namedPipelineId = namedRunId === null ? undefined : workspaces.namedPipelineRunById(namedRunId)?.pipelineId;
+  if (workspaces.enabledPipelineSteps(suiteId, namedPipelineId).length === 0) {
     throw new WorkspaceError(422, "empty_pipeline", "Add work items to this suite's flowchart before playing");
   }
   const playProvider = optionalPlayProvider(body, "provider", "provider" in body) as ProviderId | null | undefined;
   const playModel = optionalPlayProvider(body, "model", "model" in body) as string | null | undefined;
-  const namedRunId = optionalNamedPipelineRunId(body);
   const preferPlayTarget = body.preferPlayTarget === true;
   const owner = workspaces.activePipelineForWorkspace(suite.workspaceId);
   const active = workspaces.activePipeline(suiteId);
@@ -319,7 +369,8 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
     if (active.state === "WAITING_HUMAN" || active.state === "PAUSED") {
       if (active.state === "WAITING_HUMAN") {
         const currentId = active.currentPromptId;
-        const ready = currentId === null ? false : workspaces.readyPromptsInSuite(suite.workspaceId, suiteId).some((prompt) => prompt.id === currentId);
+        const pipelineId = namedPipelineId ?? namedPipelineIdFor(active);
+        const ready = currentId === null ? false : workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId);
         if (!ready) throw new WorkspaceError(422, "prompt_not_ready", "The waiting station is not ready to resume");
       }
       log.info(`resume suite=${suiteId} from=${active.state}`);
@@ -329,8 +380,15 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   if (owner !== null && owner.suiteId !== suiteId) {
     throw new WorkspaceError(409, "workspace_busy", "Another suite pipeline already owns this workspace.");
   }
-  if (workspaces.readyPromptsInSuite(suite.workspaceId, suiteId).length === 0) {
-    throw new WorkspaceError(422, "nothing_ready", "Nothing on the flowchart is ready to play");
+  const topLevelReady = workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, namedPipelineId);
+  if (topLevelReady.length === 0) {
+    const unfinished = workspaces.remainingPipelinePromptIds(suiteId, namedPipelineId).filter((promptId) => {
+      const status = workspaces.promptOutcome(promptId).status;
+      return status !== "DONE" && status !== "SKIPPED";
+    });
+    const descendant = unfinished.length === 0 ? null : workspaces.nextOpenChild(unfinished[0]!);
+    const descendantReady = descendant === null ? false : workspaces.resolvePrompt(suite.workspaceId, descendant.id).ready;
+    if (!descendantReady) throw new WorkspaceError(422, "nothing_ready", "Nothing on the flowchart is ready to play");
   }
   const created = workspaces.createPipelineRun({
     id: newId("pipe"),
