@@ -7,6 +7,7 @@ import { runHub } from "./runHub.ts";
 import {
   effectiveClaudePermissionMode,
   effectiveCodexSandboxMode,
+  effectiveCopilotPermissionMode,
   effectiveGrokSandboxMode,
   permissionForRun,
   settings,
@@ -54,6 +55,7 @@ test("consult starts are allowed except for Cursor", () => {
   assert.equal(runRoleStartError("consult", "claude"), null);
   assert.equal(runRoleStartError("consult", "codex"), null);
   assert.equal(runRoleStartError("consult", "grok"), null);
+  assert.equal(runRoleStartError("consult", "copilot"), null);
 });
 
 test("cursor consults are rejected", () => {
@@ -136,6 +138,8 @@ test("permissionForRun consult is read-only even when Host access would lift the
     assert.equal(consult.hostAccessApplied, false);
     assert.equal(permissionForRun("claude", "consult").mode, "plan");
     assert.equal(permissionForRun("grok", "consult").mode, "plan · sandbox: workspace");
+    assert.equal(effectiveCopilotPermissionMode(), "yolo");
+    assert.equal(permissionForRun("copilot", "consult").mode, "plan");
     assert.equal(permissionForRun("codex", "inherit").mode, "danger-full-access");
   });
 });

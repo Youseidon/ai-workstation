@@ -6,7 +6,7 @@
  * leak into the transport layer or the frontend.
  */
 
-export const PROVIDER_IDS = ["claude", "codex", "cursor", "grok"] as const;
+export const PROVIDER_IDS = ["claude", "codex", "cursor", "grok", "copilot"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export function isProviderId(value: unknown): value is ProviderId {
@@ -77,6 +77,14 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: null, label: "default", hint: "whatever the grok CLI picks" },
     { id: "grok-4.6", label: "grok 4.6", hint: "current default" },
     { id: "grok-4.5", label: "grok 4.5", hint: "previous generation" },
+  ],
+  // Copilot's model list is per-account: `--model` rejects anything the plan's
+  // picker does not expose, and a free plan exposes nothing but `auto`. Only the
+  // two entries every account has are listed; the ids a paid plan adds (and the
+  // routed model changes between releases) go through the custom field.
+  copilot: [
+    { id: null, label: "default", hint: "whatever the copilot CLI picks" },
+    { id: "auto", label: "auto", hint: "Copilot routes the request" },
   ],
 };
 
@@ -242,6 +250,8 @@ const PROVIDER_DEFAULT_RATES: Record<ProviderId, TokenRates> = {
   codex: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
   cursor: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
   grok: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 },
+  // Copilot bills premium requests, not tokens; this is a spend signal only.
+  copilot: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
 };
 
 /** Model-id substrings → rates. First match wins; order matters (more specific first). */
@@ -257,6 +267,11 @@ const MODEL_RATE_RULES: Array<{ provider?: ProviderId; match: RegExp; rates: Tok
   { provider: "cursor", match: /gpt|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
   { provider: "cursor", match: /grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
   { provider: "grok", match: /4\.6|4\.5|grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
+  // Copilot routes to whichever vendor the plan allows; price by the routed model.
+  { provider: "copilot", match: /opus/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
+  { provider: "copilot", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
+  { provider: "copilot", match: /haiku|mini|flash|luna/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
+  { provider: "copilot", match: /gpt|gemini|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
 ];
 
 export function ratesForModel(provider: string, modelId: string | null): { rates: TokenRates; source: "model" | "provider_default" } | null {
@@ -844,6 +859,23 @@ export interface PipelineRunDetail extends PipelineRun {
   stages: PipelineRunStage[];
 }
 
+/**
+ * A sub-step spawned by a station decomposing itself, plus the rule the
+ * scheduler will actually use for it. Sub-steps are never flowchart entries,
+ * but a pipeline can still override the agent (and the blocked policy) for one
+ * without touching its parent station.
+ */
+export interface PipelineSubStepRule {
+  promptId: number;
+  parentPromptId: number;
+  /** Nesting depth below the station: 1 for a direct sub-step, 2 for its child. */
+  depth: number;
+  /** True while this sub-step has no override and simply follows its parent. */
+  inherited: boolean;
+  /** The effective rule — the parent's when `inherited`, the override otherwise. */
+  rule: PromptPipelineRule;
+}
+
 /** Per-named-pipeline flowchart for one suite stage. */
 export interface PipelineFlowchartView {
   pipelineId: number;
@@ -854,6 +886,11 @@ export interface PipelineFlowchartView {
   /** Suite prompts not yet on this pipeline's flowchart. */
   available: PipelineAvailablePrompt[];
   rules: PromptPipelineRule[];
+  /**
+   * Effective rules for every sub-step under this stage's stations, in
+   * depth-first order. Drives the nested sub-pipeline view.
+   */
+  subSteps: PipelineSubStepRule[];
   active: SuitePipelineRun | null;
   latest: SuitePipelineRun | null;
 }
@@ -922,9 +959,11 @@ export interface OperationsPrompt {
   /** Always present; missing DB rows are filled with defaults. */
   pipelineRule: PromptPipelineRule;
   /**
-   * Sub-steps this prompt spawned by decomposing itself. Empty for an
-   * ordinary prompt and for a sub-step itself (nesting is one level deep).
-   * Never a pipeline "step" on its own — the outer flowchart never lists these.
+   * Sub-steps this prompt spawned by decomposing itself, in run order. Empty
+   * for an ordinary prompt; a sub-step may decompose once more, so this nests
+   * at most two levels below a station. Never a pipeline "step" on its own —
+   * the outer flowchart never lists these, though a pipeline can still pin an
+   * agent on one (see `PipelineSubStepRule`).
    */
   children: OperationsPrompt[];
 }

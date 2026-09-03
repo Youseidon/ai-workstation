@@ -108,7 +108,7 @@ export function PipelineHeader({
               size="sm"
               variant="secondary"
               disabled={busy}
-              title="Paused — current station will finish."
+              title="Pause after the current station finishes"
               onClick={onPause}
             >
               Pause
@@ -128,7 +128,7 @@ export function PipelineHeader({
       </div>
 
       {pipeline?.state === "PAUSED" && (
-        <Banner tone="caution">Paused — current station will finish.</Banner>
+        <Banner tone="caution">Pausing — the current agent will finish, then the rail holds.</Banner>
       )}
       {pipeline?.state === "WAITING_HUMAN" && (
         <Banner tone="warning">Waiting for you — answer in the detail pane, then Resume.</Banner>

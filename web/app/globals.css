@@ -50,6 +50,7 @@
   --color-agent-codex: var(--agent-codex);
   --color-agent-cursor: var(--agent-cursor);
   --color-agent-grok: var(--agent-grok);
+  --color-agent-copilot: var(--agent-copilot);
 
   --radius-panel: 0.625rem;
 
@@ -99,6 +100,7 @@
   --agent-codex: #5ee9a4;
   --agent-cursor: #62b8f5;
   --agent-grok: #f57fa8;
+  --agent-copilot: #b087f0;
 
   --backdrop: rgb(6 8 12 / 0.72);
   --grid-line: rgb(255 255 255 / 0.022);
@@ -139,6 +141,7 @@
   --agent-codex: #5ee9a4;
   --agent-cursor: #62b8f5;
   --agent-grok: #f57fa8;
+  --agent-copilot: #b087f0;
 
   --backdrop: rgb(0 0 0 / 0.75);
   --grid-line: rgb(255 255 255 / 0.018);
@@ -180,6 +183,7 @@
   --agent-codex: #12704a;
   --agent-cursor: #15619e;
   --agent-grok: #b03060;
+  --agent-copilot: #6a35b8;
 
   --backdrop: rgb(15 21 32 / 0.4);
   --grid-line: rgb(15 21 32 / 0.032);

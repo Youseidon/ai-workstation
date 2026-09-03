@@ -1064,3 +1064,122 @@ test("named pipeline stop records operator_stop in the archive", async () => {
     ctx.cleanup();
   }
 });
+
+test("a pipeline can pin a different agent on one sub-step without touching the station", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("sub-step-override"),
+      suiteIds: [ctx.suite.id],
+    });
+    workspaces.addNamedPipelineStep(saved.id, parent.id, { provider: "claude", model: "claude-opus-5" });
+
+    await pipelineScheduler.playNamed(saved.id);
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    const result = workspaces.decomposePrompt(runId, {
+      requestId: randomUUID(),
+      resumeBrief: "Two slices remain.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    const childA = result.children[0]!.id;
+    const childB = result.children[1]!.id;
+
+    // Nothing is pinned yet: both sub-steps report the station's rule.
+    const inherited = workspaces.namedPipelineSubStepRules(saved.id, ctx.suite.id);
+    assert.deepEqual(inherited.map((entry) => entry.promptId), [childA, childB]);
+    assert.deepEqual(inherited.map((entry) => entry.inherited), [true, true]);
+    assert.equal(inherited[0]!.rule.provider, "claude");
+    assert.equal(inherited[0]!.rule.model, "claude-opus-5");
+    assert.equal(inherited[0]!.depth, 1);
+    assert.equal(inherited[0]!.parentPromptId, parent.id);
+
+    // Pin the first slice to another agent.
+    workspaces.upsertNamedPipelineRule(saved.id, childA, { provider: "codex", model: "gpt-x" });
+    const pinned = workspaces.namedPipelineSubStepRules(saved.id, ctx.suite.id);
+    assert.deepEqual(pinned.map((entry) => entry.inherited), [false, true]);
+    assert.equal(pinned[0]!.rule.provider, "codex");
+    assert.equal(pinned[1]!.rule.provider, "claude");
+    // The station itself is untouched, and the sub-step never becomes a step.
+    assert.equal(workspaces.pipelineRule(parent.id, saved.id).provider, "claude");
+    assert.deepEqual(
+      workspaces.enabledNamedPipelineSteps(saved.id, ctx.suite.id).map((step) => step.promptId),
+      [parent.id],
+    );
+    // Sub-step overrides share the pipeline_step table, so every count over it
+    // has to stay on stations or the board reports a rail that does not exist.
+    assert.equal(workspaces.getPipeline(saved.id).stages[0]!.stepCount, 1);
+
+    // The scheduler honours the pin when it starts that slice.
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: parent.id, processState: "done" });
+    assert.equal(started.at(-1)?.promptId, childA);
+    assert.equal(started.at(-1)?.provider, "codex");
+    assert.equal(started.at(-1)?.model, "gpt-x");
+
+    // The next slice still follows the station.
+    const runA = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: runA, promptId: childA, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(started.at(-1)?.promptId, childB);
+    assert.equal(started.at(-1)?.provider, "claude");
+
+    // Dropping the override puts the slice back on the station's agent.
+    workspaces.removeNamedPipelineStep(saved.id, childA);
+    assert.equal(workspaces.pipelineRule(childA, saved.id).provider, "claude");
+    assert.equal(workspaces.namedPipelineSubStepRules(saved.id, ctx.suite.id)[0]!.inherited, true);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a pinned sub-step keeps the station's on_done and cannot join the flowchart", async () => {
+  const ctx = fixture(1);
+  stubStarts();
+  try {
+    const parent = ctx.prompts[0]!;
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("sub-step-policy"),
+      suiteIds: [ctx.suite.id],
+    });
+    workspaces.addNamedPipelineStep(saved.id, parent.id, { provider: "claude" });
+    workspaces.upsertNamedPipelineRule(saved.id, parent.id, { onDone: "skip_rest" });
+
+    await pipelineScheduler.playNamed(saved.id);
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    const result = workspaces.decomposePrompt(runId, {
+      requestId: randomUUID(),
+      resumeBrief: "Two slices remain.",
+      children: [
+        { title: unique("slice-a"), content: "Do slice A" },
+        { title: unique("slice-b"), content: "Do slice B" },
+      ],
+    }) as { children: Array<{ id: number }> };
+    const childA = result.children[0]!.id;
+
+    // A sub-step may pin its own blocked policy, but on_done stays the station's.
+    workspaces.upsertNamedPipelineRule(saved.id, childA, { provider: "codex", onBlocked: "retry", retryLimit: 3 });
+    const rule = workspaces.pipelineRule(childA, saved.id);
+    assert.equal(rule.onBlocked, "retry");
+    assert.equal(rule.retryLimit, 3);
+    assert.equal(rule.onDone, "skip_rest");
+
+    assert.throws(
+      () => workspaces.addNamedPipelineStep(saved.id, childA, { provider: "codex" }),
+      (error: unknown) => error instanceof WorkspaceError && error.status === 422,
+    );
+
+    // And the nested view still hands the board a rule for it.
+    const flowchart = workspaces.namedPipelineFlowchart(saved.id, ctx.suite.id);
+    assert.equal(flowchart.steps.length, 1);
+    assert.equal(flowchart.subSteps.length, 2);
+    assert.equal(flowchart.subSteps.find((entry) => entry.promptId === childA)?.rule.provider, "codex");
+  } finally {
+    ctx.cleanup();
+  }
+});

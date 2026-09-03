@@ -12,12 +12,13 @@ import type {
   PipelineBlockedStation,
   PipelineRecord,
   PipelineRunDetail,
+  PipelineSubStepRule,
   ProgramRecord,
   PromptPipelineRule,
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { modelLabel, promptNeedsHandoff, PROVIDER_IDS } from "@agent-console/shared";
+import { defaultPromptPipelineRule, modelLabel, promptNeedsHandoff, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -39,20 +40,17 @@ import { PageChrome } from "@/components/shell/chrome";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
 import { PipelineOverview } from "./PipelineOverview";
-import { PipelineSubSteps } from "./PipelineSubStep";
+import { PipelineStatusBar, type PipelinePosition } from "./PipelineStatusBar";
 import { SnakeFlow } from "./SnakeFlow";
+import { StationCard } from "./StationCard";
+import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
 import {
-  LABEL,
-  namedPlayKind,
-  onBlockedChip,
   onDoneChip,
-  overrideChip,
   PIPELINE_LABEL,
   PIPELINE_TONE,
-  showPause,
-  showStop,
+  pipelineStatus,
   stationOccupancy,
-  TONE,
+  type PipelineControl,
 } from "./status";
 
 export function PipelineBoard({
@@ -104,6 +102,8 @@ export function PipelineBoard({
   const [directRetry, setDirectRetry] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
+  /** Drill-down into the sub-steps a station spawned: station id first, deepest last. */
+  const [subPath, setSubPath] = useState<number[]>([]);
 
   const [pipelineId, setPipelineId] = useState<number | null>(() => {
     if (workbenchPipelineId !== undefined) return workbenchPipelineId;
@@ -275,6 +275,16 @@ export function PipelineBoard({
     };
   }, [activeSuiteId, pipelineId, showEditor, console_.operationsRevision]);
 
+  const refreshFlowchart = useCallback(
+    async (targetSuiteId: number) => {
+      if (pipelineId === null) return;
+      const next = await workspaceApi.pipelineFlowchart(SERVER_URL, pipelineId, targetSuiteId, showEditor);
+      setView(next);
+      setViewSuiteId(targetSuiteId);
+    },
+    [pipelineId, showEditor],
+  );
+
   useEffect(() => {
     if (workspaceId === null || pipelineId === null || !workbench) {
       setBlockedStations([]);
@@ -310,12 +320,23 @@ export function PipelineBoard({
     workspaceId === null
       ? null
       : (console_.runs.find((run) => run.workspace.id === workspaceId && run.role === "execute") ?? null);
-  const kind = namedPlayKind(live);
+  const resumable = pipeline?.active != null;
+
   const firstAvailable = console_.providers.find((item) => item.available)?.id ?? "claude";
   const suiteOps = activeSuiteId === null ? null : (operationsById.get(activeSuiteId) ?? null);
   const resumeSuiteOps = live?.currentSuiteId === null || live?.currentSuiteId === undefined ? null : (operationsById.get(live.currentSuiteId) ?? null);
   const resumeSuiteRun = resumeSuiteOps?.pipeline?.active ?? resumeSuiteOps?.pipeline?.latest ?? null;
-  const resumeItem = resumeSuiteRun?.currentPromptId == null ? null : (resumeSuiteOps?.prompts.find((item) => item.prompt.id === resumeSuiteRun.currentPromptId) ?? null);
+  const findPromptDeep = (items: OperationsPrompt[], promptId: number): OperationsPrompt | null => {
+    for (const item of items) {
+      if (item.prompt.id === promptId) return item;
+      const child = findPromptDeep(item.children, promptId);
+      if (child !== null) return child;
+    }
+    return null;
+  };
+  const resumeItem = resumeSuiteRun?.currentPromptId == null
+    ? null
+    : findPromptDeep(resumeSuiteOps?.prompts ?? [], resumeSuiteRun.currentPromptId);
   const steps = viewSuiteId === activeSuiteId ? (view?.steps ?? []) : [];
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
   const flowSteps = steps.filter((step) => {
@@ -333,6 +354,53 @@ export function PipelineBoard({
     ];
   });
 
+  // Every prompt of the selected suite, stations and descendants alike, so a
+  // drill-down can address a node at any depth by id.
+  const promptsByIdDeep = useMemo(() => {
+    const map = new Map<number, OperationsPrompt>();
+    const walk = (list: OperationsPrompt[]): void => {
+      for (const entry of list) {
+        map.set(entry.prompt.id, entry);
+        walk(entry.children);
+      }
+    };
+    walk(suiteOps?.prompts ?? []);
+    return map;
+  }, [suiteOps]);
+
+  const subStepRules = useMemo(() => {
+    const map = new Map<number, PipelineSubStepRule>();
+    if (viewSuiteId === activeSuiteId) for (const entry of view?.subSteps ?? []) map.set(entry.promptId, entry);
+    return map;
+  }, [view, viewSuiteId, activeSuiteId]);
+
+  const subRuleFor = useCallback(
+    (promptId: number): SubStepRuleView => {
+      const entry = subStepRules.get(promptId);
+      if (entry !== undefined) return { rule: entry.rule, inherited: entry.inherited };
+      // The flowchart has not landed yet — fall back to the parent's own rule
+      // so the card still says something truthful while it loads.
+      const node = promptsByIdDeep.get(promptId) ?? null;
+      const parentId = node?.prompt.parentPromptId ?? null;
+      const fallback = (parentId === null ? null : promptsByIdDeep.get(parentId)?.pipelineRule) ?? node?.pipelineRule ?? null;
+      return {
+        rule: fallback === null ? defaultPromptPipelineRule(promptId) : { ...fallback, promptId },
+        inherited: true,
+      };
+    },
+    [subStepRules, promptsByIdDeep],
+  );
+
+  // A drill-down only means anything inside the suite it was opened from.
+  const openSubNode = subPath.length === 0 ? null : (promptsByIdDeep.get(subPath[subPath.length - 1]!) ?? null);
+  const subTrail: SubTrailEntry[] =
+    openSubNode === null
+      ? []
+      : subPath.flatMap((promptId) => {
+          const node = promptsByIdDeep.get(promptId);
+          return node === undefined ? [] : [{ promptId, label: node.prompt.externalKey ?? node.prompt.title }];
+        });
+
   const crew = useMemo(() => {
     return PROVIDER_IDS.map((id) => {
       const info = console_.providers.find((item) => item.id === id);
@@ -345,18 +413,93 @@ export function PipelineBoard({
     });
   }, [console_.items, console_.lastRun, console_.providers, console_.runs, stages]);
 
+  // The scheduler walks depth-first into a station's sub-steps, and refuses to
+  // start when the next open one is not TODO. Find that item here so the board
+  // names it instead of letting play fail with a generic refusal.
+  const stuckPrompt = useMemo(() => {
+    const suite = resumeSuiteOps ?? suiteOps;
+    if (suite === null) return null;
+    const unfinished = (item: OperationsPrompt) =>
+      item.operationalState !== "COMPLETE" && item.operationalState !== "SKIPPED";
+    const station = suite.prompts.find(unfinished);
+    if (station === undefined) return null;
+    let node: OperationsPrompt = station;
+    while (true) {
+      const next = node.children.find(unfinished);
+      if (next === undefined) break;
+      node = next;
+    }
+    return node.operationalState === "RECOVERY_NEEDED" || node.operationalState === "AWAITING_RESPONSE" ? node : null;
+  }, [resumeSuiteOps, suiteOps]);
+
   const playBlocked = useMemo(() => {
-    if (console_.connection !== "open") return "backend disconnected";
-    if (pipelineId === null) return "save this pipeline first";
-    if (draftSuiteIds.length === 0) return "add at least one suite";
-    if (dirty) return "save changes first";
+    if (console_.connection !== "open") return "the backend is disconnected";
+    if (pipelineId === null) return "this pipeline is not saved yet";
+    if (draftSuiteIds.length === 0) return "it has no suites";
+    if (dirty) return "there are unsaved changes";
     if (stages.some((stage) => stage.stepCount === 0)) return "every suite needs at least one step";
-    if (resumeItem?.humanIntervention?.status === "PENDING") return "complete the human intervention step first";
+    if (resumeItem?.humanIntervention?.status === "PENDING") return "the human intervention step below is unanswered";
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
-      return "workspace has a writer";
+      return `${occupancy.provider} is already writing this workspace`;
+    }
+    if (stuckPrompt?.operationalState === "AWAITING_RESPONSE") {
+      const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
+      return `${label} is blocked and needs a human response first`;
     }
     return null;
-  }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live, resumeItem]);
+  }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live, resumeItem, stuckPrompt]);
+
+  // Where the live run actually sits: stage → station → deepest sub-step.
+  const runPosition = useMemo<PipelinePosition | null>(() => {
+    if (live === null || pipeline === null) return null;
+    const stageCount = pipeline.stages.length;
+    const stageIndex = live.currentSuiteId === null ? 0 : pipeline.stages.findIndex((stage) => stage.suiteId === live.currentSuiteId) + 1;
+    const stageName = pipeline.stages.find((stage) => stage.suiteId === live.currentSuiteId)?.suiteKey
+      ?? pipeline.stages.find((stage) => stage.suiteId === live.currentSuiteId)?.suiteName
+      ?? null;
+    const flat = new Map<number, OperationsPrompt>();
+    const walk = (list: OperationsPrompt[]): void => {
+      for (const entry of list) {
+        flat.set(entry.prompt.id, entry);
+        walk(entry.children);
+      }
+    };
+    walk(resumeSuiteOps?.prompts ?? []);
+    const currentId = resumeSuiteRun?.currentPromptId ?? null;
+    const current = currentId === null ? null : (flat.get(currentId) ?? null);
+    let station = current;
+    while (station !== null && station.prompt.parentPromptId !== null) {
+      station = flat.get(station.prompt.parentPromptId) ?? null;
+    }
+    const label = (entry: OperationsPrompt | null) => (entry === null ? null : entry.prompt.externalKey ?? entry.prompt.title);
+    const subLabel = current !== null && current !== station ? label(current) : null;
+    return {
+      stageIndex,
+      stageCount,
+      stageName,
+      stationLabel: label(station),
+      subStepLabel: subLabel,
+      provider: occupancy?.provider ?? null,
+    };
+  }, [live, pipeline, resumeSuiteOps, resumeSuiteRun, occupancy]);
+
+  const configNode = configId === null ? null : (promptsByIdDeep.get(configId) ?? null);
+  const configIsSubStep = configNode !== null && configNode.prompt.parentPromptId !== null;
+  const configRule = configId === null
+    ? null
+    : configIsSubStep
+      ? subRuleFor(configId).rule
+      : (steps.find((step) => step.promptId === configId) ?? null);
+  const configInherited = configId !== null && configIsSubStep && subRuleFor(configId).inherited;
+
+  const status = pipelineStatus({
+    run: live,
+    resumable,
+    station: runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null,
+    awaitingHuman: resumeItem?.humanIntervention?.status === "PENDING",
+    agentActive: live?.state === "PAUSED" && occupancy !== null,
+  });
+  const statusBlocked = status.primary === "pause" || status.primary === "stop" ? null : playBlocked;
 
   const act = async (operation: () => Promise<void>, success?: string) => {
     setBusy(true);
@@ -373,6 +516,60 @@ export function PipelineBoard({
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * Every transport button funnels through here, so the header, the status bar
+   * and the state machine in `pipelineStatus` can never disagree about which
+   * action a state actually allows.
+   */
+  const runControl = (control: PipelineControl) => {
+    if (pipelineId === null) return;
+    if (control === "pause") {
+      void act(async () => {
+        await workspaceApi.pausePipeline(SERVER_URL, pipelineId);
+      }, "Pausing — the current agent will finish, then the rail holds.");
+      return;
+    }
+    if (control === "stop") {
+      void act(async () => {
+        const confirmed = await dialogs.confirm({
+          title: "Stop this pipeline?",
+          description: "Auto-advance ends and the run closes. The agent working right now, if any, is interrupted. Finished work is kept — a new run picks up from the first unfinished station.",
+          confirmLabel: "Stop pipeline",
+          tone: "danger",
+        });
+        if (!confirmed) return;
+        await workspaceApi.stopPipeline(SERVER_URL, pipelineId);
+      }, "Pipeline stopped");
+      return;
+    }
+    // A fresh run restarts the same unfinished station, so it needs the same
+    // handoff offer a resume does — the previous agent's work is still there.
+    // Prefer the deepest recovery-needed child: that is the actual run which
+    // was interrupted, and it may not be present in the top-level station list.
+    const continuationItem = stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem;
+    if ((control === "resume" || control === "newRun") && continuationItem !== null && promptNeedsHandoff(continuationItem.prompt.status)) {
+      const available = console_.providers.find((provider) => provider.available)?.id ?? firstAvailable;
+      const readOnly = console_.providers.find((provider) => provider.available && provider.id !== "cursor")?.id ?? available;
+      setHandoffProvider(readOnly);
+      setSuccessorProvider(available);
+      setReusableHandoff(null);
+      setDirectRetry(false);
+      void act(async () => {
+        const activity = await workspaceApi.activity(SERVER_URL, continuationItem.prompt.id);
+        const latestExecute = activity.sessions.find((session) => session.role === "execute");
+        const reusable = latestExecute === undefined ? null : activity.handoffs.find((handoff) => handoff.state === "READY" && handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id) ?? null;
+        setSuccessorProvider((latestExecute?.provider as ProviderId | undefined) ?? available);
+        setDirectRetry(activity.directRetry);
+        setReusableHandoff(reusable);
+        setHandoffOpen(true);
+      });
+      return;
+    }
+    void act(async () => {
+      await workspaceApi.playPipeline(SERVER_URL, pipelineId);
+    }, control === "newRun" ? "New run started" : "Pipeline is running");
   };
 
   // Global beacon switched projects — drop local draft/selection for the old one.
@@ -453,65 +650,9 @@ export function PipelineBoard({
         actions={
           <div className="flex flex-wrap items-center gap-3">
             <CrewStrip crew={crew} />
-            {live !== null && (
-              <Badge tone={PIPELINE_TONE[live.state]} dot pulse={live.state === "PLAYING"} uppercase>
-                {PIPELINE_LABEL[live.state]}
-              </Badge>
-            )}
-            {showPause(live) && (
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={busy || pipelineId === null}
-                onClick={() =>
-                  void act(async () => {
-                    await workspaceApi.pausePipeline(SERVER_URL, pipelineId!);
-                  }, "Paused — current step will finish.")
-                }
-              >
-                Pause
-              </Button>
-            )}
-            {showStop(live) && (
-              <Button
-                size="sm"
-                variant="danger"
-                disabled={busy || pipelineId === null}
-                onClick={() =>
-                  void act(async () => {
-                    const confirmed = await dialogs.confirm({
-                      title: "Stop this pipeline?",
-                      description: "Stops auto-advance. The current agent, if running, is interrupted.",
-                      confirmLabel: "Stop pipeline",
-                      tone: "danger",
-                    });
-                    if (!confirmed) return;
-                    await workspaceApi.stopPipeline(SERVER_URL, pipelineId!);
-                  }, "Pipeline stopped")
-                }
-              >
-                Stop
-              </Button>
-            )}
-            {kind !== "hidden" && (
-              <Button
-                size="sm"
-                variant="success"
-                disabled={playBlocked !== null || busy}
-                title={playBlocked ?? undefined}
-                onClick={() => {
-                  if (kind === "resume" && resumeItem !== null && promptNeedsHandoff(resumeItem.prompt.status)) {
-                    const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
-                    const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
-                    setHandoffProvider(readOnly);setSuccessorProvider(available);setReusableHandoff(null);setDirectRetry(false);
-                    void act(async()=>{const activity=await workspaceApi.activity(SERVER_URL,resumeItem.prompt.id);const latestExecute=activity.sessions.find((session)=>session.role==="execute");const reusable=latestExecute===undefined?null:activity.handoffs.find((handoff)=>handoff.state==="READY"&&handoff.recommendation==="CONTINUE"&&handoff.successorRunId===latestExecute.id)??null;setSuccessorProvider((latestExecute?.provider as ProviderId|undefined)??available);setDirectRetry(activity.directRetry);setReusableHandoff(reusable);setHandoffOpen(true);});return;
-                  }
-                  void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
-                }}
-              >
-                {kind === "resume" ? "Resume" : "Play"}
-              </Button>
-            )}
+            <Badge tone={status.tone} dot pulse={status.pulse} uppercase>
+              {status.label}
+            </Badge>
           </div>
         }
       />
@@ -748,7 +889,7 @@ export function PipelineBoard({
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={busy || live !== null && showStop(live)}
+                    disabled={busy || resumable}
                     onClick={() =>
                       void act(async () => {
                         const confirmed = await dialogs.confirm({
@@ -770,15 +911,13 @@ export function PipelineBoard({
               </div>
             </div>
 
-            {live?.state === "WAITING_HUMAN" && (
-              <Banner tone="warning">Blocked — complete the Human intervention step below before resuming.</Banner>
-            )}
-            {live?.state === "PAUSED" && (
-              <Banner tone="caution">Paused — the current station will finish, then the rail holds.</Banner>
-            )}
-            {live?.state === "INTERRUPTED" && pipeline?.active === null && (
-              <Banner tone="caution">This pipeline was interrupted. Play to continue from a fresh run.</Banner>
-            )}
+            <PipelineStatusBar
+              status={status}
+              position={runPosition}
+              blockedReason={statusBlocked}
+              busy={busy}
+              onControl={runControl}
+            />
 
             <PipelineConstellation
               stages={stages}
@@ -791,6 +930,44 @@ export function PipelineBoard({
 
             {suiteOps === null ? (
               <p className="text-sm text-fg-dim">Select a suite on the rail to inspect its steps.</p>
+            ) : openSubNode !== null ? (
+              <SubPipeline
+                trail={subTrail}
+                items={openSubNode.children}
+                parentRule={subRuleFor(openSubNode.prompt.id).rule}
+                ruleFor={subRuleFor}
+                activeRun={view?.active ?? null}
+                runs={console_.runs}
+                readOnly={pipelineId === null}
+                busy={busy}
+                onNavigate={(index) => setSubPath((current) => (index === null ? [] : current.slice(0, index + 1)))}
+                onOpen={(promptId) => setSubPath((current) => [...current, promptId])}
+                onConfig={(promptId) => setConfigId(promptId)}
+                onUseStationSettings={(promptId) =>
+                  void act(async () => {
+                    if (pipelineId === null) return;
+                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, suiteOps.id, promptId, showEditor);
+                    await refreshFlowchart(suiteOps.id);
+                  }, "Sub-step follows its station again")
+                }
+                onRetry={(promptId) =>
+                  void act(async () => {
+                    await workspaceApi.recover(SERVER_URL, promptId);
+                  }, "Sub-step recovered — play to run it again")
+                }
+                onSkip={(promptId) =>
+                  void act(async () => {
+                    const confirmed = await dialogs.confirm({
+                      title: "Skip this sub-step?",
+                      description: "The pipeline moves straight to the next sub-step. Skipped work is not retried.",
+                      confirmLabel: "Skip sub-step",
+                      tone: "danger",
+                    });
+                    if (!confirmed) return;
+                    await workspaceApi.skipPrompt(SERVER_URL, promptId, "Operator skipped this sub-step.");
+                  }, "Sub-step skipped")
+                }
+              />
             ) : (
               <div className="space-y-4" key={activeSuiteId ?? "none"}>
                 <div>
@@ -921,14 +1098,19 @@ export function PipelineBoard({
                       if (item === undefined) return null;
                       const liveRun = stationOccupancy(item, console_.runs, view?.active);
                       const current = view?.active?.currentPromptId === step.promptId;
+                      const doneChildren = item.children.filter(
+                        (child) => child.operationalState === "COMPLETE" || child.operationalState === "SKIPPED",
+                      ).length;
                       return (
-                        <FlowNode
+                        <StationCard
                           index={index}
                           item={item}
                           rule={step}
                           current={current}
                           occupancy={liveRun}
                           readOnly={!showEditor}
+                          subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
+                          onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
                           onConfig={() => setConfigId(step.promptId)}
                           onRemove={() =>
                             void act(async () => {
@@ -991,20 +1173,28 @@ export function PipelineBoard({
 
       {configId !== null && (
         <StepConfig
-          rule={steps.find((step) => step.promptId === configId) ?? null}
-          item={byId.get(configId) ?? null}
+          rule={configRule}
+          item={configNode}
+          subStep={configIsSubStep}
+          inherited={configInherited}
           providers={console_.providers}
           models={models}
           onClose={() => setConfigId(null)}
+          onUseStationSettings={
+            configIsSubStep && !configInherited
+              ? () =>
+                  void act(async () => {
+                    if (pipelineId === null || activeSuiteId === null) return;
+                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, activeSuiteId, configId, showEditor);
+                    await refreshFlowchart(activeSuiteId);
+                  }, "Sub-step follows its station again")
+              : undefined
+          }
           onChange={(patch) =>
             void act(async () => {
               if (pipelineId === null) return;
               await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, configId, patch);
-              if (activeSuiteId !== null) {
-                const next = await workspaceApi.pipelineFlowchart(SERVER_URL, pipelineId, activeSuiteId, true);
-                setView(next);
-                setViewSuiteId(activeSuiteId);
-              }
+              if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
             })
           }
         />
@@ -1047,14 +1237,16 @@ export function PipelineBoard({
         </Modal>
       )}
 
-      {handoffOpen && resumeItem !== null && pipelineId !== null && (
+      {handoffOpen && (stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem) !== null && pipelineId !== null && (() => {
+        const continuationItem = stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem!;
+        return (
         <Modal
           open
           onClose={() => setHandoffOpen(false)}
-          title={`Continue ${resumeItem.prompt.externalKey ?? resumeItem.prompt.title}`}
+          title={`Continue ${continuationItem.prompt.externalKey ?? continuationItem.prompt.title}`}
           description={directRetry?"The previous agent failed before producing any work. Choose a developer agent and retry this station directly; no handoff is needed.":reusableHandoff===null?"A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline.":`The existing ${reusableHandoff.provider} handoff is ready. Resuming will reuse it and start only the selected developer agent.`}
           size="md"
-          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{if(directRetry)await workspaceApi.retryLaunch(SERVER_URL,resumeItem.prompt.id,{provider:successorProvider,model:null,pipelineId});else await workspaceApi.startHandoff(SERVER_URL,resumeItem.prompt.id,{...(reusableHandoff===null?{handoffProvider,handoffModel:models.resolve(handoffProvider)}:{reuseHandoffId:reusableHandoff.id}),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},directRetry?"Station restarted":reusableHandoff===null?"Handoff started":"Existing handoff reused")}>{directRetry?"Retry without handoff":reusableHandoff===null?"Prepare handoff and continue":"Continue with existing handoff"}</Button></>}
+          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{if(directRetry)await workspaceApi.retryLaunch(SERVER_URL,continuationItem.prompt.id,{provider:successorProvider,model:null,pipelineId});else await workspaceApi.startHandoff(SERVER_URL,continuationItem.prompt.id,{...(reusableHandoff===null?{handoffProvider,handoffModel:models.resolve(handoffProvider)}:{reuseHandoffId:reusableHandoff.id}),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},directRetry?"Station restarted":reusableHandoff===null?"Handoff started":"Existing handoff reused")}>{directRetry?"Retry without handoff":reusableHandoff===null?"Prepare handoff and continue":"Continue with existing handoff"}</Button></>}
         >
           <div className={`grid gap-4 ${reusableHandoff===null&&!directRetry?"sm:grid-cols-2":""}`}>
             {reusableHandoff===null&&!directRetry&&<label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>}
@@ -1062,7 +1254,8 @@ export function PipelineBoard({
           </div>
           <p className="mt-4 text-xs leading-5 text-fg-dim">{directRetry?"Launch failures retry with the provider default, so the invalid per-station model is not reused.":reusableHandoff===null?"Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.":`Prepared by ${reusableHandoff.provider}${reusableHandoff.completedAt===null?"":` on ${new Date(reusableHandoff.completedAt).toLocaleString()}`}. No handoff agent will run again.`}</p>
         </Modal>
-      )}
+        );
+      })()}
     </main>
   );
 }
@@ -1079,20 +1272,6 @@ function CrewStrip({
           <AgentAvatar provider={agent.id} size={26} activity={agent.activity} />
         </span>
       ))}
-    </div>
-  );
-}
-
-function Banner({ tone, children }: { tone: "caution" | "warning"; children: string }) {
-  return (
-    <div
-      className={cn(
-        "rounded-md px-3 py-2 text-[12px] ring-1 ring-inset",
-        tone === "caution" && "bg-caution/10 text-caution ring-caution/30",
-        tone === "warning" && "bg-warning/10 text-warning ring-warning/30",
-      )}
-    >
-      {children}
     </div>
   );
 }
@@ -1142,97 +1321,27 @@ function HumanInterventionNode({
   );
 }
 
-function FlowNode({
-  index,
-  item,
-  rule,
-  current,
-  occupancy,
-  readOnly = false,
-  onConfig,
-  onRemove,
-}: {
-  index: number;
-  item: OperationsPrompt;
-  rule: PromptPipelineRule;
-  current: boolean;
-  occupancy: ReturnType<typeof stationOccupancy>;
-  readOnly?: boolean;
-  onConfig(): void;
-  onRemove(): void;
-}) {
-  const theme = rule.provider === null ? null : providerTheme[rule.provider];
-  const who = overrideChip(rule);
-
-  return (
-    <div
-      className={cn(
-        "relative h-full min-w-0 rounded-panel border bg-surface-2 p-3",
-        current ? "border-accent/50 ring-1 ring-accent/30" : "border-line",
-      )}
-    >
-      <div className="flex items-start gap-2">
-        {rule.provider !== null ? (
-          <AgentAvatar
-            provider={rule.provider}
-            size={28}
-            activity={occupancy !== null ? "tooling" : item.operationalState === "COMPLETE" ? "done" : "idle"}
-          />
-        ) : (
-          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
-            {index + 1}
-          </span>
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-[13px] text-fg">{item.prompt.externalKey ?? item.prompt.title}</div>
-              {item.prompt.externalKey !== null && (
-                <div className="truncate text-[11px] text-fg-dim">{item.prompt.title}</div>
-              )}
-            </div>
-            <Badge tone={TONE[item.operationalState]}>{LABEL[item.operationalState]}</Badge>
-          </div>
-          <div className={cn("mt-2 text-xs", theme?.text ?? "text-fg-muted")}>{who ?? "No provider — open config"}</div>
-          <div className="mt-1 text-[10px] text-fg-dim">
-            {onDoneChip(rule.onDone)} · {onBlockedChip(rule)}
-          </div>
-          {occupancy !== null && (
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
-              <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
-              running
-            </div>
-          )}
-        </div>
-      </div>
-      <PipelineSubSteps items={item.children} />
-      {!readOnly && (
-      <div className="mt-3 flex gap-1">
-        <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
-          Config
-        </Button>
-        <Button size="sm" variant="ghost" aria-label="Remove from flow" onClick={onRemove}>
-          Remove
-        </Button>
-      </div>
-      )}
-    </div>
-  );
-}
-
 function StepConfig({
   rule,
   item,
+  subStep = false,
+  inherited = false,
   providers,
   models,
   onClose,
+  onUseStationSettings,
   onChange,
 }: {
   rule: PromptPipelineRule | null;
   item: OperationsPrompt | null;
+  /** A slice the station spawned by decomposing itself, not a flowchart step. */
+  subStep?: boolean;
+  /** Sub-step only: still following the parent station rather than pinned here. */
+  inherited?: boolean;
   providers: Parameters<typeof useModelSelection>[0];
   models: ReturnType<typeof useModelSelection>;
   onClose(): void;
+  onUseStationSettings?(): void;
   onChange(patch: Partial<Omit<PromptPipelineRule, "promptId">>): void;
 }) {
   const [modelFor, setModelFor] = useState<ProviderId | null>(null);
@@ -1242,11 +1351,38 @@ function StepConfig({
     <Modal
       open
       onClose={onClose}
-      title={`Step · ${item.prompt.externalKey ?? item.prompt.title}`}
-      description="Provider and model apply only to this step. Outcome chips decide what happens after it finishes."
+      title={`${subStep ? "Sub-step" : "Step"} · ${item.prompt.externalKey ?? item.prompt.title}`}
+      description={
+        subStep
+          ? "Sub-steps follow their station unless you pin something here. What you set applies to this slice alone; when it finishes, the station's own rule decides what happens next."
+          : "Provider and model apply only to this step. Outcome chips decide what happens after it finishes."
+      }
       size="md"
+      footer={
+        onUseStationSettings === undefined ? undefined : (
+          <Button
+            variant="ghost"
+            title="Remove this sub-step's agent override. Execution status is unchanged."
+            onClick={onUseStationSettings}
+          >
+            Use station settings
+          </Button>
+        )
+      }
     >
       <div className="space-y-4">
+        {subStep && (
+          <p
+            className={cn(
+              "rounded-md px-3 py-2 text-[11px] leading-5 ring-1 ring-inset",
+              inherited ? "bg-surface-2 text-fg-dim ring-line" : "bg-violet/10 text-violet ring-violet/30",
+            )}
+          >
+            {inherited
+              ? "Currently inherited from the station. Choosing an agent below pins it to this sub-step only."
+              : "Pinned to this sub-step. Use station settings to remove this override; execution status will not change."}
+          </p>
+        )}
         <section>
           <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">AI for this step</div>
           <div className="flex flex-wrap gap-1">
@@ -1293,7 +1429,7 @@ function StepConfig({
             })}
           </div>
         </section>
-        <section>
+        <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
           <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On DONE</div>
           <div className="flex flex-wrap gap-1">
             {(["continue", "stop", "skip_rest"] as const).map((action) => (

@@ -42,7 +42,7 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI"] as const;
+export const GROUPS = ["General", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
 
 const FIELDS: FieldDef[] = [
   {
@@ -63,7 +63,7 @@ const FIELDS: FieldDef[] = [
     envVar: "AGENT_HOST_ACCESS",
     fallback: false,
     description:
-      "Lets every provider reach Docker and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, and Grok's OS sandbox is turned off. Needed for docker compose, local stacks, and /var/run/docker.sock. The per-provider sandbox settings below are ignored while this is on.",
+      "Lets every provider reach Docker and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, Grok's OS sandbox is turned off, and Copilot runs yolo. Needed for docker compose, local stacks, and /var/run/docker.sock. The per-provider sandbox settings below are ignored while this is on.",
     isDangerous: (value) => value === true,
   },
 
@@ -391,6 +391,132 @@ const FIELDS: FieldDef[] = [
     fallback: "",
     description: "Appended verbatim to the grok invocation. Quoted tokens are respected.",
   },
+
+  {
+    key: "copilot.enabled",
+    label: "Enabled",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ENABLED",
+    fallback: true,
+    description: "When off, GitHub Copilot is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "copilot.githubToken",
+    label: "COPILOT_GITHUB_TOKEN",
+    group: "GitHub Copilot",
+    type: "password",
+    envVar: "COPILOT_GITHUB_TOKEN",
+    fallback: "",
+    placeholder: "gho_… or github_pat_…",
+    description:
+      "Optional. Leave empty to reuse an existing `copilot login`, GH_TOKEN, or `gh auth login`. Classic ghp_ tokens are not accepted by Copilot. Stored server-side only and never sent to the browser.",
+  },
+  {
+    key: "copilot.binary",
+    label: "Binary",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_BIN",
+    fallback: "copilot",
+    placeholder: "copilot",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "copilot.model",
+    label: "Model",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the copilot default",
+    description:
+      "Default model when no model is picked in the header, passed as `--model`. Copilot only accepts ids your plan's model picker exposes — `auto` always works. The header dropdown overrides this per run.",
+  },
+  {
+    key: "copilot.permissionMode",
+    label: "Permission mode",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_PERMISSION_MODE",
+    fallback: "allow-all-tools",
+    description:
+      "How much a headless Copilot run may touch. Tool approval is always pre-granted — a non-interactive run has nowhere to prompt — so this chooses how far outside the workspace that reaches. Overridden to yolo while Host access is on.",
+    options: [
+      option("allow-all-tools", "allow-all-tools", "Tools run automatically; file access stays inside the workspace (recommended)"),
+      option("plan", "plan", "Read-only planning; the built-in file-write tools are denied"),
+      option("allow-all-paths", "allow-all-paths", "Also drops path verification — the agent can read and write anywhere", true),
+      option("yolo", "yolo", "All tools, all paths, all URLs", true),
+    ],
+    isDangerous: (value) => value === "yolo" || value === "allow-all-paths",
+  },
+  {
+    key: "copilot.reasoningEffort",
+    label: "Reasoning effort",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_REASONING_EFFORT",
+    fallback: "",
+    description: "Passed as `--effort`. Leave on default to let the model decide.",
+    options: [
+      option("", "default", "Whatever the model picks"),
+      option("none", "none", null),
+      option("minimal", "minimal", null),
+      option("low", "low", null),
+      option("medium", "medium", null),
+      option("high", "high", null),
+      option("xhigh", "xhigh", null),
+      option("max", "max", "Slowest and priciest"),
+    ],
+  },
+  {
+    key: "copilot.maxAiCredits",
+    label: "Max AI credits",
+    group: "GitHub Copilot",
+    type: "number",
+    envVar: "COPILOT_MAX_AI_CREDITS",
+    fallback: 0,
+    description: "Stop the run once it has spent this many AI credits. 0 means no cap.",
+  },
+  {
+    key: "copilot.builtinMcpServers",
+    label: "Built-in GitHub MCP",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_BUILTIN_MCP",
+    fallback: true,
+    description:
+      "Copilot's bundled github-mcp-server, which lets a run read issues and pull requests. Turning it off (`--disable-builtin-mcps`) starts runs faster and keeps the prompt smaller.",
+  },
+  {
+    key: "copilot.remoteExport",
+    label: "Export sessions to GitHub",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_REMOTE_EXPORT",
+    fallback: false,
+    description:
+      "Copilot can publish a session to GitHub web and mobile and accept remote control from there. Off by default: runs started here are driven by this server, and the transcript stays local.",
+  },
+  {
+    key: "copilot.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description:
+      "Skip the login check. Needed when `copilot login` stored its token in the OS credential store, which this server cannot read.",
+  },
+  {
+    key: "copilot.extraArgs",
+    label: "Extra arguments",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the copilot invocation. Quoted tokens are respected.",
+  },
 ];
 
 const FIELDS_BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
@@ -642,6 +768,42 @@ export const settings = {
       return argvList("grok.extraArgs");
     },
   },
+
+  copilot: {
+    get enabled(): boolean {
+      return flag("copilot.enabled");
+    },
+    get githubToken(): string | null {
+      return optionalText("copilot.githubToken");
+    },
+    get binary(): string {
+      return text("copilot.binary") || "copilot";
+    },
+    get model(): string | null {
+      return optionalText("copilot.model");
+    },
+    get permissionMode(): string {
+      return text("copilot.permissionMode");
+    },
+    get reasoningEffort(): string | null {
+      return optionalText("copilot.reasoningEffort");
+    },
+    get maxAiCredits(): number | null {
+      return count("copilot.maxAiCredits") || null;
+    },
+    get builtinMcpServers(): boolean {
+      return flag("copilot.builtinMcpServers");
+    },
+    get remoteExport(): boolean {
+      return flag("copilot.remoteExport");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("copilot.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("copilot.extraArgs");
+    },
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -803,6 +965,11 @@ export function effectiveGrokSandboxMode(): string {
   return settings.hostAccess ? "off" : settings.grok.sandboxMode;
 }
 
+/** Effective Copilot permission mode after the host-access overlay. */
+export function effectiveCopilotPermissionMode(): string {
+  return settings.hostAccess ? "yolo" : settings.copilot.permissionMode;
+}
+
 /** Effective Cursor --force after the host-access overlay. */
 export function effectiveCursorForce(): boolean {
   return settings.hostAccess ? true : settings.cursor.force;
@@ -832,6 +999,8 @@ export function permissionForRun(
         return { mode: "plan · sandbox: workspace", hostAccessApplied: false };
       case "cursor":
         return { mode: "read-only-not-supported", hostAccessApplied: false };
+      case "copilot":
+        return { mode: "plan", hostAccessApplied: false };
     }
   }
   switch (provider) {
@@ -849,6 +1018,8 @@ export function permissionForRun(
         mode: effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
         hostAccessApplied: settings.hostAccess,
       };
+    case "copilot":
+      return { mode: effectiveCopilotPermissionMode(), hostAccessApplied: settings.hostAccess };
   }
 }
 

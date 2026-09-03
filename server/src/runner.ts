@@ -146,6 +146,7 @@ export function startRun(args: StartRunArgs): RunHandle {
   const done = (async (): Promise<Extract<RunState, "done" | "interrupted" | "error">> => {
     let finalState: Extract<RunState, "done" | "interrupted" | "error"> = "done";
     let sawResult = false;
+    let sawFatalError = false;
     try {
       for await (const incoming of adapter.run(prompt, {
         runId,
@@ -164,10 +165,11 @@ export function startRun(args: StartRunArgs): RunHandle {
           // No more heartbeats once the provider has reported a terminal state.
           clearInterval(ticker);
         }
+        if (event.type === "error" && event.payload.fatal === true) sawFatalError = true;
         emit(event);
       }
       if (!sawResult) {
-        finalState = completionRequested ? "done" : interruptRequested ? "interrupted" : "done";
+        finalState = completionRequested ? "done" : interruptRequested ? "interrupted" : sawFatalError ? "error" : "done";
         emit({ type: "result", payload: { state: finalState } });
       }
     } catch (error) {

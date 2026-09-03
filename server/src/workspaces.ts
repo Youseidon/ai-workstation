@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -15,6 +15,25 @@ db.pragma("foreign_keys = ON");
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
 for(const file of [databasePath,`${databasePath}-wal`,`${databasePath}-shm`])if(existsSync(file))chmodSync(file,0o600);
+
+function findOperationsPrompt(prompts: OperationsPrompt[], promptId: number): OperationsPrompt | undefined {
+  for (const prompt of prompts) {
+    if (prompt.prompt.id === promptId) return prompt;
+    const child = findOperationsPrompt(prompt.children, promptId);
+    if (child !== undefined) return child;
+  }
+  return undefined;
+}
+
+function handoffEvent(event: NormalizedEvent): Record<string, unknown> {
+  const base = { type: event.type, timestamp: event.timestamp };
+  if (event.type === "assistant_text") return { ...base, kind: event.payload.kind, text: event.payload.text.slice(0, 4000) };
+  if (event.type === "tool_use") return { ...base, name: event.payload.name, summary: event.payload.summary.slice(0, 1000), input: JSON.stringify(event.payload.input).slice(0, 2000) };
+  if (event.type === "tool_result") return { ...base, summary: event.payload.summary.slice(0, 1000), output: event.payload.output.slice(0, 4000) };
+  if (event.type === "result") return { ...base, state: event.payload.state, text: event.payload.text?.slice(0, 4000) ?? null };
+  if (event.type === "error") return { ...base, message: event.payload.message.slice(0, 2000), detail: event.payload.detail?.slice(0, 2000) ?? null };
+  return base;
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS schema_migration (
@@ -797,7 +816,7 @@ export const workspaces = {
     const programs = (db.prepare("SELECT * FROM program WHERE workspace_id=? ORDER BY sort_order").all(id) as ProgramRow[]).map((p): ProgramRecord => ({ id:p.id, workspaceId:p.workspace_id, name:p.name, overview:p.overview, sortOrder:p.sort_order, createdAt:p.created_at, updatedAt:p.updated_at, externalKey:p.external_key, suites:(db.prepare("SELECT * FROM suite WHERE program_id=? ORDER BY sort_order").all(p.id) as SuiteRow[]).map((s): SuiteRecord => ({ id:s.id, programId:s.program_id, name:s.name, overview:s.overview, sortOrder:s.sort_order, createdAt:s.created_at, updatedAt:s.updated_at, externalKey:s.external_key, prompts:(db.prepare("SELECT * FROM prompt WHERE suite_id=? ORDER BY sort_order").all(s.id) as PromptRow[]).map(promptDto) })) }));
     return { ...workspace, programs };
   },
-  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,p.parent_prompt_id parentPromptId,p.child_order childOrder,(SELECT COUNT(*) FROM prompt c WHERE c.parent_prompt_id=p.id AND c.status NOT IN ('DONE','SKIPPED')) openChildren,(SELECT COUNT(*) FROM prompt earlier WHERE p.parent_prompt_id IS NOT NULL AND earlier.parent_prompt_id=p.parent_prompt_id AND (earlier.child_order<p.child_order OR (earlier.child_order=p.child_order AND earlier.id<p.id)) AND earlier.status NOT IN ('DONE','SKIPPED')) openEarlierSiblings,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">&{openChildren:number;openEarlierSiblings:number}>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' AND state IN ('STARTING','RUNNING') THEN 0 ELSE 1 END, started_at DESC LIMIT 1");const result=db.prepare("SELECT result FROM prompt WHERE id=?"); return rows.map(({openChildren,openEarlierSiblings,...row})=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const interrupted=run?.state==="INTERRUPTED"||run?.state==="ERROR";const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const promptResult=(result.get(row.id) as {result:string}).result;const systemInterrupted=row.status==="BLOCKED"&&interrupted&&(promptResult.startsWith("Agent process ended")||promptResult.startsWith("No active agent run"));return{...row,ready:row.status==="TODO"&&blockedBy.length===0&&openChildren===0&&openEarlierSiblings===0,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
+  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,p.parent_prompt_id parentPromptId,p.child_order childOrder,(SELECT COUNT(*) FROM prompt c WHERE c.parent_prompt_id=p.id AND c.status NOT IN ('DONE','SKIPPED')) openChildren,(SELECT COUNT(*) FROM prompt earlier WHERE p.parent_prompt_id IS NOT NULL AND earlier.parent_prompt_id=p.parent_prompt_id AND (earlier.child_order<p.child_order OR (earlier.child_order=p.child_order AND earlier.id<p.id)) AND earlier.status NOT IN ('DONE','SKIPPED')) openEarlierSiblings,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">&{openChildren:number;openEarlierSiblings:number}>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' THEN 0 ELSE 1 END, started_at DESC LIMIT 1");const result=db.prepare("SELECT result FROM prompt WHERE id=?"); return rows.map(({openChildren,openEarlierSiblings,...row})=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const interrupted=run?.state==="INTERRUPTED"||run?.state==="ERROR";const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const promptResult=(result.get(row.id) as {result:string}).result;const systemInterrupted=row.status==="BLOCKED"&&interrupted&&(promptResult.startsWith("Agent process ended")||promptResult.startsWith("No active agent run"));return{...row,ready:row.status==="TODO"&&blockedBy.length===0&&openChildren===0&&openEarlierSiblings===0,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
   resolvePrompt(workspaceId: number, promptId: number): PromptOption {
     const row = this.promptOptions(workspaceId).find(prompt => prompt.id === promptId);
     if (!row) throw new WorkspaceError(404, "not_found", "Prompt was not found in this workspace"); return row;
@@ -1077,7 +1096,8 @@ export const workspaces = {
   },
   promptActivity(promptId:number):PromptActivity {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const item=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts.find(prompt=>prompt.prompt.id===promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
+    const prompts=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts??[];
+    const item=findOperationsPrompt(prompts,promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
     const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),directRetry:this.canDirectRetry(promptId)};
   },
   recordAgentEvent(runId:string,event:NormalizedEvent):void { db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp); },
@@ -1094,7 +1114,7 @@ export const workspaces = {
     db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,'BLOCKED','TODO','Human supplied context; ready to resume','USER',?)").run(promptId,now);
     return{id:remarkId,promptId,runId:null,kind:"HUMAN_RESPONSE",content,actorType:"USER",createdAt:now} satisfies PromptRemark;
   })()); },
-  recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior run to recover");return run.id; },
+  recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior developer run to recover");return run.id; },
   latestExecuteRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_handoff","This work item has no prior developer run");return run.id; },
   runSummary(runId:string):{id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string} { const run=db.prepare("SELECT id,workspace_id workspaceId,prompt_id promptId,provider,model,state FROM agent_run WHERE id=?").get(runId) as {id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string}|undefined;if(!run)throw new WorkspaceError(404,"not_found","Run not found");return run; },
   runProducedWork(runId:string):boolean {
@@ -1120,7 +1140,7 @@ export const workspaces = {
   recoverPrompt(promptId:number,expectedRunId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status,result FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"];result:string}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const run=db.prepare("SELECT id,state FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string;state:string}|undefined;
+    const run=db.prepare("SELECT id,state FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string;state:string}|undefined;
     if(!run||run.id!==expectedRunId)throw new WorkspaceError(409,"run_changed","A newer run exists; refresh before recovering");
     if(activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active; stop it before recovering");
     const abandoned=prompt.status==="IN_PROGRESS"&&(run.state==="STARTING"||run.state==="RUNNING");
@@ -1201,10 +1221,20 @@ export const workspaces = {
 
   pipelineRule(promptId:number,pipelineId?:number):PromptPipelineRule {
     this.promptHome(promptId);
-    // A sub-step is never configured on the flowchart itself; it runs under
-    // whatever policy (provider, on_blocked, retry) its parent step carries.
+    // A sub-step is never a flowchart entry. By default it runs under whatever
+    // policy (provider, on_blocked, retry) its parent station carries; a named
+    // pipeline may pin its own agent on one without disturbing the station.
     const parentId=this.parentPromptId(promptId);
-    if(parentId!==null) return {...this.pipelineRule(parentId,pipelineId),promptId};
+    if(parentId!==null){
+      const inherited={...this.pipelineRule(parentId,pipelineId),promptId};
+      if(pipelineId===undefined) return inherited;
+      // A named pipeline may pin a different agent (or blocked policy) on one
+      // sub-step. The row is seeded from the parent, so it is complete on its
+      // own; deleting it drops the sub-step back to inheriting.
+      const override=db.prepare("SELECT * FROM pipeline_step WHERE pipeline_id=? AND prompt_id=?").get(pipelineId,promptId) as PipelineStepRow|undefined;
+      if(override===undefined) return inherited;
+      return {...pipelineStepDto(promptId,override),onDone:inherited.onDone,enabled:inherited.enabled,stepOrder:inherited.stepOrder};
+    }
     if(pipelineId!==undefined){
       const row=db.prepare("SELECT * FROM pipeline_step WHERE pipeline_id=? AND prompt_id=?").get(pipelineId,promptId) as PipelineStepRow|undefined;
       if(row!==undefined) return pipelineStepDto(promptId,row);
@@ -1221,7 +1251,7 @@ export const workspaces = {
 
   enabledNamedPipelineSteps(pipelineId:number,suiteId:number):PromptPipelineRule[] {
     this.assertPipelineSuite(pipelineId,suiteId);
-    const rows=db.prepare(`SELECT ps.* FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=? AND p.suite_id=? ORDER BY ps.step_order,p.sort_order,p.id`).all(pipelineId,suiteId) as PipelineStepRow[];
+    const rows=db.prepare(`SELECT ps.* FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=? AND p.suite_id=? AND p.parent_prompt_id IS NULL ORDER BY ps.step_order,p.sort_order,p.id`).all(pipelineId,suiteId) as PipelineStepRow[];
     return rows.map(row=>pipelineStepDto(row.prompt_id,row));
   },
 
@@ -1276,9 +1306,10 @@ export const workspaces = {
   addNamedPipelineStep(pipelineId:number,promptId:number,input:Record<string,unknown>={}):PromptPipelineRule {
     const home=this.promptHome(promptId);
     this.assertPipelineSuite(pipelineId,home.suiteId);
+    if(this.parentPromptId(promptId)!==null) throw new WorkspaceError(422,"validation_error","Sub-steps run inside their station and cannot be added to the flowchart");
     const current=this.pipelineRule(promptId,pipelineId);
     if(current.enabled) return this.upsertNamedPipelineRule(pipelineId,promptId,input);
-    const max=(db.prepare(`SELECT COALESCE(MAX(ps.step_order), -1) AS value FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=? AND p.suite_id=?`).get(pipelineId,home.suiteId) as {value:number}).value;
+    const max=(db.prepare(`SELECT COALESCE(MAX(ps.step_order), -1) AS value FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=? AND p.suite_id=? AND p.parent_prompt_id IS NULL`).get(pipelineId,home.suiteId) as {value:number}).value;
     const provider="provider" in input ? optionalProviderField(input.provider,"provider") : current.provider;
     const model="model" in input ? optionalModelField(input.model,"model") : current.model;
     return this.upsertNamedPipelineRule(pipelineId,promptId,{...input,provider,model,stepOrder:max+1});
@@ -1308,6 +1339,34 @@ export const workspaces = {
     return this.enabledNamedPipelineSteps(pipelineId,suiteId);
   },
 
+  /**
+   * Every sub-step under this stage's stations, depth-first, with the rule the
+   * scheduler would use for it and whether that rule is inherited or pinned.
+   */
+  namedPipelineSubStepRules(pipelineId:number,suiteId:number):PipelineSubStepRule[] {
+    this.assertPipelineSuite(pipelineId,suiteId);
+    const rows=db.prepare("SELECT id,parent_prompt_id parentPromptId FROM prompt WHERE suite_id=? AND parent_prompt_id IS NOT NULL ORDER BY child_order,id").all(suiteId) as Array<{id:number;parentPromptId:number}>;
+    if(rows.length===0) return [];
+    const byParent=new Map<number,Array<{id:number;parentPromptId:number}>>();
+    for(const row of rows){
+      const list=byParent.get(row.parentPromptId);
+      if(list===undefined) byParent.set(row.parentPromptId,[row]); else list.push(row);
+    }
+    const overrides=db.prepare("SELECT prompt_id promptId FROM pipeline_step WHERE pipeline_id=?").all(pipelineId) as Array<{promptId:number}>;
+    const pinned=new Set(overrides.map(row=>row.promptId));
+    const out:PipelineSubStepRule[]=[];
+    const walk=(parentId:number,depth:number):void=>{
+      for(const row of byParent.get(parentId)??[]){
+        out.push({promptId:row.id,parentPromptId:parentId,depth,inherited:!pinned.has(row.id),rule:this.pipelineRule(row.id,pipelineId)});
+        walk(row.id,depth+1);
+      }
+    };
+    for(const station of db.prepare("SELECT id FROM prompt WHERE suite_id=? AND parent_prompt_id IS NULL ORDER BY sort_order,id").all(suiteId) as Array<{id:number}>){
+      walk(station.id,1);
+    }
+    return out;
+  },
+
   namedPipelineFlowchart(pipelineId:number,suiteId:number,options:{incompleteOnly?:boolean}={}):PipelineFlowchartView {
     this.assertPipelineSuite(pipelineId,suiteId);
     const defaults=this.suitePipelineDefaults(suiteId);
@@ -1322,7 +1381,7 @@ export const workspaces = {
       const rule=this.pipelineRule(row.id,pipelineId);
       return rule.enabled?rule:{...rule,enabled:false};
     });
-    return {pipelineId,suiteId,defaults,steps,available,rules,active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
+    return {pipelineId,suiteId,defaults,steps,available,rules,subSteps:this.namedPipelineSubStepRules(pipelineId,suiteId),active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
   },
 
   pipelineDashboard(workspaceId:number):PipelineDashboard {
@@ -1647,7 +1706,7 @@ export const workspaces = {
              g.id programId, g.name programName, g.external_key programKey,
              s.name suiteName, s.external_key suiteKey,
              (SELECT count(*) FROM prompt p WHERE p.suite_id=s.id) promptCount,
-             (SELECT count(*) FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=st.pipeline_id AND p.suite_id=s.id) stepCount
+             (SELECT count(*) FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=st.pipeline_id AND p.suite_id=s.id AND p.parent_prompt_id IS NULL) stepCount
       FROM pipeline_stage st
       JOIN suite s ON s.id=st.suite_id
       JOIN program g ON g.id=s.program_id
@@ -1844,7 +1903,12 @@ export const workspaces = {
     const source=(history.runs as Array<Record<string,unknown>>).find(run=>run.id===sourceRunId);
     if(!source)throw new WorkspaceError(404,"not_found","Source run not found");
     const events=(db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id").all(sourceRunId) as Array<{event_json:string}>).map(row=>JSON.parse(row.event_json) as NormalizedEvent);
-    const compact=events.filter(event=>event.type!=="status"&&event.type!=="assistant_text"||event.type==="assistant_text"&&event.payload.kind==="message").slice(-120);
+    const candidates=events.filter(event=>event.type!=="status"&&event.type!=="assistant_text"||event.type==="assistant_text"&&event.payload.kind==="message").slice(-120).map(handoffEvent);
+    // Copilot accepts its headless prompt through `-p`. Linux caps one argv
+    // entry at about 128 KiB even when ARG_MAX is much larger, so retain the
+    // newest useful evidence within a conservative transport budget.
+    const compact:Record<string,unknown>[]=[];let eventBytes=0;
+    for(let index=candidates.length-1;index>=0;index--){const event=candidates[index]!;const bytes=Buffer.byteLength(JSON.stringify(event));if(eventBytes+bytes>70000)break;compact.unshift(event);eventBytes+=bytes;}
     return JSON.stringify({context,sourceRun:source,sourceEvents:compact,history},null,2);
   },
   preparePromptForSuccessor(promptId:number,handoffId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{

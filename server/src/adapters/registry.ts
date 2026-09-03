@@ -4,6 +4,7 @@ import { settings } from "../settings.ts";
 import { providerUsageUnavailable } from "./accountUsage.ts";
 import { ClaudeAdapter } from "./claude.ts";
 import { CodexAdapter } from "./codex.ts";
+import { CopilotAdapter } from "./copilot.ts";
 import { CursorAdapter } from "./cursor.ts";
 import { GrokAdapter } from "./grok.ts";
 import { toProviderInfo, type AgentAdapter } from "./types.ts";
@@ -17,6 +18,7 @@ const adapters: Record<ProviderId, AgentAdapter> = {
   codex: new CodexAdapter(),
   cursor: new CursorAdapter(),
   grok: new GrokAdapter(),
+  copilot: new CopilotAdapter(),
 };
 
 const DETECTION_TTL_MS = 15_000;

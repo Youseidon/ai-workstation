@@ -14,7 +14,7 @@ import { useProviderUsage } from "@/lib/providerUsage";
 import { providerTheme } from "@/lib/providerTheme";
 
 /**
- * One control for "which agent, which model". Replaces the four static split
+ * One control for "which agent, which model". Replaces the static split
  * pills: the trigger shows the active choice, and the popover carries status,
  * usage and the model list for every provider.
  */

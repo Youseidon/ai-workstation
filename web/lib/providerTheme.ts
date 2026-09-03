@@ -58,4 +58,12 @@ export const providerTheme: Record<ProviderId, ProviderTheme> = {
     fill: "bg-agent-grok",
     cssVar: "var(--agent-grok)",
   },
+  copilot: {
+    text: "text-agent-copilot",
+    chip: "bg-agent-copilot/10 text-agent-copilot ring-agent-copilot/30",
+    rule: "border-agent-copilot/40",
+    active: "bg-agent-copilot/15 text-agent-copilot ring-agent-copilot/40",
+    fill: "bg-agent-copilot",
+    cssVar: "var(--agent-copilot)",
+  },
 };

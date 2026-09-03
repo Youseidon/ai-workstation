@@ -1,14 +1,14 @@
 # Multi-Agent Live Console
 
-A self-hosted web console that gives four local CLI coding agents — **Claude Code**,
-**Codex CLI**, **Cursor CLI**, and **Grok CLI** — one shared browser UI. Type a prompt, pick a
+A self-hosted web console that gives five local CLI coding agents — **Claude Code**,
+**Codex CLI**, **Cursor CLI**, **Grok CLI**, and **GitHub Copilot** — one shared browser UI. Type a prompt, pick a
 provider, and watch that agent work in real time: streamed assistant text,
 collapsible tool calls and results, a server-side elapsed clock, and live token
 counts, all rendered as a scrolling terminal-style log.
 
 ```
 ┌─ agent console ──────────────────────────────────────────────────────────┐
-│  ● Claude Code   ● Codex CLI   ○ Cursor CLI   ● Grok CLI       clear log │
+│  ● Claude Code  ● Codex CLI  ○ Cursor CLI  ● Grok CLI  ● Copilot  clear │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 11:44:02  CODEX   ❯ create hello.txt containing "it works"               │
 │ 11:44:06  CODEX   I'll write the file and verify it.                     │
@@ -57,6 +57,7 @@ runs both without watch mode.
 | Codex CLI | `codex exec --json` (spawned) | `codex` on `PATH` + `OPENAI_API_KEY` or `codex login` | yes |
 | Cursor CLI | `cursor-agent -p --output-format …` (spawned) | `cursor-agent` on `PATH` + `cursor-agent login` | not reliably — the stat is hidden rather than faked |
 | Grok CLI | `grok -p --output-format streaming-json` (spawned) | `grok` on `PATH` + `XAI_API_KEY` or `grok login` | yes |
+| GitHub Copilot | `copilot -p --output-format json` (spawned) | `copilot` on `PATH` + `copilot login`, `COPILOT_GITHUB_TOKEN`, or a Copilot-enabled `gh` login | yes |
 
 ### How detection works
 
@@ -81,6 +82,15 @@ per provider. Nothing is hardcoded to an install path.
   satisfied by `XAI_API_KEY` or by `auth.json` under `$GROK_HOME` (default
   `~/.grok`). If that heuristic is wrong for your install, set
   `GROK_ASSUME_AUTHENTICATED=true`.
+- **Copilot** — same `$PATH` lookup for `COPILOT_BIN` (default `copilot`). Auth
+  is resolved in the CLI's own order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
+  `GITHUB_TOKEN`, a plaintext credential file under `$COPILOT_HOME` (default
+  `~/.copilot`), then `gh auth token`. A `copilot login` normally stores its
+  token in the **OS credential store**, which this server cannot read — if you
+  logged in that way and nothing else applies, set
+  `COPILOT_ASSUME_AUTHENTICATED=true`. Plan usage (the monthly premium-request
+  or chat allowance and its reset date) comes from GitHub's own
+  `copilot_internal/user` endpoint using that token.
 
 Unavailable providers cannot be selected; hovering the button shows why
 (`codex not found on PATH`, `ANTHROPIC_API_KEY not set…`). The ↻ button re-runs
@@ -101,6 +111,10 @@ provider's model list. Two other ways to get there:
 
 The catalog lives in `shared/src/index.ts` (`MODEL_CATALOG`) — the codex slugs
 come from that CLI's own model cache and the grok ones from `grok models`.
+Copilot is the exception: its model list is per-account, and `--model` rejects
+any id the plan's picker does not expose (a free plan exposes none, only
+`auto`), so only `default` and `auto` are listed and everything else goes
+through the custom-model field.
 
 **Precedence** for a run is: model picked in the header → the provider's `Model`
 setting → the provider's own default (nothing is passed). Picking a model in the
@@ -111,14 +125,15 @@ next to the timestamp and a transcript that mixes providers stays readable.
 
 ### ⚠️ CLI flags drift
 
-Codex's, Cursor's, and Grok's headless/JSON flags change between releases. The flags here
-were verified against **codex-cli 0.150.1** and **grok 1.0.5**; the Cursor mapper was written
+Codex's, Cursor's, Grok's, and Copilot's headless/JSON flags change between releases. The
+flags here were verified against **codex-cli 0.150.1**, **grok 1.0.5**, and
+**GitHub Copilot CLI 1.0.82**; the Cursor mapper was written
 against the documented `stream-json` shape and is deliberately tolerant of
 unknown event types. **Check `codex --help`, `codex exec --help`,
-`cursor-agent --help`, and `grok --help` for your installed versions** before assuming a
-mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
-`CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` so you can adjust without editing code, and
-`CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
+`cursor-agent --help`, `grok --help`, and `copilot --help` for your installed versions** before
+assuming a mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
+`CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` / `COPILOT_EXTRA_ARGS` so you can adjust without editing
+code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 
 ---
 
@@ -141,7 +156,8 @@ gitignored) and survive restarts.
 - **Secrets stay server-side** — `password` fields are write-only. The browser
   is told whether a key is set, never its value.
 - **Dangerous values are called out** — selecting `bypassPermissions`,
-  `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, or turning on
+  `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, Copilot
+  `allow-all-paths` / `yolo`, or turning on
   **Host access (Docker)** is flagged inline and asks for confirmation before saving.
 
 The Agents page is generated from the field table in `server/src/settings.ts`.
@@ -204,11 +220,12 @@ changed at any time from the Agents page:
 
 | Provider | Env var | Default | What it means |
 |---|---|---|---|
-| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
+| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`, Copilot `yolo`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
 | Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
 | Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
 | Cursor | `CURSOR_FORCE` | `true` | Cursor has no sandbox: `--force` means it will not stop to ask. Set `false` to keep approvals on (headless runs may then stall). |
 | Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to the selected workspace directory. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
+| Copilot | `COPILOT_PERMISSION_MODE` | `allow-all-tools` | A headless `copilot -p` run cannot show an approval prompt, so tool approval is always pre-granted (`--allow-all-tools`); this picks how far outside the workspace that reaches. File access stays inside the working directory (plus the system temp dir) by default. `plan` is read-only planning with the built-in write tools denied; `allow-all-paths` and `yolo` drop that containment. Copilot's own OS-level command sandbox is experimental and is not used — shell commands run with your user's access. |
 
 `CLAUDE_PERMISSION_MODE=default` and `GROK_PERMISSION_MODE=default` are a poor
 fit for a headless console: prompts have nowhere to go, so tool calls get denied
@@ -243,6 +260,7 @@ server/src/
     codex.ts             codex JSONL → normalized events
     cursor.ts            cursor JSON → normalized events
     grok.ts              grok streaming-json → normalized events
+    copilot.ts           copilot JSON envelopes → normalized events
     spawnAdapter.ts      shared spawn/JSONL/stderr/interrupt machinery
 web/
   lib/useAgentConsole.ts WebSocket client, reconnect, state reduction
@@ -270,7 +288,8 @@ assistant_text | tool_use | tool_result | status | result | error
 ```
 
 Provider-specific shapes (`SDKMessage`, codex `item.completed`, cursor
-`stream-json`, grok `streaming-json`) never leave the adapter. Adding another
+`stream-json`, grok `streaming-json`, copilot `assistant.*`/`tool.*` envelopes)
+never leave the adapter. Adding another
 provider is one new file in `server/src/adapters/` plus one line in
 `registry.ts` (and `"id"` on `PROVIDER_IDS` plus a chip colour) — the transport
 layer and the rest of the frontend stay untouched.
@@ -315,7 +334,8 @@ plus a boolean for whether each key is set.
 Note that keys saved through the Agents page are stored in
 `.agent-console/settings.json` in plain text (file mode `0600`). If you would
 rather not have them on disk in that form, leave those fields empty and use
-`.env` or your provider's own login (`claude`, `codex login`, `grok login`).
+`.env` or your provider's own login (`claude`, `codex login`, `grok login`,
+`copilot login`).
 
 ---
 
@@ -325,8 +345,8 @@ rather not have them on disk in that form, leave those fields empty and use
 trusted network without adding authentication.**
 
 It has no auth system by design, and anyone who can reach the port can run
-arbitrary code and file operations in any configured workspace through four
-different agents with four different permission models — including modes that
+arbitrary code and file operations in any configured workspace through five
+different agents with five different permission models — including modes that
 disable sandboxing entirely. The settings endpoints are unauthenticated too:
 reaching the port is enough to disable a sandbox or read whether an API key is
 configured. The server binds `127.0.0.1` by default and rejects WebSocket

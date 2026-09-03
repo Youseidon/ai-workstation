@@ -45,6 +45,7 @@ export const workspaceApi = {
   history(serverUrl:string,id:number){return request<{events:PromptStatusEvent[];remarks:PromptRemark[];runs:unknown[]}>(serverUrl,`/api/prompts/${id}/history`);},
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},
+  skipPrompt(serverUrl:string,id:number,reason?:string){return request<{skipped:boolean}>(serverUrl,`/api/prompts/${id}/skip`,{method:"POST",...json(reason===undefined?{}:{reason})});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
   retryLaunch(serverUrl:string,id:number,value:{provider:ProviderId;model?:string|null;pipelineId:number}){return request<{started:boolean}>(serverUrl,`/api/prompts/${id}/retry-launch`,{method:"POST",...json(value)});},
   startHandoff(serverUrl:string,id:number,value:{handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number;reuseHandoffId?:string}){return request<{started:boolean;reused?:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},

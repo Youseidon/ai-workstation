@@ -165,11 +165,13 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(namedPipelineStepMatch){
       const pipelineId=id(namedPipelineStepMatch[1]!);
       const promptId=id(namedPipelineStepMatch[2]!);
-      const suiteIdValue=url.searchParams.get("suiteId");
-      if(suiteIdValue===null) throw new WorkspaceError(400,"validation_error","suiteId is required");
-      const suiteId=id(suiteIdValue);
       const incompleteOnly=url.searchParams.get("incompleteOnly")==="1";
       if(method==="DELETE"){
+        // Only the delete reply rebuilds the stage flowchart, so only it needs
+        // the suite; a rule patch is addressed by prompt id alone.
+        const suiteIdValue=url.searchParams.get("suiteId");
+        if(suiteIdValue===null) throw new WorkspaceError(400,"validation_error","suiteId is required");
+        const suiteId=id(suiteIdValue);
         workspaces.removeNamedPipelineStep(pipelineId,promptId);
         json(res,200,{flowchart:workspaces.namedPipelineFlowchart(pipelineId,suiteId,{incompleteOnly})});
       } else if(method==="PATCH"){

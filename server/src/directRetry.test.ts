@@ -171,3 +171,29 @@ test("promptActivity exposes directRetry", () => {
     ctx.cleanup();
   }
 });
+
+test("a later handoff run does not hide an interrupted developer run", () => {
+  const ctx = fixture();
+  try {
+    const executeId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.finishAgentRun(executeId, "interrupted");
+    const handoffId = newId("run");
+    workspaces.beginHandoffAgentRun({
+      runId: handoffId,
+      workspaceId: ctx.workspace.id,
+      promptId: ctx.prompt.id,
+      provider: "copilot",
+      model: null,
+      tokenHash: "test-token",
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    });
+    workspaces.finishAgentRun(handoffId, "error");
+
+    const prompt = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
+    assert.equal(prompt.currentRun?.id, executeId);
+    assert.equal(prompt.recoverable, true);
+    assert.equal(workspaces.recoveryRunId(ctx.prompt.id), executeId);
+  } finally {
+    ctx.cleanup();
+  }
+});

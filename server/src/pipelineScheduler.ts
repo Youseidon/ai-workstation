@@ -334,6 +334,31 @@ async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | nul
   return advance(live, preferPlayTarget);
 }
 
+/**
+ * Why a suite will not start, named down to the exact work item. "Nothing is
+ * ready" on its own sends the operator hunting: the blocker is usually one
+ * sub-step several levels below a station, invisible from the flowchart.
+ */
+function notReadyReason(workspaceId: number, blockingPromptId: number | null, descendantId: number | null): string {
+  if (blockingPromptId === null) return "Every station on this pipeline is already finished.";
+  const target = descendantId ?? blockingPromptId;
+  const prompt = workspaces.resolvePrompt(workspaceId, target);
+  const label = prompt.externalKey ?? prompt.title;
+  if (prompt.recoverable) {
+    return `${label} needs recovery before this pipeline can continue — its agent process ended without posting a status. Retry or skip it, then play again.`;
+  }
+  if (prompt.status === "BLOCKED") {
+    return `${label} is blocked and needs a human response. Answer or skip it, then play again.`;
+  }
+  if (prompt.blockedBy.length > 0) {
+    return `${label} is waiting on ${prompt.blockedBy.join(", ")}.`;
+  }
+  if (prompt.status === "IN_PROGRESS") {
+    return `${label} is still marked in progress from an earlier run. Recover it, then play again.`;
+  }
+  return `${label} is not ready to run.`;
+}
+
 async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
   const suite = workspaces.suiteHeader(suiteId);
   const workspace = workspaces.get(suite.workspaceId);
@@ -370,8 +395,13 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
       if (active.state === "WAITING_HUMAN") {
         const currentId = active.currentPromptId;
         const pipelineId = namedPipelineId ?? namedPipelineIdFor(active);
-        const ready = currentId === null ? false : workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId);
-        if (!ready) throw new WorkspaceError(422, "prompt_not_ready", "The waiting station is not ready to resume");
+        // The waiting item may be a sub-step, which never appears in the
+        // station list — ask the prompt itself as well.
+        const ready = currentId !== null && (
+          workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId)
+          || workspaces.resolvePrompt(suite.workspaceId, currentId).ready
+        );
+        if (!ready) throw new WorkspaceError(422, "prompt_not_ready", currentId === null ? "This run has no station to resume." : notReadyReason(suite.workspaceId, currentId, null));
       }
       log.info(`resume suite=${suiteId} from=${active.state}`);
       return resume(active, playProvider, playModel, preferPlayTarget);
@@ -386,9 +416,12 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
       const status = workspaces.promptOutcome(promptId).status;
       return status !== "DONE" && status !== "SKIPPED";
     });
-    const descendant = unfinished.length === 0 ? null : workspaces.nextOpenChild(unfinished[0]!);
+    const blocking = unfinished[0] ?? null;
+    const descendant = blocking === null ? null : workspaces.nextOpenChild(blocking);
     const descendantReady = descendant === null ? false : workspaces.resolvePrompt(suite.workspaceId, descendant.id).ready;
-    if (!descendantReady) throw new WorkspaceError(422, "nothing_ready", "Nothing on the flowchart is ready to play");
+    if (!descendantReady) {
+      throw new WorkspaceError(422, "nothing_ready", notReadyReason(suite.workspaceId, blocking, descendant?.id ?? null));
+    }
   }
   const created = workspaces.createPipelineRun({
     id: newId("pipe"),
