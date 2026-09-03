@@ -1,0 +1,20 @@
+{
+  "S6-00": [
+    {
+      "find": "**Review the burn-down list at the start of each module rather than porting on autopilot.**\n\nRe-run `node contracts/tools/scope-audit.mjs` (no `--module` flag). Filter\n`contracts/catalog/scope-audit.json` → `byNamespace` using the namespaces\n`src/backend/module-map.json` assigns to this module. For each endpoint confirm its bucket:",
+      "replace": "**Review the burn-down list at the start of each module rather than porting on autopilot.**\n\n**Triage is the module's job, and is done once.** If you are a sub-step of a module, your parent has\nalready triaged; inherit its decisions from the work-item context and do not re-derive them. Re-run\nthe audit only if you have reason to believe it is stale.\n\nRe-run `node contracts/tools/scope-audit.mjs` (no `--module` flag). `contracts/catalog/scope-audit.json`\nis ~630 KB — never read it whole. Query `byNamespace` for the namespaces\n`src/backend/module-map.json` assigns to this module:\n\n```\nnode -e \"const a=require('./contracts/catalog/scope-audit.json'); const ns=['<ns>']; for (const n of ns) console.log(n, JSON.stringify(a.byNamespace[n]?.map(e=>[e.route,e.bucket])))\"\n```\n\nFor each endpoint confirm its bucket:"
+    },
+    {
+      "find": "1. Its contract in `contracts/schemas/<ns>.schema.json` — request, response, `x-route`, `x-source`.",
+      "replace": "1. Its contract in `contracts/schemas/<ns>.schema.json` — request, response, `x-route`, `x-source`.\n   These run to ~77 KB; extract the definitions for your endpoints rather than reading the file."
+    },
+    {
+      "find": "## Step 5 — Regression check\n\n```\nnode harness/replay.mjs --target http://localhost:8080     # the WHOLE suite\n```\nUse `--reset-between-passes` when proving flipped .NET state (Postgres is not reset by recreating\nthe mock). Porting one endpoint can break another through shared state, shared repositories or a\nchanged query. Run the full suite at the end of every module, not just the module's own namespace.",
+      "replace": "## Step 5 — Regression check\n\n```\nnode harness/replay.mjs --target http://localhost:8080 --namespace <ns>\n```\nUse `--reset-between-passes` when proving flipped .NET state (Postgres is not reset by recreating\nthe mock).\n\nPorting one endpoint can break another through shared state, shared repositories or a changed query,\nso the **whole suite** must also be replayed:\n\n```\nnode harness/replay.mjs --target http://localhost:8080     # the WHOLE suite\n```\n\n**That full-suite pass belongs to the module, once — not to each slice of it.** If this module was\nsplit into sub-steps, the sub-steps replay their own routes and namespace; the run that resumes the\nmodule after the last sub-step is the one that replays everything. Running the full suite once per\nsub-step multiplies the most expensive check in the program by the number of slices and tells you\nnothing the module-level pass will not."
+    },
+    {
+      "find": "## Definition of done for the module\n\n1. Every `port` endpoint replays green on all scenarios.\n2. Every one is flipped to `dotnet` in the catalog.\n3. The full suite is green (or only pre-recorded split-state reds remain, none introduced here).\n4. The architecture analyser passes.\n5. The triage decisions are reported with counts.",
+      "replace": "## Definition of done for the module\n\nThis is the **module's** exit, checked by the module's own run. A sub-step is done when its own\nendpoints replay green on every scenario and are flipped; items 3-5 are the module's to prove.\n\n1. Every `port` endpoint replays green on all scenarios.\n2. Every one is flipped to `dotnet` in the catalog.\n3. The full suite is green (or only pre-recorded split-state reds remain, none introduced here).\n4. The architecture analyser passes.\n5. The triage decisions are reported with counts."
+    }
+  ]
+}

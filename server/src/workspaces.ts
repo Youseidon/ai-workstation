@@ -1,14 +1,20 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
+import { settings } from "./settings.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 
-const databasePath = resolve(config.repoRoot, ".agent-console/console.sqlite");
+// Tests must never open the console's own database: they create and delete
+// workspaces, and a crashed or cancelled run leaves that debris in real data.
+// `AGENT_CONSOLE_DB` lets the test runner point somewhere disposable.
+const databasePath = process.env.AGENT_CONSOLE_DB !== undefined && process.env.AGENT_CONSOLE_DB !== ""
+  ? resolve(process.env.AGENT_CONSOLE_DB)
+  : resolve(config.repoRoot, ".agent-console/console.sqlite");
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
 const db = new Database(databasePath);
 db.pragma("foreign_keys = ON");
@@ -471,7 +477,83 @@ migrate();
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(15,?)").run(new Date().toISOString());
   }
+  const afterFifteen = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterFifteen < 16) {
+    // Prompt content had no history: updateChild overwrote it in place, so a
+    // bad edit — by hand or by a bulk rewrite — was unrecoverable. Status and
+    // run output were already versioned (prompt_status_event, prompt_remark);
+    // this closes the gap for the text itself. Every existing prompt is seeded
+    // as its own revision 0 so the pre-versioning state is captured too.
+    db.exec(`
+      CREATE TABLE prompt_revision (
+        id INTEGER PRIMARY KEY,
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX prompt_revision_prompt_idx ON prompt_revision(prompt_id, id);
+    `);
+    const seedNow = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) SELECT id,title,content,'SYSTEM','Seeded when prompt versioning was introduced',? FROM prompt",
+    ).run(seedNow);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(16,?)").run(seedNow);
+  }
+  const afterSixteen = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterSixteen < 17) {
+    // Per-run cost was only recoverable by parsing every agent_run_event row.
+    // These columns make "what did this run cost" a single query, which is the
+    // precondition for enforcing — and proving — the run budgets.
+    db.exec(`
+      ALTER TABLE agent_run ADD COLUMN input_tokens INTEGER;
+      ALTER TABLE agent_run ADD COLUMN output_tokens INTEGER;
+      ALTER TABLE agent_run ADD COLUMN cached_input_tokens INTEGER;
+      ALTER TABLE agent_run ADD COLUMN tool_calls INTEGER;
+      ALTER TABLE agent_run ADD COLUMN tool_output_bytes INTEGER;
+      ALTER TABLE agent_run ADD COLUMN stop_reason TEXT;
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(17,?)").run(new Date().toISOString());
+  }
+  const afterSeventeen = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+  if (afterSeventeen < 18) {
+    // The repo-level agent instruction files, owned here rather than in the
+    // working tree. They are still written to disk for each run — a provider
+    // CLI loads CLAUDE.md/AGENTS.md itself, and only a real file reaches
+    // subagents, survives compaction, and participates in nested loading. The
+    // database is the source of truth; the files are its projection.
+    db.exec(`
+      ALTER TABLE workspace ADD COLUMN claude_md TEXT NOT NULL DEFAULT '';
+      ALTER TABLE workspace ADD COLUMN agents_md TEXT NOT NULL DEFAULT '';
+      CREATE TABLE workspace_revision (
+        id INTEGER PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        field TEXT NOT NULL CHECK(field IN ('claudeMd','agentsMd','description')),
+        content TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX workspace_revision_idx ON workspace_revision(workspace_id, field, id);
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(18,?)").run(new Date().toISOString());
+  }
 }
+
+const afterEighteen = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterEighteen < 19) {
+  // A run parked on WAITING_HUMAN is not stopped, so the reason it is waiting
+  // does not belong in `stop_reason` — that field means "why this run ended",
+  // and overloading it hid the explanation exactly where it mattered most.
+  db.exec(`
+    ALTER TABLE suite_pipeline_run ADD COLUMN wait_reason TEXT;
+    ALTER TABLE pipeline_run ADD COLUMN wait_reason TEXT;
+  `);
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(19,?)").run(new Date().toISOString());
+}
+
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -513,22 +595,25 @@ const recoverAbandonedRuns=db.transaction(()=>{
 });
 recoverAbandonedRuns();
 
-type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string };
+/** What a finished run spent, as recorded by the runner. */
+export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null }
+
+type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string; claude_md: string; agents_md: string };
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
 type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; default_provider?: string | null; default_model?: string | null };
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number; parent_prompt_id: number | null; child_order: number };
 type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
 type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; step_order: number; updated_at: string };
-type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; pipeline_run_id: string | null };
+type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null; pipeline_run_id: string | null };
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
-type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
+type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
   return value !== null && value !== undefined && isProviderId(value) ? value : null;
 }
 
 function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): PromptPipelineRule {
-  if (row === undefined) return defaultPromptPipelineRule(promptId);
+  if (row === undefined) return defaultPromptPipelineRule(promptId, settings.pipelinePolicy);
   const onDone = isOnDoneAction(row.on_done) ? row.on_done : "continue";
   const onBlocked = isOnBlockedAction(row.on_blocked) ? row.on_blocked : "wait";
   return {
@@ -577,6 +662,7 @@ function pipelineRunDto(row: PipelineRunRow): SuitePipelineRun {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     stopReason: row.stop_reason,
+    waitReason: row.wait_reason ?? null,
     pipelineRunId: row.pipeline_run_id ?? null,
   };
 }
@@ -594,6 +680,7 @@ function namedPipelineRunDto(row: NamedPipelineRunRow): PipelineRun {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     stopReason: row.stop_reason,
+    waitReason: row.wait_reason ?? null,
   };
 }
 
@@ -612,7 +699,7 @@ function optionalModelField(value: unknown, field: string): string | null {
   return text === "" ? null : requireText(text, field, 200);
 }
 
-const workspaceDto = (row: WorkspaceRow): WorkspaceRecord => ({ id: row.id, name: row.name, description: row.description, workDirectory: row.work_directory, workDirectoryExists: existsSync(row.work_directory), createdAt: row.created_at, updatedAt: row.updated_at });
+const workspaceDto = (row: WorkspaceRow): WorkspaceRecord => ({ id: row.id, name: row.name, description: row.description, workDirectory: row.work_directory, workDirectoryExists: existsSync(row.work_directory), createdAt: row.created_at, updatedAt: row.updated_at, claudeMd: row.claude_md ?? "", agentsMd: row.agents_md ?? "" });
 const promptDto = (row: PromptRow): PromptRecord => ({ id: row.id, suiteId: row.suite_id, title: row.title, content: row.content, sortOrder: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at, externalKey: row.external_key, status: row.status, completedAt: row.completed_at, result: row.result, isGate: row.is_gate === 1, parentPromptId: row.parent_prompt_id, childOrder: row.child_order });
 
 function handoffDto(row:Record<string,unknown>):HandoffRecord {
@@ -731,7 +818,16 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:target,result,createdAt:now};
 }));
 
-const DECOMPOSE_MAX_DEPTH=2;
+/**
+ * Remarks rendered into an agent's context. Newest first, so a resumed run sees
+ * the resume brief and the last blocker rather than an unbounded transcript of
+ * every prior attempt.
+ */
+const CONTEXT_REMARK_LIMIT=8;
+/** Evidence budget for a handoff dossier, in bytes. */
+const HANDOFF_EVENT_BUDGET_BYTES=16000;
+
+export const DECOMPOSE_MAX_DEPTH=2;
 const DECOMPOSE_MIN_CHILDREN=2;
 const DECOMPOSE_MAX_CHILDREN=12;
 
@@ -802,14 +898,42 @@ export const workspaces = {
       .run(requireText(input.name, "name", 120), requireText(input.description ?? "", "description", 64000, true), directory(input.workDirectory), now, now);
     return this.get(Number(result.lastInsertRowid));
   }); },
-  update(id: number, input: Record<string, unknown>): WorkspaceRecord { return sqliteGuard(() => {
+  update(id: number, input: Record<string, unknown>): WorkspaceRecord { return sqliteGuard(() => db.transaction(() => {
     const current = this.get(id);
-    db.prepare("UPDATE workspace SET name=?, description=?, work_directory=?, updated_at=? WHERE id=?").run(
-      input.name === undefined ? current.name : requireText(input.name, "name", 120),
-      input.description === undefined ? current.description : requireText(input.description, "description", 64000, true),
-      input.workDirectory === undefined ? current.workDirectory : directory(input.workDirectory), new Date().toISOString(), id);
+    const next = {
+      name: input.name === undefined ? current.name : requireText(input.name, "name", 120),
+      description: input.description === undefined ? current.description : requireText(input.description, "description", 64000, true),
+      workDirectory: input.workDirectory === undefined ? current.workDirectory : directory(input.workDirectory),
+      claudeMd: input.claudeMd === undefined ? current.claudeMd : requireText(input.claudeMd, "claudeMd", 64000, true),
+      agentsMd: input.agentsMd === undefined ? current.agentsMd : requireText(input.agentsMd, "agentsMd", 64000, true),
+    };
+    // Agents may rewrite these, so the text they replace is kept the way a
+    // prompt's is. An instruction file edited badly is as costly as a prompt
+    // edited badly, and neither is recoverable from git here.
+    const actor = input.actorType === "AGENT" ? "AGENT" : input.actorType === "SYSTEM" ? "SYSTEM" : "USER";
+    const reason = typeof input.reason === "string" ? input.reason.slice(0, 500) : "";
+    const snapshot = db.prepare("INSERT INTO workspace_revision(workspace_id,field,content,actor_type,reason,created_at) VALUES(?,?,?,?,?,?)");
+    const now = new Date().toISOString();
+    for (const field of ["description", "claudeMd", "agentsMd"] as const) {
+      if (next[field] !== current[field]) snapshot.run(id, field, current[field], actor, reason, now);
+    }
+    db.prepare("UPDATE workspace SET name=?, description=?, work_directory=?, claude_md=?, agents_md=?, updated_at=? WHERE id=?")
+      .run(next.name, next.description, next.workDirectory, next.claudeMd, next.agentsMd, now, id);
     return this.get(id);
-  }); },
+  })()); },
+  /** Newest first. A revision holds the text as it was *before* that edit. */
+  workspaceRevisions(id: number, field?: string): WorkspaceRevision[] {
+    this.get(id);
+    const sql = "SELECT id,workspace_id workspaceId,field,content,actor_type actorType,reason,created_at createdAt FROM workspace_revision WHERE workspace_id=?";
+    return (field === undefined
+      ? db.prepare(`${sql} ORDER BY id DESC`).all(id)
+      : db.prepare(`${sql} AND field=? ORDER BY id DESC`).all(id, field)) as WorkspaceRevision[];
+  },
+  restoreWorkspaceRevision(id: number, revisionId: number): WorkspaceRecord {
+    const revision = db.prepare("SELECT field,content FROM workspace_revision WHERE id=? AND workspace_id=?").get(revisionId, id) as { field: string; content: string } | undefined;
+    if (!revision) throw new WorkspaceError(404, "not_found", "Revision not found for this workspace");
+    return this.update(id, { [revision.field]: revision.content, reason: `Restored revision ${revisionId}` });
+  },
   remove(id: number): void { if (db.prepare("DELETE FROM workspace WHERE id=?").run(id).changes === 0) throw new WorkspaceError(404, "not_found", "Workspace not found"); },
   tree(id: number): WorkspaceTree {
     const workspace = this.get(id);
@@ -826,7 +950,7 @@ export const workspaces = {
     if(!row) throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
     const dependencies=db.prepare(`SELECT p.external_key externalKey,p.title,p.status,p.result FROM prompt_dependency d JOIN prompt p ON p.id=d.depends_on_prompt_id WHERE d.prompt_id=? ORDER BY p.external_key`).all(promptId) as AgentPromptContext["dependencies"];
     const gate=db.prepare("SELECT code,name,description FROM program_gate WHERE prompt_id=?").get(promptId) as AgentPromptContext["gate"]|undefined;
-    const history=this.promptHistory(promptId);
+    const history=this.promptHistory(promptId,CONTEXT_REMARK_LIMIT);
     return {workspace:{id:Number(row.context_workspace_id),name:String(row.workspace_name),workDirectory:String(row.work_directory),description:String(row.workspace_description)},program:{id:Number(row.context_program_id),externalKey:row.program_external_key as string|null,name:String(row.program_name),overview:String(row.program_overview)},suite:{id:Number(row.context_suite_id),externalKey:row.suite_external_key as string|null,name:String(row.suite_name),overview:String(row.suite_overview)},prompt:promptDto(row),dependencies,gate:gate??null,history:{remarks:[...history.remarks].reverse() as PromptRemark[],events:[...history.events].reverse() as PromptStatusEvent[]},clarifications:this.clarifications(promptId)};
   },
   createChild(kind: "program"|"suite"|"prompt", parentId: number, input: Record<string, unknown>): unknown { return sqliteGuard(() => {
@@ -835,12 +959,36 @@ export const workspaces = {
     if (kind === "suite") { const parent=db.prepare("SELECT workspace_id FROM program WHERE id=?").get(parentId) as {workspace_id:number}|undefined; if(!parent) throw new WorkspaceError(404,"not_found","Program not found"); const r=db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.name,"name",120),requireText(input.overview??"","overview",10000,true),nextOrder("suite","program_id",parentId),now,now); return this.tree(parent.workspace_id).programs.flatMap(x=>x.suites).find(x=>x.id===Number(r.lastInsertRowid)); }
     const parent=db.prepare("SELECT g.workspace_id FROM suite s JOIN program g ON g.id=s.program_id WHERE s.id=?").get(parentId) as {workspace_id:number}|undefined; if(!parent) throw new WorkspaceError(404,"not_found","Suite not found"); const r=db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.title,"title",160),requireText(input.content,"content",64000),nextOrder("prompt","suite_id",parentId),now,now); return this.tree(parent.workspace_id).programs.flatMap(x=>x.suites).flatMap(x=>x.prompts).find(x=>x.id===Number(r.lastInsertRowid));
   }); },
-  updateChild(kind: "program"|"suite"|"prompt", id:number, input:Record<string,unknown>): unknown { return sqliteGuard(() => {
+  updateChild(kind: "program"|"suite"|"prompt", id:number, input:Record<string,unknown>): unknown { return sqliteGuard(() => db.transaction(() => {
     const table=kind; const row=db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) as Record<string,unknown>|undefined; if(!row) throw new WorkspaceError(404,"not_found",`${kind} not found`); const now=new Date().toISOString();
-    if(kind==="prompt") { db.prepare("UPDATE prompt SET title=?,content=?,updated_at=? WHERE id=?").run(input.title===undefined?row.title:requireText(input.title,"title",160),input.content===undefined?row.content:requireText(input.content,"content",64000),now,id); }
+    if(kind==="prompt") {
+      const title=input.title===undefined?String(row.title):requireText(input.title,"title",160);
+      const content=input.content===undefined?String(row.content):requireText(input.content,"content",64000);
+      // Snapshot the outgoing text before it is overwritten, so a bad edit is
+      // recoverable from the database rather than from a file backup.
+      if(title!==row.title||content!==row.content){
+        const actor=typeof input.actorType==="string"&&input.actorType==="SYSTEM"?"SYSTEM":"USER";
+        const reason=typeof input.reason==="string"?input.reason.slice(0,500):"";
+        db.prepare("INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) VALUES(?,?,?,?,?,?)").run(id,row.title,row.content,actor,reason,now);
+      }
+      db.prepare("UPDATE prompt SET title=?,content=?,updated_at=? WHERE id=?").run(title,content,now,id);
+    }
     else { db.prepare(`UPDATE ${table} SET name=?,overview=?,updated_at=? WHERE id=?`).run(input.name===undefined?row.name:requireText(input.name,"name",120),input.overview===undefined?row.overview:requireText(input.overview,"overview",10000,true),now,id); }
     return db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
-  }); },
+  })()); },
+  /** Newest first. The revision holds the text as it was *before* that edit. */
+  promptRevisions(promptId:number):Array<Record<string,unknown>> {
+    if(!db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId))throw new WorkspaceError(404,"not_found","Prompt not found");
+    return db.prepare("SELECT id,prompt_id promptId,title,content,actor_type actorType,reason,created_at createdAt FROM prompt_revision WHERE prompt_id=? ORDER BY id DESC").all(promptId) as Array<Record<string,unknown>>;
+  },
+  /** Restores a revision's text, recording the current text as a new revision. */
+  restorePromptRevision(promptId:number,revisionId:number):unknown {
+    return this.updateChild("prompt",promptId,(()=>{
+      const revision=db.prepare("SELECT title,content FROM prompt_revision WHERE id=? AND prompt_id=?").get(revisionId,promptId) as {title:string;content:string}|undefined;
+      if(!revision)throw new WorkspaceError(404,"not_found","Revision not found for this prompt");
+      return {title:revision.title,content:revision.content,reason:`Restored revision ${revisionId}`};
+    })());
+  },
   removeChild(kind:"program"|"suite"|"prompt",id:number):void { if(db.prepare(`DELETE FROM ${kind} WHERE id=?`).run(id).changes===0) throw new WorkspaceError(404,"not_found",`${kind} not found`); },
   importProgram(workspaceId:number,pack:ImportedProgram):WorkspaceTree { return sqliteGuard(()=>{ importProgramTransaction(workspaceId,pack); return this.tree(workspaceId); }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
@@ -851,14 +999,21 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt);
   }); },
   markAgentRunRunning(runId:string):void { db.prepare("UPDATE agent_run SET state='RUNNING' WHERE id=? AND state='STARTING'").run(runId); },
-  finishAgentRun(runId:string,state:string,answer=""):void { sqliteGuard(()=>db.transaction(()=>{
+  finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;if(!run)return;
-    const now=new Date().toISOString();db.prepare("UPDATE agent_run SET state=?,ended_at=? WHERE id=?").run(state.toUpperCase(),now,runId);
+    const now=new Date().toISOString();
+    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=? WHERE id=?")
+      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};
     if(prompt.status==="IN_PROGRESS"){
-      const reason=`Agent process ended ${state} without posting the required DONE or BLOCKED status.`;
+      // A budget stop is deliberate and resumable, so it must not read as a
+      // crash — `processFailureBlocked` treats "Agent process ended" as a hard
+      // failure that terminates the pipeline, and this is not one.
+      const reason=metrics?.stopReason
+        ? `Run budget exhausted (${metrics.stopReason}). The run was stopped before it could post a status. Its work so far is in the tree and in this item's remarks; resume from there rather than restarting.`
+        : `Agent process ended ${state} without posting the required DONE or BLOCKED status.`;
       db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,run.prompt_id);
       db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);
@@ -868,7 +1023,21 @@ export const workspaces = {
   addAgentRemark(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentRemarkTransaction(runId,input)); },
   updateAgentStatus(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentStatusTransaction(runId,input)); },
   decomposePrompt(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentDecomposeTransaction(runId,input)); },
-  promptHistory(promptId:number):{events:unknown[];remarks:unknown[];runs:unknown[]} { const exists=db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId);if(!exists)throw new WorkspaceError(404,"not_found","Prompt not found");return{events:db.prepare("SELECT id,prompt_id promptId,run_id runId,previous_status previousStatus,new_status newStatus,reason,verification_summary verificationSummary,actor_type actorType,created_at createdAt FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC").all(promptId),remarks:db.prepare("SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt FROM prompt_remark WHERE prompt_id=? ORDER BY id DESC").all(promptId),runs:db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC").all(promptId)}; },
+  /**
+   * Newest first, unbounded — the UI wants the whole record.
+   *
+   * `remarkLimit` bounds it for the callers that pay per character: an
+   * agent's context and a handoff dossier. Without it the most-retried work
+   * items get the biggest prompts, so failure makes the next attempt more
+   * expensive and more distracting than the first.
+   */
+  promptHistory(promptId:number,remarkLimit?:number):{events:unknown[];remarks:unknown[];runs:unknown[]} {
+    const exists=db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId);if(!exists)throw new WorkspaceError(404,"not_found","Prompt not found");
+    const remarks=remarkLimit===undefined
+      ?db.prepare("SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt FROM prompt_remark WHERE prompt_id=? ORDER BY id DESC").all(promptId)
+      :db.prepare("SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt FROM prompt_remark WHERE prompt_id=? ORDER BY id DESC LIMIT ?").all(promptId,remarkLimit);
+    return{events:db.prepare("SELECT id,prompt_id promptId,run_id runId,previous_status previousStatus,new_status newStatus,reason,verification_summary verificationSummary,actor_type actorType,created_at createdAt FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC").all(promptId),remarks,runs:db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC").all(promptId)};
+  },
   humanInputRequests():HumanInputRequest[] {
     const rows=db.prepare(`SELECT p.id promptId,g.workspace_id workspaceId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.status='BLOCKED' OR EXISTS(SELECT 1 FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='HUMAN_RESPONSE') ORDER BY p.updated_at DESC`).all() as Array<{promptId:number;workspaceId:number}>;
     return rows.map(({promptId,workspaceId})=>{const prompt=this.resolvePrompt(workspaceId,promptId);const workspace=this.get(workspaceId);const history=this.promptHistory(promptId);const remarks=history.remarks as PromptRemark[];return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},latestBlocker:remarks.find(item=>item.kind==="BLOCKER")??null,remarks,events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),currentRun:this.latestRunActivity(promptId)};});
@@ -881,11 +1050,14 @@ export const workspaces = {
    */
   usageReport(workspaceId?:number):UsageReport {
     if(workspaceId!==undefined)this.get(workspaceId);
-    const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,s.id suiteId,COALESCE(s.name,'') suiteName,g.id programId,COALESCE(g.name,'') programName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id WHERE (? IS NULL OR r.workspace_id=?) ORDER BY r.started_at DESC`).all(workspaceId??null,workspaceId??null) as Array<{id:string;workspaceId:number;workspaceName:string;promptId:number|null;promptKey:string|null;promptTitle:string;suiteId:number|null;suiteName:string;programId:number|null;programName:string;provider:string;model:string|null;role:string;state:string;startedAt:string;endedAt:string|null}>;
+    const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,s.id suiteId,COALESCE(s.name,'') suiteName,g.id programId,COALESCE(g.name,'') programName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,r.input_tokens inputTokens,r.output_tokens outputTokens,r.cached_input_tokens cachedInputTokens FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id WHERE (? IS NULL OR r.workspace_id=?) ORDER BY r.started_at DESC`).all(workspaceId??null,workspaceId??null) as Array<{id:string;workspaceId:number;workspaceName:string;promptId:number|null;promptKey:string|null;promptTitle:string;suiteId:number|null;suiteName:string;programId:number|null;programName:string;provider:string;model:string|null;role:string;state:string;startedAt:string;endedAt:string|null;inputTokens:number|null;outputTokens:number|null;cachedInputTokens:number|null}>;
     const eventsStmt=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id");
     const sessions:SessionUsageRow[]=rows.map(row=>{
-      const events=(eventsStmt.all(row.id) as Array<{event_json:string}>).map(entry=>JSON.parse(entry.event_json) as NormalizedEvent);
-      const usage=usageFromEvents(events);
+      // Runs finished since usage was persisted answer from their own columns;
+      // older ones still get it rebuilt from the transcript.
+      const usage=row.inputTokens===null
+        ?usageFromEvents((eventsStmt.all(row.id) as Array<{event_json:string}>).map(entry=>JSON.parse(entry.event_json) as NormalizedEvent))
+        :{inputTokens:row.inputTokens,outputTokens:row.outputTokens??0,cachedInputTokens:row.cachedInputTokens??0,reasoningOutputTokens:0,totalTokens:row.inputTokens+(row.outputTokens??0)};
       const cost=estimateCost(usage,row.provider,row.model);
       return{id:row.id,workspaceId:row.workspaceId,workspaceName:row.workspaceName,promptId:row.promptId,promptKey:row.promptKey,promptTitle:row.promptTitle,suiteId:row.suiteId,suiteName:row.suiteName,programId:row.programId,programName:row.programName,provider:row.provider,model:row.model,role:isRunRole(row.role)?row.role:"execute",state:row.state,startedAt:row.startedAt,endedAt:row.endedAt,usage,cost};
     });
@@ -957,7 +1129,7 @@ export const workspaces = {
       }
       for(const item of prompts) item.children.sort((a,b)=>a.prompt.childOrder-b.prompt.childOrder);
       const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];const defaultsRow=suiteDefaults.get(suite.id) as {defaultProvider:string|null;defaultModel:string|null};suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:allPrompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null,pipeline:{defaults:{suiteId:suite.id,defaultProvider:asProviderId(defaultsRow.defaultProvider),defaultModel:defaultsRow.defaultModel},active:(()=>{const row=activePipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})(),latest:(()=>{const row=latestPipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})()}});}}
-    return{generatedAt:new Date().toISOString(),suites};
+    return{generatedAt:new Date().toISOString(),suites,policy:settings.pipelinePolicy};
   },
   /* ---------------------------------------------------------------- */
   /* Suite verification                                                 */
@@ -1098,9 +1270,20 @@ export const workspaces = {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
     const prompts=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts??[];
     const item=findOperationsPrompt(prompts,promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),directRetry:this.canDirectRetry(promptId)};
+    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),directRetry:this.canDirectRetry(promptId),producedWork:this.promptProducedWork(promptId)};
   },
-  recordAgentEvent(runId:string,event:NormalizedEvent):void { db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp); },
+  /**
+   * The per-second "running" heartbeat is a live-UI signal, not a record: it
+   * accounted for 79k rows and 24 MB here while telling the transcript nothing
+   * a reader or a replay needs. It still reaches clients over the socket; only
+   * the persisted copy is dropped. Terminal status events are kept, so usage
+   * stays recoverable from the transcript for runs that predate the columns on
+   * `agent_run`.
+   */
+  recordAgentEvent(runId:string,event:NormalizedEvent):void {
+    if(event.type==="status"&&event.payload.state==="running")return;
+    db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp);
+  },
   clarifications(promptId:number):ClarificationExchange[] { return db.prepare("SELECT id,prompt_id promptId,question,answer,provider,model,state,created_at createdAt,answered_at answeredAt FROM clarification_exchange WHERE prompt_id=? ORDER BY id").all(promptId) as ClarificationExchange[]; },
   beginClarification(promptId:number,questionValue:unknown,provider:string,model:string|null):number { const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:string}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");if(prompt.status!=="BLOCKED")throw new WorkspaceError(409,"prompt_not_blocked","Clarification is only available while a prompt is blocked");const question=requireText(questionValue,"question",10000);return Number(db.prepare("INSERT INTO clarification_exchange(prompt_id,question,provider,model,state,created_at) VALUES(?,?,?,?, 'RUNNING',?)").run(promptId,question,provider,model,new Date().toISOString()).lastInsertRowid); },
   finishClarification(id:number,state:"DONE"|"INTERRUPTED"|"ERROR",answer:string|null):void { db.prepare("UPDATE clarification_exchange SET state=?,answer=?,answered_at=? WHERE id=?").run(state,answer?.trim()||null,new Date().toISOString(),id); },
@@ -1123,6 +1306,12 @@ export const workspaces = {
       const event=JSON.parse(row.event_json) as NormalizedEvent;
       return event.type==="tool_use"||event.type==="tool_result";
     });
+  },
+  /** Whether the latest developer run on this prompt made any tool call. */
+  promptProducedWork(promptId:number):boolean {
+    let runId:string;
+    try { runId=this.latestExecuteRunId(promptId); } catch { return false; }
+    return this.runProducedWork(runId);
   },
   canDirectRetry(promptId:number):boolean {
     let runId:string;
@@ -1238,7 +1427,7 @@ export const workspaces = {
     if(pipelineId!==undefined){
       const row=db.prepare("SELECT * FROM pipeline_step WHERE pipeline_id=? AND prompt_id=?").get(pipelineId,promptId) as PipelineStepRow|undefined;
       if(row!==undefined) return pipelineStepDto(promptId,row);
-      return {...defaultPromptPipelineRule(promptId),enabled:false};
+      return {...defaultPromptPipelineRule(promptId, settings.pipelinePolicy),enabled:false};
     }
     return pipelineRuleDto(promptId,db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?").get(promptId) as PipelineRuleRow|undefined);
   },
@@ -1613,6 +1802,7 @@ export const workspaces = {
     playModel?:string|null;
     endedAt?:string|null;
     stopReason?:string|null;
+    waitReason?:string|null;
   }):SuitePipelineRun {
     const current=this.pipelineById(id);
     if(!current)throw new WorkspaceError(404,"not_found","Pipeline run not found");
@@ -1626,9 +1816,10 @@ export const workspaces = {
       playModel:patch.playModel===undefined?current.playModel:patch.playModel,
       endedAt:patch.endedAt===undefined?current.endedAt:patch.endedAt,
       stopReason:patch.stopReason===undefined?current.stopReason:patch.stopReason,
+      waitReason:patch.waitReason===undefined?current.waitReason:patch.waitReason,
     };
-    db.prepare("UPDATE suite_pipeline_run SET state=?,current_prompt_id=?,current_run_id=?,attempt=?,recovering=?,play_provider=?,play_model=?,ended_at=?,stop_reason=? WHERE id=?")
-      .run(next.state,next.currentPromptId,next.currentRunId,next.attempt,next.recovering?1:0,next.playProvider,next.playModel,next.endedAt,next.stopReason,id);
+    db.prepare("UPDATE suite_pipeline_run SET state=?,current_prompt_id=?,current_run_id=?,attempt=?,recovering=?,play_provider=?,play_model=?,ended_at=?,stop_reason=?,wait_reason=? WHERE id=?")
+      .run(next.state,next.currentPromptId,next.currentRunId,next.attempt,next.recovering?1:0,next.playProvider,next.playModel,next.endedAt,next.stopReason,next.waitReason,id);
     return this.pipelineById(id)!;
   },
 
@@ -1838,6 +2029,7 @@ export const workspaces = {
     playModel?:string|null;
     endedAt?:string|null;
     stopReason?:string|null;
+    waitReason?:string|null;
   }):PipelineRun {
     const current=this.namedPipelineRunById(id);
     if(!current) throw new WorkspaceError(404,"not_found","Pipeline run not found");
@@ -1849,9 +2041,10 @@ export const workspaces = {
       playModel:patch.playModel===undefined?current.playModel:patch.playModel,
       endedAt:patch.endedAt===undefined?current.endedAt:patch.endedAt,
       stopReason:patch.stopReason===undefined?current.stopReason:patch.stopReason,
+      waitReason:patch.waitReason===undefined?current.waitReason:patch.waitReason,
     };
-    db.prepare("UPDATE pipeline_run SET state=?,current_suite_id=?,current_suite_run_id=?,play_provider=?,play_model=?,ended_at=?,stop_reason=? WHERE id=?")
-      .run(next.state,next.currentSuiteId,next.currentSuiteRunId,next.playProvider,next.playModel,next.endedAt,next.stopReason,id);
+    db.prepare("UPDATE pipeline_run SET state=?,current_suite_id=?,current_suite_run_id=?,play_provider=?,play_model=?,ended_at=?,stop_reason=?,wait_reason=? WHERE id=?")
+      .run(next.state,next.currentSuiteId,next.currentSuiteRunId,next.playProvider,next.playModel,next.endedAt,next.stopReason,next.waitReason,id);
     return this.namedPipelineRunById(id)!;
   },
 
@@ -1899,17 +2092,20 @@ export const workspaces = {
     return this.handoffById(id)!;
   },
   handoffDossier(workspaceId:number,promptId:number,sourceRunId:string):string {
-    const context=this.agentContext(workspaceId,promptId);const history=this.promptHistory(promptId);
-    const source=(history.runs as Array<Record<string,unknown>>).find(run=>run.id===sourceRunId);
+    const context=this.agentContext(workspaceId,promptId);
+    const source=(this.promptHistory(promptId,CONTEXT_REMARK_LIMIT).runs as Array<Record<string,unknown>>).find(run=>run.id===sourceRunId);
     if(!source)throw new WorkspaceError(404,"not_found","Source run not found");
     const events=(db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id").all(sourceRunId) as Array<{event_json:string}>).map(row=>JSON.parse(row.event_json) as NormalizedEvent);
     const candidates=events.filter(event=>event.type!=="status"&&event.type!=="assistant_text"||event.type==="assistant_text"&&event.payload.kind==="message").slice(-120).map(handoffEvent);
     // Copilot accepts its headless prompt through `-p`. Linux caps one argv
     // entry at about 128 KiB even when ARG_MAX is much larger, so retain the
     // newest useful evidence within a conservative transport budget.
+    //
+    // `history` is deliberately absent: `context` already carries this prompt's
+    // remarks and status events, and including both serialised every one twice.
     const compact:Record<string,unknown>[]=[];let eventBytes=0;
-    for(let index=candidates.length-1;index>=0;index--){const event=candidates[index]!;const bytes=Buffer.byteLength(JSON.stringify(event));if(eventBytes+bytes>70000)break;compact.unshift(event);eventBytes+=bytes;}
-    return JSON.stringify({context,sourceRun:source,sourceEvents:compact,history},null,2);
+    for(let index=candidates.length-1;index>=0;index--){const event=candidates[index]!;const bytes=Buffer.byteLength(JSON.stringify(event));if(eventBytes+bytes>HANDOFF_EVENT_BUDGET_BYTES)break;compact.unshift(event);eventBytes+=bytes;}
+    return JSON.stringify({context,sourceRun:source,sourceEvents:compact},null,2);
   },
   preparePromptForSuccessor(promptId:number,handoffId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");

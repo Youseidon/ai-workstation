@@ -17,6 +17,8 @@ import {
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AskChip } from "@/components/AgentDock";
 import { SettingRow } from "@/components/SettingField";
+import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
+import { GROUP_BLURB, GROUP_TITLE } from "@/lib/settingsGroups";
 import { PageChrome } from "@/components/shell/chrome";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -73,7 +75,7 @@ export function AgentsView() {
   const { providers, runs, items, lastRun, connection, interrupt, refreshProviders } =
     useAgentConsole();
   const credits = useProviderUsage(true);
-  const { snapshot, saving, save, reset } = useSettings(SERVER_URL);
+  const { snapshot, saving, save, reset, reload } = useSettings(SERVER_URL);
   const models = useModelSelection(providers);
   const dialogs = useDialogs();
   const [drafts, setDrafts] = useState<Record<string, SettingValue>>({});
@@ -109,8 +111,15 @@ export function AgentsView() {
     });
   }, [drafts, snapshot]);
 
-  const generalFields = snapshot?.fields.filter((field) => field.group === "General") ?? [];
-  const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
+  /*
+   * Every group that is not a provider's own settings. Derived from
+   * SETTINGS_GROUP rather than listed by hand: "Run budgets" and "Pipeline
+   * policy" were both invisible here because the page filtered for "General"
+   * alone, so a new group silently had nowhere to render.
+   */
+  const providerGroups = new Set(Object.values(SETTINGS_GROUP));
+  const sharedGroups = (snapshot?.groups ?? []).filter((group) => !providerGroups.has(group));
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -204,60 +213,35 @@ export function AgentsView() {
           </p>
         </header>
 
-        {generalFields.length > 0 && (
-          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
-            <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Runtime</h2>
-            <p className="mt-1 text-[11px] text-fg-dim">
-              Shared with every provider. Host access is required for docker compose and other host sockets.
-            </p>
-            {generalFields.map((field) => (
-              <SettingRow
-                key={field.key}
-                field={field}
-                draft={drafts[field.key]}
-                disabled={saving}
-                onChange={(key, value) => {
-                  setNotice(null);
-                  setDrafts((current) => ({ ...current, [key]: value }));
-                }}
-                onRevert={(key) => {
-                  setNotice(null);
-                  void reset([key]);
-                  setDrafts((current) => {
-                    const next = { ...current };
-                    delete next[key];
-                    return next;
-                  });
-                }}
-              />
-            ))}
-            {generalDirty.length > 0 && (
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setDrafts((current) => {
-                      const next = { ...current };
-                      for (const key of generalDirty) delete next[key];
-                      return next;
-                    });
-                  }}
-                  disabled={saving}
-                >
-                  Discard
-                </Button>
-                <Button
-                  size="sm"
-                  variant="success"
-                  onClick={() => void saveDrafts(generalDirty)}
-                  loading={saving}
-                >
-                  Save {generalDirty.length}
-                </Button>
-              </div>
-            )}
-          </section>
+        {/* Shared settings open as dialogs rather than sitting inline, so the
+            same form can be reached from the page each group actually governs. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {sharedGroups.map((group) => {
+            const count = snapshot?.fields.filter((field) => field.group === group).length ?? 0;
+            const pending = dirtyKeys.filter((key) =>
+              snapshot?.fields.some((field) => field.key === key && field.group === group),
+            ).length;
+            return (
+              <Button
+                key={group}
+                size="sm"
+                variant="secondary"
+                onClick={() => setOpenGroup(group)}
+                title={GROUP_BLURB[group]}
+              >
+                {GROUP_TITLE[group] ?? group}
+                <span className="ml-1.5 text-fg-dim">{pending > 0 ? `${pending} unsaved` : count}</span>
+              </Button>
+            );
+          })}
+        </div>
+
+        {openGroup !== null && (
+          <SettingsGroupDialog
+            group={openGroup}
+            onClose={() => setOpenGroup(null)}
+            onSaved={() => void reload()}
+          />
         )}
 
         <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">

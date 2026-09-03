@@ -1,14 +1,15 @@
 import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
-import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner } from "./agentContext.ts";
+import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
 import { config } from "./config.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
+import { materialize, readBack } from "./workspaceInstructions.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 
 const CONSULT_LIMIT = 3;
 
@@ -134,7 +135,25 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       }
       activeContextRunId = plannedRunId;
       const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
-      resolvedPrompt = `Execute saved work item ${record.externalKey ?? record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
+      const depth = workspaces.decomposeDepth(promptId);
+      // The context is inlined rather than fetched. Handing it over as a tool
+      // result cost a turn before any work started, put it where it could not
+      // serve as a cached prompt prefix, and led agents to fetch it more than
+      // once and re-read a saved copy — three copies of the same text in one
+      // transcript. The endpoint stays for refreshes and for the Progress API.
+      resolvedPrompt = [
+        `# Execute saved work item ${record.externalKey ?? record.title}`,
+        "",
+        "The context below is authoritative and complete. Do not search for a Markdown prompt file and never modify SQLite directly. Post remarks through the Progress API as you verify each slice, and post a final DONE or BLOCKED status before finishing.",
+        "",
+        `Re-read this context at any time with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}`,
+        "",
+        "---",
+        "",
+        contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
+        "",
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH }),
+      ].join("\n");
     }
   } else {
     resolvedPrompt = prompt?.trim() ?? "";
@@ -145,6 +164,9 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
 
   let clarificationAnswer = "";
   let executionAnswer = "";
+  // The provider CLI reads these off disk before it reads anything we send, so
+  // they have to be in place before the process starts.
+  materialize(workspace);
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),
@@ -153,6 +175,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     model,
     role: "execute",
     permissionOverride: "inherit",
+    budgetDepth: savedPrompt === null ? 0 : workspaces.decomposeDepth(savedPrompt.id),
     onEvent: (event) => {
       if (event.type === "assistant_text" && event.payload.kind === "message") {
         if (clarificationId !== null) clarificationAnswer += event.payload.text;
@@ -165,11 +188,11 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       if (activeContextRunId !== null) workspaces.recordAgentEvent(activeContextRunId, event);
       runHub.event(plannedRunId, event);
     },
-    onEnd: (runId, state) => {
+    onEnd: (runId, state, metrics) => {
       const endedPromptId = savedPrompt?.id ?? promptId;
       const endedWorkspaceId = workspace.id;
       if (activeContextRunId !== null) {
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer);
+        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics);
         runContexts.complete(activeContextRunId);
         activeContextRunId = null;
       }
@@ -181,6 +204,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         );
       }
       runHub.end(runId, state);
+      if (mode === "execute") readBack(endedWorkspaceId);
       if (mode === "execute" && endedPromptId !== undefined) {
         void pipelineScheduler
           .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
@@ -270,6 +294,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
   }
 
+  materialize(workspace);
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),
@@ -282,8 +307,8 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
       workspaces.recordAgentEvent(plannedRunId, event);
       runHub.event(plannedRunId, event);
     },
-    onEnd: (runId, state) => {
-      workspaces.finishAgentRun(runId, state);
+    onEnd: (runId, state, metrics) => {
+      workspaces.finishAgentRun(runId, state, "", metrics);
       runContexts.complete(runId);
       runHub.end(runId, state);
     },
@@ -338,6 +363,7 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
 
   // The agent's closing message is the report; keep the last full one.
   let report = "";
+  materialize(workspace);
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),

@@ -1,3 +1,4 @@
+import { emptyBudgetSnapshot } from "./runner.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -5,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { promptNeedsHandoff, type ProgramRecord, type PromptPipelineRule, type PromptRecord, type ProviderId, type SuiteRecord } from "@agent-console/shared";
+import { DEFAULT_PIPELINE_POLICY, promptNeedsHandoff, type ProgramRecord, type PromptPipelineRule, type PromptRecord, type ProviderId, type SuiteRecord } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
 import { pipelineScheduler, resolveExecuteTarget, setPipelineStationStarter } from "./pipelineScheduler.ts";
+import { resetSettings, settings, updateSettings } from "./settings.ts";
 import { runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import type { StartExecuteArgs } from "./runService.ts";
@@ -374,8 +376,48 @@ test("retry exhaustion on a human BLOCKED waits instead of stopping", async () =
     await endStation({ runId: retrying.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
     const waiting = workspaces.activePipeline(ctx.suite.id);
     assert.equal(waiting?.state, "WAITING_HUMAN");
-    assert.equal(waiting?.stopReason, "retry_exhausted");
+    // D5: a parked run has not stopped, so the reason lives in waitReason.
+    assert.equal(waiting?.waitReason, "retry_exhausted");
+    assert.equal(waiting?.stopReason, null);
   } finally {
+    ctx.cleanup();
+  }
+});
+
+test("autoHandoffOnBlocked is off by default: a blocked station just parks", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+    const parked = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(parked?.state, "WAITING_HUMAN");
+    assert.equal(parked?.waitReason, null, "nothing should have been summoned");
+    assert.equal(workspaces.handoffsForPrompt(ctx.prompts[0]!.id).length, 0);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("autoHandoffOnBlocked parks normally when no handoff can be started", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    // No provider is actually available in the test process, so scheduleHandoff
+    // declines. The run must still park cleanly rather than claim a handoff is
+    // running — a wait reason that never resolves would strand the operator.
+    updateSettings({ "pipeline.autoHandoffOnBlocked": true });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+    const parked = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(parked?.state, "WAITING_HUMAN");
+    assert.equal(parked?.stopReason, null);
+    assert.ok(
+      parked?.waitReason === null || parked?.waitReason === "handoff_running",
+      `unexpected wait reason ${String(parked?.waitReason)}`,
+    );
+  } finally {
+    resetSettings(["pipeline.autoHandoffOnBlocked"]);
     ctx.cleanup();
   }
 });
@@ -777,6 +819,7 @@ test("pause does not interrupt; stop does", async () => {
         model: null,
         role: "execute",
         permissionMode: null,
+        budget: emptyBudgetSnapshot,
         interrupt: async () => { interrupted = true; },
         done: Promise.resolve("interrupted"),
       } satisfies RunHandle,
@@ -810,6 +853,96 @@ test("recoverAbandonedRuns marks active pipelines INTERRUPTED", async () => {
   }
 });
 
+test("onRestart=resumeSameRun adopts the interrupted run instead of starting a fresh one", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    updateSettings({ "pipeline.onRestart": "resumeSameRun" });
+    const first = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const stationRunId = first.currentRunId!;
+    workspaces.interruptPipelinesOnRestart();
+    assert.equal(workspaces.latestPipeline(ctx.suite.id)?.state, "INTERRUPTED");
+    // A restart also strands the station's own run, which has to be cleared
+    // before anything can start it — the "Recover station" control's job.
+    workspaces.recoverPrompt(ctx.prompts[0]!.id, stationRunId);
+
+    const resumed = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    assert.equal(resumed.id, first.id, "should have picked the same run back up");
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(resumed.stopReason, null, "adopting must clear the restart reason");
+  } finally {
+    resetSettings(["pipeline.onRestart"]);
+    ctx.cleanup();
+  }
+});
+
+test("onRestart=newRun leaves the interrupted run in the archive", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const first = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const stationRunId = first.currentRunId!;
+    workspaces.interruptPipelinesOnRestart();
+    workspaces.recoverPrompt(ctx.prompts[0]!.id, stationRunId);
+    const second = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    assert.notEqual(second.id, first.id, "the default must start a fresh run");
+    assert.equal(second.state, "PLAYING");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/*
+ * D4: retry and recover both reset the prompt and spend an attempt before
+ * starting anything. Pausing used to slip between those writes and the start,
+ * burning a retry the operator never saw run.
+ */
+test("pausing a station that blocks does not spend a retry", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { onBlocked: "retry", retryLimit: 3 });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    await pipelineScheduler.pause(ctx.suite.id);
+    await endStation({
+      runId: playing.currentRunId!,
+      promptId: ctx.prompts[0]!.id,
+      workspaceId: ctx.workspace.id,
+      outcome: "human",
+    });
+    const held = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(held?.state, "PAUSED", "the run should still be held");
+    assert.equal(held?.attempt, 0, "a held run must not spend an attempt");
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "BLOCKED", "the station must not be reset while held");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/*
+ * D5: retry exhaustion parks the run for a human. It is not stopped, so the
+ * reason belongs in `waitReason`; writing it to `stopReason` meant the status
+ * bar dropped it, because that field is only rendered on a terminal run.
+ */
+test("retry exhaustion parks with a waitReason and leaves stopReason clear", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { onBlocked: "retry", retryLimit: 1 });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+    const retrying = workspaces.activePipeline(ctx.suite.id)!;
+    await endStation({ runId: retrying.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+    const live = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(live.state, "WAITING_HUMAN");
+    assert.equal(live.waitReason, "retry_exhausted");
+    assert.equal(live.stopReason, null, "a parked run has not stopped");
+    assert.equal(live.endedAt, null);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test("attempt only resets on a new Play, not on resume", async () => {
   const ctx = fixture(1);
   stubStarts();
@@ -833,16 +966,111 @@ test("attempt only resets on a new Play, not on resume", async () => {
   }
 });
 
-test("scheduler starts executes only, never consults, and pause never stops the child", () => {
+test("scheduler starts executes only, never consults", () => {
   const source = readFileSync(new URL("./pipelineScheduler.ts", import.meta.url), "utf8");
   assert.match(source, /startExecute/);
   assert.doesNotMatch(source, /startConsult|startRun\(/);
-  const pauseAt = source.indexOf("async pause(");
-  const stopAt = source.indexOf("async stop(");
-  const pause = source.slice(pauseAt, stopAt);
-  const stop = source.slice(stopAt, source.indexOf("async onExecuteEnded"));
-  assert.doesNotMatch(pause, /runHub\.stop/);
-  assert.match(stop, /runHub\.stop/);
+});
+
+/**
+ * Whether Pause and Stop interrupt the running agent is operator policy now, so
+ * these assert the behaviour under each setting rather than grepping the source
+ * for `runHub.stop` — which pinned one answer and broke the moment the other
+ * became reachable.
+ */
+async function withRunningAgent(
+  ctx: ReturnType<typeof fixture>,
+  runId: string,
+  body: () => Promise<void>,
+): Promise<boolean> {
+  let interrupted = false;
+  runHub.start({
+    handle: {
+      runId,
+      provider: "claude",
+      model: null,
+      role: "execute",
+      permissionMode: null,
+      budget: emptyBudgetSnapshot,
+      interrupt: async () => { interrupted = true; },
+      done: Promise.resolve("interrupted"),
+    } satisfies RunHandle,
+    workspace: { id: ctx.workspace.id, name: ctx.workspace.name, workDirectory: ctx.workspace.workDirectory },
+    source: { type: "custom", displayText: "station" },
+    role: "execute",
+  });
+  try {
+    await body();
+  } finally {
+    if (runHub.has(runId)) runHub.end(runId, "interrupted");
+  }
+  return interrupted;
+}
+
+test("pauseMode=immediate interrupts the agent but keeps the run resumable", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    updateSettings({ "pipeline.pauseMode": "immediate" });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const runId = playing.currentRunId!;
+    const interrupted = await withRunningAgent(ctx, runId, async () => {
+      const paused = await pipelineScheduler.pause(ctx.suite.id);
+      // The difference from Stop: still PAUSED, so still active and resumable.
+      assert.equal(paused.state, "PAUSED");
+      assert.notEqual(workspaces.activePipeline(ctx.suite.id), null);
+    });
+    assert.equal(interrupted, true, "immediate pause should interrupt the agent");
+  } finally {
+    resetSettings(["pipeline.pauseMode"]);
+    ctx.cleanup();
+  }
+});
+
+test("pauseMode=graceful leaves the agent alone", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const runId = playing.currentRunId!;
+    const interrupted = await withRunningAgent(ctx, runId, async () => {
+      assert.equal((await pipelineScheduler.pause(ctx.suite.id)).state, "PAUSED");
+    });
+    assert.equal(interrupted, false, "the default pause must not interrupt");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("stopInterruptsAgent=false ends the run without killing the agent", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    updateSettings({ "pipeline.stopInterruptsAgent": false });
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const runId = playing.currentRunId!;
+    const interrupted = await withRunningAgent(ctx, runId, async () => {
+      const stopped = await pipelineScheduler.stop(ctx.suite.id);
+      assert.equal(stopped.state, "STOPPED");
+      assert.equal(stopped.stopReason, "operator_stop");
+    });
+    assert.equal(interrupted, false, "stop should have left the agent running");
+  } finally {
+    resetSettings(["pipeline.stopInterruptsAgent"]);
+    ctx.cleanup();
+  }
+});
+
+test("the resolved policy falls back to built-in defaults for junk values", () => {
+  try {
+    updateSettings({ "pipeline.maxHandoffGenerations": 0 });
+    assert.equal(settings.pipelinePolicy.maxHandoffGenerations, DEFAULT_PIPELINE_POLICY.maxHandoffGenerations);
+    updateSettings({ "pipeline.maxHandoffGenerations": 5 });
+    assert.equal(settings.pipelinePolicy.maxHandoffGenerations, 5);
+  } finally {
+    resetSettings(["pipeline.maxHandoffGenerations"]);
+  }
+  assert.deepEqual(settings.pipelinePolicy, DEFAULT_PIPELINE_POLICY);
 });
 
 test("provider resolution uses station then play then suite then adapter", () => {

@@ -1,5 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import {
+  DEFAULT_PIPELINE_POLICY,
+  isOnBlockedAction,
+  isOnDoneAction,
+  type PipelinePolicy,
+  type HandoffRequirement,
+  type PauseMode,
+} from "@agent-console/shared";
 import type {
   ProviderId,
   SettingField,
@@ -42,9 +50,195 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
+export const GROUPS = ["General", "Run budgets", "Pipeline policy", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
 
 const FIELDS: FieldDef[] = [
+  {
+    key: "budget.maxToolResultBytes",
+    label: "Max tool result size (bytes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_RESULT_BYTES",
+    fallback: 8192,
+    description:
+      "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
+  },
+  {
+    key: "budget.maxToolCalls",
+    label: "Max tool calls per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_CALLS",
+    fallback: 250,
+    description:
+      "Stops a run that keeps working past the point of usefulness. Sub-steps get a smaller share automatically. 0 disables.",
+  },
+  {
+    key: "budget.maxWallClockMinutes",
+    label: "Max wall clock per run (minutes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_WALL_CLOCK_MINUTES",
+    fallback: 45,
+    description: "Hard time limit for one run. Sub-steps get a smaller share automatically. 0 disables.",
+  },
+  {
+    key: "budget.maxInputTokens",
+    label: "Max input tokens per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_INPUT_TOKENS",
+    fallback: 8000000,
+    description:
+      "Cumulative input tokens, cached included. This is the number that turns into money: an agentic loop resends its whole transcript every turn. 0 disables.",
+  },
+  {
+    key: "budget.maxToolOutputBytes",
+    label: "Max total tool output per run (bytes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_OUTPUT_BYTES",
+    fallback: 1048576,
+    description: "Cumulative size of every tool result in one run. 0 disables.",
+  },
+  {
+    key: "budget.noProgressToolCalls",
+    label: "No-progress tool calls",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_NO_PROGRESS_TOOL_CALLS",
+    fallback: 25,
+    description:
+      "Stops a run repeating the same tool call with the same input this many times in a row — the signature of a thrash loop. 0 disables.",
+  },
+  {
+    key: "budget.subStepFraction",
+    label: "Sub-step budget share (%)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_SUB_STEP_FRACTION",
+    fallback: 50,
+    description:
+      "Share of each budget a decomposed sub-step receives. A sub-step is a slice of its parent, so it should not be allowed to spend a whole station's allowance.",
+  },
+  {
+    key: "pipeline.pauseMode",
+    label: "What Pause does",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_PAUSE_MODE",
+    fallback: "graceful",
+    description:
+      "Graceful lets the station's agent finish and applies its result, then holds before the next one. "
+      + "Immediate interrupts the agent straight away but keeps the run resumable, unlike Stop.",
+    options: [
+      option("graceful", "Let the current station finish", "The agent completes; its DONE or BLOCKED still applies"),
+      option("immediate", "Interrupt the agent now", "Stops the agent, but the run stays resumable"),
+    ],
+  },
+  {
+    key: "pipeline.stopInterruptsAgent",
+    label: "Stop interrupts the running agent",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_STOP_INTERRUPTS_AGENT",
+    fallback: true,
+    description:
+      "On, Stop kills the agent working right now and its station stays unfinished. Off, Stop only ends "
+      + "auto-advance and lets that agent finish what it started.",
+  },
+  {
+    key: "pipeline.onRestart",
+    label: "After a server restart",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_ON_RESTART",
+    fallback: "newRun",
+    description:
+      "A run holding a station when the server restarts is marked interrupted. This decides what the "
+      + "pipeline offers when you come back. Neither option relaunches anything on its own — nothing "
+      + "starts until you press the button.",
+    options: [
+      option("newRun", "Offer a fresh run", "Starts again from the first unfinished station"),
+      option("resumeSameRun", "Offer to continue the same run", "Picks the interrupted run back up where it stopped"),
+    ],
+  },
+  {
+    key: "pipeline.handoffRequirement",
+    label: "When to require a handoff",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_HANDOFF_REQUIREMENT",
+    fallback: "whenWorkProduced",
+    description:
+      "A handoff runs a read-only agent that summarises what the previous run finished and what it left, "
+      + "so the next agent does not redo the work. This decides when resuming offers to prepare one.",
+    options: [
+      option("whenWorkProduced", "When the previous run produced work", "Checks for tool calls; skips the offer for a station that only failed to start"),
+      option("always", "Before every resume", "Offers a handoff whenever the station is unfinished"),
+      option("never", "Never offer one", "Resume restarts the station directly, and prior work may be redone", true),
+    ],
+    isDangerous: (value) => value === "never",
+  },
+  {
+    key: "pipeline.autoHandoffOnBlocked",
+    label: "Summon a handoff when a station blocks",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_AUTO_HANDOFF_ON_BLOCKED",
+    fallback: false,
+    description:
+      "On, a station whose rule is 'wait' first has a read-only agent write a continuation brief, and the "
+      + "run carries on by itself if that agent says the work can continue. Off, the run simply parks and "
+      + "waits for you. This is the one setting here that can start an agent without you pressing anything.",
+    isDangerous: (value) => value === true,
+  },
+  {
+    key: "pipeline.maxHandoffGenerations",
+    label: "Max handoff generations per station",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_HANDOFF_GENERATIONS",
+    fallback: 3,
+    description:
+      "How many times one station may be handed off before the pipeline refuses another. Guards against a "
+      + "station that hands off to itself forever without progressing.",
+  },
+  {
+    key: "pipeline.defaultOnBlocked",
+    label: "Default rule when a station blocks",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_BLOCKED",
+    fallback: "wait",
+    description:
+      "The 'on blocked' rule a station starts with, before anyone configures it on the flowchart. "
+      + "Existing stations keep whatever they were given.",
+    options: [
+      option("wait", "Wait for a human", "The run parks and asks you"),
+      option("retry", "Retry the station", "Restarts it up to its retry limit, then parks"),
+      option("recover", "Hand to the recovery agent", "One attempt with the station's recover agent"),
+      option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
+    ],
+    isDangerous: (value) => value === "skip",
+  },
+  {
+    key: "pipeline.defaultOnDone",
+    label: "Default rule when a station finishes",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_DONE",
+    fallback: "continue",
+    description:
+      "The 'on done' rule a station starts with, before anyone configures it on the flowchart.",
+    options: [
+      option("continue", "Continue to the next station", "The usual rail behaviour"),
+      option("stop", "Stop the run", "Finishing this station ends the run"),
+      option("skip_rest", "Skip the rest of the stage", "Marks every later station SKIPPED", true),
+    ],
+    isDangerous: (value) => value === "skip_rest",
+  },
+
   {
     key: "statusIntervalMs",
     label: "Status heartbeat (ms)",
@@ -662,6 +856,67 @@ export const settings = {
     return count("statusIntervalMs") || 1000;
   },
   /**
+   * Run budgets, already scaled for the work item's depth. A decomposed
+   * sub-step is a slice of its parent's work, so it gets a slice of the
+   * allowance rather than a fresh full one — otherwise decomposing a station
+   * into eight children multiplies the ceiling by eight.
+   */
+  budgetFor(depth: number): {
+    maxToolCalls: number | null;
+    maxWallClockMs: number | null;
+    maxInputTokens: number | null;
+    maxToolOutputBytes: number | null;
+    noProgressToolCalls: number | null;
+    maxToolResultBytes: number;
+  } {
+    const share = depth > 0 ? Math.min(100, Math.max(1, count("budget.subStepFraction") || 50)) / 100 : 1;
+    const scaled = (key: string, fallback: number): number | null => {
+      const base = count(key) || fallback;
+      if (base <= 0) return null;
+      return Math.max(1, Math.round(base * share));
+    };
+    return {
+      maxToolCalls: scaled("budget.maxToolCalls", 250),
+      maxWallClockMs: (() => {
+        const minutes = scaled("budget.maxWallClockMinutes", 45);
+        return minutes === null ? null : minutes * 60_000;
+      })(),
+      maxInputTokens: scaled("budget.maxInputTokens", 8_000_000),
+      maxToolOutputBytes: scaled("budget.maxToolOutputBytes", 1_048_576),
+      // Not scaled: a thrash loop is a thrash loop at any depth.
+      noProgressToolCalls: (count("budget.noProgressToolCalls") || 25) > 0 ? count("budget.noProgressToolCalls") || 25 : null,
+      maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes") || 8192),
+    };
+  },
+  /**
+   * House rules for the pipeline transport, resolved once so the scheduler, the
+   * handoff coordinator and the browser all read the same values. Anything
+   * unrecognised in the store falls back to the built-in default rather than
+   * reaching the rule table as a bad value.
+   */
+  get pipelinePolicy(): PipelinePolicy {
+    const pauseMode = text("pipeline.pauseMode");
+    const requirement = text("pipeline.handoffRequirement");
+    const onBlocked = text("pipeline.defaultOnBlocked");
+    const onDone = text("pipeline.defaultOnDone");
+    const generations = count("pipeline.maxHandoffGenerations");
+    return {
+      pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
+      stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
+      onRestart: text("pipeline.onRestart") === "resumeSameRun" ? "resumeSameRun" : "newRun",
+      handoffRequirement:
+        requirement === "always" || requirement === "never"
+          ? (requirement satisfies HandoffRequirement)
+          : "whenWorkProduced",
+      autoHandoffOnBlocked: flag("pipeline.autoHandoffOnBlocked"),
+      maxHandoffGenerations:
+        generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
+      defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,
+      defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
+    };
+  },
+
+  /**
    * One switch that lifts every provider's sandbox/permission gate so Docker
    * and other host services work. Per-provider knobs still exist; this
    * overlays them at run time.
@@ -832,6 +1087,11 @@ function describeField(field: FieldDef): SettingField {
     dangerWhenTrue: field.type === "boolean" && (field.isDangerous?.(true) ?? false),
     requiresRestart: field.requiresRestart ?? false,
   };
+}
+
+/** Groups that actually have at least one field. Used by the UI-coverage test. */
+export function groupsWithFields(): string[] {
+  return [...GROUPS].filter((group) => FIELDS.some((field) => field.group === group));
 }
 
 export function snapshot(): SettingsSnapshot {

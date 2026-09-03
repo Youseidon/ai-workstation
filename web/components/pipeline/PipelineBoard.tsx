@@ -12,13 +12,14 @@ import type {
   PipelineBlockedStation,
   PipelineRecord,
   PipelineRunDetail,
+  PipelinePolicy,
   PipelineSubStepRule,
   ProgramRecord,
   PromptPipelineRule,
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { defaultPromptPipelineRule, modelLabel, promptNeedsHandoff, PROVIDER_IDS } from "@agent-console/shared";
+import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, handoffRequired, modelLabel, onBlockedConsequence, onDoneConsequence, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -41,6 +42,9 @@ import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
 import { PipelineOverview } from "./PipelineOverview";
 import { PipelineStatusBar, type PipelinePosition } from "./PipelineStatusBar";
+import { RulesPanel } from "./RulesPanel";
+import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
+import { PIPELINE_POLICY_GROUP } from "@/lib/settingsGroups";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
 import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
@@ -96,6 +100,8 @@ export function PipelineBoard({
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [policyOpen, setPolicyOpen] = useState(false);
   const [handoffProvider, setHandoffProvider] = useState<ProviderId>("claude");
   const [successorProvider, setSuccessorProvider] = useState<ProviderId>("claude");
   const [reusableHandoff, setReusableHandoff] = useState<HandoffRecord | null>(null);
@@ -492,9 +498,18 @@ export function PipelineBoard({
       : (steps.find((step) => step.promptId === configId) ?? null);
   const configInherited = configId !== null && configIsSubStep && subRuleFor(configId).inherited;
 
+  // Prefer the deepest stuck descendant: a station whose sub-step lost its agent
+  // is the item that actually needs recovering, and it never appears in the
+  // top-level station list.
+  const stationState = stuckPrompt?.operationalState ?? resumeItem?.operationalState ?? null;
+  // Resolved server-side from the Pipeline policy settings; the built-in
+  // defaults stand in for the moment before the first snapshot arrives.
+  const policy = snapshot?.policy ?? DEFAULT_PIPELINE_POLICY;
+
   const status = pipelineStatus({
     run: live,
-    resumable,
+    policy,
+    stationState,
     station: runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null,
     awaitingHuman: resumeItem?.humanIntervention?.status === "PENDING",
     agentActive: live?.state === "PAUSED" && occupancy !== null,
@@ -549,7 +564,8 @@ export function PipelineBoard({
     // Prefer the deepest recovery-needed child: that is the actual run which
     // was interrupted, and it may not be present in the top-level station list.
     const continuationItem = stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem;
-    if ((control === "resume" || control === "newRun") && continuationItem !== null && promptNeedsHandoff(continuationItem.prompt.status)) {
+    const continuing = control === "resume" || control === "newRun" || control === "recover";
+    if (continuing && continuationItem !== null) {
       const available = console_.providers.find((provider) => provider.available)?.id ?? firstAvailable;
       const readOnly = console_.providers.find((provider) => provider.available && provider.id !== "cursor")?.id ?? available;
       setHandoffProvider(readOnly);
@@ -559,8 +575,22 @@ export function PipelineBoard({
       void act(async () => {
         const activity = await workspaceApi.activity(SERVER_URL, continuationItem.prompt.id);
         const latestExecute = activity.sessions.find((session) => session.role === "execute");
-        const reusable = latestExecute === undefined ? null : activity.handoffs.find((handoff) => handoff.state === "READY" && handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id) ?? null;
-        setSuccessorProvider((latestExecute?.provider as ProviderId | undefined) ?? available);
+        // The question is not "is this station unfinished" — a station a retry
+        // reset to TODO is unfinished with nothing to summarise. It is whether a
+        // previous run left work a successor must not redo, under the operator's
+        // chosen policy.
+        const needed = handoffRequired({
+          policy,
+          hasPriorRun: latestExecute !== undefined,
+          producedWork: activity.producedWork,
+        });
+        if (!needed || latestExecute === undefined) {
+          await workspaceApi.playPipeline(SERVER_URL, pipelineId);
+          toast.success(control === "newRun" ? "New run started" : "Pipeline is running");
+          return;
+        }
+        const reusable = activity.handoffs.find((handoff) => handoff.state === "READY" && handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id) ?? null;
+        setSuccessorProvider((latestExecute.provider as ProviderId | undefined) ?? available);
         setDirectRetry(activity.directRetry);
         setReusableHandoff(reusable);
         setHandoffOpen(true);
@@ -847,6 +877,14 @@ export function PipelineBoard({
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPolicyOpen(true)}
+                  title="What Pause and Stop do, when a handoff is offered, and the rule a station starts with"
+                >
+                  Pipeline policy
+                </Button>
                 {workbench && pipelineId !== null && !isNew && (
                   <Button
                     size="sm"
@@ -917,7 +955,38 @@ export function PipelineBoard({
               blockedReason={statusBlocked}
               busy={busy}
               onControl={runControl}
+              onExplain={() => setRulesOpen(true)}
             />
+
+            <RulesPanel
+              open={rulesOpen}
+              onClose={() => setRulesOpen(false)}
+              status={status}
+              policy={policy}
+              station={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
+              onEditPolicy={() => {
+                setRulesOpen(false);
+                setPolicyOpen(true);
+              }}
+              onEditStationRule={
+                resumeItem === null
+                  ? undefined
+                  : () => {
+                      setRulesOpen(false);
+                      setConfigId(resumeItem.prompt.id);
+                    }
+              }
+            />
+
+            {policyOpen && (
+              <SettingsGroupDialog
+                group={PIPELINE_POLICY_GROUP}
+                onClose={() => setPolicyOpen(false)}
+                // The board renders from the policy on the operations snapshot,
+                // so it has to be re-read before the change is visible here.
+                onSaved={() => void refreshCatalog()}
+              />
+            )}
 
             <PipelineConstellation
               stages={stages}
@@ -1179,6 +1248,7 @@ export function PipelineBoard({
           inherited={configInherited}
           providers={console_.providers}
           models={models}
+          policy={policy}
           onClose={() => setConfigId(null)}
           onUseStationSettings={
             configIsSubStep && !configInherited
@@ -1328,6 +1398,7 @@ function StepConfig({
   inherited = false,
   providers,
   models,
+  policy,
   onClose,
   onUseStationSettings,
   onChange,
@@ -1340,6 +1411,8 @@ function StepConfig({
   inherited?: boolean;
   providers: Parameters<typeof useModelSelection>[0];
   models: ReturnType<typeof useModelSelection>;
+  /** House rules, so the consequence lines match what will actually happen. */
+  policy: PipelinePolicy;
   onClose(): void;
   onUseStationSettings?(): void;
   onChange(patch: Partial<Omit<PromptPipelineRule, "promptId">>): void;
@@ -1446,6 +1519,7 @@ function StepConfig({
               </button>
             ))}
           </div>
+          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onDoneConsequence(rule.onDone, policy)}</p>
         </section>
         <section>
           <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On BLOCKED</div>
@@ -1470,6 +1544,7 @@ function StepConfig({
               </button>
             ))}
           </div>
+          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onBlockedConsequence(rule, policy)}</p>
         </section>
       </div>
     </Modal>

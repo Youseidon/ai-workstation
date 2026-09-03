@@ -1,3 +1,4 @@
+import { emptyBudgetSnapshot } from "./runner.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -13,6 +14,7 @@ function fakeHandle(runId: string): RunHandle {
     model: null,
     role: "execute",
     permissionMode: null,
+    budget: emptyBudgetSnapshot,
     interrupt: async () => {},
     done: Promise.resolve("done"),
   };

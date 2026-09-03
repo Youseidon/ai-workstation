@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isRunRole } from "@agent-console/shared";
 import type { RunHandle } from "./runner.ts";
-import { runRoleStartError } from "./runner.ts";
+import { runRoleStartError, emptyBudgetSnapshot } from "./runner.ts";
 import { runHub } from "./runHub.ts";
 import {
   effectiveClaudePermissionMode,
@@ -34,6 +34,7 @@ function fakeHandle(runId: string, role: RunHandle["role"] = "execute"): RunHand
     model: null,
     role,
     permissionMode: role === "consult" ? "plan" : null,
+    budget: emptyBudgetSnapshot,
     interrupt: async () => {},
     done: Promise.resolve("done"),
   };

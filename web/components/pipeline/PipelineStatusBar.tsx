@@ -57,6 +57,7 @@ export function PipelineStatusBar({
   blockedReason,
   busy,
   onControl,
+  onExplain,
 }: {
   status: PipelineStatusView;
   position: PipelinePosition | null;
@@ -64,6 +65,8 @@ export function PipelineStatusBar({
   blockedReason: string | null;
   busy: boolean;
   onControl(control: PipelineControl): void;
+  /** Opens the rules panel. The pill is the affordance for "why these buttons?". */
+  onExplain(): void;
 }) {
   const primaryDisabled = busy || blockedReason !== null;
 
@@ -74,14 +77,22 @@ export function PipelineStatusBar({
     >
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 py-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
-          <span className="mt-[3px] flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onExplain}
+            title="What decides these buttons?"
+            className="mt-[3px] flex shrink-0 items-center gap-2 rounded-sm underline decoration-transparent underline-offset-4 transition-colors hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
             <StatusDot tone={status.tone} pulse={status.pulse} size={8} />
             <span className={cn("text-[11px] font-medium uppercase tracking-[0.16em]", PILL[status.tone])}>
               {status.label}
             </span>
-          </span>
+          </button>
+          {/* Three lines, in the order the questions get asked: what the run is
+              doing, what put it there, and what the button will do about it. */}
           <div className="min-w-0">
             <p className="text-[13px] leading-5 text-fg">{status.headline}</p>
+            <p className="mt-0.5 text-xs leading-5 text-fg-muted">{status.because}</p>
             {status.hint !== null && (
               <p className="mt-0.5 text-xs leading-5 text-fg-dim">{status.hint}</p>
             )}

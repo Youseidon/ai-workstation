@@ -8,9 +8,9 @@ import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runRoleStartError } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
-import { contextMarkdown } from "./agentContext.ts";
+import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
@@ -115,7 +115,15 @@ const httpServer = createServer((req, res) => {
         }
         if(memory.promptId===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
         const context=workspaces.agentContext(memory.workspaceId,memory.promptId);
-        if(req.headers.accept?.includes("application/json"))sendJson(res,200,context);else{const api=`## Progress API\n\nThis run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.\n\nPost a remark with:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"What changed or was discovered"}'\n\`\`\`\n\nAllowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.\n\nBefore finishing, post exactly one terminal prompt status. For success:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'\n\`\`\`\n\nBLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'\n\`\`\`\n\nIf the remaining scope will not realistically fit in this execution window (large, mostly-independent chunks of work — e.g. a long list of endpoints, files, or modules), decompose instead of grinding until you run out of room or report a false BLOCKED. Split the remaining work into 2-12 sub-steps, each independently completable and independently verifiable, and hand off:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/decompose -d '{"requestId":"unique-decompose-id","resumeBrief":"What you already established and verified, so the run that resumes this work item after every sub-step is done does not repeat it","children":[{"title":"Short unique title","content":"Full, self-contained instructions for this slice - this is the only context that sub-step run will see"},{"title":"...","content":"..."}]}'\n\`\`\`\n\nEach sub-step runs to its own DONE or BLOCKED, in the order listed, as a real tracked work item. Once every sub-step is DONE, a fresh run resumes this same work item with their outcomes in its history to do final integration and post this item's own DONE or BLOCKED. Decomposing is not itself DONE or BLOCKED and does not require expectedStatus. A sub-step can decompose again only once (two levels total); do not use this to avoid finishing straightforward work.\n\nEvery requestId must be unique for this run.\n\n`;res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(`${contextMarkdown(context)}\n\n${api}`);}return;
+        const depth=workspaces.decomposeDepth(memory.promptId);
+        const budget=runHub.get(runId)?.handle.budget()??null;
+        if(req.headers.accept?.includes("application/json"))sendJson(res,200,{...context,budget});
+        else{
+          const api=progressApiMarkdown({runId,token,port:config.port,canDecompose:depth<DECOMPOSE_MAX_DEPTH});
+          res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
+          res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH})}\n\n${api}${budgetMarkdown(budget)}`);
+        }
+        return;
       }
       if(operation==="state"&&req.method==="GET"){
         if(memory.promptId===null){sendJson(res,200,{events:[],remarks:[],runs:[]});return;}
@@ -124,7 +132,11 @@ const httpServer = createServer((req, res) => {
       if((operation==="remarks"||operation==="status"||operation==="decompose")&&req.method==="POST"){
         void readJsonBody(req).then(body=>{
           const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):operation==="status"?workspaces.updateAgentStatus(runId,body):workspaces.decomposePrompt(runId,body);
-          sendJson(res,200,result);
+          // The agent cannot see the runner's counters. Riding the reply it is
+          // already making is the one channel that reaches every provider, so a
+          // run learns to bank its work before the budget stops it.
+          const live=runHub.get(runId)?.handle.budget()??null;
+          sendJson(res,200,live===null?result:{...result as Record<string,unknown>,budget:live});
           runHub.operationsChanged();
           // A terminal status or a decompose is the agent's authoritative
           // signal that this run is done with the work item. End the provider

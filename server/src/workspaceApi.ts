@@ -282,7 +282,18 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else { const workspaceId=id(importMatch[1]!); workspaces.get(workspaceId); const input=await body(req); const inspected=inspectPromptPack(input.rootPath,input.programKey); if(importMatch[2]==="inspect") json(res,200,{preview:inspected.preview}); else json(res,201,{preview:inspected.preview,workspace:workspaces.importProgram(workspaceId,inspected.pack)}); }
       return true;
     }
-    let match = url.pathname.match(/^\/api\/workspaces\/(\d+)(?:\/(tree|prompts|programs))?$/);
+    let match = url.pathname.match(/^\/api\/workspaces\/(\d+)\/revisions$/);
+    if (match && method === "GET") {
+      const field = url.searchParams.get("field");
+      json(res, 200, { revisions: workspaces.workspaceRevisions(id(match[1]!), field ?? undefined) });
+      return true;
+    }
+    match = url.pathname.match(/^\/api\/workspaces\/(\d+)\/revisions\/(\d+)\/restore$/);
+    if (match && method === "POST") {
+      json(res, 200, { workspace: workspaces.restoreWorkspaceRevision(id(match[1]!), id(match[2]!)) });
+      return true;
+    }
+    match = url.pathname.match(/^\/api\/workspaces\/(\d+)(?:\/(tree|prompts|programs))?$/);
     if (match) {
       const workspaceId = id(match[1]!); const child = match[2];
       if (!child && method === "GET") json(res, 200, { workspace: workspaces.get(workspaceId) });
@@ -310,6 +321,10 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
       return true;
     }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/revisions$/);
+    if(match&&method==="GET"){json(res,200,{revisions:workspaces.promptRevisions(id(match[1]!))});return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/revisions\/(\d+)\/restore$/);
+    if(match&&method==="POST"){json(res,200,{prompt:workspaces.restorePromptRevision(id(match[1]!),id(match[2]!))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/history$/);
     if(match&&method==="GET"){json(res,200,workspaces.promptHistory(id(match[1]!)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/activity$/);

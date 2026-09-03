@@ -279,6 +279,70 @@ body::before {
   line-height: 1.55;
 }
 
+/* Readable, document-like presentation for saved work-item Markdown. */
+.prompt-document {
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+.prompt-document > * { max-width: 76ch; }
+.prompt-document > :first-child { margin-top: 0; }
+.prompt-document > :last-child { margin-bottom: 0; }
+.prompt-document h1,
+.prompt-document h2,
+.prompt-document h3 {
+  color: var(--fg);
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin: 1.75em 0 0.65em;
+}
+.prompt-document h1 { font-size: 1.65rem; border-bottom: 1px solid var(--line); padding-bottom: 0.45em; }
+.prompt-document h2 { font-size: 1.3rem; border-bottom: 1px solid var(--line); padding-bottom: 0.35em; }
+.prompt-document h3 { font-size: 1.08rem; }
+.prompt-document p,
+.prompt-document ul,
+.prompt-document ol,
+.prompt-document blockquote,
+.prompt-document pre,
+.prompt-document table { margin: 0.9em 0; }
+.prompt-document ul,
+.prompt-document ol { padding-left: 1.5rem; }
+.prompt-document ul { list-style: disc; }
+.prompt-document ol { list-style: decimal; }
+.prompt-document li { padding-left: 0.2rem; margin: 0.25em 0; }
+.prompt-document li::marker { color: var(--fg-dim); }
+.prompt-document strong { color: var(--fg); font-weight: 650; }
+.prompt-document a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.prompt-document blockquote {
+  border-left: 3px solid var(--line-strong);
+  color: var(--fg-dim);
+  padding: 0.15rem 0 0.15rem 1rem;
+}
+.prompt-document code {
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.12em 0.35em;
+}
+.prompt-document pre {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--surface-0);
+  padding: 1rem;
+}
+.prompt-document pre code { border: 0; background: transparent; padding: 0; }
+.prompt-document table { width: 100%; border-collapse: collapse; }
+.prompt-document th,
+.prompt-document td { border: 1px solid var(--line); padding: 0.55rem 0.7rem; text-align: left; }
+.prompt-document th { background: var(--surface-2); color: var(--fg); font-weight: 600; }
+.prompt-document hr { max-width: 76ch; border: 0; border-top: 1px solid var(--line); margin: 1.75rem 0; }
+.prompt-document input[type="checkbox"] { margin-right: 0.45rem; accent-color: var(--accent); }
+
 /* ==========================================================================
    Surface helpers
    ========================================================================== */

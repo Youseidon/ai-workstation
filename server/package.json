@@ -8,7 +8,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 src/*.test.ts"
+    "test": "AGENT_CONSOLE_DB=\"${TMPDIR:-/tmp}/agent-console-test-$$.sqlite\" SETTINGS_FILE=\"${TMPDIR:-/tmp}/agent-console-test-settings-$$.json\" node --import tsx --test --test-concurrency=1 src/*.test.ts"
   },
   "dependencies": {
     "@agent-console/shared": "*",

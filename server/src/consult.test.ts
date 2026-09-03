@@ -1,3 +1,4 @@
+import { emptyBudgetSnapshot } from "./runner.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +40,7 @@ function fakeHandle(runId: string, role: RunHandle["role"] = "consult"): RunHand
     model: null,
     role,
     permissionMode: role === "consult" ? "plan" : null,
+    budget: emptyBudgetSnapshot,
     interrupt: async () => {},
     done: Promise.resolve("done"),
   };
@@ -50,7 +52,9 @@ function future(): string {
 
 test("schema version 9 rebuilds agent_run with nullable prompt_id and execute-only uniqueness", () => {
   const source = readFileSync(new URL("./workspaces.ts", import.meta.url), "utf8");
-  const migrate9 = source.slice(source.indexOf("if (version < 9)"), source.indexOf("const recoverAbandonedRuns"));
+  // Bounded to migration 9 alone: the slice used to run to the end of every
+  // migration, so any later table with a NOT NULL prompt_id failed this.
+  const migrate9 = source.slice(source.indexOf("if (version < 9)"), source.indexOf("const afterNine"));
   assert.match(migrate9, /prompt_id INTEGER REFERENCES prompt\(id\) ON DELETE CASCADE/);
   assert.doesNotMatch(migrate9, /prompt_id INTEGER NOT NULL/);
   assert.match(migrate9, /WHERE state IN \('STARTING','RUNNING'\) AND role = 'execute'/);

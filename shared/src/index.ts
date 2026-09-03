@@ -1,3 +1,4 @@
+import type { PipelinePolicy } from "./pipelineRules";
 /**
  * The single source of truth for everything that crosses the WebSocket boundary.
  *
@@ -637,6 +638,25 @@ export interface WorkspaceRecord {
   workDirectoryExists: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Repo-level agent instruction files, owned by the workspace and written into
+   * the working tree for every run. Claude Code reads only CLAUDE.md; codex,
+   * cursor and grok read only AGENTS.md, so both are kept.
+   */
+  claudeMd: string;
+  agentsMd: string;
+}
+
+export type WorkspaceInstructionField = "claudeMd" | "agentsMd";
+
+export interface WorkspaceRevision {
+  id: number;
+  workspaceId: number;
+  field: WorkspaceInstructionField | "description";
+  content: string;
+  actorType: string;
+  reason: string;
+  createdAt: string;
 }
 
 export interface WorkspaceTree extends WorkspaceRecord {
@@ -743,13 +763,21 @@ export interface PromptPipelineRule {
   stepOrder: number;
 }
 
-export function defaultPromptPipelineRule(promptId: number): PromptPipelineRule {
+/**
+ * The rule a station has before anyone configures it. `policy` supplies the
+ * operator's chosen defaults; without it the built-in ones are used, which is
+ * what a caller with no snapshot in hand (a test, a first paint) should get.
+ */
+export function defaultPromptPipelineRule(
+  promptId: number,
+  policy?: Pick<PipelinePolicy, "defaultOnDone" | "defaultOnBlocked">,
+): PromptPipelineRule {
   return {
     promptId,
     provider: null,
     model: null,
-    onDone: "continue",
-    onBlocked: "wait",
+    onDone: policy?.defaultOnDone ?? "continue",
+    onBlocked: policy?.defaultOnBlocked ?? "wait",
     retryLimit: 1,
     recoverProvider: null,
     recoverModel: null,
@@ -787,6 +815,11 @@ export interface SuitePipelineRun {
   startedAt: string;
   endedAt: string | null;
   stopReason: string | null;
+  /**
+   * Why a live run is parked on WAITING_HUMAN. Distinct from `stopReason`,
+   * which means "why this run ended" — a waiting run has not ended.
+   */
+  waitReason: string | null;
   /** Named pipeline execution that launched this suite, when there is one. */
   pipelineRunId: string | null;
 }
@@ -831,6 +864,8 @@ export interface PipelineRun {
   startedAt: string;
   endedAt: string | null;
   stopReason: string | null;
+  /** Why a live run is parked on WAITING_HUMAN; see `SuitePipelineRun`. */
+  waitReason: string | null;
 }
 
 export interface PipelineRecord {
@@ -999,7 +1034,7 @@ export interface OperationsSuite {
   } | null;
 }
 export interface OperationsSession { id:string; workspaceId:number; promptId:number|null; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
-export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[] }
+export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[]; policy:PipelinePolicy }
 export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
 /** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
 export type SuiteVerificationCheck = "VERIFIED" | "WARNING" | "FAILED" | "UNVERIFIED";
@@ -1093,6 +1128,8 @@ export interface PromptActivity {
   handoffs: HandoffRecord[];
   /** True when the latest execute run failed before meaningful work; pipeline resume can skip handoff. */
   directRetry: boolean;
+  /** True when the latest developer run made at least one tool call. */
+  producedWork: boolean;
 }
 
 export const HANDOFF_STATES = ["QUEUED", "RUNNING", "READY", "FAILED", "SUPERSEDED"] as const;
@@ -1357,3 +1394,36 @@ export function oneLine(value: string, max = 160): string {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
+
+/*
+ * The transport interlocking. Re-exported by name rather than with `export *`,
+ * so the package's public surface is explicit and a new symbol has to be
+ * declared here on purpose.
+ */
+export {
+  CONTROL_LABEL,
+  DEFAULT_PIPELINE_POLICY,
+  HANDOFF_REQUIREMENTS,
+  PAUSE_MODES,
+  PIPELINE_CONTROLS,
+  STOP_REASON,
+  TRANSITIONS,
+  describeStopReason,
+  handoffRequired,
+  matchTransition,
+  onBlockedConsequence,
+  onDoneConsequence,
+  RESTART_POLICIES,
+} from "./pipelineRules";
+export type {
+  HandoffRequirement,
+  PauseMode,
+  PipelineControl,
+  PipelinePolicy,
+  PolicyKey,
+  RestartPolicy,
+  RuleContext,
+  RulePolicy,
+  StatusTone,
+  TransitionRow,
+} from "./pipelineRules";

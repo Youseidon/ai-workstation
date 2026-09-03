@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ProgramRecord,
   PromptRecord,
@@ -20,6 +22,7 @@ import { useDialogs } from "./ui/Dialogs";
 import { useToast } from "./ui/Toast";
 
 type Kind = "program" | "suite" | "prompt";
+type InstructionField = "claudeMd" | "agentsMd";
 
 /**
  * The execution library: workspaces, and the programs, suites and work items
@@ -44,6 +47,10 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const [programId, setProgramId] = useState<number | null>(null);
   const [suiteId, setSuiteId] = useState<number | null>(null);
   const [promptId, setPromptId] = useState<number | null>(null);
+  const [instructionField, setInstructionField] = useState<InstructionField | null>(null);
+  const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(() => new Set());
+  const [expandedSuites, setExpandedSuites] = useState<Set<number>>(() => new Set());
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<number>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
 
@@ -98,6 +105,10 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
     setProgramId(null);
     setSuiteId(null);
     setPromptId(null);
+    setInstructionField(null);
+    setExpandedPrograms(new Set());
+    setExpandedSuites(new Set());
+    setExpandedPrompts(new Set());
     setWorkspaceId(id);
     try {
       setTree(await workspaceApi.tree(serverUrl, id));
@@ -106,7 +117,19 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
     }
   };
 
-  const create = async (kind: Kind) => {
+  const toggleProgram = (id: number) => {
+    setExpandedPrograms((current) => toggleSet(current, id));
+  };
+
+  const toggleSuite = (id: number) => {
+    setExpandedSuites((current) => toggleSet(current, id));
+  };
+
+  const togglePrompt = (id: number) => {
+    setExpandedPrompts((current) => toggleSet(current, id));
+  };
+
+  const create = async (kind: Kind, parentId?: number) => {
     const name = await dialogs.prompt({
       title: kind === "prompt" ? "New work item" : `New ${kind}`,
       label: kind === "prompt" ? "Title" : `${kind[0]!.toUpperCase()}${kind.slice(1)} name`,
@@ -119,15 +142,15 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
         () => workspaceApi.createChild(serverUrl, "workspaces", tree.id, "programs", { name, overview: "" }),
         "Program created",
       );
-    } else if (kind === "suite" && program !== null) {
+    } else if (kind === "suite" && (parentId ?? program?.id) !== undefined) {
       await act(
-        () => workspaceApi.createChild(serverUrl, "programs", program.id, "suites", { name, overview: "" }),
+        () => workspaceApi.createChild(serverUrl, "programs", parentId ?? program!.id, "suites", { name, overview: "" }),
         "Suite created",
       );
-    } else if (kind === "prompt" && suite !== null) {
+    } else if (kind === "prompt" && (parentId ?? suite?.id) !== undefined) {
       await act(
         () =>
-          workspaceApi.createChild(serverUrl, "suites", suite.id, "prompts", {
+          workspaceApi.createChild(serverUrl, "suites", parentId ?? suite!.id, "prompts", {
             title: name,
             content: "Describe the task here.",
           }),
@@ -249,64 +272,68 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
               onDelete={() => void removeWorkspace()}
             />
 
-            <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <Column title="Programs" count={tree.programs.length} onAdd={() => void create("program")} disabled={busy}>
-                {tree.programs.map((item) => (
-                  <Row
-                    key={item.id}
-                    active={item.id === programId}
-                    label={item.name}
-                    hint={`${item.suites.length} suite${item.suites.length === 1 ? "" : "s"}`}
-                    onClick={() => {
-                      setProgramId(item.id);
-                      setSuiteId(null);
-                      setPromptId(null);
-                    }}
-                  />
-                ))}
-              </Column>
-              <Column
-                title="Suites"
-                count={program?.suites.length ?? 0}
-                onAdd={program === null ? undefined : () => void create("suite")}
-                disabled={busy}
-                empty={program === null ? "Pick a program first." : "No suites yet."}
-              >
-                {(program?.suites ?? []).map((item) => (
-                  <Row
-                    key={item.id}
-                    active={item.id === suiteId}
-                    label={item.name}
-                    hint={`${item.prompts.length} item${item.prompts.length === 1 ? "" : "s"}`}
-                    onClick={() => {
-                      setSuiteId(item.id);
-                      setPromptId(null);
-                    }}
-                  />
-                ))}
-              </Column>
-              <Column
-                title="Work items"
-                count={suite?.prompts.length ?? 0}
-                onAdd={suite === null ? undefined : () => void create("prompt")}
-                disabled={busy}
-                empty={suite === null ? "Pick a suite first." : "No work items yet."}
-              >
-                {(suite?.prompts ?? []).map((item) => (
-                  <Row
-                    key={item.id}
-                    active={item.id === promptId}
-                    label={item.title}
-                    prefix={item.externalKey}
-                    hint={item.status.toLowerCase()}
-                    onClick={() => setPromptId(item.id)}
-                  />
-                ))}
-              </Column>
-            </div>
+            <div className="mt-5 grid min-h-[32rem] grid-cols-1 overflow-hidden rounded-panel border border-line bg-surface-1 lg:grid-cols-[21rem_minmax(0,1fr)]">
+              <DirectoryTree
+                tree={tree}
+                instructionField={instructionField}
+                programId={programId}
+                suiteId={suiteId}
+                promptId={promptId}
+                expandedPrograms={expandedPrograms}
+                expandedSuites={expandedSuites}
+                expandedPrompts={expandedPrompts}
+                busy={busy}
+                onAddProgram={() => void create("program")}
+                onAddSuite={(id) => void create("suite", id)}
+                onAddPrompt={(id) => void create("prompt", id)}
+                onInstruction={(field) => {
+                  setInstructionField(field);
+                  setProgramId(null);
+                  setSuiteId(null);
+                  setPromptId(null);
+                }}
+                onProgram={(id) => {
+                  setInstructionField(null);
+                  setProgramId(id);
+                  setSuiteId(null);
+                  setPromptId(null);
+                  toggleProgram(id);
+                }}
+                onSuite={(parentId, id) => {
+                  setInstructionField(null);
+                  setProgramId(parentId);
+                  setSuiteId(id);
+                  setPromptId(null);
+                  setExpandedPrograms((current) => new Set(current).add(parentId));
+                  toggleSuite(id);
+                }}
+                onPrompt={(parentProgramId, parentSuiteId, id) => {
+                  setInstructionField(null);
+                  setProgramId(parentProgramId);
+                  setSuiteId(parentSuiteId);
+                  setPromptId(id);
+                  setExpandedPrograms((current) => new Set(current).add(parentProgramId));
+                  setExpandedSuites((current) => new Set(current).add(parentSuiteId));
+                }}
+                onTogglePrompt={togglePrompt}
+              />
 
-            <div className="mt-4">
-              {prompt !== null ? (
+              <div className="min-w-0 border-t border-line bg-surface-0/40 p-4 sm:p-6 lg:border-l lg:border-t-0">
+              {instructionField !== null ? (
+                <InstructionEditor
+                  key={`${tree.id}:${instructionField}:${tree.updatedAt}`}
+                  field={instructionField}
+                  value={tree[instructionField]}
+                  updatedAt={tree.updatedAt}
+                  busy={busy}
+                  onSave={(content) =>
+                    void act(
+                      () => workspaceApi.update(serverUrl, tree.id, { [instructionField]: content }),
+                      `${instructionField === "claudeMd" ? "CLAUDE.md" : "AGENTS.md"} saved`,
+                    )
+                  }
+                />
+              ) : prompt !== null ? (
                 <PromptEditor
                   key={`${prompt.id}:${prompt.updatedAt}`}
                   value={prompt}
@@ -339,8 +366,9 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
                   onDelete={() => void removeChild("program", program.id, program.name)}
                 />
               ) : (
-                <p className="text-sm text-fg-dim">Select an item above to edit its details.</p>
+                <EmptyDetail />
               )}
+              </div>
             </div>
           </>
         )}
@@ -366,69 +394,210 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   );
 }
 
-function Column({
-  title,
-  count,
-  onAdd,
-  disabled,
-  empty = "Nothing here yet.",
-  children,
+function toggleSet(current: Set<number>, id: number) {
+  const next = new Set(current);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+function DirectoryTree({
+  tree, instructionField, programId, suiteId, promptId, expandedPrograms, expandedSuites, expandedPrompts, busy,
+  onAddProgram, onAddSuite, onAddPrompt, onInstruction, onProgram, onSuite, onPrompt, onTogglePrompt,
 }: {
-  title: string;
-  count: number;
-  onAdd?: () => void;
-  disabled: boolean;
-  empty?: string;
-  children: React.ReactNode[];
+  tree: WorkspaceTree;
+  instructionField: InstructionField | null;
+  programId: number | null;
+  suiteId: number | null;
+  promptId: number | null;
+  expandedPrograms: Set<number>;
+  expandedSuites: Set<number>;
+  expandedPrompts: Set<number>;
+  busy: boolean;
+  onAddProgram(): void;
+  onAddSuite(programId: number): void;
+  onAddPrompt(suiteId: number): void;
+  onInstruction(field: InstructionField): void;
+  onProgram(id: number): void;
+  onSuite(programId: number, id: number): void;
+  onPrompt(programId: number, suiteId: number, id: number): void;
+  onTogglePrompt(id: number): void;
 }) {
+  const renderPrompt = (prompt: PromptRecord, programId: number, suiteId: number, level: number): React.ReactNode => {
+    const children = tree.programs.find((item) => item.id === programId)?.suites.find((item) => item.id === suiteId)?.prompts.filter((item) => item.parentPromptId === prompt.id) ?? [];
+    const open = expandedPrompts.has(prompt.id);
+    return <div key={prompt.id} role="treeitem" aria-expanded={children.length > 0 ? open : undefined} aria-selected={prompt.id === promptId}>
+      <TreeRow level={level} active={prompt.id === promptId} expanded={open} leaf={children.length === 0}
+        icon={<DocumentIcon className="size-4 text-accent" />} label={prompt.title}
+        meta={prompt.externalKey ?? undefined} status={prompt.status}
+        onClick={() => {
+          onPrompt(programId, suiteId, prompt.id);
+          if (children.length > 0) onTogglePrompt(prompt.id);
+        }} />
+      {open && children.length > 0 && <div role="group">{children.map((child) => renderPrompt(child, programId, suiteId, level + 1))}</div>}
+    </div>;
+  };
+
   return (
-    <div className="flex min-h-0 flex-col overflow-hidden rounded-panel border border-line bg-surface-1">
-      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
-        <span className="text-xs font-medium text-fg-muted">
-          {title} <span className="text-fg-dim">{count}</span>
-        </span>
-        <Button size="sm" variant="ghost" disabled={onAdd === undefined || disabled} onClick={onAdd}>
-          + Add
-        </Button>
+    <aside className="flex min-h-[24rem] flex-col bg-surface-1">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div>
+          <h2 className="text-xs font-semibold text-fg">Project directory</h2>
+          <p className="mt-0.5 text-[10px] text-fg-dim">{tree.programs.length} program{tree.programs.length === 1 ? "" : "s"}</p>
+        </div>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={onAddProgram}>+ Program</Button>
       </div>
-      <div className="max-h-80 overflow-y-auto p-2">
-        {children.length === 0 ? <p className="px-1 py-2 text-xs text-fg-dim">{empty}</p> : children}
+      <div className="min-h-0 flex-1 overflow-y-auto p-2" role="tree" aria-label={`${tree.name} contents`}>
+        <div className="mb-2 border-b border-line pb-2">
+          <TreeRow level={0} active={instructionField === "claudeMd"} leaf
+            icon={<DocumentIcon className="size-4 text-accent" />} label="CLAUDE.md"
+            onClick={() => onInstruction("claudeMd")} />
+          <TreeRow level={0} active={instructionField === "agentsMd"} leaf
+            icon={<DocumentIcon className="size-4 text-accent" />} label="AGENTS.md"
+            onClick={() => onInstruction("agentsMd")} />
+        </div>
+        {tree.programs.length === 0 ? (
+          <div className="m-2 rounded-md border border-dashed border-line p-5 text-center">
+            <FolderIcon className="mx-auto mb-2 size-7 text-fg-dim" />
+          <p className="text-xs text-fg-muted">No programs yet.</p>
+            <button type="button" className="mt-2 text-xs text-accent hover:underline" onClick={onAddProgram}>Create a program</button>
+          </div>
+        ) : tree.programs.map((program) => {
+          const programOpen = expandedPrograms.has(program.id);
+          return (
+            <div key={program.id} role="treeitem" aria-expanded={programOpen} aria-selected={program.id === programId && suiteId === null}>
+              <TreeRow level={0} active={program.id === programId && suiteId === null} expanded={programOpen}
+                icon={<FolderIcon className="size-4 text-info" />} label={program.name}
+                meta={`${program.suites.length}`} onClick={() => onProgram(program.id)} />
+              {programOpen && <div role="group">
+                {program.suites.map((suite) => {
+                  const suiteOpen = expandedSuites.has(suite.id);
+                  return <div key={suite.id} role="treeitem" aria-expanded={suiteOpen} aria-selected={suite.id === suiteId && promptId === null}>
+                    <TreeRow level={1} active={suite.id === suiteId && promptId === null} expanded={suiteOpen}
+                      icon={<StackIcon className="size-4 text-violet" />} label={suite.name}
+                      meta={`${suite.prompts.length}`} onClick={() => onSuite(program.id, suite.id)} />
+                    {suiteOpen && <div role="group">
+                      {suite.prompts.filter((prompt) => prompt.parentPromptId === null).map((prompt) => renderPrompt(prompt, program.id, suite.id, 2))}
+                      <TreeAdd level={2} label="New work item" disabled={busy} onClick={() => {
+                        onAddPrompt(suite.id);
+                      }} />
+                    </div>}
+                  </div>;
+                })}
+                <TreeAdd level={1} label="New suite" disabled={busy} onClick={() => {
+                  onAddSuite(program.id);
+                }} />
+              </div>}
+            </div>
+          );
+        })}
       </div>
-    </div>
+    </aside>
   );
 }
 
-function Row({
-  active,
-  label,
-  prefix,
-  hint,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  prefix?: string | null;
-  hint?: string;
-  onClick(): void;
+function TreeRow({ level, active, expanded, leaf = false, icon, label, meta, status, onClick }: {
+  level: number; active: boolean; expanded?: boolean; leaf?: boolean; icon: React.ReactNode;
+  label: string; meta?: string; status?: PromptRecord["status"]; onClick(): void;
 }) {
+  return <button type="button" onClick={onClick} aria-current={active ? "page" : undefined}
+    style={{ paddingLeft: `${0.5 + level * 1.25}rem` }}
+    className={cn("group mb-0.5 flex w-full items-center gap-2 rounded-md py-2 pr-2 text-left transition-colors",
+      active ? "bg-surface-3 text-fg shadow-sm" : "text-fg-muted hover:bg-surface-2 hover:text-fg")}>
+    <ChevronIcon className={cn("size-3 shrink-0 transition-transform", leaf && "invisible", expanded && "rotate-90")} />
+    <span className="shrink-0">{icon}</span>
+    <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{label}</span>
+    {status !== undefined && <span className={cn("size-1.5 shrink-0 rounded-full", status === "DONE" ? "bg-success" : status === "BLOCKED" ? "bg-warning" : status === "IN_PROGRESS" ? "bg-info" : "bg-fg-dim")} title={status.toLowerCase()} />}
+    {meta && <span className="shrink-0 text-[9px] tabular-nums text-fg-dim">{meta}</span>}
+  </button>;
+}
+
+function TreeAdd({ level, label, disabled, onClick }: { level: number; label: string; disabled: boolean; onClick(): void }) {
+  return <button type="button" disabled={disabled} onClick={onClick} style={{ paddingLeft: `${2.25 + level * 1.25}rem` }}
+    className="mb-0.5 flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-[11px] text-fg-dim hover:bg-surface-2 hover:text-accent disabled:opacity-40">
+    <span className="text-sm leading-none">+</span>{label}
+  </button>;
+}
+
+function EmptyDetail() {
+  return <div className="flex min-h-[26rem] flex-col items-center justify-center text-center">
+    <DocumentIcon className="mb-3 size-9 text-fg-dim" />
+    <h2 className="text-sm font-medium text-fg">Select something to view</h2>
+    <p className="mt-1 max-w-xs text-xs leading-relaxed text-fg-dim">Choose a program, suite, or work item from the directory to view and edit its details.</p>
+  </div>;
+}
+
+function InstructionEditor({
+  field,
+  value,
+  updatedAt,
+  busy,
+  onSave,
+}: {
+  field: InstructionField;
+  value: string;
+  updatedAt: string;
+  busy: boolean;
+  onSave(content: string): void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  const name = field === "claudeMd" ? "CLAUDE.md" : "AGENTS.md";
+  const providerHint = field === "claudeMd" ? "Read by Claude Code." : "Read by Codex, Cursor, and Grok.";
+  const dirty = draft !== value;
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-current={active ? "true" : undefined}
-      className={cn(
-        "mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
-        active ? "bg-surface-3 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
-      )}
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave(draft);
+      }}
+      className="overflow-hidden rounded-panel border border-line bg-surface-1 shadow-[var(--shadow-panel)]"
     >
-      {prefix != null && prefix !== "" && (
-        <span className="shrink-0 text-[11px] font-semibold text-fg-dim">{prefix}</span>
+      <header className="border-b border-line bg-surface-1 px-5 py-4 sm:px-7 sm:py-5">
+        <div className="mb-2 flex items-center gap-2">
+          <DocumentIcon className="size-4 text-accent" />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-dim">Repository instructions</span>
+        </div>
+        <h2 className="text-lg font-semibold tracking-tight text-fg sm:text-xl">{name}</h2>
+        <p className="mt-1 text-xs text-fg-dim">{providerHint} Stored with this workspace and written to the project root before each run.</p>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="inline-flex rounded-md border border-line bg-surface-0 p-0.5" aria-label="Document mode">
+            <ModeButton active={mode === "view"} onClick={() => setMode("view")}>View</ModeButton>
+            <ModeButton active={mode === "edit"} onClick={() => setMode("edit")}>Edit</ModeButton>
+          </div>
+          <span className="text-[10px] text-fg-dim">Updated {formatDate(updatedAt)}</span>
+        </div>
+      </header>
+
+      {mode === "view" ? (
+        <article className="prompt-document min-h-[24rem] bg-surface-0/35 px-5 py-7 sm:px-8 lg:px-10">
+          {draft.trim() === "" ? <p className="text-sm italic text-fg-dim">No instructions have been written yet.</p> : <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>}
+        </article>
+      ) : (
+        <div className="p-5 sm:p-7">
+          <TextArea label="Instruction" rows={18} className="font-terminal"
+            hint="Markdown is rendered in View mode. Saving updates the file used by future agent runs."
+            value={draft} onChange={(event) => setDraft(event.target.value)} />
+        </div>
       )}
-      <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
-      {hint !== undefined && <span className="shrink-0 text-[10px] text-fg-dim">{hint}</span>}
-    </button>
+
+      <div className="flex flex-wrap items-center gap-3 border-t border-line bg-surface-1 px-5 py-3 sm:px-7">
+        {mode === "view" ? (
+          <Button variant="secondary" onClick={() => setMode("edit")}>Edit {name}</Button>
+        ) : (
+          <Button type="submit" variant="primary" disabled={!dirty} loading={busy}>Save changes</Button>
+        )}
+        {dirty && <span className="text-[11px] text-warning">unsaved changes</span>}
+      </div>
+    </form>
   );
 }
+
+function ChevronIcon({ className }: { className?: string }) { return <svg viewBox="0 0 16 16" fill="none" className={className} aria-hidden="true"><path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>; }
+function FolderIcon({ className }: { className?: string }) { return <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true"><path d="M2.5 5.25A1.75 1.75 0 0 1 4.25 3.5h3l1.5 1.75h7A1.75 1.75 0 0 1 17.5 7v7.25A1.75 1.75 0 0 1 15.75 16h-11A2.25 2.25 0 0 1 2.5 13.75v-8.5Z" fill="currentColor" opacity=".22"/><path d="M2.5 6.5h15M2.5 5.25A1.75 1.75 0 0 1 4.25 3.5h3l1.5 1.75h7A1.75 1.75 0 0 1 17.5 7v7.25A1.75 1.75 0 0 1 15.75 16h-11A2.25 2.25 0 0 1 2.5 13.75v-8.5Z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round"/></svg>; }
+function StackIcon({ className }: { className?: string }) { return <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true"><path d="m10 2.75 7.25 3.75L10 10.25 2.75 6.5 10 2.75Z" fill="currentColor" opacity=".2"/><path d="m3 10 7 3.5 7-3.5M3 13.5l7 3.5 7-3.5M2.75 6.5 10 2.75l7.25 3.75L10 10.25 2.75 6.5Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
+function DocumentIcon({ className }: { className?: string }) { return <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true"><path d="M5 2.5h6l4 4v11H5v-15Z" fill="currentColor" opacity=".16"/><path d="M11 2.5H5v15h10v-11m-4-4 4 4m-4-4v4h4M7.5 10h5M7.5 13h5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
 
 function CreateWorkspaceDialog({
   open,
@@ -549,11 +718,12 @@ function WorkspaceEditor({
           label="Standing instructions"
           fieldClassName="md:col-span-2"
           rows={3}
-          hint="Prepended to every custom prompt run in this workspace."
+          hint="Program context. Rendered into every work-item run in this workspace."
           value={draft.description}
           onChange={(event) => setDraft({ ...draft, description: event.target.value })}
         />
       </div>
+
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <Button type="submit" variant="primary" disabled={!dirty} loading={busy}>
           Save workspace
@@ -628,6 +798,7 @@ function PromptEditor({
   onDelete(): void;
 }) {
   const [draft, setDraft] = useState({ title: value.title, content: value.content });
+  const [mode, setMode] = useState<"view" | "edit">("view");
   const dirty = draft.title !== value.title || draft.content !== value.content;
 
   return (
@@ -636,41 +807,85 @@ function PromptEditor({
         event.preventDefault();
         onSave(draft);
       }}
-      className="space-y-4 rounded-panel border border-line bg-surface-1 p-4"
+      className="overflow-hidden rounded-panel border border-line bg-surface-1 shadow-[var(--shadow-panel)]"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={value.status === "DONE" ? "success" : value.status === "BLOCKED" ? "warning" : "neutral"}>
-          {value.status.toLowerCase()}
-        </Badge>
-        {value.externalKey !== null && <span className="text-xs text-fg-dim">{value.externalKey}</span>}
-        {value.result !== "" && (
-          <span className="min-w-0 truncate text-xs text-fg-dim" title={value.result}>
-            {value.result}
-          </span>
+      <header className="border-b border-line bg-surface-1 px-5 py-4 sm:px-7 sm:py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <DocumentIcon className="size-4 text-accent" />
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-dim">Work item</span>
+              {value.externalKey !== null && <span className="font-mono text-[10px] text-fg-dim">{value.externalKey}</span>}
+            </div>
+            <h2 className="text-lg font-semibold tracking-tight text-fg sm:text-xl">{draft.title || "Untitled work item"}</h2>
+          </div>
+          <Badge tone={value.status === "DONE" ? "success" : value.status === "BLOCKED" ? "warning" : "neutral"}>
+            {value.status.toLowerCase().replace("_", " ")}
+          </Badge>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="inline-flex rounded-md border border-line bg-surface-0 p-0.5" aria-label="Document mode">
+            <ModeButton active={mode === "view"} onClick={() => setMode("view")}>View</ModeButton>
+            <ModeButton active={mode === "edit"} onClick={() => setMode("edit")}>Edit</ModeButton>
+          </div>
+          <span className="text-[10px] text-fg-dim">Updated {formatDate(value.updatedAt)}</span>
+        </div>
+      </header>
+
+      {mode === "view" ? (
+        <article className="prompt-document min-h-[24rem] bg-surface-0/35 px-5 py-7 sm:px-8 lg:px-10">
+          {draft.content.trim() === "" ? (
+            <p className="text-sm italic text-fg-dim">No instructions have been written yet.</p>
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.content}</ReactMarkdown>
+          )}
+        </article>
+      ) : (
+        <div className="space-y-5 p-5 sm:p-7">
+          <TextInput
+            label="Title"
+            value={draft.title}
+            onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+          />
+          <TextArea
+            label="Instruction"
+            rows={16}
+            className="font-terminal"
+            hint="Markdown is rendered in View mode and fetched by the agent at run time."
+            value={draft.content}
+            onChange={(event) => setDraft({ ...draft, content: event.target.value })}
+          />
+        </div>
+      )}
+
+      {value.result !== "" && mode === "view" && (
+        <div className="border-t border-line bg-surface-2/50 px-5 py-4 sm:px-8">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">Latest result</p>
+          <p className="text-xs leading-relaxed text-fg-muted">{value.result}</p>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-3 border-t border-line bg-surface-1 px-5 py-3 sm:px-7">
+        {mode === "view" ? (
+          <Button variant="secondary" onClick={() => setMode("edit")}>Edit work item</Button>
+        ) : (
+          <Button type="submit" variant="primary" disabled={!dirty} loading={busy}>Save changes</Button>
         )}
-      </div>
-      <TextInput
-        label="Title"
-        value={draft.title}
-        onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-      />
-      <TextArea
-        label="Instruction"
-        rows={12}
-        className="font-terminal"
-        hint="Markdown. The agent fetches this from the database at run time."
-        value={draft.content}
-        onChange={(event) => setDraft({ ...draft, content: event.target.value })}
-      />
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" variant="primary" disabled={!dirty} loading={busy}>
-          Save work item
-        </Button>
         {dirty && <span className="text-[11px] text-warning">unsaved changes</span>}
-        <Button variant="ghost" className="ml-auto text-danger" onClick={onDelete}>
-          Delete
-        </Button>
+        <Button variant="ghost" className="ml-auto text-danger" onClick={onDelete}>Delete</Button>
       </div>
     </form>
   );
+}
+
+function ModeButton({ active, onClick, children }: { active: boolean; onClick(): void; children: React.ReactNode }) {
+  return <button type="button" aria-pressed={active} onClick={onClick}
+    className={cn("rounded px-3 py-1 text-[11px] font-medium transition-colors", active ? "bg-surface-3 text-fg shadow-sm" : "text-fg-dim hover:text-fg")}>
+    {children}
+  </button>;
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "recently";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }

@@ -3,6 +3,7 @@ import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
+import { settings } from "./settings.ts";
 import type { StartExecuteArgs } from "./runService.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -121,6 +122,7 @@ async function syncNamedFromSuite(suiteRun: SuitePipelineRun): Promise<void> {
     workspaces.updateNamedPipelineRun(parent.id, {
       state: suiteRun.state,
       stopReason: suiteRun.stopReason,
+      waitReason: suiteRun.waitReason,
       endedAt: null,
       currentSuiteId: suiteRun.suiteId,
       currentSuiteRunId: suiteRun.id,
@@ -225,30 +227,79 @@ async function applyOnDone(pipeline: SuitePipelineRun, rule: PromptPipelineRule)
   return advance(pipeline);
 }
 
-async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string): Promise<SuitePipelineRun> {
+/** Park the run for a human, recording why without pretending it ended. */
+async function park(pipeline: SuitePipelineRun, promptId: number, waitReason: string | null): Promise<SuitePipelineRun> {
+  log.info(`wait suite=${pipeline.suiteId} prompt=${promptId} reason=${waitReason ?? "station_rule"}`);
+  const updated = workspaces.updatePipelineRun(pipeline.id, {
+    state: "WAITING_HUMAN",
+    currentRunId: null,
+    stopReason: null,
+    waitReason,
+    endedAt: null,
+  });
+  await syncNamedFromSuite(updated);
+  return updated;
+}
+
+/**
+ * Summon a read-only handoff agent for a station that blocked, instead of just
+ * parking. The run still parks — the handoff decides what happens next: on
+ * CONTINUE it resets the station to TODO and plays this pipeline again, and on
+ * anything else the run simply stays parked for a human.
+ *
+ * Returns false when no handoff could start, so the caller parks normally
+ * rather than claiming one is running.
+ */
+async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sourceRunId: string): Promise<boolean> {
+  try {
+    const source = workspaces.runSummary(sourceRunId);
+    const { scheduleHandoff } = await import("./handoffCoordinator.ts");
+    const namedPipelineId = namedPipelineIdFor(pipeline);
+    return await scheduleHandoff({
+      workspaceId: pipeline.workspaceId,
+      promptId,
+      sourceRunId,
+      sourceProvider: source.provider,
+      sourceModel: source.model,
+      processState: "done",
+      ...(namedPipelineId === undefined ? {} : { namedPipelineId }),
+    });
+  } catch (error) {
+    log.warn(`auto-handoff failed suite=${pipeline.suiteId} prompt=${promptId}`, error);
+    return false;
+  }
+}
+
+async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string): Promise<SuitePipelineRun> {
+  // A paused run must not spend an attempt. Retry and recover both mutate the
+  // prompt and the counter before starting anything, so the hold is checked
+  // here rather than after those writes — otherwise pausing on a blocked
+  // station silently burned a retry the operator never saw run.
+  const held = workspaces.pipelineById(pipeline.id)?.state === "PAUSED";
+
   if (rule.onBlocked === "wait") {
-    log.info(`wait suite=${pipeline.suiteId} prompt=${promptId}`);
-    const updated = workspaces.updatePipelineRun(pipeline.id, { state: "WAITING_HUMAN", currentRunId: null, stopReason: null, endedAt: null });
-    await syncNamedFromSuite(updated);
-    return updated;
+    if (settings.pipelinePolicy.autoHandoffOnBlocked && sourceRunId !== undefined && !held) {
+      if (await tryAutoHandoff(pipeline, promptId, sourceRunId)) {
+        return park(pipeline, promptId, "handoff_running");
+      }
+    }
+    return park(pipeline, promptId, null);
   }
   if (rule.onBlocked === "retry") {
     if (pipeline.attempt < rule.retryLimit) {
+      if (held) return workspaces.pipelineById(pipeline.id) ?? pipeline;
       const attempt = pipeline.attempt + 1;
       log.info(`retry ${attempt}/${rule.retryLimit} suite=${pipeline.suiteId} prompt=${promptId}`);
       workspaces.resetPromptToTodo(promptId, `pipeline retry ${attempt}/${rule.retryLimit}`);
       const updated = workspaces.updatePipelineRun(pipeline.id, { attempt, recovering: false, currentPromptId: promptId, currentRunId: null });
-      if (updated.state === "PAUSED") return updated;
       return startCurrentStation(updated, promptId);
     }
     if (processFailureBlocked(result)) return terminate(pipeline, "STOPPED", "retry_exhausted");
-    log.info(`retry_exhausted waiting suite=${pipeline.suiteId} prompt=${promptId}`);
-    const waiting = workspaces.updatePipelineRun(pipeline.id, { state: "WAITING_HUMAN", currentRunId: null, stopReason: "retry_exhausted", endedAt: null });
-    await syncNamedFromSuite(waiting);
-    return waiting;
+    return park(pipeline, promptId, "retry_exhausted");
   }
   if (rule.onBlocked === "recover") {
     if (!pipeline.recovering) {
+      if (held) return workspaces.pipelineById(pipeline.id) ?? pipeline;
       log.info(`recover suite=${pipeline.suiteId} prompt=${promptId}`);
       workspaces.resetPromptToTodo(promptId, "pipeline recover");
       const updated = workspaces.updatePipelineRun(pipeline.id, {
@@ -257,7 +308,6 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
         currentPromptId: promptId,
         currentRunId: null,
       });
-      if (updated.state === "PAUSED") return updated;
       return startCurrentStation(updated, promptId);
     }
     log.info(`recover_exhausted suite=${pipeline.suiteId} prompt=${promptId}`);
@@ -292,7 +342,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
       return;
     }
     if (posted.status === "BLOCKED") {
-      await applyOnBlocked(live, rule, promptId, posted.result);
+      await applyOnBlocked(live, rule, promptId, posted.result, runId);
       return;
     }
     await terminate(live, "STOPPED", `unexpected_status:${posted.status}`);
@@ -303,7 +353,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     return;
   }
   if (posted.status === "BLOCKED") {
-    await applyOnBlocked(live, rule, promptId, posted.result);
+    await applyOnBlocked(live, rule, promptId, posted.result, runId);
     return;
   }
   if (posted.status === "SKIPPED") {
@@ -314,10 +364,11 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
 }
 
 async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined, preferPlayTarget = false): Promise<SuitePipelineRun> {
-  const patch: { state: "PLAYING"; playProvider?: ProviderId | null; playModel?: string | null; endedAt: null; stopReason: null } = {
+  const patch: { state: "PLAYING"; playProvider?: ProviderId | null; playModel?: string | null; endedAt: null; stopReason: null; waitReason: null } = {
     state: "PLAYING",
     endedAt: null,
     stopReason: null,
+    waitReason: null,
   };
   if (playProvider !== undefined) patch.playProvider = playProvider;
   if (playModel !== undefined) patch.playModel = playModel;
@@ -423,6 +474,16 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
       throw new WorkspaceError(422, "nothing_ready", notReadyReason(suite.workspaceId, blocking, descendant?.id ?? null));
     }
   }
+  // `resumeSameRun`: an interrupted run is not "active", so it would otherwise be
+  // abandoned in favour of a fresh one. Adopting it keeps the attempt counter and
+  // the station it was holding, which is the whole point of the policy.
+  if (settings.pipelinePolicy.onRestart === "resumeSameRun") {
+    const latest = workspaces.latestPipeline(suiteId);
+    if (latest !== null && latest.state === "INTERRUPTED" && (namedRunId === null || latest.pipelineRunId === namedRunId)) {
+      log.info(`adopt interrupted suite=${suiteId} pipeline=${latest.id}`);
+      return resume(latest, playProvider, playModel, preferPlayTarget);
+    }
+  }
   const created = workspaces.createPipelineRun({
     id: newId("pipe"),
     suiteId,
@@ -435,22 +496,30 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   return advance(created, preferPlayTarget);
 }
 
-async function pauseSuiteUnlocked(suiteId: number): Promise<SuitePipelineRun> {
+/**
+ * Pause holds the rail. Under the `immediate` policy it also interrupts the
+ * agent working right now — the difference from Stop being that the run stays
+ * PAUSED, and so still resumable, rather than becoming terminal.
+ */
+async function pauseSuiteUnlocked(suiteId: number): Promise<{ paused: SuitePipelineRun; interruptId: string | null }> {
   const active = workspaces.activePipeline(suiteId);
   if (active === null || active.state !== "PLAYING") {
     throw new WorkspaceError(409, "pipeline_not_playing", "Pause requires a playing pipeline");
   }
-  log.info(`pause suite=${suiteId}`);
+  const immediate = settings.pipelinePolicy.pauseMode === "immediate";
+  log.info(`pause suite=${suiteId} mode=${immediate ? "immediate" : "graceful"}`);
   const updated = workspaces.updatePipelineRun(active.id, { state: "PAUSED" });
   await syncNamedFromSuite(updated);
-  return updated;
+  return { paused: updated, interruptId: immediate ? active.currentRunId : null };
 }
 
 async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipelineRun; interruptId: string | null }> {
   const active = workspaces.activePipeline(suiteId);
   if (active === null) throw new WorkspaceError(409, "pipeline_not_active", "No active pipeline to stop");
-  const interruptId = active.currentRunId;
-  log.info(`stop suite=${suiteId}`);
+  // With `stopInterruptsAgent` off, Stop only ends auto-advance: the agent
+  // already working keeps its station and finishes on its own.
+  const interruptId = settings.pipelinePolicy.stopInterruptsAgent ? active.currentRunId : null;
+  log.info(`stop suite=${suiteId} interrupt=${interruptId !== null}`);
   const stopped = workspaces.updatePipelineRun(active.id, {
     state: "STOPPED",
     stopReason: "operator_stop",
@@ -564,7 +633,14 @@ export const pipelineScheduler = {
 
   async pause(suiteId: number): Promise<SuitePipelineRun> {
     const suite = workspaces.suiteHeader(suiteId);
-    return enqueue(suite.workspaceId, () => pauseSuiteUnlocked(suiteId));
+    let interruptId: string | null = null;
+    const paused = await enqueue(suite.workspaceId, async () => {
+      const result = await pauseSuiteUnlocked(suiteId);
+      interruptId = result.interruptId;
+      return result.paused;
+    });
+    if (interruptId !== null) await runHub.stop(interruptId);
+    return paused;
   },
 
   async stop(suiteId: number): Promise<SuitePipelineRun> {
@@ -592,7 +668,8 @@ export const pipelineScheduler = {
         throw new WorkspaceError(409, "pipeline_not_playing", "Pause requires a playing pipeline");
       }
       if (active.currentSuiteId !== null) {
-        await pauseSuiteUnlocked(active.currentSuiteId);
+        const result = await pauseSuiteUnlocked(active.currentSuiteId);
+        if (result.interruptId !== null) await runHub.stop(result.interruptId);
       } else {
         workspaces.updateNamedPipelineRun(active.id, { state: "PAUSED" });
       }
@@ -640,7 +717,7 @@ export const pipelineScheduler = {
     await enqueue(home.workspaceId, async () => {
       const active = workspaces.activePipeline(home.suiteId);
       if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
-      const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, endedAt: null });
+      const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
       await syncNamedFromSuite(playing);
       const live = workspaces.pipelineById(playing.id);
       if (live === null) return;

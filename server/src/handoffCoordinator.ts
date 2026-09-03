@@ -3,12 +3,15 @@ import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
+import { settings } from "./settings.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { materialize } from "./workspaceInstructions.ts";
+import { WorkspaceError, workspaces, type RunCostMetrics } from "./workspaces.ts";
 
 const log=createLogger("handoff");
-const MAX_GENERATIONS=3;
+/** Operator-settable; see the "Pipeline policy" settings group. */
+function maxGenerations():number{return settings.pipelinePolicy.maxHandoffGenerations;}
 
 function list(value:unknown):string[]{return Array.isArray(value)?value.filter((item):item is string=>typeof item==="string").slice(0,30):[];}
 function parseBrief(text:string,originalObjective:string,terminationReason:string):HandoffBrief {
@@ -36,7 +39,7 @@ export async function scheduleHandoff(args:{workspaceId:number;promptId:number;s
   if(outcome.status==="DONE"||outcome.status==="SKIPPED")return false;
   const previous=workspaces.handoffsForPrompt(args.promptId);
   const priorForRun=previous.find(item=>item.sourceRunId===args.sourceRunId);
-  if((priorForRun!==undefined&&priorForRun.state!=="FAILED")||(priorForRun===undefined&&previous.length>=MAX_GENERATIONS))return false;
+  if((priorForRun!==undefined&&priorForRun.state!=="FAILED")||(priorForRun===undefined&&previous.length>=maxGenerations()))return false;
   const provider=await providerFor(args.handoffProvider??args.sourceProvider);if(provider===null){log.warn(`requested read-only provider unavailable prompt=${args.promptId}`);return false;}
   const handoffModel=args.handoffModel??(provider===args.sourceProvider?args.sourceModel:null);
   const id=priorForRun?.id??newId("handoff");const record=priorForRun===undefined?workspaces.createHandoff({id,workspaceId:args.workspaceId,promptId:args.promptId,sourceRunId:args.sourceRunId,provider,model:handoffModel}):workspaces.updateHandoff(id,{state:"QUEUED",handoffRunId:null,recommendation:null,brief:null,briefMarkdown:"",error:null,completedAt:null});
@@ -46,7 +49,8 @@ export async function scheduleHandoff(args:{workspaceId:number;promptId:number;s
   const dossier=workspaces.handoffDossier(args.workspaceId,args.promptId,args.sourceRunId);
   const prompt=`You are a read-only handoff agent. You cannot edit files or orchestration state. Convert the authoritative dossier below into a compact continuation brief so a developer agent can resume without reconstructing prior work. Distinguish a real external human dependency from incomplete implementation. Return one JSON object only with keys: originalObjective, terminationReason, completedWork, pendingWork, verificationPassed, verificationFailed, blockers (description, requiresHuman, requiredAction), importantFiles, decisionsAndAssumptions, recommendation (CONTINUE, WAIT_FOR_HUMAN, RETRY_LATER, or DO_NOT_CONTINUE), successorInstructions. Never recommend DONE.\n\nDOSSIER\n${dossier}`;
   let answer="";
-  const handle=startRun({runId,adapter:getAdapter(provider),prompt,cwd:workspaces.get(args.workspaceId).workDirectory,model:handoffModel,role:"handoff",permissionOverride:"handoff",onEvent:event=>{if(event.type==="assistant_text"&&event.payload.kind==="message")answer+=event.payload.text;if(event.type==="result"&&event.payload.text)answer=event.payload.text;workspaces.recordAgentEvent(runId,event);runHub.event(runId,event);},onEnd:(ended,state)=>{void finishHandoff(record.id,ended,state,answer,args).catch(error=>log.error("finish failed",error));}});
+  materialize(workspaces.get(args.workspaceId));
+  const handle=startRun({runId,adapter:getAdapter(provider),prompt,cwd:workspaces.get(args.workspaceId).workDirectory,model:handoffModel,role:"handoff",permissionOverride:"handoff",onEvent:event=>{if(event.type==="assistant_text"&&event.payload.kind==="message")answer+=event.payload.text;if(event.type==="result"&&event.payload.text)answer=event.payload.text;workspaces.recordAgentEvent(runId,event);runHub.event(runId,event);},onEnd:(ended,state,metrics)=>{void finishHandoff(record.id,ended,state,answer,args,metrics).catch(error=>log.error("finish failed",error));}});
   workspaces.markAgentRunRunning(runId);
   const saved=workspaces.resolvePrompt(args.workspaceId,args.promptId);
   runHub.start({handle,workspace:{id:args.workspaceId,name:workspaces.get(args.workspaceId).name,workDirectory:workspaces.get(args.workspaceId).workDirectory},source:{type:"handoff",handoffId:id,promptId:args.promptId,promptKey:saved.externalKey,title:saved.title,sourceRunId:args.sourceRunId},role:"handoff",permissionMode:handle.permissionMode});
@@ -67,8 +71,8 @@ export async function resumeReadyHandoff(args:{handoffId:string;promptId:number;
   workspaces.updateHandoff(record.id,{successorRunId:runId});runHub.operationsChanged();return runId;
 }
 
-async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"error",answer:string,args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<void>{
-  workspaces.finishAgentRun(runId,state);runContexts.complete(runId);runHub.end(runId,state);
+async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"error",answer:string,args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number},metrics?:RunCostMetrics):Promise<void>{
+  workspaces.finishAgentRun(runId,state,"",metrics);runContexts.complete(runId);runHub.end(runId,state);
   if(state!=="done"){workspaces.updateHandoff(id,{state:"FAILED",error:`Handoff agent ended ${state}`,completedAt:new Date().toISOString()});const {pipelineScheduler}=await import("./pipelineScheduler.ts");await pipelineScheduler.onExecuteEnded({runId:args.sourceRunId,workspaceId:args.workspaceId,promptId:args.promptId,processState:args.processState as never});runHub.operationsChanged();return;}
   try{
     const context=workspaces.agentContext(args.workspaceId,args.promptId);const brief=parseBrief(answer,context.prompt.content,`Agent process ended ${args.processState}`);const rendered=markdown(brief);
