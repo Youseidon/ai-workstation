@@ -1,17 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_REVIEWER_CONFIG,
   DEFAULT_STATUS_CATALOG,
   DEFAULT_TRIGGER_SENTENCES,
+  DOD_COMMAND_TIMEOUT_MAX_MS,
+  DOD_CRITERION_KINDS,
+  DOD_ENFORCEMENTS,
+  DOD_ENFORCEMENT_LABEL,
+  DOD_KIND_HINT,
+  DOD_KIND_LABEL,
   OVERLAY_STATUSES,
+  REVIEW_TRIGGERS,
   STATUS_TRIGGERS,
   STEP_DISPLAY_STATUSES,
   STEP_SIGNALS,
   STEP_STATUSES,
   STEP_TRANSITIONS,
+  clampDodTimeout,
   describeTrigger,
   isStepStatus,
   matchStepTransition,
+  reviewTriggerFor,
   rollupStatus,
   statusDefinition,
 } from "./statusModel";
@@ -184,4 +194,98 @@ test("a parent takes the worst outcome among its settled children", () => {
   // to close on its own definition of done rather than inheriting a state.
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, ["DONE", "SKIPPED"]), null);
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, []), null);
+});
+
+/* ------------------------------------------------------------------ */
+/* The definition of done                                              */
+/* ------------------------------------------------------------------ */
+
+test("every kind of criterion says what it is and how it is checked", () => {
+  // A kind an operator cannot tell apart from another is a kind they will pick
+  // wrongly, and the difference here is the whole point: one of the three
+  // cannot be argued with and the other two can.
+  for (const kind of DOD_CRITERION_KINDS) {
+    assert.ok(DOD_KIND_LABEL[kind]?.length > 0, `${kind} has no label`);
+    assert.ok(DOD_KIND_HINT[kind]?.length > 30, `${kind} does not explain how it is checked`);
+  }
+  for (const enforcement of DOD_ENFORCEMENTS) {
+    assert.ok(DOD_ENFORCEMENT_LABEL[enforcement]?.length > 0, `${enforcement} has no label`);
+  }
+});
+
+test("a command timeout cannot exceed what the server will honour", () => {
+  // The cap is a boundary, not tuning: an unbounded criterion is a console that
+  // hangs. The editor and the runner read it from here so they cannot disagree.
+  assert.equal(clampDodTimeout(Number.MAX_SAFE_INTEGER), DOD_COMMAND_TIMEOUT_MAX_MS);
+  assert.equal(clampDodTimeout(-1), 1_000);
+});
+
+/* ------------------------------------------------------------------ */
+/* Which situation a reviewer is sent into                             */
+/* ------------------------------------------------------------------ */
+
+test("every reviewer situation is reachable from some real outcome", () => {
+  // `dodUnmet` and `childFailed` shipped with nothing able to produce them:
+  // NEEDS_REVIEW is where three different problems land, and reading the status
+  // alone could not tell them apart, so two rows of the configuration were
+  // unreachable from any run the app could actually have.
+  const reachable = new Set(
+    [
+      reviewTriggerFor("UNREPORTED"),
+      reviewTriggerFor("FAILED"),
+      reviewTriggerFor("NEEDS_REVIEW", "dod_unmet"),
+      reviewTriggerFor("NEEDS_REVIEW", "dod_command_failed"),
+      reviewTriggerFor("NEEDS_REVIEW", "child_rollup"),
+    ].filter((trigger) => trigger !== null),
+  );
+  for (const trigger of REVIEW_TRIGGERS) {
+    assert.ok(reachable.has(trigger), `nothing can put a work item into the ${trigger} situation`);
+    assert.ok(DEFAULT_REVIEWER_CONFIG[trigger] !== undefined, `${trigger} has no shipped default`);
+  }
+});
+
+test("a question an agent asked is never a situation a reviewer is sent into", () => {
+  // The invariant: BLOCKED means the agent stopped to ask a human something. A
+  // machine reviewing past it would be overruling a request for a human
+  // decision — no trigger, however specific, may make that reachable.
+  assert.equal(reviewTriggerFor("BLOCKED"), null);
+  assert.equal(reviewTriggerFor("BLOCKED", "agent_post"), null);
+  assert.equal(reviewTriggerFor("BLOCKED", "dod_unmet"), null);
+  assert.equal(reviewTriggerFor("DONE"), null);
+  assert.equal(reviewTriggerFor("SKIPPED"), null);
+});
+
+test("NEEDS_REVIEW without a recognised cause asks for a person, not another review", () => {
+  // A reviewer that already said "I cannot tell" is not asked again, and a
+  // reviewer that could not be run at all is an operator's problem.
+  assert.equal(reviewTriggerFor("NEEDS_REVIEW"), null);
+  assert.equal(reviewTriggerFor("NEEDS_REVIEW", "review_unverifiable"), null);
+  assert.equal(reviewTriggerFor("NEEDS_REVIEW", "review_failed"), null);
+  assert.equal(reviewTriggerFor("NEEDS_REVIEW", "operator_override"), null);
+});
+
+test("the rule row an unmet definition of done lands on holds the line", () => {
+  const row = matchStepTransition({ signal: "dod_unmet" });
+  assert.ok(row !== null);
+  // It must not close the item, and it must not claim the work failed: neither
+  // was established. NEEDS_REVIEW is the honest answer and `park` is the honest
+  // next move.
+  assert.equal(row.to, "NEEDS_REVIEW");
+  assert.notEqual(row.to, "DONE");
+  assert.notEqual(row.to, "FAILED");
+  assert.equal(row.next, "park");
+  // The setting it defers to has to be one the rules panel can actually open.
+  assert.equal(row.policy.kind, "setting");
+});
+
+test("every settings key a rule row defers to is one the pipeline policy group has", () => {
+  // `pipeline.dodEnforcement` was named here with no such setting anywhere, so
+  // two rows offered to open a screen that did not exist. The server's field
+  // table is the other half of this and cannot be imported from `shared`, so
+  // this pins the names and `settingsCoverage.test.ts` pins the group.
+  const known = new Set(["pipeline.pauseMode", "pipeline.onRestart", "pipeline.handoffTrigger", "pipeline.dodEnforcement"]);
+  for (const row of STEP_TRANSITIONS) {
+    if (row.policy.kind !== "setting") continue;
+    assert.ok(known.has(row.policy.key), `${row.id} defers to ${row.policy.key}, which is not a known setting`);
+  }
 });

@@ -1,5 +1,5 @@
 import type {
-  StatusDefinition, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+  StatusDefinition, DefinitionOfDone, DodEvaluation, ReviewerConfig, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -30,6 +30,19 @@ export const workspaceApi = {
   statuses(serverUrl:string){return request<{statuses:StatusDefinition[];triggers:Record<string,string>}>(serverUrl,"/api/statuses");},
   patchStatus(serverUrl:string,id:string,value:unknown){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"PATCH",...json(value)}).then(r=>r.status);},
   resetStatus(serverUrl:string,id:string){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"DELETE"}).then(r=>r.status);},
+  /** What a reviewer does in each situation. `prompt` resolves through its scopes. */
+  reviewers(serverUrl:string,promptId?:number){return request<{reviewers:ReviewerConfig[]}>(serverUrl,`/api/reviewers${promptId===undefined?"":`?prompt=${promptId}`}`).then(r=>r.reviewers);},
+  patchReviewer(serverUrl:string,trigger:string,patch:Record<string,unknown>,scope="global",scopeId:number|null=null){return request<{reviewer:ReviewerConfig}>(serverUrl,"/api/reviewers",{method:"PATCH",...json({scope,scopeId,trigger,patch})}).then(r=>r.reviewer);},
+  resetReviewer(serverUrl:string,trigger:string,scope="global",scopeId:number|null=null){return request<{reviewer:ReviewerConfig}>(serverUrl,`/api/reviewers/${trigger}?scope=${scope}${scopeId===null?"":`&scopeId=${scopeId}`}`,{method:"DELETE"}).then(r=>r.reviewer);},
+  /** What a work item is judged against, and how each criterion stands. */
+  definitionOfDone(serverUrl:string,promptId:number){return request<{definitionOfDone:DefinitionOfDone;evaluation:DodEvaluation}>(serverUrl,`/api/prompts/${promptId}/definition-of-done`);},
+  /** Runs the command criteria now. The same execution a close is decided on. */
+  runDefinitionOfDone(serverUrl:string,promptId:number){return request<{definitionOfDone:DefinitionOfDone;evaluation:DodEvaluation}>(serverUrl,`/api/prompts/${promptId}/definition-of-done`,{method:"POST",body:"{}"});},
+  scopeDefinitionOfDone(serverUrl:string,scope:string,scopeId:number){return request<{definitionOfDone:DefinitionOfDone}>(serverUrl,`/api/definition-of-done/${scope}/${scopeId}`).then(r=>r.definitionOfDone);},
+  setDodEnforcement(serverUrl:string,scope:string,scopeId:number,enforcement:string|null){return request<{definitionOfDone:DefinitionOfDone}>(serverUrl,`/api/definition-of-done/${scope}/${scopeId}`,{method:"PATCH",...json({enforcement})}).then(r=>r.definitionOfDone);},
+  addDodCriterion(serverUrl:string,scope:string,scopeId:number,patch:Record<string,unknown>){return request<{definitionOfDone:DefinitionOfDone}>(serverUrl,`/api/definition-of-done/${scope}/${scopeId}`,{method:"POST",...json(patch)}).then(r=>r.definitionOfDone);},
+  patchDodCriterion(serverUrl:string,scope:string,scopeId:number,criterionId:number,patch:Record<string,unknown>){return request<{definitionOfDone:DefinitionOfDone}>(serverUrl,`/api/definition-of-done/${scope}/${scopeId}/criteria/${criterionId}`,{method:"PATCH",...json(patch)}).then(r=>r.definitionOfDone);},
+  removeDodCriterion(serverUrl:string,scope:string,scopeId:number,criterionId:number){return request<{definitionOfDone:DefinitionOfDone}>(serverUrl,`/api/definition-of-done/${scope}/${scopeId}/criteria/${criterionId}`,{method:"DELETE"}).then(r=>r.definitionOfDone);},
   patchTrigger(serverUrl:string,id:string,sentence:string|null){return request<{triggers:Record<string,string>}>(serverUrl,`/api/triggers/${id}`,{method:"PATCH",...json({sentence})}).then(r=>r.triggers);},
   operations(serverUrl:string,workspaceId?:number){return request<OperationsSnapshot>(serverUrl,`/api/operations${workspaceId===undefined?"":`?workspace=${workspaceId}`}`);},
   /** Records a fresh audit of what the orchestration records already claim. */

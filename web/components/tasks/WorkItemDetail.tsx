@@ -11,6 +11,7 @@ import { TextArea } from "@/components/ui/Field";
 import { cn } from "@/lib/cn";
 import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
+import { DefinitionOfDonePanel } from "@/components/pipeline/DefinitionOfDonePanel";
 import { WhyThisStatus } from "./WhyThisStatus";
 
 type DetailTab = "overview" | "sessions" | "activity";
@@ -250,6 +251,12 @@ export function WorkItemDetail({
               triggerSentences={triggerSentences}
             />
 
+            {/* What this item has to satisfy before it closes, and where each
+                criterion currently stands. Directly under "why this status"
+                because when the answer up there is "a criterion did not pass",
+                this is the next thing the operator wants. */}
+            <DefinitionOfDonePanel scope="prompt" scopeId={item.prompt.id} promptId={item.prompt.id} />
+
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>
@@ -341,7 +348,7 @@ export function WorkItemDetail({
                     title={
                       response.trim() === ""
                         ? "Paste the evidence that this work is finished before marking it complete"
-                        : "Record this as DONE without running the agent again"
+                        : "Record this as DONE without running the agent again. Your override is always honoured, including over an unmet definition of done — and is recorded as such."
                     }
                   >
                     Mark complete

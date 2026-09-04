@@ -1,5 +1,7 @@
 "use client";
 
+import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
+import { ReviewerMatrixPanel } from "./ReviewerMatrixPanel";
 import { StatusCatalogPanel } from "./StatusCatalogPanel";
 import type { PipelinePolicy, RuleContext, RulePolicy, TransitionRow } from "@agent-console/shared";
 import { Modal } from "@/components/ui/Modal";
@@ -24,6 +26,7 @@ export function RulesPanel({
   onEditStationRule,
   onEditPolicy,
   onStatusesChanged,
+  suiteId,
 }: {
   open: boolean;
   onClose(): void;
@@ -37,6 +40,12 @@ export function RulesPanel({
   onEditPolicy?(): void;
   /** Re-read the board after a status is renamed, so the change shows at once. */
   onStatusesChanged?(): void;
+  /**
+   * The suite the board is showing, for its definition of done. Omitted when
+   * the board is not on one, in which case the section is left out rather than
+   * shown editing nothing.
+   */
+  suiteId?: number | null;
 }) {
   const controls = [
     ...(status.primary === null ? [] : [{ control: status.primary, primary: true }]),
@@ -120,6 +129,35 @@ export function RulesPanel({
           <StatusCatalogPanel onChanged={onStatusesChanged} />
         </div>
       </section>
+
+      {/* Two rows of the table above defer to these, so they belong in the same
+          dialog: "a reviewer confirmed the work" is decided by the matrix, and
+          "the definition of done was not satisfied" by the criteria. Sending the
+          operator somewhere else to find them is how a rule row ends up pointing
+          at a screen nobody can locate. */}
+      <section className="mt-6 border-t border-line pt-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+          When a reviewer is sent, and what its verdict may do
+        </h3>
+        <div className="mt-2">
+          <ReviewerMatrixPanel />
+        </div>
+      </section>
+
+      {suiteId != null && (
+        <section className="mt-6 border-t border-line pt-4">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+            This suite&rsquo;s definition of done
+          </h3>
+          <p className="mt-1 text-[11px] leading-5 text-fg-dim">
+            Inherited by every work item in the suite that has not written its own. A single item can
+            still say something different on its own detail panel.
+          </p>
+          <div className="mt-2">
+            <DefinitionOfDonePanel scope="suite" scopeId={suiteId} />
+          </div>
+        </section>
+      )}
     </Modal>
   );
 }
