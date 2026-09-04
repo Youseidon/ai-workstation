@@ -1,4 +1,4 @@
-import { isProviderId, type PipelineRun, type PromptPipelineRule, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -255,7 +255,7 @@ async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sour
     const source = workspaces.runSummary(sourceRunId);
     const { scheduleHandoff } = await import("./handoffCoordinator.ts");
     const namedPipelineId = namedPipelineIdFor(pipeline);
-    return await scheduleHandoff({
+    const result = await scheduleHandoff({
       workspaceId: pipeline.workspaceId,
       promptId,
       sourceRunId,
@@ -264,18 +264,66 @@ async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sour
       processState: "done",
       ...(namedPipelineId === undefined ? {} : { namedPipelineId }),
     });
+    return result.started;
   } catch (error) {
     log.warn(`auto-handoff failed suite=${pipeline.suiteId} prompt=${promptId}`, error);
     return false;
   }
 }
 
-async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string): Promise<SuitePipelineRun> {
+/**
+ * Summon a read-only auditor for a station that blocked without any agent ever
+ * posting a status. The distinction is the whole point: that block means "the
+ * process ended and we do not know what happened", which is the one case where
+ * the work may already be finished and only the status post was lost.
+ *
+ * `scheduleCompletionAudit` re-checks that itself and declines otherwise, so a
+ * station that blocked with a real question for a human is never audited past.
+ */
+async function tryCompletionAudit(pipeline: SuitePipelineRun, promptId: number, sourceRunId: string): Promise<boolean> {
+  if (settings.pipelinePolicy.auditOnBlocked === "off") return false;
+  try {
+    const source = workspaces.runSummary(sourceRunId);
+    const { scheduleCompletionAudit } = await import("./completionAudit.ts");
+    const result = await scheduleCompletionAudit({
+      workspaceId: pipeline.workspaceId,
+      promptId,
+      sourceRunId,
+      sourceProvider: source.provider,
+      automatic: true,
+    });
+    return result.started;
+  } catch (error) {
+    log.warn(`audit failed to start suite=${pipeline.suiteId} prompt=${promptId}`, error);
+    return false;
+  }
+}
+
+interface BlockedOptions {
+  /** Set once an audit has already had its say, so the gate cannot loop. */
+  audited?: boolean;
+  /** Wait reason to park under, when the audit explained why we are here. */
+  parkReason?: string | null;
+}
+
+async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string, options: BlockedOptions = {}): Promise<SuitePipelineRun> {
   // A paused run must not spend an attempt. Retry and recover both mutate the
   // prompt and the counter before starting anything, so the hold is checked
   // here rather than after those writes — otherwise pausing on a blocked
   // station silently burned a retry the operator never saw run.
   const held = workspaces.pipelineById(pipeline.id)?.state === "PAUSED";
+
+  // Before any rule runs, find out whether there is anything left to do. Every
+  // rule is the wrong move when the work is already finished: "wait" strands
+  // the rail for hours, and "retry" and "recover" pay another full developer
+  // run to redo work that is sitting in the tree. This gate applies to all of
+  // them — except "skip", where the operator has already said the station's
+  // outcome does not matter.
+  if (!held && !options.audited && sourceRunId !== undefined && rule.onBlocked !== "skip") {
+    if (await tryCompletionAudit(pipeline, promptId, sourceRunId)) {
+      return park(pipeline, promptId, "audit_running");
+    }
+  }
 
   if (rule.onBlocked === "wait") {
     if (settings.pipelinePolicy.autoHandoffOnBlocked && sourceRunId !== undefined && !held) {
@@ -283,7 +331,7 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
         return park(pipeline, promptId, "handoff_running");
       }
     }
-    return park(pipeline, promptId, null);
+    return park(pipeline, promptId, options.parkReason ?? null);
   }
   if (rule.onBlocked === "retry") {
     if (pipeline.attempt < rule.retryLimit) {
@@ -396,7 +444,7 @@ function notReadyReason(workspaceId: number, blockingPromptId: number | null, de
   const prompt = workspaces.resolvePrompt(workspaceId, target);
   const label = prompt.externalKey ?? prompt.title;
   if (prompt.recoverable) {
-    return `${label} needs recovery before this pipeline can continue — its agent process ended without posting a status. Retry or skip it, then play again.`;
+    return `${label} needs recovery before this pipeline can continue — its last run stopped without posting a status. Retry or skip it, then play again.`;
   }
   if (prompt.status === "BLOCKED") {
     return `${label} is blocked and needs a human response. Answer or skip it, then play again.`;
@@ -625,6 +673,80 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   return startNextNamedStage(created, preferPlayTarget);
 }
 
+/**
+ * Restarts a pipeline parked on a station a human has just resolved out of band
+ * — skipped, or marked complete. Only a rail actually waiting on *this* station
+ * moves; anything else is left exactly as it is.
+ */
+async function resumeAfterHumanResolution(promptId: number): Promise<void> {
+  const home = workspaces.promptHome(promptId);
+  await enqueue(home.workspaceId, async () => {
+    const active = workspaces.activePipeline(home.suiteId);
+    if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
+    const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+    await syncNamedFromSuite(playing);
+    const live = workspaces.pipelineById(playing.id);
+    if (live === null) return;
+    await advance(live);
+  });
+}
+
+/**
+ * The reason recorded on a station that an audit closed. Deliberately explicit
+ * about who decided: nobody reading this record later should have to work out
+ * that the agent which did the work never confirmed it.
+ */
+const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work item against its acceptance criteria after the run that did the work ended without posting a status.";
+
+/**
+ * Act on a finished audit. Runs inside the workspace queue, so it must never
+ * call back into anything that enqueues — the tail it would wait on is the one
+ * it is already holding.
+ *
+ * Returns whether the verdict actually closed the station, which is what the
+ * audit record stores as `applied`.
+ */
+async function settleAudit(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string }): Promise<boolean> {
+  const home = workspaces.promptHome(args.promptId);
+  const active = workspaces.activePipeline(home.suiteId);
+  // Only a run parked on this exact station by this audit may be moved by it.
+  const parked = active !== null
+    && active.state === "WAITING_HUMAN"
+    && active.currentPromptId === args.promptId
+    && active.waitReason === "audit_running";
+
+  if (args.verdict === "COMPLETE" && settings.pipelinePolicy.auditOnBlocked === "autocomplete") {
+    try {
+      workspaces.completePrompt(args.promptId, "SYSTEM", {
+        reason: AUDIT_COMPLETE_REASON,
+        verificationSummary: args.verificationSummary ?? "",
+      });
+      log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
+      if (parked) {
+        const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+        await syncNamedFromSuite(playing);
+        const live = workspaces.pipelineById(playing.id);
+        if (live !== null) await advance(live);
+      }
+      return true;
+    } catch (error) {
+      // The station moved under us, or the verdict carried no evidence to
+      // record. Either way it is not complete, so fall through to the rule.
+      log.warn(`audit COMPLETE could not be applied prompt=${args.promptId}`, error);
+    }
+  }
+
+  if (!parked) return false;
+  const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+  await syncNamedFromSuite(playing);
+  const live = workspaces.pipelineById(playing.id) ?? playing;
+  const rule = workspaces.pipelineRule(args.promptId, namedPipelineIdFor(live));
+  const outcome = workspaces.promptOutcome(args.promptId);
+  const parkReason = args.verdict === "INCOMPLETE" ? "audit_incomplete" : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable" : null;
+  await applyOnBlocked(live, rule, args.promptId, outcome.result, args.sourceRunId, { audited: true, parkReason });
+  return false;
+}
+
 export const pipelineScheduler = {
   async play(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
     const suite = workspaces.suiteHeader(suiteId);
@@ -707,21 +829,35 @@ export const pipelineScheduler = {
     promptId: number;
     processState: "done" | "interrupted" | "error";
   }): Promise<void> {
+    // A run that ended because the server is shutting down is not a station
+    // outcome: advancing here would start the successor inside a dying process
+    // and orphan it. The pipeline is left PLAYING so the next boot marks it
+    // interrupted and the operator resumes or retries deliberately.
+    if (runHub.isClosing()) return;
     const pointed = workspaces.pipelineByCurrentRun(args.runId);
     if (pointed === null) return;
     await enqueue(args.workspaceId, () => applyExecuteEnded(pointed, args.runId, args.promptId));
   },
 
-  async onPromptSkipped(promptId: number): Promise<void> {
-    const home = workspaces.promptHome(promptId);
-    await enqueue(home.workspaceId, async () => {
-      const active = workspaces.activePipeline(home.suiteId);
-      if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
-      const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
-      await syncNamedFromSuite(playing);
-      const live = workspaces.pipelineById(playing.id);
-      if (live === null) return;
-      await advance(live);
-    });
+  /**
+   * A completion audit finished. `verdict` is null when the auditor itself
+   * failed, which is treated exactly like UNVERIFIABLE: the station falls back
+   * to its own rule, having lost nothing but the cost of the read-only run.
+   */
+  async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string }): Promise<boolean> {
+    const home = workspaces.promptHome(args.promptId);
+    return enqueue(home.workspaceId, () => settleAudit(args));
+  },
+
+  onPromptSkipped(promptId: number): Promise<void> {
+    return resumeAfterHumanResolution(promptId);
+  },
+
+  /**
+   * The operator marked a parked station complete by hand. Same resumption as a
+   * skip: the station is terminal either way, so the rail can move on.
+   */
+  onPromptCompleted(promptId: number): Promise<void> {
+    return resumeAfterHumanResolution(promptId);
   },
 };

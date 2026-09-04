@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
+import { operationalState } from "./operationalState.ts";
 import { runContexts } from "./runContext.ts";
 import { workspaces } from "./workspaces.ts";
 
@@ -193,6 +194,72 @@ test("a later handoff run does not hide an interrupted developer run", () => {
     assert.equal(prompt.currentRun?.id, executeId);
     assert.equal(prompt.recoverable, true);
     assert.equal(workspaces.recoveryRunId(ctx.prompt.id), executeId);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/*
+ * A budget stop is not a question. The harness ends the run, banks its work and
+ * marks the station BLOCKED — an operator resumes that; they cannot answer it.
+ * Classification reads the actor on the status event, so it no longer depends
+ * on how the stop reason happens to be worded.
+ */
+test("a budget-stopped run is recoverable, not awaiting a human answer", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    workspaces.finishAgentRun(runId, "done", "", {
+      usage: null,
+      toolCalls: 40,
+      toolOutputBytes: 0,
+      stopReason: "budget_input_tokens:4000000",
+    });
+    const prompt = workspaces.promptOptions(ctx.workspace.id).find((item) => item.id === ctx.prompt.id)!;
+    assert.equal(prompt.status, "BLOCKED");
+    assert.equal(prompt.recoverable, true);
+    assert.equal(operationalState(prompt), "RECOVERY_NEEDED");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a budget-stopped station can be recovered and replayed", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    workspaces.finishAgentRun(runId, "done", "", {
+      usage: null,
+      toolCalls: 40,
+      toolOutputBytes: 0,
+      stopReason: "budget_wall_clock_ms:2700000",
+    });
+    workspaces.recoverPrompt(ctx.prompt.id, runId);
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("an agent-posted BLOCKED still asks for a human answer", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    workspaces.updateAgentStatus(runId, {
+      requestId: randomUUID(),
+      expectedStatus: "IN_PROGRESS",
+      status: "BLOCKED",
+      reason: "Which staging database should this point at?",
+      verificationSummary: "none — waiting on the answer",
+    });
+    workspaces.finishAgentRun(runId, "done");
+    const prompt = workspaces.promptOptions(ctx.workspace.id).find((item) => item.id === ctx.prompt.id)!;
+    assert.equal(prompt.recoverable, false);
+    assert.equal(operationalState(prompt), "AWAITING_RESPONSE");
+    assert.throws(() => workspaces.recoverPrompt(ctx.prompt.id, runId), /not an abandoned or system-interrupted run/);
   } finally {
     ctx.cleanup();
   }

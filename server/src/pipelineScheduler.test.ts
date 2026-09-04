@@ -349,6 +349,10 @@ test("onBlocked retry retries then stops on process-failure exhaustion", async (
   const ctx = fixture(1);
   const started = stubStarts();
   try {
+    // Isolate the rule. A run that ends without posting a status is normally
+    // audited before any rule applies (see completionAudit.test.ts); this test
+    // is about what retry does once that audit has had its say.
+    updateSettings({ "pipeline.auditOnBlocked": "off" });
     workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { onBlocked: "retry", retryLimit: 1 });
     const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
     await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "process" });
@@ -361,6 +365,7 @@ test("onBlocked retry retries then stops on process-failure exhaustion", async (
     assert.equal(latest.state, "STOPPED");
     assert.equal(latest.stopReason, "retry_exhausted");
   } finally {
+    resetSettings(["pipeline.auditOnBlocked"]);
     ctx.cleanup();
   }
 });

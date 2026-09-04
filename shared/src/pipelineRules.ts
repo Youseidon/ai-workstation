@@ -83,6 +83,21 @@ export const RESTART_POLICIES = ["newRun", "resumeSameRun"] as const;
 export type RestartPolicy = (typeof RESTART_POLICIES)[number];
 
 /**
+ * What happens when a station blocks because its run ended without ever
+ * posting DONE or BLOCKED — a dropped status post, not an agent asking a
+ * question. "off" keeps the old behaviour. "report" sends a read-only auditor
+ * to say whether the work was actually finished, and still parks for you.
+ * "autocomplete" additionally lets a COMPLETE verdict close the station so an
+ * unattended pipeline keeps moving.
+ */
+export const AUDIT_ON_BLOCKED_MODES = ["off", "report", "autocomplete"] as const;
+export type AuditOnBlockedMode = (typeof AUDIT_ON_BLOCKED_MODES)[number];
+
+export function isAuditOnBlockedMode(value: unknown): value is AuditOnBlockedMode {
+  return typeof value === "string" && (AUDIT_ON_BLOCKED_MODES as readonly string[]).includes(value);
+}
+
+/**
  * House rules for how a pipeline behaves, resolved on the server from settings
  * and shipped to the client with the operations snapshot so that both sides
  * decide from the same values.
@@ -102,6 +117,8 @@ export interface PipelinePolicy {
   handoffRequirement: HandoffRequirement;
   /** Whether a station that blocks summons a handoff agent instead of just parking. */
   autoHandoffOnBlocked: boolean;
+  /** Whether a station blocked by a missing status post is audited before anything else. */
+  auditOnBlocked: AuditOnBlockedMode;
   /** Hard cap on handoff generations for one station. */
   maxHandoffGenerations: number;
   /** The rule a station gets before anyone configures it. */
@@ -115,6 +132,7 @@ export const DEFAULT_PIPELINE_POLICY: PipelinePolicy = {
   onRestart: "newRun",
   handoffRequirement: "whenWorkProduced",
   autoHandoffOnBlocked: false,
+  auditOnBlocked: "autocomplete",
   maxHandoffGenerations: 3,
   defaultOnBlocked: "wait",
   defaultOnDone: "continue",
@@ -217,6 +235,9 @@ export const STOP_REASON: Record<string, string> = {
   recover_exhausted: "Recovery did not clear the block.",
   no_provider: "A station had no agent assigned.",
   handoff_running: "A handoff agent is summarising what the run left behind.",
+  audit_running: "A read-only agent is checking whether the run actually finished the work.",
+  audit_incomplete: "An audit found the work genuinely unfinished.",
+  audit_unverifiable: "An audit could not confirm the work either way.",
   start_failed: "The agent process failed to start.",
 };
 

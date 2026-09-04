@@ -5,9 +5,42 @@ import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
 import { isProviderId, promptNeedsHandoff } from "@agent-console/shared";
-import { resumeReadyHandoff, scheduleHandoff } from "./handoffCoordinator.ts";
+import { resumeReadyHandoff, scheduleHandoff, type HandoffBlock } from "./handoffCoordinator.ts";
+import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
+
+// One message per reason: "something is in the way" left operators guessing
+// which of three unrelated conditions they had hit, and what to do about it.
+const HANDOFF_BLOCK_CODE: Record<HandoffBlock, string> = {
+  already_complete: "station_already_complete",
+  handoff_running: "handoff_in_progress",
+  reusable: "handoff_reusable",
+  attempt_limit: "handoff_limit_reached",
+  provider_unavailable: "handoff_provider_unavailable",
+};
+const HANDOFF_BLOCK_MESSAGE: Record<HandoffBlock, string> = {
+  already_complete: "This station is already complete; resume the pipeline to start the next ready station",
+  handoff_running: "A handoff agent is already preparing a brief for this run; wait for it to finish",
+  reusable: "A handoff brief for this run is ready; continue with it instead of preparing another",
+  attempt_limit: "This station reached the handoff attempt limit; raise it in Pipeline policy or retry the station directly",
+  provider_unavailable: "The selected handoff provider is unavailable; choose another read-only agent",
+};
+
+const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
+  already_complete: "station_already_complete",
+  not_auditable: "station_not_auditable",
+  audit_running: "audit_in_progress",
+  attempt_limit: "audit_limit_reached",
+  provider_unavailable: "audit_provider_unavailable",
+};
+const AUDIT_BLOCK_MESSAGE: Record<AuditBlock, string> = {
+  already_complete: "This station is already complete; there is nothing to audit",
+  not_auditable: "Only a station blocked because its run ended without posting a status can be audited. A station that reported BLOCKED asked you a specific question, and no amount of reading the tree answers it",
+  audit_running: "An audit of this run is already going; wait for its verdict",
+  attempt_limit: "This run has already been audited automatically; read that verdict, or complete or retry the station yourself",
+  provider_unavailable: "No read-only agent is available to audit — it cannot be Cursor, and it cannot be the agent whose own run is being judged",
+};
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -250,6 +283,18 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
+    const completeMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/complete$/);
+    if(completeMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const promptId=id(completeMatch[1]!);
+        const input=await body(req);
+        workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
+        await pipelineScheduler.onPromptCompleted(promptId);
+        json(res,200,{completed:true});
+      }
+      return true;
+    }
     let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
     if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
     if(url.pathname==="/api/sessions"){
@@ -346,6 +391,23 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       const run=await pipelineScheduler.playNamed(pipelineId,{provider,model:typeof input.model==="string"?input.model:null,preferPlayTarget:true});
       json(res,202,{started:true,run});return true;
     }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audit$/);
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);const input=await body(req);
+      const sourceRunId=workspaces.latestExecuteRunId(promptId);const source=workspaces.runSummary(sourceRunId);
+      const auditProvider=input.provider;
+      if(auditProvider!==undefined&&!isProviderId(auditProvider))throw new WorkspaceError(422,"validation_error","Choose a valid read-only provider");
+      if(auditProvider==="cursor")throw new WorkspaceError(422,"audit_not_supported","Cursor cannot be held read-only, so it cannot audit");
+      const result=await scheduleCompletionAudit({
+        workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,automatic:false,
+        ...(auditProvider===undefined?{}:{auditProvider}),
+        ...(typeof input.model==="string"?{auditModel:input.model}:{}),
+      });
+      if(!result.started)throw new WorkspaceError(409,AUDIT_BLOCK_CODE[result.block],AUDIT_BLOCK_MESSAGE[result.block]);
+      json(res,202,{started:true,auditId:result.auditId});return true;
+    }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audits$/);
+    if(match&&method==="GET"){json(res,200,{audits:workspaces.completionAuditsForPrompt(id(match[1]!))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;
@@ -359,8 +421,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       if(!isProviderId(handoffProvider))throw new WorkspaceError(422,"validation_error","Choose a valid handoff provider");
       if(handoffProvider==="cursor")throw new WorkspaceError(422,"handoff_not_supported","Cursor cannot guarantee a read-only handoff");
-      const started=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
-      if(!started)throw new WorkspaceError(409,"handoff_not_started","A handoff already exists for this run, the attempt limit was reached, or the selected provider is unavailable");
+      const result=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
+      if(!result.started)throw new WorkspaceError(409,HANDOFF_BLOCK_CODE[result.block],HANDOFF_BLOCK_MESSAGE[result.block]);
       json(res,202,{started:true});return true;
     }
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;

@@ -8,7 +8,7 @@ import type {
   StatusPayload,
   TokenUsage,
 } from "@agent-console/shared";
-import { isMeaningfulUsage, mergeUsage } from "@agent-console/shared";
+import { billableInputTokens, isMeaningfulUsage, mergeUsage } from "@agent-console/shared";
 import { permissionForRun, settings } from "./settings.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -72,6 +72,7 @@ export interface RunMetrics {
 export interface BudgetSnapshot {
   toolCalls: { used: number; limit: number | null };
   wallClockMs: { used: number; limit: number | null };
+  /** Cost-weighted: cache reads count at their cache-read rate, not in full. */
   inputTokens: { used: number; limit: number | null };
   toolOutputBytes: { used: number; limit: number | null };
   /** 0-1, the highest utilisation across all active budgets. */
@@ -167,8 +168,11 @@ export function startRun(args: StartRunArgs): RunHandle {
   const ratio = (used: number, limit: number | null): number =>
     limit === null || limit <= 0 ? 0 : used / limit;
 
+  // What the input budget meters: cache reads discounted to their real cost.
+  const spentInputTokens = (): number => billableInputTokens(usage, provider, model);
+
   const budgetSnapshot = (): BudgetSnapshot => {
-    const inputTokens = usage?.inputTokens ?? 0;
+    const inputTokens = spentInputTokens();
     const pressure = Math.max(
       ratio(toolCalls, budget.maxToolCalls),
       ratio(elapsed(), budget.maxWallClockMs),
@@ -192,7 +196,7 @@ export function startRun(args: StartRunArgs): RunHandle {
   const breachedBudget = (): string | null => {
     if (budget.maxToolCalls !== null && toolCalls >= budget.maxToolCalls) return `budget_tool_calls:${budget.maxToolCalls}`;
     if (budget.maxWallClockMs !== null && elapsed() >= budget.maxWallClockMs) return `budget_wall_clock_ms:${budget.maxWallClockMs}`;
-    if (budget.maxInputTokens !== null && (usage?.inputTokens ?? 0) >= budget.maxInputTokens) return `budget_input_tokens:${budget.maxInputTokens}`;
+    if (budget.maxInputTokens !== null && spentInputTokens() >= budget.maxInputTokens) return `budget_input_tokens:${budget.maxInputTokens}`;
     if (budget.maxToolOutputBytes !== null && toolOutputBytes >= budget.maxToolOutputBytes) return `budget_tool_output_bytes:${budget.maxToolOutputBytes}`;
     if (budget.noProgressToolCalls !== null && repeatCount >= budget.noProgressToolCalls) return `budget_no_progress:${budget.noProgressToolCalls}`;
     return null;

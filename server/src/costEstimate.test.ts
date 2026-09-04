@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  billableInputTokens,
   estimateCost,
   formatUsd,
   mergeUsage,
@@ -16,6 +17,44 @@ const sampleUsage: TokenUsage = {
   reasoningOutputTokens: 0,
   totalTokens: 1_500_000,
 };
+
+describe("billableInputTokens", () => {
+  it("discounts cache reads to their cache-read rate", () => {
+    // Sonnet reads cache at a tenth of base input: 800k + 200k/10.
+    assert.equal(billableInputTokens(sampleUsage, "claude", "claude-sonnet-5"), 820_000);
+  });
+
+  it("counts an uncached run in full", () => {
+    const usage: TokenUsage = { ...sampleUsage, cachedInputTokens: 0 };
+    assert.equal(billableInputTokens(usage, "claude", "claude-sonnet-5"), 1_000_000);
+  });
+
+  it("uses each provider's own cache ratio", () => {
+    // Grok reads cache at a quarter of base input, not a tenth.
+    assert.equal(billableInputTokens(sampleUsage, "grok", "grok-4.6"), 850_000);
+  });
+
+  // A transcript-heavy agentic run is almost entirely cache reads. Charging
+  // those in full is what stopped runs that had barely spent anything.
+  it("keeps a mostly-cached run far below its raw input count", () => {
+    const usage: TokenUsage = {
+      inputTokens: 4_151_627,
+      outputTokens: 4_171,
+      cachedInputTokens: 3_890_859,
+      reasoningOutputTokens: 0,
+      totalTokens: 4_155_798,
+    };
+    assert.equal(billableInputTokens(usage, "claude", "claude-opus-5"), 649_854);
+  });
+
+  it("charges every token when the provider has no rate table", () => {
+    assert.equal(billableInputTokens(sampleUsage, "unknown-provider", null), 1_000_000);
+  });
+
+  it("is zero without usage", () => {
+    assert.equal(billableInputTokens(null, "claude", "claude-opus-5"), 0);
+  });
+});
 
 describe("estimateCost", () => {
   it("returns null when usage is missing", () => {

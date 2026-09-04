@@ -303,6 +303,24 @@ export function estimateCost(usage: TokenUsage | null, provider: string, modelId
   return { usd, rates, rateSource: source };
 }
 
+/**
+ * Input tokens weighted by what they cost, for run budgets that mean to cap
+ * spend. An agentic loop resends its transcript every turn, so nearly all of
+ * its input is cache reads — billed at a fraction of the base rate. Counting
+ * those at full weight made the ceiling track transcript size instead of
+ * money, and stopped runs that had barely spent anything.
+ */
+export function billableInputTokens(usage: TokenUsage | null, provider: string, modelId: string | null): number {
+  if (usage === null) return 0;
+  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  const uncached = Math.max(0, usage.inputTokens - cached);
+  const rates = ratesForModel(provider, modelId)?.rates ?? null;
+  // No rate table for this provider: charge every token at full weight rather
+  // than silently handing an unpriced run a larger allowance.
+  if (rates === null || rates.inputPerMTok <= 0) return usage.inputTokens;
+  return Math.round(uncached + cached * (rates.cachedInputPerMTok / rates.inputPerMTok));
+}
+
 export function formatUsd(amount: number, digits = 2): string {
   if (!Number.isFinite(amount)) return "—";
   if (amount === 0) return "$0";
@@ -991,6 +1009,8 @@ export interface OperationsPrompt {
   lastActivityAt: string;
   sessionCount: number;
   latestHandoff: HandoffRecord | null;
+  /** Newest completion audit for this station, when one has ever run. */
+  latestAudit: CompletionAuditRecord | null;
   /** Always present; missing DB rows are filled with defaults. */
   pipelineRule: PromptPipelineRule;
   /**
@@ -1126,6 +1146,8 @@ export interface PromptActivity {
   clarifications: ClarificationExchange[];
   sessions: AgentSession[];
   handoffs: HandoffRecord[];
+  /** Newest first. Read-only adjudications of a run that ended without a status. */
+  audits: CompletionAuditRecord[];
   /** True when the latest execute run failed before meaningful work; pipeline resume can skip handoff. */
   directRetry: boolean;
   /** True when the latest developer run made at least one tool call. */
@@ -1165,6 +1187,67 @@ export interface HandoffRecord {
   recommendation: HandoffRecommendation | null;
   brief: HandoffBrief | null;
   briefMarkdown: string;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Completion audit                                                            */
+/* -------------------------------------------------------------------------- */
+
+export const COMPLETION_AUDIT_STATES = ["QUEUED", "RUNNING", "READY", "FAILED"] as const;
+export type CompletionAuditState = (typeof COMPLETION_AUDIT_STATES)[number];
+
+/**
+ * What a read-only auditor concluded about a station that blocked without an
+ * agent-posted status. COMPLETE means the work is provably finished in the tree
+ * and only the status post is missing; INCOMPLETE means real work remains;
+ * UNVERIFIABLE means the auditor could not tell either way, which is not a pass.
+ */
+export const COMPLETION_VERDICTS = ["COMPLETE", "INCOMPLETE", "UNVERIFIABLE"] as const;
+export type CompletionVerdict = (typeof COMPLETION_VERDICTS)[number];
+
+export const AUDIT_CHECK_RESULTS = ["PASSED", "FAILED", "UNVERIFIED"] as const;
+export type AuditCheckResult = (typeof AUDIT_CHECK_RESULTS)[number];
+
+export interface CompletionAuditCheck {
+  /** The acceptance criterion, quoted from the work item where possible. */
+  criterion: string;
+  result: AuditCheckResult;
+  /** What the auditor observed — output, file contents, a diff hunk. */
+  evidence: string;
+  /** The read-only command it ran to see that, when it ran one. */
+  command: string | null;
+}
+
+export interface CompletionAuditReport {
+  version: 1;
+  verdict: CompletionVerdict;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  checks: CompletionAuditCheck[];
+  /** Concrete work the auditor found still missing. Empty when COMPLETE. */
+  remainingWork: string[];
+  /** Evidence sentence recorded on the work item when a COMPLETE is applied. */
+  verificationSummary: string;
+  reasoning: string;
+}
+
+export interface CompletionAuditRecord {
+  id: string;
+  workspaceId: number;
+  promptId: number;
+  /** The developer run whose outcome is being adjudicated. */
+  sourceRunId: string;
+  auditRunId: string | null;
+  provider: ProviderId;
+  model: string | null;
+  state: CompletionAuditState;
+  verdict: CompletionVerdict | null;
+  report: CompletionAuditReport | null;
+  reportMarkdown: string;
+  /** True once a COMPLETE verdict actually moved the station to DONE. */
+  applied: boolean;
   error: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -1270,7 +1353,8 @@ export type RunSource =
   | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
   | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
   | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
-  | { type: "handoff"; handoffId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string };
+  | { type: "handoff"; handoffId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string }
+  | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string };
 
 export interface ServerRunStartedMessage {
   kind: "run_started";
@@ -1401,6 +1485,7 @@ export function oneLine(value: string, max = 160): string {
  * declared here on purpose.
  */
 export {
+  AUDIT_ON_BLOCKED_MODES,
   CONTROL_LABEL,
   DEFAULT_PIPELINE_POLICY,
   HANDOFF_REQUIREMENTS,
@@ -1410,12 +1495,14 @@ export {
   TRANSITIONS,
   describeStopReason,
   handoffRequired,
+  isAuditOnBlockedMode,
   matchTransition,
   onBlockedConsequence,
   onDoneConsequence,
   RESTART_POLICIES,
 } from "./pipelineRules";
 export type {
+  AuditOnBlockedMode,
   HandoffRequirement,
   PauseMode,
   PipelineControl,

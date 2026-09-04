@@ -280,6 +280,17 @@ export function TasksView() {
     if (!ok) toast.error("Could not start", "The agent connection is unavailable.");
   };
 
+  /**
+   * Records a parked station as DONE with the evidence in the response box,
+   * without spending an agent run to re-report work that is already finished.
+   */
+  const markComplete = (target: OperationsPrompt | null = listItem) =>
+    void act(async () => {
+      if (target === null) return;
+      await workspaceApi.completePrompt(SERVER_URL, target.prompt.id, response.trim());
+      setResponse("");
+    }, "Marked complete");
+
   const respond = () =>
     void act(async () => {
       if (listItem === null) return;
@@ -318,6 +329,17 @@ export function TasksView() {
       }
       setFilter("all");
     }, "Recovered and resumed");
+
+  /**
+   * Ask a different, read-only agent whether the work is already done. Only
+   * offered on a station whose run vanished without posting a status — the
+   * server refuses it for a station that asked a human a question.
+   */
+  const auditCompletion = (target: OperationsPrompt | null = listItem) =>
+    void act(async () => {
+      if (target === null) return;
+      await workspaceApi.startAudit(SERVER_URL, target.prompt.id);
+    }, "Audit started");
 
   const stopAgent = async (target: OperationsPrompt | null = listItem) => {
     if (target?.prompt.currentRun == null) return;
@@ -443,7 +465,9 @@ export function TasksView() {
     onRun: () => start(),
     onStop: () => void stopAgent(),
     onRecover: () => recoverAndResume(),
+    onAudit: () => auditCompletion(),
     onRespond: respond,
+    onComplete: () => markComplete(),
     onVerifyItem: () => void verifyWorkItem(),
   } as const;
 

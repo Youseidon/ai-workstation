@@ -113,3 +113,83 @@ test("a sub-step is patched and reset over the same routes as a station", async 
     ctx.cleanup();
   }
 });
+
+/*
+ * The scenario this route exists for: a run is interrupted between finishing
+ * the work and reporting it, boot-time recovery parks the station BLOCKED, and
+ * the operator has the agent's own evidence in hand. Re-running the agent just
+ * to re-report finished work is the expensive way out.
+ */
+function seedInterruptedRun(workspaceId: number, promptId: number): string {
+  const runId = `run_${randomUUID()}`;
+  workspaces.beginAgentRun({
+    runId,
+    workspaceId,
+    promptId,
+    provider: "claude",
+    model: null,
+    tokenHash: randomUUID(),
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    role: "execute",
+  });
+  workspaces.markAgentRunRunning(runId);
+  // How the real one arises: the server restarts while the agent is still
+  // working, and boot-time recovery parks the station it can no longer see.
+  workspaces.recoverAbandonedRuns();
+  return runId;
+}
+
+test("a blocked station whose work is done can be completed without another run", async () => {
+  const ctx = fixture();
+  try {
+    const runId = seedInterruptedRun(ctx.workspace.id, ctx.prompt.id);
+    const before = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
+    assert.equal(before.status, "BLOCKED");
+    assert.equal(before.recoverable, true, "recovery is offered, but it would re-run the work");
+
+    const summary = "Build 0 warnings; 25/25 route replay green; burndown +6.";
+    const response = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: summary });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { completed: true });
+
+    const after = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
+    assert.equal(after.status, "DONE");
+    assert.equal(after.recoverable, false, "a completed station must stop offering recovery");
+
+    // The audit reads the status event, so the evidence has to land there too,
+    // attributed to the run that actually did the work.
+    const history = workspaces.promptHistory(ctx.prompt.id);
+    const done = (history.events as Array<{ newStatus: string; runId: string | null; actorType: string }>)
+      .find((event) => event.newStatus === "DONE");
+    assert.equal(done?.runId, runId, "provenance of the run that did the work is kept");
+    assert.equal(done?.actorType, "USER");
+    // WARNING, not VERIFIED, and deliberately so: the evidence is recorded, but
+    // the run behind it ended interrupted and the audit must keep saying so.
+    // An operator override is not a way to launder a station into looking clean.
+    const audited = workspaces.recordSuiteAudit(ctx.suite.id).items[0];
+    assert.equal(audited?.check, "WARNING");
+    assert.match(audited?.evidence ?? "", /25\/25 route replay green/);
+    assert.match(audited?.evidence ?? "", /ended interrupted after posting DONE/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("completing a station requires evidence and refuses terminal or live stations", async () => {
+  const ctx = fixture();
+  try {
+    seedInterruptedRun(ctx.workspace.id, ctx.prompt.id);
+    // An empty summary would audit as "Marked DONE with no recorded
+    // verification summary" — the same hole the agent's DONE path refuses.
+    const blank = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "  " });
+    assert.equal(blank.status, 422);
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "BLOCKED");
+
+    await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "done and verified" });
+    const again = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "done and verified" });
+    assert.equal(again.status, 409);
+    assert.equal((again.body.error as { code: string }).code, "already_complete");
+  } finally {
+    ctx.cleanup();
+  }
+});

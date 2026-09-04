@@ -34,13 +34,23 @@ async function providerFor(requested:ProviderId):Promise<ProviderId|null>{
   return eligible.some(item=>item.id===requested)?requested:null;
 }
 
-export async function scheduleHandoff(args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<boolean>{
+/**
+ * Why a handoff could not be prepared. `reusable` is not a dead end: a brief
+ * for this run already exists, and the operator continues from it instead of
+ * paying a second read-only agent to write the same summary again.
+ */
+export type HandoffBlock="already_complete"|"handoff_running"|"reusable"|"attempt_limit"|"provider_unavailable";
+export type ScheduleHandoffResult={started:true}|{started:false;block:HandoffBlock};
+
+export async function scheduleHandoff(args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<ScheduleHandoffResult>{
   const outcome=workspaces.promptOutcome(args.promptId);
-  if(outcome.status==="DONE"||outcome.status==="SKIPPED")return false;
+  if(outcome.status==="DONE"||outcome.status==="SKIPPED")return{started:false,block:"already_complete"};
   const previous=workspaces.handoffsForPrompt(args.promptId);
   const priorForRun=previous.find(item=>item.sourceRunId===args.sourceRunId);
-  if((priorForRun!==undefined&&priorForRun.state!=="FAILED")||(priorForRun===undefined&&previous.length>=maxGenerations()))return false;
-  const provider=await providerFor(args.handoffProvider??args.sourceProvider);if(provider===null){log.warn(`requested read-only provider unavailable prompt=${args.promptId}`);return false;}
+  if(priorForRun!==undefined&&priorForRun.state==="READY")return{started:false,block:"reusable"};
+  if(priorForRun!==undefined&&priorForRun.state!=="FAILED")return{started:false,block:"handoff_running"};
+  if(priorForRun===undefined&&previous.length>=maxGenerations())return{started:false,block:"attempt_limit"};
+  const provider=await providerFor(args.handoffProvider??args.sourceProvider);if(provider===null){log.warn(`requested read-only provider unavailable prompt=${args.promptId}`);return{started:false,block:"provider_unavailable"};}
   const handoffModel=args.handoffModel??(provider===args.sourceProvider?args.sourceModel:null);
   const id=priorForRun?.id??newId("handoff");const record=priorForRun===undefined?workspaces.createHandoff({id,workspaceId:args.workspaceId,promptId:args.promptId,sourceRunId:args.sourceRunId,provider,model:handoffModel}):workspaces.updateHandoff(id,{state:"QUEUED",handoffRunId:null,recommendation:null,brief:null,briefMarkdown:"",error:null,completedAt:null});
   const runId=newId("run");const credential=runContexts.create(runId,args.workspaceId,args.promptId);
@@ -54,13 +64,24 @@ export async function scheduleHandoff(args:{workspaceId:number;promptId:number;s
   workspaces.markAgentRunRunning(runId);
   const saved=workspaces.resolvePrompt(args.workspaceId,args.promptId);
   runHub.start({handle,workspace:{id:args.workspaceId,name:workspaces.get(args.workspaceId).name,workDirectory:workspaces.get(args.workspaceId).workDirectory},source:{type:"handoff",handoffId:id,promptId:args.promptId,promptKey:saved.externalKey,title:saved.title,sourceRunId:args.sourceRunId},role:"handoff",permissionMode:handle.permissionMode});
-  void handle.done.catch(error=>log.error("run failed",error));return true;
+  void handle.done.catch(error=>log.error("run failed",error));return{started:true};
 }
 
+/**
+ * Continue from a brief that already exists. Two shapes reach here: the brief
+ * launched a successor and that successor failed, and the brief never launched
+ * one at all — its recommendation was not CONTINUE, so the station parked for a
+ * human. The recommendation is advice to the automatic path, not a veto on the
+ * operator, so an explicit resume overrides it either way.
+ */
 export async function resumeReadyHandoff(args:{handoffId:string;promptId:number;failedSuccessorRunId:string;successorProvider:ProviderId;successorModel:string|null;namedPipelineId?:number}):Promise<string>{
   const record=workspaces.handoffById(args.handoffId);
-  if(record===null||record.promptId!==args.promptId||record.state!=="READY"||record.recommendation!=="CONTINUE"||record.successorRunId!==args.failedSuccessorRunId)throw new WorkspaceError(409,"handoff_not_reusable","The saved handoff is not available for this failed successor run");
-  workspaces.preparePromptForHandoffRetry(args.promptId,record.id);
+  const unused=record!==null&&record.successorRunId===null;
+  if(record===null||record.promptId!==args.promptId||record.state!=="READY"||(!unused&&(record.recommendation!=="CONTINUE"||record.successorRunId!==args.failedSuccessorRunId)))throw new WorkspaceError(409,"handoff_not_reusable","The saved handoff is not available for this run");
+  // A brief that never reached a successor was never written onto the prompt,
+  // so the retry path alone would start the successor with no continuation.
+  if(unused)workspaces.preparePromptForSuccessor(args.promptId,record.id,record.briefMarkdown);
+  else workspaces.preparePromptForHandoffRetry(args.promptId,record.id);
   let runId:string;
   if(args.namedPipelineId!==undefined){
     const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:args.successorProvider,model:args.successorModel,preferPlayTarget:true});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);runId=suite?.currentRunId??"";

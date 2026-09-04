@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import type { OperationsPrompt, OperationsSuite } from "@agent-console/shared";
+import type { CompletionAuditRecord, OperationsPrompt, OperationsSuite } from "@agent-console/shared";
 import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
@@ -13,6 +13,56 @@ import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
 
 type DetailTab = "overview" | "sessions" | "activity";
+
+const VERDICT_TONE = {
+  COMPLETE: { border: "border-success/30", bg: "bg-success/5", text: "text-success" },
+  INCOMPLETE: { border: "border-warning/30", bg: "bg-warning/5", text: "text-warning" },
+  UNVERIFIABLE: { border: "border-caution/30", bg: "bg-caution/10", text: "text-caution" },
+} as const;
+
+/**
+ * The answer an operator comes back hours later to look for: did the agent that
+ * vanished without posting a status actually finish the work? Verdict first,
+ * then the checks it stands on — a verdict with no visible evidence behind it
+ * is exactly the thing this feature exists to stop trusting.
+ */
+function CompletionAuditCard({ audit }: { audit: CompletionAuditRecord }): React.ReactElement {
+  const tone = audit.verdict === null ? { border: "border-info/30", bg: "bg-info/5", text: "text-info" } : VERDICT_TONE[audit.verdict];
+  return (
+    <div className={cn("rounded-panel border p-4", tone.border, tone.bg)}>
+      <div className={cn("text-[10px] uppercase tracking-wider", tone.text)}>
+        Completion audit · {audit.verdict === null ? audit.state.toLowerCase() : audit.verdict.toLowerCase()}
+        {audit.applied && " · station closed"}
+      </div>
+      <div className="mt-1 text-xs text-fg-muted">
+        Read-only {audit.provider} check of the run that ended without posting a status
+        {audit.report === null ? "" : ` · ${audit.report.confidence.toLowerCase()} confidence`}
+      </div>
+      {audit.report !== null && audit.report.checks.length > 0 && (
+        <div className="mt-3 space-y-1 text-xs">
+          {audit.report.checks.slice(0, 8).map((check) => (
+            <div key={check.criterion} className="flex gap-2">
+              <span className={cn("shrink-0 font-mono", check.result === "PASSED" ? "text-success" : check.result === "FAILED" ? "text-danger" : "text-fg-dim")}>
+                {check.result === "PASSED" ? "✓" : check.result === "FAILED" ? "✗" : "?"}
+              </span>
+              <span className="text-fg-muted">
+                {check.criterion}
+                {check.evidence === "" ? "" : <span className="text-fg-dim"> — {check.evidence}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {audit.report !== null && audit.report.remainingWork.length > 0 && (
+        <div className="mt-3 text-xs">
+          <div className="mb-1 text-fg-dim">Still missing</div>
+          {audit.report.remainingWork.slice(0, 6).map((entry) => <div key={entry} className="text-fg-muted">• {entry}</div>)}
+        </div>
+      )}
+      {audit.error !== null && <div className="mt-2 text-xs text-warning">{audit.error}</div>}
+    </div>
+  );
+}
 
 type ActivityPayload = Awaited<ReturnType<typeof import("@/lib/workspacesApi").workspaceApi.activity>>;
 
@@ -31,7 +81,9 @@ export function WorkItemDetail({
   onRun,
   onStop,
   onRecover,
+  onAudit,
   onRespond,
+  onComplete,
   onVerifyItem,
   onClose,
 }: {
@@ -49,7 +101,9 @@ export function WorkItemDetail({
   onRun(): void;
   onStop(): void;
   onRecover(): void;
+  onAudit(): void;
   onRespond(): void;
+  onComplete(): void;
   onVerifyItem(): void;
   onClose?(): void;
 }) {
@@ -159,6 +213,7 @@ export function WorkItemDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {tab === "overview" && (
           <div className="space-y-4">
+            {item.latestAudit !== null && <CompletionAuditCard audit={item.latestAudit} />}
             {item.latestHandoff !== null && (
               <div className="rounded-panel border border-info/30 bg-info/5 p-4">
                 <div className="text-[10px] uppercase tracking-wider text-info">
@@ -185,9 +240,21 @@ export function WorkItemDetail({
                 </Button>
               )}
               {item.operationalState === "RECOVERY_NEEDED" && (
-                <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
-                  Recover and resume
-                </Button>
+                <>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
+                    Recover and resume
+                  </Button>
+                  {/* Recovering re-runs the work. Ask first whether it needs re-running. */}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={onAudit}
+                    title="Send a read-only agent to check whether the work was already finished"
+                  >
+                    Audit what the run left
+                  </Button>
+                </>
               )}
               {item.operationalState === "WORKING" && item.prompt.currentRun !== null && (
                 <Button size="sm" variant="danger" disabled={busy} onClick={onStop}>
@@ -223,19 +290,44 @@ export function WorkItemDetail({
               </div>
             )}
 
-            {item.operationalState === "AWAITING_RESPONSE" && (
+            {(item.operationalState === "AWAITING_RESPONSE" ||
+              item.operationalState === "RECOVERY_NEEDED") && (
               <div className="rounded-panel border border-line bg-surface-1 p-4">
                 <TextArea
-                  label="Your response"
+                  label={item.operationalState === "AWAITING_RESPONSE" ? "Your response" : "Evidence"}
                   rows={4}
                   value={response}
-                  hint="Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
+                  hint={
+                    item.operationalState === "AWAITING_RESPONSE"
+                      ? "Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
+                      : "Paste the agent's own summary here if the work is already finished, then mark it complete."
+                  }
                   placeholder="What the agent needs to know to continue…"
                   onChange={(event) => onResponseChange(event.target.value)}
                 />
-                <div className="mt-3">
-                  <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
-                    Respond and resume
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {item.operationalState === "AWAITING_RESPONSE" && (
+                    <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
+                      Respond and resume
+                    </Button>
+                  )}
+                  {/*
+                    For work that is finished but whose status never landed —
+                    an interrupted run, a rejected final Progress call. The box
+                    above becomes the recorded verification summary, so this is
+                    deliberately disabled until there is evidence to record.
+                  */}
+                  <Button
+                    variant="secondary"
+                    disabled={busy || response.trim() === ""}
+                    onClick={onComplete}
+                    title={
+                      response.trim() === ""
+                        ? "Paste the evidence that this work is finished before marking it complete"
+                        : "Record this as DONE without running the agent again"
+                    }
+                  >
+                    Mark complete
                   </Button>
                 </div>
               </div>

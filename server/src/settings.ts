@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_PIPELINE_POLICY,
+  isAuditOnBlockedMode,
   isOnBlockedAction,
   isOnDoneAction,
   type PipelinePolicy,
@@ -90,7 +91,7 @@ const FIELDS: FieldDef[] = [
     envVar: "BUDGET_MAX_INPUT_TOKENS",
     fallback: 8000000,
     description:
-      "Cumulative input tokens, cached included. This is the number that turns into money: an agentic loop resends its whole transcript every turn. 0 disables.",
+      "Cumulative input tokens, weighted by cost: cache reads count at their cache-read rate, not at full price. This is the number that turns into money — an agentic loop resends its whole transcript every turn, and almost all of that is cached. 0 disables.",
   },
   {
     key: "budget.maxToolOutputBytes",
@@ -192,6 +193,25 @@ const FIELDS: FieldDef[] = [
       + "run carries on by itself if that agent says the work can continue. Off, the run simply parks and "
       + "waits for you. This is the one setting here that can start an agent without you pressing anything.",
     isDangerous: (value) => value === true,
+  },
+  {
+    key: "pipeline.auditOnBlocked",
+    label: "Audit a station that blocked without posting a status",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_AUDIT_ON_BLOCKED",
+    fallback: "autocomplete",
+    description:
+      "Some agents finish the work and then never post DONE, and the station blocks with 'Agent process "
+      + "ended ... without posting the required DONE or BLOCKED status'. This sends a different, read-only "
+      + "agent to check the working tree against the item's acceptance criteria before anything else "
+      + "happens. It never runs for a station that blocked with a real question for you.",
+    options: [
+      option("autocomplete", "Audit, and close the station if the work is really done", "Keeps an unattended pipeline moving; a COMPLETE verdict marks the station DONE with the auditor's evidence", true),
+      option("report", "Audit and record the verdict, but still wait for me", "You get the answer when you come back; nothing is completed automatically"),
+      option("off", "Do not audit", "The station parks or follows its rule exactly as before"),
+    ],
+    isDangerous: (value) => value === "autocomplete",
   },
   {
     key: "pipeline.maxHandoffGenerations",
@@ -900,6 +920,7 @@ export const settings = {
     const onBlocked = text("pipeline.defaultOnBlocked");
     const onDone = text("pipeline.defaultOnDone");
     const generations = count("pipeline.maxHandoffGenerations");
+    const audit = text("pipeline.auditOnBlocked");
     return {
       pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
       stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
@@ -909,6 +930,7 @@ export const settings = {
           ? (requirement satisfies HandoffRequirement)
           : "whenWorkProduced",
       autoHandoffOnBlocked: flag("pipeline.autoHandoffOnBlocked"),
+      auditOnBlocked: isAuditOnBlockedMode(audit) ? audit : DEFAULT_PIPELINE_POLICY.auditOnBlocked,
       maxHandoffGenerations:
         generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
       defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,

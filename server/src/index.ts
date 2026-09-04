@@ -6,6 +6,7 @@ import { config } from "./config.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
+import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
 import { runRoleStartError } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
@@ -461,7 +462,37 @@ httpServer.on("error", (error: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+/**
+ * Claimed once the port is bound, released on shutdown. Two servers sharing a
+ * database is the failure this pair of guards exists to prevent: the port rules
+ * out a second copy on the same port, the lock rules out one on a different
+ * port, and only an owner may reconcile runs.
+ */
+let instanceLock: InstanceLock | null = null;
+
+function releaseInstanceLock(): void {
+  instanceLock?.release();
+  instanceLock = null;
+}
+
 httpServer.listen(config.port, config.host, () => {
+  try {
+    instanceLock = acquireInstanceLock(`${workspaces.databasePath}.lock`);
+  } catch (error) {
+    if (error instanceof InstanceLockedError) {
+      log.error(
+        `another console (pid ${error.heldByPid}) is already using ${workspaces.databasePath} — ` +
+          `two servers on one database corrupt each other's runs. Stop it, or point ` +
+          `AGENT_CONSOLE_DB at a different file.`,
+      );
+      process.exit(1);
+    }
+    throw error;
+  }
+  // Safe only here: this process now demonstrably owns the database, so runs
+  // still marked in flight really did die with the last one.
+  workspaces.recoverAbandonedRuns();
+
   log.info(`http  http://${config.host}:${config.port}`);
   log.info(`ws    ws://${config.host}:${config.port}/ws`);
   log.info(`workspaces ${workspaces.list().length}`);
@@ -475,12 +506,38 @@ httpServer.listen(config.port, config.host, () => {
   });
 });
 
+/**
+ * Long enough for every provider to take its interrupt (the runner allows a run
+ * two seconds to stop gracefully, then the spawn adapter another two before
+ * SIGKILL), short enough that a stuck agent cannot hold the terminal.
+ */
+const SHUTDOWN_GRACE_MS = 10_000;
+
+let shuttingDown = false;
+
+const finish = () => {
+  releaseInstanceLock();
+  workspaces.close();
+  process.exit(0);
+};
+
 const shutdown = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   log.info("shutting down");
   wss.clients.forEach((client) => client.close());
-  httpServer.close(() => { workspaces.close(); process.exit(0); });
-  setTimeout(() => process.exit(0), 2000).unref();
+  httpServer.close();
+  // Runs are stopped before the database closes so each one records its own
+  // terminal state. Without this the agents survive the server that owns them.
+  void runHub.stopAll().then(finish, (error: unknown) => {
+    log.error("failed to stop live runs", error);
+    finish();
+  });
+  setTimeout(finish, SHUTDOWN_GRACE_MS).unref();
 };
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+// A crash or an explicit exit still has to give up the claim, or the next boot
+// finds a lock file whose owner is gone.
+process.on("exit", releaseInstanceLock);

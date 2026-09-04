@@ -82,6 +82,7 @@ function promptIdFromSource(source: RunSource): number | null {
     case "consult":
       return source.promptId;
     case "handoff":
+    case "audit":
       return source.promptId;
     default:
       return null;
@@ -98,6 +99,8 @@ function titleFromSource(source: RunSource): string {
       return (source.title ?? source.question) || "(consult)";
     case "handoff":
       return `Handoff · ${source.promptKey ?? source.title}`;
+    case "audit":
+      return `Audit · ${source.promptKey ?? source.title}`;
     case "verification":
       return source.promptKey === null
         ? `Verify · ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`

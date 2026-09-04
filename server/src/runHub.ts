@@ -44,6 +44,7 @@ type Subscriber = (message: ServerMessage) => void;
 
 const subscribers = new Set<Subscriber>();
 const runs = new Map<string, LiveRun>();
+let closing = false;
 
 function snapshot(run: LiveRun): RunSnapshot {
   return {
@@ -206,6 +207,34 @@ export const runHub = {
     await run.handle.interrupt();
     await run.handle.done;
     return true;
+  },
+
+  /**
+   * True once shutdown has begun, so callers that would start new work — the
+   * pipeline scheduler advancing to the next station — can stand down instead
+   * of spawning an agent into a process that is on its way out.
+   */
+  isClosing(): boolean {
+    return closing;
+  },
+
+  /**
+   * Interrupts every live run and waits for each to record its terminal state.
+   *
+   * Agents are children of this server, not of the shell that started it, so
+   * nothing else signals them: left alone they outlive the server, keep writing
+   * to a database no live process owns, and surface on the next boot as runs
+   * that were abandoned mid-flight.
+   */
+  async stopAll(): Promise<void> {
+    closing = true;
+    const live = [...runs.keys()];
+    if (live.length === 0) return;
+    log.info(`stopping ${live.length} live run${live.length === 1 ? "" : "s"}`);
+    const results = await Promise.allSettled(live.map((runId) => this.stop(runId)));
+    for (const [index, result] of results.entries()) {
+      if (result.status === "rejected") log.warn(`run ${live[index]} did not stop cleanly`, result.reason);
+    }
   },
 
   /** Stops a provider that has already posted DONE/BLOCKED, without recording a false interruption. */

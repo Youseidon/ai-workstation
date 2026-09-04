@@ -125,7 +125,7 @@ export function budgetMarkdown(budget: BudgetSnapshot | null): string {
   };
   line("Tool calls", budget.toolCalls.used, budget.toolCalls.limit, (value) => value.toLocaleString());
   line("Wall clock", budget.wallClockMs.used, budget.wallClockMs.limit, (value) => `${Math.round(value / 60_000)} min`);
-  line("Input tokens", budget.inputTokens.used, budget.inputTokens.limit, (value) => value.toLocaleString());
+  line("Input tokens (cache reads discounted)", budget.inputTokens.used, budget.inputTokens.limit, (value) => value.toLocaleString());
   line("Tool output", budget.toolOutputBytes.used, budget.toolOutputBytes.limit, (value) => `${Math.round(value / 1024)} KB`);
   if (rows.length === 0) return "";
   return `\n## Run budget\n\n${rows.join("\n")}\n${budget.warning === null ? "" : `\n**${budget.warning}**\n`}`;

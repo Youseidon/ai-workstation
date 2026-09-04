@@ -177,8 +177,11 @@ export function StationCard({
  * than as just another status chip.
  */
 function stuckNote(state: OperationsPrompt["operationalState"]): string | null {
-  if (state === "RECOVERY_NEEDED") return "The agent process ended without posting a status. Retry to run it again, or skip it.";
-  if (state === "AWAITING_RESPONSE") return "Blocked on a human response. Answer it on the work item, or skip it.";
+  // "Mark complete" is named in both: the run ending without a status says
+  // nothing about whether the work got done, and re-running an agent to
+  // re-report finished work is the expensive way out of that.
+  if (state === "RECOVERY_NEEDED") return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
+  if (state === "AWAITING_RESPONSE") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
   return null;
 }
 
