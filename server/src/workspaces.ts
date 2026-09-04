@@ -1,12 +1,14 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, isStatusIcon, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type StatusDefinition, type StatusEditableKey, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, isStatusIcon, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { settings } from "./settings.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
+import { decide, endOfRunReason, endOfRunSignal } from "./statusTransition.ts";
+import type { RunOutcome } from "./statusTransition.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 
 // Tests must never open the console's own database: they create and delete
@@ -724,7 +726,14 @@ const recoverAbandonedRuns=db.transaction(()=>{
   db.prepare("UPDATE completion_audit SET state='FAILED',error='The server restarted while this audit was running.',completed_at=? WHERE state IN ('QUEUED','RUNNING')").run(now);
   for(const row of rows)db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,row.id);
   const orphaned=db.prepare(`SELECT p.id,(SELECT r.id FROM agent_run r WHERE r.prompt_id=p.id AND r.role='execute' ORDER BY r.started_at DESC LIMIT 1) runId FROM prompt p WHERE p.status='IN_PROGRESS' AND NOT EXISTS(SELECT 1 FROM agent_run active WHERE active.prompt_id=p.id AND active.state IN ('STARTING','RUNNING') AND active.role='execute')`).all() as Array<{id:number;runId:string|null}>;
-  for(const prompt of orphaned){const reason="No active agent run exists for this IN_PROGRESS prompt; the latest run ended without a terminal prompt status.";db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,prompt.id);db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);}
+  // The server died while these were in flight, so nobody ever recorded how
+  // they ended. That is the definition of UNREPORTED — not BLOCKED, which would
+  // claim an agent had asked the operator something, and not FAILED, which
+  // would claim the work was observed to fail. Neither is known here.
+  for(const prompt of orphaned){
+    const reason="The server restarted while this run was in flight, so the run never reported how it ended. Whether the work was finished is unknown.";
+    writeStatus({promptId:prompt.id,to:"UNREPORTED",trigger:"run_ended_without_post",actor:"SYSTEM",runId:prompt.runId,reason,result:reason,evidence:{cause:"server_restart"},remark:{kind:"BLOCKER",content:reason}});
+  }
   db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
   db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
 });
@@ -919,10 +928,33 @@ function sqliteGuard<T>(operation: () => T): T {
  * differently on purpose: it fell straight into "answer the question", where
  * there was no question and no way forward.
  */
-function systemBlocked(promptId:number,status:string):boolean {
-  if(status!=="BLOCKED")return false;
-  const row=db.prepare("SELECT actor_type FROM prompt_status_event WHERE prompt_id=? AND new_status='BLOCKED' ORDER BY id DESC LIMIT 1").get(promptId) as {actor_type:string}|undefined;
-  return row?.actor_type==="SYSTEM";
+/** The statuses that mean "the run is over and the item is not closed". */
+const UNFINISHED_STATUSES=new Set<StepStatus>(["BLOCKED","UNREPORTED","FAILED","NEEDS_REVIEW"]);
+
+/** Status events on the wire, with the ledger columns the "why" panel renders. */
+function statusEvents(promptId:number):PromptStatusEvent[] {
+  return (db.prepare(`SELECT id,prompt_id promptId,run_id runId,previous_status previousStatus,new_status newStatus,
+      reason,verification_summary verificationSummary,actor_type actorType,created_at createdAt,
+      trigger_id trigger,rule_id ruleId,evidence_json evidenceJson
+    FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC`).all(promptId) as Array<Record<string,unknown>>)
+    .map(row=>{
+      const {evidenceJson,...rest}=row;
+      let evidence:Record<string,unknown>|null=null;
+      // Malformed evidence must never cost the operator the event itself: the
+      // sentence and the trigger are the part they actually read.
+      try{ evidence=typeof evidenceJson==="string"?JSON.parse(evidenceJson) as Record<string,unknown>:null; }catch{ evidence=null; }
+      return {...rest,evidence} as unknown as PromptStatusEvent;
+    });
+}
+
+function endedWithoutAgentStatus(status:string):boolean {
+  // Reads the stored status. This used to re-derive the same fact on every call
+  // by looking up the newest BLOCKED event and checking whether its actor was
+  // SYSTEM — the distinction was real and load-bearing, but it lived only in
+  // the ledger and had to be reconstructed, so it could not be shown, filtered,
+  // or trusted. Both of these statuses mean the same thing: a run ended and the
+  // agent never said what it achieved.
+  return status==="UNREPORTED"||status==="FAILED";
 }
 
 const REMARK_KINDS=new Set(["PROGRESS","FINDING","DECISION_NEEDED","BLOCKER","VERIFICATION","COMPLETION"]);
@@ -940,8 +972,7 @@ const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;
   if(active)throw new WorkspaceError(409,"prompt_run_active",`This prompt already has an active session: ${active.id} (${active.provider}${active.model?` / ${active.model}`:""}, ${active.state.toLowerCase()}, started ${active.startedAt}). Open Sessions to inspect it before starting another run.`,{runId:active.id,state:active.state,provider:active.provider,startedAt:active.startedAt});
   const now=new Date().toISOString(); db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.role??"execute");
   if(prompt.status==="TODO"){
-    db.prepare("UPDATE prompt SET status='IN_PROGRESS',updated_at=? WHERE id=?").run(now,args.promptId);
-    db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'TODO','IN_PROGRESS','Agent run started','SYSTEM',?)").run(args.promptId,args.runId,now);
+    writeStatus({promptId:args.promptId,to:"IN_PROGRESS",expect:"TODO",trigger:"run_started",actor:"SYSTEM",runId:args.runId,reason:"An agent run started."});
   }
 });
 
@@ -978,8 +1009,12 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   if(target==="DONE"&&verification==="")throw new WorkspaceError(422,"validation_error","DONE requires a verification summary");
   if(target==="BLOCKED"&&reason==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires an evidence-based reason");
   if(target==="BLOCKED"&&verification==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires verificationSummary to state the exact action only the human can take");
-  const now=new Date().toISOString();const result=target==="DONE"?verification:`${reason}\n\nRequired human action: ${verification}`;db.prepare("UPDATE prompt SET status=?,result=?,completed_at=?,updated_at=? WHERE id=?").run(target,result,target==="DONE"?now:null,now,run.prompt_id);
-  const eventId=Number(db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,?,?,?,?,'AGENT',?)").run(run.prompt_id,runId,prompt.status,target,reason,verification,now).lastInsertRowid);
+  const now=new Date().toISOString();const result=target==="DONE"?verification:`${reason}\n\nRequired human action: ${verification}`;
+  // The agent posting for itself is the most direct evidence there is, so the
+  // row that records it is the one the transition table locks against override.
+  const decision=decide(target==="DONE"?"agent_posted_done":"agent_posted_blocked");
+  writeStatus({promptId:run.prompt_id,to:target,expect:"IN_PROGRESS",trigger:decision.row.trigger,ruleId:decision.row.id,actor:"AGENT",runId,reason,verificationSummary:verification,result});
+  const eventId=Number((db.prepare("SELECT id FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1").get(run.prompt_id) as {id:number}).id);
   db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?, 'AGENT',?)").run(run.prompt_id,runId,target==="DONE"?"COMPLETION":"BLOCKER",result,now);
   return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:target,result,createdAt:now};
 }));
@@ -1023,7 +1058,7 @@ const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string
       .run(prompt.suiteId,title,content,sortOrder,now,now,externalKey,run.prompt_id,index).lastInsertRowid);
     return{id,externalKey,title};
   });
-  db.prepare("UPDATE prompt SET status='TODO',updated_at=? WHERE id=?").run(now,run.prompt_id);
+  writeStatus({promptId:run.prompt_id,to:"TODO",trigger:"agent_decompose",ruleId:"agent-decomposed",actor:"AGENT",runId,reason:"The agent split this work item into sub-steps; they carry the work now."});
   db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','TODO',?,?, 'AGENT',?)")
     .run(run.prompt_id,runId,`Decomposed into ${children.length} sub-steps`,resumeBrief,now);
   db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?, 'PROGRESS',?, 'AGENT',?)").run(run.prompt_id,runId,resumeBrief,now);
@@ -1104,6 +1139,71 @@ function resolvedTriggerSentences(): Record<string, string> {
   return { ...DEFAULT_TRIGGER_SENTENCES, ...Object.fromEntries(rows.map(r => [r.id, r.sentence])) };
 }
 
+/*
+ * The one place a work item's status changes.
+ *
+ * Every status write in this file goes through here. Before, thirteen call
+ * sites each did their own UPDATE plus their own INSERT into
+ * prompt_status_event, which meant thirteen chances to write a status without
+ * recording why, to record a reason that did not match what was written, or to
+ * forget the ledger row entirely. It also meant there was no single place that
+ * could enforce an invariant, so the invariants lived in comments.
+ *
+ * Callers must already be inside a transaction: a status and its ledger row
+ * that can be separated by a crash are worse than either alone.
+ */
+interface StatusWrite {
+  promptId: number;
+  to: StepStatus;
+  trigger: StatusTrigger;
+  actor: ActorType;
+  /** The transition row that decided, when a rule did. */
+  ruleId?: string | null;
+  runId?: string | null;
+  /** One sentence for the operator. Stored on the event, not invented later. */
+  reason: string;
+  verificationSummary?: string;
+  /** Anything that backs the decision: verdicts, exit codes, failing criteria. */
+  evidence?: Record<string, unknown> | null;
+  /** Optimistic concurrency. When given, the write is refused unless it holds. */
+  expect?: StepStatus;
+  /** Replaces prompt.result. Omit to leave it as it is. */
+  result?: string | null;
+  /** A remark to file alongside, as the agent-facing API already does. */
+  remark?: { kind: RemarkKind; content: string } | null;
+}
+
+function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boolean } {
+  const row = db.prepare("SELECT status FROM prompt WHERE id=?").get(write.promptId) as { status: StepStatus } | undefined;
+  if (row === undefined) throw new WorkspaceError(404, "not_found", "Work item not found");
+  const previous = row.status;
+  if (write.expect !== undefined && previous !== write.expect) {
+    throw new WorkspaceError(409, "stale_status", `Work item is ${previous}, not ${write.expect}`);
+  }
+  if (!isStepStatus(write.to)) {
+    // An overlay is derived on every read; storing one would make the display
+    // disagree with the database the moment the underlying fact changed.
+    throw new WorkspaceError(422, "invalid_status", `${write.to} is not a storable status`);
+  }
+  const now = new Date().toISOString();
+  const terminal = statusDefinition(resolvedStatusCatalog(), write.to).isTerminal;
+  db.prepare("UPDATE prompt SET status=?,result=COALESCE(?,result),completed_at=?,updated_at=? WHERE id=?")
+    .run(write.to, write.result ?? null, terminal ? now : null, now, write.promptId);
+  db.prepare(`INSERT INTO prompt_status_event
+      (prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at,trigger_id,rule_id,evidence_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(
+      write.promptId, write.runId ?? null, previous, write.to, write.reason,
+      write.verificationSummary ?? "", write.actor, now, write.trigger,
+      write.ruleId ?? null, write.evidence === undefined || write.evidence === null ? null : JSON.stringify(write.evidence),
+    );
+  if (write.remark != null && write.remark.content.trim() !== "") {
+    db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?,?,?)")
+      .run(write.promptId, write.runId ?? null, write.remark.kind, write.remark.content.slice(0, 20000), write.actor, now);
+  }
+  return { previous, changed: previous !== write.to };
+}
+
 export const workspaces = {
   databasePath,
   /** The resolved status catalog. See `resolvedStatusCatalog`. */
@@ -1163,7 +1263,7 @@ export const workspaces = {
     const programs = (db.prepare("SELECT * FROM program WHERE workspace_id=? ORDER BY sort_order").all(id) as ProgramRow[]).map((p): ProgramRecord => ({ id:p.id, workspaceId:p.workspace_id, name:p.name, overview:p.overview, sortOrder:p.sort_order, createdAt:p.created_at, updatedAt:p.updated_at, externalKey:p.external_key, suites:(db.prepare("SELECT * FROM suite WHERE program_id=? ORDER BY sort_order").all(p.id) as SuiteRow[]).map((s): SuiteRecord => ({ id:s.id, programId:s.program_id, name:s.name, overview:s.overview, sortOrder:s.sort_order, createdAt:s.created_at, updatedAt:s.updated_at, externalKey:s.external_key, prompts:(db.prepare("SELECT * FROM prompt WHERE suite_id=? ORDER BY sort_order").all(s.id) as PromptRow[]).map(promptDto) })) }));
     return { ...workspace, programs };
   },
-  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,p.parent_prompt_id parentPromptId,p.child_order childOrder,(SELECT COUNT(*) FROM prompt c WHERE c.parent_prompt_id=p.id AND c.status NOT IN ('DONE','SKIPPED')) openChildren,(SELECT COUNT(*) FROM prompt earlier WHERE p.parent_prompt_id IS NOT NULL AND earlier.parent_prompt_id=p.parent_prompt_id AND (earlier.child_order<p.child_order OR (earlier.child_order=p.child_order AND earlier.id<p.id)) AND earlier.status NOT IN ('DONE','SKIPPED')) openEarlierSiblings,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">&{openChildren:number;openEarlierSiblings:number}>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' THEN 0 ELSE 1 END, started_at DESC LIMIT 1"); return rows.map(({openChildren,openEarlierSiblings,...row})=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const systemInterrupted=systemBlocked(row.id,row.status);return{...row,ready:row.status==="TODO"&&blockedBy.length===0&&openChildren===0&&openEarlierSiblings===0,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
+  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,p.parent_prompt_id parentPromptId,p.child_order childOrder,(SELECT COUNT(*) FROM prompt c WHERE c.parent_prompt_id=p.id AND c.status NOT IN ('DONE','SKIPPED')) openChildren,(SELECT COUNT(*) FROM prompt earlier WHERE p.parent_prompt_id IS NOT NULL AND earlier.parent_prompt_id=p.parent_prompt_id AND (earlier.child_order<p.child_order OR (earlier.child_order=p.child_order AND earlier.id<p.id)) AND earlier.status NOT IN ('DONE','SKIPPED')) openEarlierSiblings,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">&{openChildren:number;openEarlierSiblings:number}>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' THEN 0 ELSE 1 END, started_at DESC LIMIT 1"); return rows.map(({openChildren,openEarlierSiblings,...row})=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const systemInterrupted=endedWithoutAgentStatus(row.status);return{...row,ready:row.status==="TODO"&&blockedBy.length===0&&openChildren===0&&openEarlierSiblings===0,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
   resolvePrompt(workspaceId: number, promptId: number): PromptOption {
     const row = this.promptOptions(workspaceId).find(prompt => prompt.id === promptId);
     if (!row) throw new WorkspaceError(404, "not_found", "Prompt was not found in this workspace"); return row;
@@ -1230,16 +1330,37 @@ export const workspaces = {
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};
-    if(prompt.status==="IN_PROGRESS"){
-      // A budget stop is deliberate and resumable, so it must not read as a
-      // crash — `processFailureBlocked` treats "Agent process ended" as a hard
-      // failure that terminates the pipeline, and this is not one.
-      const reason=metrics?.stopReason
-        ? `Run budget exhausted (${metrics.stopReason}). The run was stopped before it could post a status. Its work so far is in the tree and in this item's remarks; resume from there rather than restarting.`
-        : `Agent process ended ${state} without posting the required DONE or BLOCKED status.`;
-      db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,run.prompt_id);
-      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);
-      db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);
+    // What the end of a run means for the work item. The decision is in
+    // statusTransition.ts so it can be tested without a database, and so the
+    // one rule that matters is stated once: a run that ends without posting is
+    // UNREPORTED, never BLOCKED and never FAILED.
+    //
+    // This used to write BLOCKED unconditionally, which is what made an agent
+    // that finished the work but dropped its final HTTP call look identical to
+    // one that stopped to ask a question — and BLOCKED is what the pipeline
+    // parks on, so finished work waited on a human with nothing to answer.
+    // `state` arrives as a loose string from the runner. Anything that is not a
+    // recognised ending is treated as an error rather than silently as a clean
+    // exit: guessing "fine" about an unrecognised ending is the same mistake in
+    // a smaller place.
+    const outcome:RunOutcome=state==="done"?"done":state==="interrupted"?"interrupted":"error";
+    const facts={status:prompt.status,outcome,stopReason:metrics?.stopReason??null};
+    const signal=endOfRunSignal(facts);
+    if(signal!==null){
+      const decision=decide(signal);
+      const reason=endOfRunReason(facts);
+      writeStatus({
+        promptId:run.prompt_id,
+        to:decision.to??"UNREPORTED",
+        trigger:decision.row.trigger,
+        ruleId:decision.row.id,
+        actor:"SYSTEM",
+        runId,
+        reason,
+        result:reason,
+        evidence:{processState:state,stopReason:metrics?.stopReason??null,toolCalls:metrics?.toolCalls??null},
+        remark:{kind:"BLOCKER",content:reason},
+      });
     }
   })()); },
   authorizeAgentRun(runId:string,tokenHash:string):{workspaceId:number;promptId:number|null;state:string;role:RunRole} { const row=db.prepare("SELECT workspace_id workspaceId,prompt_id promptId,state,role FROM agent_run WHERE id=? AND context_token_hash=? AND token_expires_at>?").get(runId,tokenHash,new Date().toISOString()) as {workspaceId:number;promptId:number|null;state:string;role:RunRole}|undefined;if(!row)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");return row; },
@@ -1259,7 +1380,7 @@ export const workspaces = {
     const remarks=remarkLimit===undefined
       ?db.prepare("SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt FROM prompt_remark WHERE prompt_id=? ORDER BY id DESC").all(promptId)
       :db.prepare("SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt FROM prompt_remark WHERE prompt_id=? ORDER BY id DESC LIMIT ?").all(promptId,remarkLimit);
-    return{events:db.prepare("SELECT id,prompt_id promptId,run_id runId,previous_status previousStatus,new_status newStatus,reason,verification_summary verificationSummary,actor_type actorType,created_at createdAt FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC").all(promptId),remarks,runs:db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC").all(promptId)};
+    return{events:statusEvents(promptId),remarks,runs:db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC").all(promptId)};
   },
   humanInputRequests():HumanInputRequest[] {
     const rows=db.prepare(`SELECT p.id promptId,g.workspace_id workspaceId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.status='BLOCKED' OR EXISTS(SELECT 1 FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='HUMAN_RESPONSE') ORDER BY p.updated_at DESC`).all() as Array<{promptId:number;workspaceId:number}>;
@@ -1517,8 +1638,7 @@ export const workspaces = {
     if(prompt.status!=="BLOCKED")throw new WorkspaceError(409,"prompt_not_blocked","Prompt no longer needs human input");
     const content=requireText(input.content,"content",20000);const now=new Date().toISOString();
     const remarkId=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'USER',?)").run(promptId,content,now).lastInsertRowid);
-    db.prepare("UPDATE prompt SET status='TODO',result='',updated_at=? WHERE id=?").run(now,promptId);
-    db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,'BLOCKED','TODO','Human supplied context; ready to resume','USER',?)").run(promptId,now);
+    writeStatus({promptId,to:"TODO",trigger:"operator_override",actor:"USER",reason:"You answered the question, so it is ready to resume.",result:""});
     return{id:remarkId,promptId,runId:null,kind:"HUMAN_RESPONSE",content,actorType:"USER",createdAt:now} satisfies PromptRemark;
   })()); },
   recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior developer run to recover");return run.id; },
@@ -1546,7 +1666,7 @@ export const workspaces = {
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(prompt===undefined)return false;
     const abandoned=prompt.status==="IN_PROGRESS"&&(run.state==="STARTING"||run.state==="RUNNING")&&!activeRuns.has(runId);
-    return abandoned||systemBlocked(promptId,prompt.status);
+    return abandoned||endedWithoutAgentStatus(prompt.status);
   },
   recoverPrompt(promptId:number,expectedRunId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
@@ -1555,12 +1675,11 @@ export const workspaces = {
     if(!run||run.id!==expectedRunId)throw new WorkspaceError(409,"run_changed","A newer run exists; refresh before recovering");
     if(activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active; stop it before recovering");
     const abandoned=prompt.status==="IN_PROGRESS"&&(run.state==="STARTING"||run.state==="RUNNING");
-    const systemInterrupted=systemBlocked(promptId,prompt.status);
+    const systemInterrupted=endedWithoutAgentStatus(prompt.status);
     if(!abandoned&&!systemInterrupted)throw new WorkspaceError(409,"not_recoverable","This prompt is not an abandoned or system-interrupted run");
     const now=new Date().toISOString();
     if(run.state==="STARTING"||run.state==="RUNNING")db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,run.id);
-    db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
-    db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,?,'TODO','Operator recovered a stopped agent run','USER',?)").run(promptId,run.id,prompt.status,now);
+    writeStatus({promptId,to:"TODO",trigger:"operator_recover",actor:"USER",runId:run.id,reason:"You recovered a run that had stopped.",result:""});
     db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?, 'HUMAN_RESPONSE','The previous agent run was interrupted or lost. Continue from the existing working tree and prior run evidence; inspect current changes before repeating work.','USER',?)").run(promptId,run.id,now);
   })()); },
 
@@ -2079,8 +2198,7 @@ export const workspaces = {
       }
       if(prompt.status!=="TODO"&&prompt.status!=="BLOCKED")throw new WorkspaceError(409,"invalid_transition","Only TODO or BLOCKED work items can be skipped");
       const now=new Date().toISOString();
-      db.prepare("UPDATE prompt SET status='SKIPPED',updated_at=? WHERE id=?").run(now,promptId);
-      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?, 'SKIPPED',?,?,?)").run(promptId,prompt.status,reason,actor,now);
+      writeStatus({promptId,to:"SKIPPED",trigger:"operator_skip",actor,reason});
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,?,?,?,?)").run(promptId,actor==="USER"?"HUMAN_RESPONSE":"PROGRESS",reason,actor,now);
     })());
   },
@@ -2113,9 +2231,10 @@ export const workspaces = {
       // keeps reporting how that run ended instead of losing the provenance.
       const runId=(db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined)?.id??null;
       const now=new Date().toISOString();
-      db.prepare("UPDATE prompt SET status='DONE',result=?,completed_at=?,updated_at=? WHERE id=?").run(verification,now,now,promptId);
-      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,?,'DONE',?,?,?,?)").run(promptId,runId,prompt.status,reason,verification,actor,now);
-      db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'COMPLETION',?,?,?)").run(promptId,runId,verification,actor,now);
+      // SYSTEM here is a reviewer closing a station on its verdict; USER is the
+      // operator overriding. The trigger keeps those apart, which is what lets
+      // the UI say "closed by review" rather than implying the agent finished.
+      writeStatus({promptId,to:"DONE",trigger:actor==="USER"?"operator_override":"review_complete",ruleId:actor==="USER"?null:"review-complete",actor,runId,reason,verificationSummary:verification,result:verification,remark:{kind:"COMPLETION",content:verification}});
     })());
   },
 
@@ -2126,12 +2245,15 @@ export const workspaces = {
       if(prompt.status==="IN_PROGRESS"){
         const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' AND state IN ('STARTING','RUNNING') ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;
         if(run&&activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active");
-      }else if(prompt.status!=="BLOCKED"){
-        throw new WorkspaceError(409,"invalid_transition","Pipeline can only reset BLOCKED stations to TODO");
+      }else if(!UNFINISHED_STATUSES.has(prompt.status)){
+        // Widened past BLOCKED when a run that ended without reporting stopped
+        // being written as BLOCKED. A retry has to be able to reset the very
+        // statuses that now describe an unfinished run, or the retry rule could
+        // never fire again.
+        throw new WorkspaceError(409,"invalid_transition",`Pipeline cannot reset a ${prompt.status} station to TODO`);
       }
       const now=new Date().toISOString();
-      db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
-      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,reason,now);
+      writeStatus({promptId,to:"TODO",trigger:"operator_retry",actor:"SYSTEM",reason,result:""});
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'SYSTEM',?)")
         .run(promptId,"Pipeline is retrying / recovering this station. Inspect the working tree and prior evidence; do not repeat resolved work.",now);
     })());
@@ -2375,16 +2497,20 @@ export const workspaces = {
     return this.completionAuditById(id)!;
   },
   /**
-   * Why a station is BLOCKED, told apart by who posted it. Only a SYSTEM block
-   * is auditable: it means a run ended without a status, which is exactly the
-   * case where the work may in fact be finished. A block the agent posted
-   * itself carries a real question, and auditing past it would be a machine
-   * overruling a request for a human decision.
+   * Whether a work item is waiting because its run never reported, which is
+   * exactly the case a reviewer exists to settle: the work may in fact be
+   * finished. Covers both UNREPORTED (the run ended saying nothing) and FAILED
+   * (the process died saying nothing) — how the process exited says nothing
+   * about how much of the work got done.
+   *
+   * A BLOCKED item is deliberately excluded. That is an agent asking a human a
+   * question, and reviewing past it would be a machine overruling a request for
+   * a human decision.
    */
-  blockedWithoutAgentStatus(promptId:number):boolean {
+  endedWithoutAgentStatus(promptId:number):boolean {
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)return false;
-    return systemBlocked(promptId,prompt.status);
+    return endedWithoutAgentStatus(prompt.status);
   },
   /**
    * Everything an auditor is allowed to see about a finished run, plus the
@@ -2419,15 +2545,12 @@ export const workspaces = {
   preparePromptForSuccessor(promptId:number,handoffId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
     if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    const now=new Date().toISOString();db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
-    db.prepare("INSERT INTO prompt_status_event(prompt_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,`Automatic continuation prepared by handoff ${handoffId}`,now);
-    db.prepare("INSERT INTO prompt_remark(prompt_id,kind,content,actor_type,created_at) VALUES(?,'PROGRESS',?,'SYSTEM',?)").run(promptId,`${briefMarkdown}\n\nHandoff: ${handoffId}`,now);
+    writeStatus({promptId,to:"TODO",trigger:"review_incomplete",ruleId:"review-incomplete-with-work",actor:"SYSTEM",reason:"A handoff prepared a continuation brief, so a successor can pick this up without redoing the work.",result:"",evidence:{handoffId},remark:{kind:"PROGRESS",content:`${briefMarkdown}\n\nHandoff: ${handoffId}`}});
   })()); },
   preparePromptForHandoffRetry(promptId:number,handoffId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
     if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    const now=new Date().toISOString();db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
-    db.prepare("INSERT INTO prompt_status_event(prompt_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,`Retrying successor from existing handoff ${handoffId}`,now);
+    writeStatus({promptId,to:"TODO",trigger:"operator_retry",actor:"SYSTEM",reason:`Retrying a successor from the brief handoff ${handoffId} already produced.`,result:"",evidence:{handoffId}});
   })()); },
   suitePipelineForRun(runId:string):SuitePipelineRun|null { const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE current_run_id=? ORDER BY started_at DESC LIMIT 1").get(runId) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null; },
   close(): void { db.close(); },

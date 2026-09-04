@@ -133,7 +133,7 @@ export async function scheduleCompletionAudit(args: ScheduleAuditArgs): Promise<
   if (outcome.status === "DONE" || outcome.status === "SKIPPED") return { started: false, block: "already_complete" };
   // The station must be blocked *by the system*. An agent that posted BLOCKED
   // itself asked a human a question, and no amount of tree-reading answers it.
-  if (!workspaces.blockedWithoutAgentStatus(args.promptId)) return { started: false, block: "not_auditable" };
+  if (!workspaces.endedWithoutAgentStatus(args.promptId)) return { started: false, block: "not_auditable" };
   const previous = workspaces.completionAuditsForRun(args.sourceRunId);
   if (previous.some((item) => item.state === "QUEUED" || item.state === "RUNNING")) return { started: false, block: "audit_running" };
   if (args.automatic !== false && previous.length >= AUTO_ATTEMPTS_PER_RUN) return { started: false, block: "attempt_limit" };

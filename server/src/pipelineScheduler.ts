@@ -1,4 +1,4 @@
-import { isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -31,8 +31,21 @@ function enqueue<T>(workspaceId: number, work: () => Promise<T>): Promise<T> {
   return current;
 }
 
-function processFailureBlocked(result: string): boolean {
-  return result.startsWith("Agent process ended") || result.startsWith("No active agent run");
+/**
+ * Whether retries were exhausted against something no further retry can fix.
+ *
+ * A station that keeps failing to *run* will keep failing to run, so the
+ * pipeline stops rather than parking for an operator who has nothing to answer.
+ * A station that keeps ending without reporting is a different matter: the work
+ * may well be getting done, so that parks and waits for a reviewer.
+ *
+ * This used to sniff the prompt's result text for the prefixes "Agent process
+ * ended" and "No active agent run", which meant rewording an operator-facing
+ * sentence silently changed the scheduler's behaviour. The status now carries
+ * the fact, so it is read instead of guessed at.
+ */
+function processFailureBlocked(status: PromptStatus): boolean {
+  return status === "FAILED";
 }
 
 function optionalPlayProvider(input: Record<string, unknown>, field: "provider" | "model", present: boolean): ProviderId | string | null | undefined {
@@ -342,7 +355,7 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
       const updated = workspaces.updatePipelineRun(pipeline.id, { attempt, recovering: false, currentPromptId: promptId, currentRunId: null });
       return startCurrentStation(updated, promptId);
     }
-    if (processFailureBlocked(result)) return terminate(pipeline, "STOPPED", "retry_exhausted");
+    if (processFailureBlocked(workspaces.promptOutcome(promptId).status)) return terminate(pipeline, "STOPPED", "retry_exhausted");
     return park(pipeline, promptId, "retry_exhausted");
   }
   if (rule.onBlocked === "recover") {
@@ -364,6 +377,19 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
   workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it blocked.");
   return advance(pipeline);
 }
+
+/**
+ * Statuses that hand the station to `applyOnBlocked` — the path for "this run
+ * did not finish the work, decide what to do about it".
+ *
+ * All three are the same situation from the scheduler's point of view: the run
+ * is over and the item is not closed. They differ in *why*, which is what the
+ * status now records and what the reviewer keys off, but not in what the
+ * pipeline must do next. Listing them here rather than testing `!== "DONE"`
+ * keeps `unexpected_status` meaning something: a status the scheduler genuinely
+ * does not know how to handle should still stop the run rather than be guessed at.
+ */
+const UNFINISHED_STATUSES = new Set<PromptStatus>(["BLOCKED", "UNREPORTED", "FAILED", "NEEDS_REVIEW"]);
 
 async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, promptId: number): Promise<void> {
   const live = workspaces.pipelineById(pipeline.id);
@@ -389,7 +415,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
       await advance(live);
       return;
     }
-    if (posted.status === "BLOCKED") {
+    if (UNFINISHED_STATUSES.has(posted.status)) {
       await applyOnBlocked(live, rule, promptId, posted.result, runId);
       return;
     }
@@ -400,7 +426,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     await applyOnDone(live, rule);
     return;
   }
-  if (posted.status === "BLOCKED") {
+  if (UNFINISHED_STATUSES.has(posted.status)) {
     await applyOnBlocked(live, rule, promptId, posted.result, runId);
     return;
   }

@@ -734,8 +734,26 @@ export interface ProgramGate {
 }
 
 export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
-export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
-export interface PromptStatusEvent { id:number; promptId:number; runId:string|null; previousStatus:PromptStatus; newStatus:PromptStatus; reason:string; verificationSummary:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
+/**
+ * Who caused a change. Named rather than repeated inline: it is the field that
+ * separates "the agent said so" from "the system concluded it" from "you did
+ * it", which is the first thing an operator asks of a status they distrust.
+ */
+export type ActorType = "IMPORT" | "SYSTEM" | "AGENT" | "USER";
+
+export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:ActorType; createdAt:string }
+export interface PromptStatusEvent {
+  id:number; promptId:number; runId:string|null;
+  previousStatus:PromptStatus; newStatus:PromptStatus;
+  reason:string; verificationSummary:string;
+  actorType:ActorType; createdAt:string;
+  /** What caused this change. Null only on rows written before the ledger existed. */
+  trigger:StatusTrigger|null;
+  /** The transition row that decided, when a rule did rather than a person. */
+  ruleId:string|null;
+  /** What backs the decision: verdicts, exit codes, failing criteria, child ids. */
+  evidence:Record<string,unknown>|null;
+}
 
 export interface HumanInputRequest {
   prompt: PromptOption;
@@ -1571,7 +1589,7 @@ export type {
   StepStatus,
   StepTransitionRow,
 } from "./statusModel";
-import type { StepDisplayStatus, StepStatus } from "./statusModel";
+import type { StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
 
 export type {
   AuditOnBlockedMode,

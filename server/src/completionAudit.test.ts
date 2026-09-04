@@ -146,7 +146,7 @@ test("a station the agent itself reported BLOCKED is never audited past", async 
 
     // The station asked a specific question. Reading the tree cannot answer it,
     // and an auditor that closed it would be overruling a request for a human.
-    assert.equal(workspaces.blockedWithoutAgentStatus(ctx.prompts[0]!.id), false);
+    assert.equal(workspaces.endedWithoutAgentStatus(ctx.prompts[0]!.id), false);
     const parked = workspaces.activePipeline(ctx.suite.id);
     assert.equal(parked?.waitReason, null, "no audit was summoned");
     assert.equal(workspaces.completionAuditsForPrompt(ctx.prompts[0]!.id).length, 0);
@@ -164,8 +164,11 @@ test("a run that ended without posting a status is auditable", async () => {
   stubStarts();
   try {
     await stationBlockedWithoutStatus(ctx);
-    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "BLOCKED");
-    assert.equal(workspaces.blockedWithoutAgentStatus(ctx.prompts[0]!.id), true);
+    // The process died without reporting, so the run failed — but what the
+    // work item is owed is a review, not a verdict. It is emphatically not
+    // BLOCKED: nobody asked the operator anything.
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "FAILED");
+    assert.equal(workspaces.endedWithoutAgentStatus(ctx.prompts[0]!.id), true);
   } finally {
     ctx.cleanup();
   }
@@ -215,7 +218,10 @@ test("an INCOMPLETE verdict leaves the station blocked and says so", async () =>
     updateSettings({ "pipeline.auditOnBlocked": "autocomplete" });
     const applied = await pipelineScheduler.onAuditSettled({ promptId: ctx.prompts[0]!.id, sourceRunId: runId, verdict: "INCOMPLETE" });
     assert.equal(applied, false);
-    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "BLOCKED");
+    // An INCOMPLETE verdict does not change the status — the item is still a run
+    // that ended without reporting. What changes is that the pipeline now parks
+    // with a reason, and the verdict is on the record.
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "FAILED");
     const parked = workspaces.activePipeline(ctx.suite.id);
     assert.equal(parked?.state, "WAITING_HUMAN");
     assert.equal(parked?.waitReason, "audit_incomplete");
@@ -256,7 +262,7 @@ test("the report-only policy records the verdict and still waits for the operato
       verificationSummary: "Everything is there.",
     });
     assert.equal(applied, false, "report mode never closes a station on its own");
-    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "BLOCKED");
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "FAILED");
     assert.equal(workspaces.activePipeline(ctx.suite.id)?.state, "WAITING_HUMAN");
     assert.equal(started.length, 1);
   } finally {

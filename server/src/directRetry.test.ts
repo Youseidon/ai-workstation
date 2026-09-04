@@ -217,7 +217,10 @@ test("a budget-stopped run is recoverable, not awaiting a human answer", () => {
       stopReason: "budget_input_tokens:4000000",
     });
     const prompt = workspaces.promptOptions(ctx.workspace.id).find((item) => item.id === ctx.prompt.id)!;
-    assert.equal(prompt.status, "BLOCKED");
+    // A budget stop is deliberate and resumable. The run ended without saying
+    // what it achieved, which is UNREPORTED — not BLOCKED, which would claim a
+    // human was asked something, and not FAILED, which would claim a crash.
+    assert.equal(prompt.status, "UNREPORTED");
     assert.equal(prompt.recoverable, true);
     assert.equal(operationalState(prompt), "RECOVERY_NEEDED");
   } finally {

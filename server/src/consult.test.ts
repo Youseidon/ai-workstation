@@ -120,7 +120,10 @@ test("consult finish leaves an IN_PROGRESS execute prompt untouched", () => {
     workspaces.finishAgentRun(consultId, "done");
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "IN_PROGRESS");
     workspaces.finishAgentRun(executeId, "error");
-    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "BLOCKED");
+    // The execute process failed, so the run failed. It is not BLOCKED: nothing
+    // asked the operator anything, and saying so would park the pipeline on a
+    // question that does not exist.
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "FAILED");
   } finally {
     ctx.cleanup();
   }

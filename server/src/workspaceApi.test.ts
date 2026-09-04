@@ -144,7 +144,8 @@ test("a blocked station whose work is done can be completed without another run"
   try {
     const runId = seedInterruptedRun(ctx.workspace.id, ctx.prompt.id);
     const before = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
-    assert.equal(before.status, "BLOCKED");
+    // The server restarted mid-run, so nothing ever recorded how it ended.
+    assert.equal(before.status, "UNREPORTED");
     assert.equal(before.recoverable, true, "recovery is offered, but it would re-run the work");
 
     const summary = "Build 0 warnings; 25/25 route replay green; burndown +6.";
@@ -183,7 +184,7 @@ test("completing a station requires evidence and refuses terminal or live statio
     // verification summary" — the same hole the agent's DONE path refuses.
     const blank = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "  " });
     assert.equal(blank.status, 422);
-    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "BLOCKED");
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "UNREPORTED");
 
     await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "done and verified" });
     const again = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "done and verified" });
