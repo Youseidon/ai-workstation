@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import type { CompletionAuditRecord, OperationsPrompt, OperationsSuite } from "@agent-console/shared";
+import type { CompletionAuditRecord, OperationsPrompt, OperationsSuite, StatusDefinition } from "@agent-console/shared";
 import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
@@ -11,6 +11,7 @@ import { TextArea } from "@/components/ui/Field";
 import { cn } from "@/lib/cn";
 import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
+import { WhyThisStatus } from "./WhyThisStatus";
 
 type DetailTab = "overview" | "sessions" | "activity";
 
@@ -70,6 +71,8 @@ export function WorkItemDetail({
   suite,
   item,
   activity,
+  statusCatalog,
+  triggerSentences,
   response,
   busy,
   canStart,
@@ -90,6 +93,9 @@ export function WorkItemDetail({
   suite: OperationsSuite | null;
   item: OperationsPrompt | null;
   activity: ActivityPayload | null;
+  /** Resolved catalog from the operations snapshot, so renames show here too. */
+  statusCatalog: readonly StatusDefinition[];
+  triggerSentences: Record<string, string>;
   response: string;
   busy: boolean;
   canStart: boolean;
@@ -233,6 +239,17 @@ export function WorkItemDetail({
                 {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
               </div>
             )}
+            {/* The answer to "why is it showing this", from the ledger rather
+                than reconstructed at render time. First thing in the overview
+                because it is the first thing an operator asks of a status they
+                do not trust. */}
+            <WhyThisStatus
+              item={item}
+              events={activity !== null && activity.item.prompt.id === item.prompt.id ? activity.events : []}
+              catalog={statusCatalog}
+              triggerSentences={triggerSentences}
+            />
+
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>

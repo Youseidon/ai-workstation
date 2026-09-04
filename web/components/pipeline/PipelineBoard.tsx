@@ -975,6 +975,9 @@ export function PipelineBoard({
                       setConfigId(resumeItem.prompt.id);
                     }
               }
+              // The board renders labels from the catalog on the operations
+              // snapshot, so a rename has to be re-read before it shows here.
+              onStatusesChanged={() => void refreshCatalog()}
             />
 
             {policyOpen && (

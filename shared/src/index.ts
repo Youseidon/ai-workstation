@@ -1120,7 +1120,20 @@ export interface OperationsSuite {
   } | null;
 }
 export interface OperationsSession { id:string; workspaceId:number; promptId:number|null; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
-export interface OperationsSnapshot { generatedAt:string; suites:OperationsSuite[]; policy:PipelinePolicy }
+export interface OperationsSnapshot {
+  generatedAt:string;
+  suites:OperationsSuite[];
+  policy:PipelinePolicy;
+  /**
+   * The status catalog as the operator has it: shipped defaults with their
+   * edits applied. Shipped with the snapshot for the same reason `policy` is —
+   * so the board and the server decide what a state is called, and what it
+   * means, from the same values.
+   */
+  statusCatalog:StatusDefinition[];
+  /** The operator's sentence for each cause, over the shipped defaults. */
+  triggerSentences:Record<string,string>;
+}
 export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
 /** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
 export type SuiteVerificationCheck = "VERIFIED" | "WARNING" | "FAILED" | "UNVERIFIED";
@@ -1624,7 +1637,7 @@ export type {
   StepStatus,
   StepTransitionRow,
 } from "./statusModel";
-import type { StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
+import type { StatusDefinition, StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
 
 export type {
   AuditOnBlockedMode,

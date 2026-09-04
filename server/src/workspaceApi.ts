@@ -78,7 +78,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -87,6 +87,32 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   }
   try {
     const method = req.method ?? "GET";
+    // The status catalog: what each state is called, what it means, and what
+    // entering it sets in motion. Locked fields are refused with the reason
+    // rather than silently dropped — see workspaces.updateStatusDefinition.
+    if(url.pathname==="/api/statuses"){
+      if(method==="GET")json(res,200,{statuses:workspaces.statusCatalog(),triggers:workspaces.triggerSentences()});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    {
+      const match=url.pathname.match(/^\/api\/statuses\/([A-Z_]+)$/);
+      if(match){
+        const statusId=match[1]!;
+        if(method==="PATCH")json(res,200,{status:workspaces.updateStatusDefinition(statusId,await body(req))});
+        else if(method==="DELETE")json(res,200,{status:workspaces.resetStatusDefinition(statusId)});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    {
+      const match=url.pathname.match(/^\/api\/triggers\/([a-z_]+)$/);
+      if(match){
+        if(method==="PATCH"){const input=await body(req);json(res,200,{triggers:workspaces.updateTriggerSentence(match[1]!,input.sentence)});}
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
     if(url.pathname==="/api/operations"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, isStatusIcon, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -1209,6 +1209,84 @@ export const workspaces = {
   /** The resolved status catalog. See `resolvedStatusCatalog`. */
   statusCatalog(): StatusDefinition[] { return resolvedStatusCatalog(); },
   triggerSentences(): Record<string, string> { return resolvedTriggerSentences(); },
+  /**
+   * Change how a status presents itself, or what entering it does.
+   *
+   * Refuses a locked field rather than quietly ignoring it: a settings screen
+   * that appears to accept a change it will not honour is worse than one that
+   * says no. The locks protect invariants the rest of the engine relies on —
+   * DONE has to stay terminal, and an item nobody confirmed cannot be made to
+   * satisfy a dependency.
+   */
+  updateStatusDefinition(id: string, patch: Record<string, unknown>): StatusDefinition {
+    if (!isStepDisplayStatus(id)) throw new WorkspaceError(404, "not_found", `No status called ${id}`);
+    const base = defaultStatusDefinition(id);
+    const columns: Array<[StatusEditableKey, string, "text" | "flag" | "number" | "tone" | "icon" | "onEnter"]> = [
+      ["label", "label", "text"], ["shortLabel", "short_label", "text"], ["description", "description", "text"],
+      ["tone", "tone", "tone"], ["icon", "icon", "icon"],
+      ["isTerminal", "is_terminal", "flag"], ["satisfiesDependency", "satisfies_dependency", "flag"],
+      ["blocksParent", "blocks_parent", "flag"], ["needsAttention", "needs_attention", "flag"],
+      ["precedence", "precedence", "number"], ["onEnter", "on_enter", "onEnter"],
+    ];
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const errors: Record<string, string> = {};
+    for (const [key, column, kind] of columns) {
+      if (!(key in patch)) continue;
+      if (!statusFieldEditable(base, key)) {
+        errors[key] = base.lockedReason ?? "This field cannot be changed.";
+        continue;
+      }
+      const value = patch[key];
+      if (value === null) { fields.push(`${column}=?`); values.push(null); continue; }
+      if (kind === "text") {
+        if (typeof value !== "string" || value.trim() === "") { errors[key] = "Must be some text"; continue; }
+        fields.push(`${column}=?`); values.push(value.trim().slice(0, 2000));
+      } else if (kind === "flag") {
+        if (typeof value !== "boolean") { errors[key] = "Must be true or false"; continue; }
+        fields.push(`${column}=?`); values.push(value ? 1 : 0);
+      } else if (kind === "number") {
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 0) { errors[key] = "Must be a whole number, zero or more"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      } else if (kind === "tone") {
+        if (!isStatusTone(value)) { errors[key] = "Not a known tone"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      } else if (kind === "icon") {
+        if (!isStatusIcon(value)) { errors[key] = "Not a known icon"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      } else {
+        if (!isStatusOnEnter(value)) { errors[key] = "Not a known entry behaviour"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      }
+    }
+    if (Object.keys(errors).length > 0) throw new WorkspaceError(422, "validation_error", "Some changes were refused", errors);
+    if (fields.length === 0) return statusDefinition(resolvedStatusCatalog(), id);
+    const now = new Date().toISOString();
+    sqliteGuard(() => db.transaction(() => {
+      db.prepare("INSERT INTO status_definition(id,updated_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING").run(id, now);
+      db.prepare(`UPDATE status_definition SET ${fields.join(",")},updated_at=? WHERE id=?`).run(...values, now, id);
+    })());
+    statusCatalogCache = null;
+    return statusDefinition(resolvedStatusCatalog(), id);
+  },
+  /** Drop every override on a status, returning it to what ships. */
+  resetStatusDefinition(id: string): StatusDefinition {
+    if (!isStepDisplayStatus(id)) throw new WorkspaceError(404, "not_found", `No status called ${id}`);
+    db.prepare("DELETE FROM status_definition WHERE id=?").run(id);
+    statusCatalogCache = null;
+    return defaultStatusDefinition(id);
+  },
+  /** Reword what caused a status change. The token stays ours; the sentence is theirs. */
+  updateTriggerSentence(id: string, sentence: unknown): Record<string, string> {
+    if (!isStatusTrigger(id)) throw new WorkspaceError(404, "not_found", `No trigger called ${id}`);
+    if (sentence === null) { db.prepare("DELETE FROM trigger_definition WHERE id=?").run(id); return resolvedTriggerSentences(); }
+    if (typeof sentence !== "string" || sentence.trim() === "") {
+      throw new WorkspaceError(422, "validation_error", "A trigger needs a sentence", { sentence: "Must be some text" });
+    }
+    db.prepare("INSERT INTO trigger_definition(id,sentence,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET sentence=excluded.sentence,updated_at=excluded.updated_at")
+      .run(id, sentence.trim().slice(0, 2000), new Date().toISOString());
+    return resolvedTriggerSentences();
+  },
   list(): WorkspaceRecord[] { return (db.prepare("SELECT * FROM workspace ORDER BY name COLLATE NOCASE").all() as WorkspaceRow[]).map(workspaceDto); },
   get(id: number): WorkspaceRecord {
     const row = db.prepare("SELECT * FROM workspace WHERE id = ?").get(id) as WorkspaceRow | undefined;
@@ -1474,7 +1552,7 @@ export const workspaces = {
       }
       for(const item of prompts) item.children.sort((a,b)=>a.prompt.childOrder-b.prompt.childOrder);
       const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];const defaultsRow=suiteDefaults.get(suite.id) as {defaultProvider:string|null;defaultModel:string|null};suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:allPrompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null,pipeline:{defaults:{suiteId:suite.id,defaultProvider:asProviderId(defaultsRow.defaultProvider),defaultModel:defaultsRow.defaultModel},active:(()=>{const row=activePipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})(),latest:(()=>{const row=latestPipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})()}});}}
-    return{generatedAt:new Date().toISOString(),suites,policy:settings.pipelinePolicy};
+    return{generatedAt:new Date().toISOString(),suites,policy:settings.pipelinePolicy,statusCatalog:resolvedStatusCatalog(),triggerSentences:resolvedTriggerSentences()};
   },
   /* ---------------------------------------------------------------- */
   /* Suite verification                                                 */

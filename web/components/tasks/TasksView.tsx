@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES } from "@agent-console/shared";
 import type { OperationsPrompt, OperationsSnapshot } from "@agent-console/shared";
 import { PageChrome } from "@/components/shell/chrome";
 import { VerificationPanel } from "@/components/VerificationPanel";
@@ -454,6 +455,11 @@ export function TasksView() {
     suite,
     item: listItem,
     activity,
+    // From the snapshot, not the shipped defaults, so a status the operator has
+    // renamed reads the same here as it does on the board. The defaults stand
+    // in only for the moment before the first snapshot arrives.
+    statusCatalog: snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG,
+    triggerSentences: snapshot?.triggerSentences ?? DEFAULT_TRIGGER_SENTENCES,
     response,
     busy,
     canStart,

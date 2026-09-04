@@ -1,4 +1,5 @@
-import type { AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+import type {
+  StatusDefinition, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -25,6 +26,11 @@ const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 export const workspaceApi = {
   async sessions(serverUrl:string){return (await request<{sessions:AgentSession[]}>(serverUrl,"/api/sessions")).sessions;},
   async report(serverUrl:string,workspaceId?:number){return (await request<{report:UsageReport}>(serverUrl,`/api/report${workspaceId===undefined?"":`?workspace=${workspaceId}`}`)).report;},
+  /** The status catalog and the trigger sentences, for the rules screen. */
+  statuses(serverUrl:string){return request<{statuses:StatusDefinition[];triggers:Record<string,string>}>(serverUrl,"/api/statuses");},
+  patchStatus(serverUrl:string,id:string,value:unknown){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"PATCH",...json(value)}).then(r=>r.status);},
+  resetStatus(serverUrl:string,id:string){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"DELETE"}).then(r=>r.status);},
+  patchTrigger(serverUrl:string,id:string,sentence:string|null){return request<{triggers:Record<string,string>}>(serverUrl,`/api/triggers/${id}`,{method:"PATCH",...json({sentence})}).then(r=>r.triggers);},
   operations(serverUrl:string,workspaceId?:number){return request<OperationsSnapshot>(serverUrl,`/api/operations${workspaceId===undefined?"":`?workspace=${workspaceId}`}`);},
   /** Records a fresh audit of what the orchestration records already claim. */
   auditSuite(serverUrl:string,suiteId:number){return request<{verification:SuiteVerificationRecord}>(serverUrl,`/api/suites/${suiteId}/verification`,{method:"POST",body:"{}"}).then(r=>r.verification);},

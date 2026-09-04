@@ -1,5 +1,6 @@
 "use client";
 
+import { StatusCatalogPanel } from "./StatusCatalogPanel";
 import type { PipelinePolicy, RuleContext, RulePolicy, TransitionRow } from "@agent-console/shared";
 import { Modal } from "@/components/ui/Modal";
 import { StatusDot } from "@/components/ui/Badge";
@@ -22,6 +23,7 @@ export function RulesPanel({
   station,
   onEditStationRule,
   onEditPolicy,
+  onStatusesChanged,
 }: {
   open: boolean;
   onClose(): void;
@@ -33,6 +35,8 @@ export function RulesPanel({
   onEditStationRule?(): void;
   /** Opens the Pipeline policy form, so a setting is changed where it is read. */
   onEditPolicy?(): void;
+  /** Re-read the board after a status is renamed, so the change shows at once. */
+  onStatusesChanged?(): void;
 }) {
   const controls = [
     ...(status.primary === null ? [] : [{ control: status.primary, primary: true }]),
@@ -103,6 +107,18 @@ export function RulesPanel({
           the running agent. Handoffs are offered{" "}
           <span className="text-fg-muted">{requirementPhrase(policy)}</span>.
         </p>
+      </section>
+
+      {/* The states themselves, editable. Kept in the same dialog as the rule
+          table because they are one subject: the table decides which state a run
+          lands in, and this decides what that state is called and what it does. */}
+      <section className="mt-6 border-t border-line pt-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+          Every status
+        </h3>
+        <div className="mt-2">
+          <StatusCatalogPanel onChanged={onStatusesChanged} />
+        </div>
       </section>
     </Modal>
   );
