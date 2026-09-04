@@ -1,4 +1,4 @@
-import { autoHandoffAllowed, isProviderId, reviewTriggerFor, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { autoHandoffAllowed, isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -755,26 +755,47 @@ async function settleAudit(args: { promptId: number; sourceRunId: string; verdic
   // the narrowest scope that says anything. This used to be one global
   // three-way switch, so "close a run that went quiet" and "close one whose
   // process crashed" could not be answered differently.
-  const trigger = reviewTriggerFor(workspaces.promptOutcome(args.promptId).status) ?? "unreported";
+  const trigger = workspaces.reviewSituation(args.promptId) ?? "unreported";
   const reviewer = workspaces.reviewerConfig(trigger, args.promptId);
   const action = args.verdict === "COMPLETE" ? reviewer.onComplete
     : args.verdict === "INCOMPLETE" ? reviewer.onIncomplete
     : reviewer.onUnverifiable;
 
+  // Set when the definition of done refused a close the reviewer wanted to make.
+  // It changes what the station parks under, so the operator reads "a criterion
+  // did not pass" rather than "an audit could not confirm it".
+  let refusedByDod = false;
   if (args.verdict === "COMPLETE" && action === "close") {
     try {
-      workspaces.completePrompt(args.promptId, "SYSTEM", {
+      // A reviewer's COMPLETE is an opinion; the definition-of-done commands are
+      // not. Run them here so the gate inside `completePrompt` is reading fresh
+      // evidence rather than whatever was last recorded — this is the one path
+      // where a machine closes a station unattended, so it is the one that most
+      // needs the checks to have actually happened.
+      const { runDefinitionOfDoneCommands } = await import("./definitionOfDone.ts");
+      await runDefinitionOfDoneCommands(args.promptId, args.sourceRunId);
+      const written = workspaces.completePrompt(args.promptId, "SYSTEM", {
         reason: AUDIT_COMPLETE_REASON,
         verificationSummary: args.verificationSummary ?? "",
       });
-      log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
-      if (parked) {
-        const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
-        await syncNamedFromSuite(playing);
-        const live = workspaces.pipelineById(playing.id);
-        if (live !== null) await advance(live);
+      // The gate refused: the item is on NEEDS_REVIEW with the failing criteria
+      // recorded, not on DONE. Reporting this as applied would tell the audit
+      // record it closed a station it did not close. It falls through to the
+      // station rule below rather than returning, because a pipeline parked on
+      // `audit_running` is only ever unparked down there — returning here would
+      // leave the rail waiting on an audit that has already finished.
+      if (written === "DONE") {
+        log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
+        if (parked) {
+          const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+          await syncNamedFromSuite(playing);
+          const live = workspaces.pipelineById(playing.id);
+          if (live !== null) await advance(live);
+        }
+        return true;
       }
-      return true;
+      refusedByDod = true;
+      log.info(`audit COMPLETE refused by the definition of done suite=${home.suiteId} prompt=${args.promptId}`);
     } catch (error) {
       // The station moved under us, or the verdict carried no evidence to
       // record. Either way it is not complete, so fall through to the rule.
@@ -788,7 +809,10 @@ async function settleAudit(args: { promptId: number; sourceRunId: string; verdic
   const live = workspaces.pipelineById(playing.id) ?? playing;
   const rule = workspaces.pipelineRule(args.promptId, namedPipelineIdFor(live));
   const outcome = workspaces.promptOutcome(args.promptId);
-  const parkReason = args.verdict === "INCOMPLETE" ? "audit_incomplete" : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable" : null;
+  const parkReason = refusedByDod ? "dod_unmet"
+    : args.verdict === "INCOMPLETE" ? "audit_incomplete"
+    : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable"
+    : null;
   await applyOnBlocked(live, rule, args.promptId, outcome.result, args.sourceRunId, { audited: true, parkReason });
   return false;
 }

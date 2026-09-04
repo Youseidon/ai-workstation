@@ -151,7 +151,10 @@ test("a blocked station whose work is done can be completed without another run"
     const summary = "Build 0 warnings; 25/25 route replay green; burndown +6.";
     const response = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: summary });
     assert.equal(response.status, 200);
-    assert.deepEqual(response.body, { completed: true });
+    // `status` says what was actually stored. An override is always honoured,
+    // but with a definition of done in play a close can land short of DONE, and
+    // the caller has to be able to tell those apart.
+    assert.deepEqual(response.body, { completed: true, status: "DONE" });
 
     const after = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
     assert.equal(after.status, "DONE");

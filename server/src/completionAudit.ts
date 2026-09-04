@@ -1,5 +1,6 @@
 import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, reviewTriggerFor, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { recordReviewerVerdicts } from "./definitionOfDone.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
@@ -61,6 +62,10 @@ function parseChecks(value: unknown): CompletionAuditCheck[] {
     .slice(0, 40)
     .map((row) => ({
       criterion: String(row.criterion ?? "").slice(0, 500),
+      // Anything that is not a plain integer is treated as "the reviewer did
+      // not name a criterion". A coerced id would file a verdict against the
+      // wrong one, which is worse than filing it against none.
+      criterionId: typeof row.criterionId === "number" && Number.isInteger(row.criterionId) ? row.criterionId : null,
       result: typeof row.result === "string" && AUDIT_CHECK_RESULTS.includes(row.result.toUpperCase() as never)
         ? (row.result.toUpperCase() as CompletionAuditCheck["result"])
         : "UNVERIFIED",
@@ -140,13 +145,16 @@ export interface ScheduleAuditArgs {
 export async function scheduleCompletionAudit(args: ScheduleAuditArgs): Promise<ScheduleAuditResult> {
   const outcome = workspaces.promptOutcome(args.promptId);
   if (outcome.status === "DONE" || outcome.status === "SKIPPED") return { started: false, block: "already_complete" };
-  // The station must be blocked *by the system*. An agent that posted BLOCKED
-  // itself asked a human a question, and no amount of tree-reading answers it.
-  if (!workspaces.endedWithoutAgentStatus(args.promptId)) return { started: false, block: "not_auditable" };
+  // There has to be a situation a reviewer can actually be sent into. An agent
+  // that posted BLOCKED itself asked a human a question, and no amount of
+  // tree-reading answers it; `reviewSituation` reads the recorded cause rather
+  // than guessing from the status, which is what lets an item held back by an
+  // unmet definition of done be reviewed while a genuine question is not.
+  if (workspaces.reviewSituation(args.promptId) === null) return { started: false, block: "not_auditable" };
   // Which situation this is, and what the operator has said about it. An
   // automatic review that is switched off for this situation must not happen;
   // one the operator asked for by hand always may.
-  const trigger = reviewTriggerFor(outcome.status) ?? "unreported";
+  const trigger = workspaces.reviewSituation(args.promptId) ?? "unreported";
   const config = workspaces.reviewerConfig(trigger, args.promptId);
   if (args.automatic !== false && !config.enabled) return { started: false, block: "not_auditable" };
 
@@ -222,7 +230,7 @@ function auditPrompt(dossier: string, blockReason: string): string {
 Your only job is to answer one question from evidence in the working tree: did that agent actually finish this work item, or is real work still missing?
 
 Method, in this order:
-1. Read the acceptance criteria in the dossier. Turn them into a concrete checklist.
+1. Read \`definitionOfDone.criteria\` in the dossier — that is the checklist, and each entry carries a criterionId you must quote back. A criterion marked \`alreadyChecked\` was run by the orchestrator itself; its result is a fact you cannot overturn, so report it as you found it. Where no criteria are listed, fall back to \`acceptanceCriteria\` and turn that prose into a checklist of your own.
 2. Inspect the current working tree yourself. Read the files the criteria are about. Use git (status, diff, log, show) to see what actually changed. Run the read-only verification commands the work item names — builds, tests, type checks, linters — and read their real output.
 3. Judge each criterion only on what you observed. The previous agent's own claims in the transcript are a hint about where to look, never evidence that something is done.
 
@@ -231,7 +239,7 @@ Verdicts:
 - INCOMPLETE — you found something specific that is missing, broken, or failing. Name it.
 - UNVERIFIABLE — you could not check enough to be sure. Not being able to run a command, or an ambiguous criterion, belongs here. This is a safe answer; a guess is not.
 
-Return one JSON object only, no prose around it, with keys: verdict (COMPLETE, INCOMPLETE, or UNVERIFIABLE), confidence (HIGH, MEDIUM, or LOW), checks (array of {criterion, result: PASSED|FAILED|UNVERIFIED, evidence, command}), remainingWork (array of strings, empty if COMPLETE), verificationSummary (one paragraph of the concrete commands you ran and the results you saw — this is recorded as the work item's evidence if you say COMPLETE), reasoning (why this verdict follows from the checks).
+Return one JSON object only, no prose around it, with keys: verdict (COMPLETE, INCOMPLETE, or UNVERIFIABLE), confidence (HIGH, MEDIUM, or LOW), checks (array of {criterionId, criterion, result: PASSED|FAILED|UNVERIFIED, evidence, command} — criterionId is the number from the dossier, or null for a criterion of your own), remainingWork (array of strings, empty if COMPLETE), verificationSummary (one paragraph of the concrete commands you ran and the results you saw — this is recorded as the work item's evidence if you say COMPLETE), reasoning (why this verdict follows from the checks).
 
 DOSSIER
 ${dossier}`;
@@ -267,6 +275,14 @@ async function finishAudit(
     runHub.operationsChanged();
     return;
   }
+
+  // Before the verdict is acted on: the reviewer's per-criterion answers become
+  // `dod_result` rows, so the definition of done accumulates evidence from the
+  // review rather than the review being a separate opinion sitting beside it.
+  // Only PROSE criteria are taken — a command's exit code is already recorded
+  // and is not a model's to overturn.
+  const filed = recordReviewerVerdicts({ promptId: args.promptId, runId, checks: report.checks });
+  if (filed > 0) log.info(`recorded ${filed} definition-of-done verdicts from the reviewer prompt=${args.promptId}`);
 
   const provider = workspaces.completionAuditById(id)?.provider ?? args.sourceProvider;
   workspaces.updateCompletionAudit(id, {

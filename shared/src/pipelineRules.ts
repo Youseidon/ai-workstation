@@ -18,7 +18,7 @@ import type {
   PromptOperationalState,
   PromptPipelineRule,
 } from "./index";
-import type { PolicyKey, RulePolicy, StatusTone } from "./statusModel";
+import type { DodEnforcement, PolicyKey, RulePolicy, StatusTone } from "./statusModel";
 
 /**
  * The tone and rule-policy vocabularies moved to `statusModel`, which sits
@@ -135,6 +135,12 @@ export interface PipelinePolicy {
   handoffTrigger: HandoffTrigger;
   /** Whether a station blocked by a missing status post is audited before anything else. */
   auditOnBlocked: AuditOnBlockedMode;
+  /**
+   * What an unmet definition of done does to a close. The scope-level setting
+   * overrides this per workspace/program/suite/item; this is the house default
+   * the `dod-unmet` rule row points at.
+   */
+  dodEnforcement: DodEnforcement;
   /** Hard cap on handoff generations for one station. */
   maxHandoffGenerations: number;
   /** The rule a station gets before anyone configures it. */
@@ -149,6 +155,10 @@ export const DEFAULT_PIPELINE_POLICY: PipelinePolicy = {
   handoffRequirement: "whenWorkProduced",
   handoffTrigger: "reviewerIncomplete",
   auditOnBlocked: "autocomplete",
+  // Blocking by default is safe on an existing install: with no criteria
+  // defined anywhere, a definition of done is satisfied vacuously and nothing
+  // changes until someone writes one.
+  dodEnforcement: "block",
   maxHandoffGenerations: 3,
   defaultOnBlocked: "wait",
   defaultOnDone: "continue",
@@ -254,6 +264,7 @@ export const STOP_REASON: Record<string, string> = {
   audit_running: "A read-only agent is checking whether the run actually finished the work.",
   audit_incomplete: "An audit found the work genuinely unfinished.",
   audit_unverifiable: "An audit could not confirm the work either way.",
+  dod_unmet: "The definition of done was not satisfied, so the work item was not closed.",
   start_failed: "The agent process failed to start.",
 };
 

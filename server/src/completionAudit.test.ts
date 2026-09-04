@@ -19,7 +19,7 @@ function unique(prefix: string): string {
 }
 
 function check(overrides: Partial<CompletionAuditCheck> = {}): CompletionAuditCheck {
-  return { criterion: "the endpoint exists", result: "PASSED", evidence: "curl returned 200", command: "curl -s localhost/health", ...overrides };
+  return { criterion: "the endpoint exists", criterionId: null, result: "PASSED", evidence: "curl returned 200", command: "curl -s localhost/health", ...overrides };
 }
 
 function fixture(count = 2) {

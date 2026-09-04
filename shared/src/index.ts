@@ -1311,6 +1311,17 @@ export type AuditCheckResult = (typeof AUDIT_CHECK_RESULTS)[number];
 export interface CompletionAuditCheck {
   /** The acceptance criterion, quoted from the work item where possible. */
   criterion: string;
+  /**
+   * The `dod_criterion` this check answers, when the reviewer was given a
+   * structured definition of done and echoed the id back.
+   *
+   * Matching a reviewer's verdict to a criterion by comparing its prose would
+   * be a fuzzy string match deciding whether a work item closes, which is not a
+   * thing to leave to a regex. An id the reviewer was handed and quoted back is
+   * exact, and a check that names no id is simply not recorded against any
+   * criterion rather than guessed at.
+   */
+  criterionId: number | null;
   result: AuditCheckResult;
   /** What the auditor observed — output, file contents, a diff hunk. */
   evidence: string;
@@ -1614,6 +1625,29 @@ export {
   DEFAULT_REVIEWER_CONFIG,
   DEFAULT_STATUS_CATALOG,
   DEFAULT_TRIGGER_SENTENCES,
+  DOD_COMMAND_MAX_LENGTH,
+  DOD_COMMAND_OUTPUT_MAX_BYTES,
+  DOD_COMMAND_TIMEOUT_DEFAULT_MS,
+  DOD_COMMAND_TIMEOUT_MAX_MS,
+  DOD_COMMAND_TIMEOUT_MIN_MS,
+  DOD_CRITERION_KINDS,
+  DOD_ENFORCEMENTS,
+  DOD_ENFORCEMENT_LABEL,
+  DOD_KIND_HINT,
+  DOD_KIND_LABEL,
+  DOD_RESULTS,
+  DOD_RESULT_SOURCES,
+  DOD_SCOPES,
+  DOD_SCOPE_LABEL,
+  clampDodTimeout,
+  dodUnmetEvidence,
+  dodUnmetReason,
+  isDodCriterionKind,
+  isDodEnforcement,
+  isDodResult,
+  isDodResultSource,
+  isDodScope,
+  unmetCriteria,
   REVIEW_ACTIONS,
   REVIEW_ACTION_LABEL,
   REVIEW_TRIGGERS,
@@ -1649,6 +1683,15 @@ export {
   statusFieldEditable,
 } from "./statusModel";
 export type {
+  DefinitionOfDone,
+  DodCriterion,
+  DodCriterionKind,
+  DodCriterionResult,
+  DodEnforcement,
+  DodEvaluation,
+  DodResult,
+  DodResultSource,
+  DodScope,
   ReviewAction,
   ReviewTrigger,
   ReviewerConfig,

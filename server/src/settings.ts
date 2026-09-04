@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import {
   DEFAULT_PIPELINE_POLICY,
   isAuditOnBlockedMode,
+  isDodEnforcement,
   isHandoffTrigger,
   isOnBlockedAction,
   isOnDoneAction,
@@ -219,6 +220,26 @@ const FIELDS: FieldDef[] = [
       option("off", "Do not audit", "The station parks or follows its rule exactly as before"),
     ],
     isDangerous: (value) => value === "autocomplete",
+  },
+  {
+    key: "pipeline.dodEnforcement",
+    label: "When a definition of done is not met",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DOD_ENFORCEMENT",
+    fallback: "block",
+    description:
+      "A work item's definition of done is a list of criteria — prose a reviewer judges, commands "
+      + "this server runs itself and checks the exit code of, and whether every sub-step is closed. "
+      + "This is the house default for what happens when a required criterion does not pass; a "
+      + "workspace, program, suite or single item can say something different. With no criteria "
+      + "written anywhere, there is nothing to fail and this setting does nothing.",
+    options: [
+      option("block", "Refuse to close the work item", "It lands in Needs review, with the failing criteria and the real command output recorded as its evidence"),
+      option("warn", "Close it anyway, but record what did not pass", "The item completes; the failing criteria are still visible on it", true),
+      option("off", "Do not check", "Nothing is evaluated and no evidence is recorded", true),
+    ],
+    isDangerous: (value) => value !== "block",
   },
   {
     key: "pipeline.maxHandoffGenerations",
@@ -929,6 +950,7 @@ export const settings = {
     const onDone = text("pipeline.defaultOnDone");
     const generations = count("pipeline.maxHandoffGenerations");
     const audit = text("pipeline.auditOnBlocked");
+    const enforcement = text("pipeline.dodEnforcement");
     return {
       pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
       stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
@@ -943,6 +965,7 @@ export const settings = {
         ? handoffTrigger
         : flag("pipeline.autoHandoffOnBlocked") ? "anyUnfinished" : DEFAULT_PIPELINE_POLICY.handoffTrigger,
       auditOnBlocked: isAuditOnBlockedMode(audit) ? audit : DEFAULT_PIPELINE_POLICY.auditOnBlocked,
+      dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
       maxHandoffGenerations:
         generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
       defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,

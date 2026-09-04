@@ -876,6 +876,222 @@ export function rollupStatus(
 }
 
 /* ------------------------------------------------------------------ */
+/* The definition of done                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What "finished" means for a work item, as data rather than prose.
+ *
+ * Before this, the only acceptance criteria the app had were whatever a regex
+ * could scrape out of the work item's markdown — and that regex had one
+ * installation's domain headings baked into it, so on any other repository it
+ * matched almost nothing and the reviewer was handed an empty checklist.
+ *
+ * Three kinds, because they are checked by three different things and only one
+ * of them can be argued with:
+ *
+ * - `PROSE` is judged by the reviewer agent. It is the flexible kind and the
+ *   least trustworthy: a model can talk itself into a pass.
+ * - `COMMAND` is run by the *server*, in the workspace directory, and judged on
+ *   its exit code. Nothing in the loop can talk an exit code into being 0.
+ * - `CHILDREN_CLOSED` is read off the child rollup the app already computes.
+ */
+export const DOD_CRITERION_KINDS = ["PROSE", "COMMAND", "CHILDREN_CLOSED"] as const;
+export type DodCriterionKind = (typeof DOD_CRITERION_KINDS)[number];
+
+export function isDodCriterionKind(value: unknown): value is DodCriterionKind {
+  return typeof value === "string" && (DOD_CRITERION_KINDS as readonly string[]).includes(value);
+}
+
+export const DOD_KIND_LABEL: Record<DodCriterionKind, string> = {
+  PROSE: "A reviewer judges it",
+  COMMAND: "A command this server runs",
+  CHILDREN_CLOSED: "Every sub-step is closed",
+};
+
+export const DOD_KIND_HINT: Record<DodCriterionKind, string> = {
+  PROSE:
+    "Written for a person to read and a read-only reviewer agent to judge. Flexible, and the "
+    + "only kind an agent can argue its way past.",
+  COMMAND:
+    "Run by this server in the workspace directory, not by the agent. Its exit code decides, and "
+    + "its real output is recorded as the evidence.",
+  CHILDREN_CLOSED:
+    "Satisfied when every sub-step this item was split into has settled and none needs attention.",
+};
+
+/** Who produced a result. `RUNNER` is this server executing a command itself. */
+export const DOD_RESULT_SOURCES = ["AGENT", "REVIEWER", "RUNNER", "HUMAN"] as const;
+export type DodResultSource = (typeof DOD_RESULT_SOURCES)[number];
+
+export function isDodResultSource(value: unknown): value is DodResultSource {
+  return typeof value === "string" && (DOD_RESULT_SOURCES as readonly string[]).includes(value);
+}
+
+/**
+ * `UNVERIFIED` is not a soft failure — it is the absence of evidence, and it is
+ * distinct from `FAILED` for the same reason `UNREPORTED` is distinct from
+ * `FAILED` on a work item: "nobody checked" and "it was checked and it did not
+ * pass" are different facts, and collapsing them is what makes a verdict
+ * untrustworthy. Neither one closes an item.
+ */
+export const DOD_RESULTS = ["PASSED", "FAILED", "UNVERIFIED"] as const;
+export type DodResult = (typeof DOD_RESULTS)[number];
+
+export function isDodResult(value: unknown): value is DodResult {
+  return typeof value === "string" && (DOD_RESULTS as readonly string[]).includes(value);
+}
+
+/** What an unmet definition of done is allowed to do. */
+export const DOD_ENFORCEMENTS = ["block", "warn", "off"] as const;
+export type DodEnforcement = (typeof DOD_ENFORCEMENTS)[number];
+
+export function isDodEnforcement(value: unknown): value is DodEnforcement {
+  return typeof value === "string" && (DOD_ENFORCEMENTS as readonly string[]).includes(value);
+}
+
+export const DOD_ENFORCEMENT_LABEL: Record<DodEnforcement, string> = {
+  block: "Refuse to close the item",
+  warn: "Close it, but record what did not pass",
+  off: "Do not check",
+};
+
+/**
+ * Where a definition of done can be attached. A work item inherits the nearest
+ * one above it, so a house rule is written once.
+ */
+export const DOD_SCOPES = ["workspace", "program", "suite", "prompt"] as const;
+export type DodScope = (typeof DOD_SCOPES)[number];
+
+export function isDodScope(value: unknown): value is DodScope {
+  return typeof value === "string" && (DOD_SCOPES as readonly string[]).includes(value);
+}
+
+export const DOD_SCOPE_LABEL: Record<DodScope, string> = {
+  workspace: "this workspace",
+  program: "this program",
+  suite: "this suite",
+  prompt: "this work item",
+};
+
+/*
+ * Caps on a command criterion, stated here so the server, the editor and the
+ * validator cannot disagree about them.
+ *
+ * These are a security boundary, not tuning. A criterion's command comes out of
+ * the database and runs as the server's own user, so an unbounded timeout is a
+ * hung console and an unbounded capture is a heap the operator cannot see
+ * filling.
+ */
+export const DOD_COMMAND_TIMEOUT_DEFAULT_MS = 120_000;
+export const DOD_COMMAND_TIMEOUT_MIN_MS = 1_000;
+export const DOD_COMMAND_TIMEOUT_MAX_MS = 600_000;
+export const DOD_COMMAND_OUTPUT_MAX_BYTES = 16_000;
+export const DOD_COMMAND_MAX_LENGTH = 2_000;
+
+/** Clamp a requested timeout into the range the server will actually honour. */
+export function clampDodTimeout(milliseconds: number): number {
+  if (!Number.isFinite(milliseconds)) return DOD_COMMAND_TIMEOUT_DEFAULT_MS;
+  return Math.min(DOD_COMMAND_TIMEOUT_MAX_MS, Math.max(DOD_COMMAND_TIMEOUT_MIN_MS, Math.round(milliseconds)));
+}
+
+export interface DodCriterion {
+  id: number;
+  kind: DodCriterionKind;
+  /** What the criterion says, in the operator's words. Always present. */
+  text: string;
+  /** The shell command, for `COMMAND` only. */
+  command: string | null;
+  /** Relative to the workspace directory. `null` means the workspace root. */
+  cwd: string | null;
+  expectExitCode: number;
+  timeoutMs: number;
+  /** An optional criterion is reported but never blocks a close. */
+  required: boolean;
+  sortOrder: number;
+}
+
+export interface DefinitionOfDone {
+  /** The scope this was resolved *for*. */
+  scope: DodScope;
+  scopeId: number;
+  enforcement: DodEnforcement;
+  /**
+   * Which scope the criteria actually came from, or `null` when nothing is
+   * defined anywhere above this item. Rendered, because "this suite has no
+   * definition of done" and "this suite inherits the workspace's" look
+   * identical otherwise.
+   */
+  inheritedFrom: { scope: DodScope; scopeId: number } | null;
+  criteria: DodCriterion[];
+}
+
+/** One criterion and the newest thing anyone recorded about it. */
+export interface DodCriterionResult {
+  criterionId: number;
+  kind: DodCriterionKind;
+  text: string;
+  required: boolean;
+  result: DodResult;
+  /** `null` when nothing has ever been recorded for this criterion. */
+  source: DodResultSource | null;
+  evidence: string;
+  /** Captured command output, for a `COMMAND` the server ran. */
+  output: string;
+  exitCode: number | null;
+  runId: string | null;
+  createdAt: string | null;
+}
+
+export interface DodEvaluation {
+  enforcement: DodEnforcement;
+  /** Every *required* criterion passed. Vacuously true when none is defined. */
+  satisfied: boolean;
+  /**
+   * Whether falling short may actually stop a close. False under `warn` and
+   * `off`, so the caller never has to re-derive the policy from the enum.
+   */
+  blocking: boolean;
+  criteria: DodCriterionResult[];
+}
+
+/** The required criteria that are not passing. The reason a close is refused. */
+export function unmetCriteria(evaluation: DodEvaluation): DodCriterionResult[] {
+  return evaluation.criteria.filter((entry) => entry.required && entry.result !== "PASSED");
+}
+
+/**
+ * What gets stored as `evidence_json` when a definition of done refuses a
+ * close, shaped for the key/value renderer in the "Why this status" panel.
+ *
+ * The failing command's *own output* is what goes in the value — an operator
+ * looking at a refused close needs the compiler's words, not ours.
+ */
+export function dodUnmetEvidence(evaluation: DodEvaluation): Record<string, unknown> {
+  const unmet = unmetCriteria(evaluation);
+  const required = evaluation.criteria.filter((entry) => entry.required).length;
+  const evidence: Record<string, unknown> = {
+    definitionOfDone: `${unmet.length} of ${required} required criteria not met`,
+  };
+  for (const entry of unmet) {
+    const detail = entry.evidence !== "" ? entry.evidence
+      : entry.result === "UNVERIFIED" ? "Nothing has checked this yet."
+      : "";
+    evidence[entry.text.slice(0, 200)] = detail === "" ? entry.result : `${entry.result} — ${detail}`;
+  }
+  return evidence;
+}
+
+/** One sentence for a refused close, for the ledger's `reason`. */
+export function dodUnmetReason(evaluation: DodEvaluation): string {
+  const unmet = unmetCriteria(evaluation);
+  const names = unmet.slice(0, 3).map((entry) => entry.text).join("; ");
+  const more = unmet.length > 3 ? ` (and ${unmet.length - 3} more)` : "";
+  return `The definition of done was not satisfied: ${names}${more}. `
+    + "The work item is held for review rather than closed on this evidence.";
+}
+
+/* ------------------------------------------------------------------ */
 /* The reviewer                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -972,10 +1188,30 @@ export const DEFAULT_REVIEWER_CONFIG: Record<ReviewTrigger, ReviewerConfig> = {
   },
 };
 
-/** The situation a status puts a work item in, or null if none needs a reviewer. */
-export function reviewTriggerFor(status: StepStatus): ReviewTrigger | null {
+/**
+ * The situation a status puts a work item in, or null if none needs a reviewer.
+ *
+ * `NEEDS_REVIEW` needs the trigger as well as the status, because the status
+ * alone does not say what went wrong: an unmet definition of done, a reviewer
+ * that could not tell either way, and a sub-step in trouble all land there, and
+ * they are three different questions to send a reviewer to answer. Reading the
+ * cause off the ledger row rather than guessing from the status is the whole
+ * point of having recorded it.
+ */
+export function reviewTriggerFor(
+  status: StepStatus,
+  trigger: StatusTrigger | null = null,
+): ReviewTrigger | null {
   if (status === "UNREPORTED") return "unreported";
   if (status === "FAILED") return "failed";
+  if (status === "NEEDS_REVIEW") {
+    if (trigger === "dod_unmet" || trigger === "dod_command_failed") return "dodUnmet";
+    if (trigger === "child_rollup") return "childFailed";
+    // A reviewer that already said "I cannot tell" is not asked again, and a
+    // reviewer that could not be run at all is an operator's problem, not
+    // another review's.
+    return null;
+  }
   // BLOCKED is deliberately absent. An agent that stopped to ask a human a
   // question has not left an unanswered question about *the work* — reviewing
   // past it would be a machine overruling a request for a human decision.

@@ -78,7 +78,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/reviewers" && !url.pathname.startsWith("/api/reviewers/") && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/reviewers" && !url.pathname.startsWith("/api/reviewers/") && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/definition-of-done/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -334,15 +334,64 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
+    // What a work item is judged against, and how each criterion currently
+    // stands. `?run=1` runs the command criteria first, which is the operator's
+    // "check it now" — the same execution the closing gate depends on, so what
+    // they see here is exactly what a close would be decided on.
+    const dodPromptMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/definition-of-done$/);
+    if(dodPromptMatch){
+      const promptId=id(dodPromptMatch[1]!);
+      if(method==="GET"){
+        json(res,200,{definitionOfDone:workspaces.resolvedDefinitionOfDone(promptId),evaluation:workspaces.definitionOfDoneEvaluation(promptId)});
+      } else if(method==="POST"){
+        const { runDefinitionOfDoneCommands }=await import("./definitionOfDone.ts");
+        await runDefinitionOfDoneCommands(promptId,null);
+        json(res,200,{definitionOfDone:workspaces.resolvedDefinitionOfDone(promptId),evaluation:workspaces.definitionOfDoneEvaluation(promptId)});
+        runHub.operationsChanged();
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    // The definition of done at one scope, on its own — what an editor for that
+    // scope shows and writes. Separate from the resolved view above because
+    // "this suite says nothing and inherits" has to be editable as itself.
+    {
+      const match=url.pathname.match(/^\/api\/definition-of-done\/([a-z]+)\/(\d+)$/);
+      if(match){
+        const scope=match[1]!;const scopeId=id(match[2]!);
+        if(method==="GET")json(res,200,{definitionOfDone:workspaces.definitionOfDone(scope,scopeId)});
+        else if(method==="PATCH"){
+          const input=await body(req);
+          const enforcement=input.enforcement===null?null:typeof input.enforcement==="string"?input.enforcement:undefined;
+          if(enforcement===undefined)throw new WorkspaceError(422,"validation_error","Some changes were refused",{enforcement:"Must be block, warn, off, or null to inherit"});
+          json(res,200,{definitionOfDone:workspaces.setDodEnforcement(scope,scopeId,enforcement)});
+        }
+        else if(method==="POST")json(res,200,{definitionOfDone:workspaces.saveDodCriterion({scope,scopeId,patch:await body(req)})});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    {
+      const match=url.pathname.match(/^\/api\/definition-of-done\/([a-z]+)\/(\d+)\/criteria\/(\d+)$/);
+      if(match){
+        const scope=match[1]!;const scopeId=id(match[2]!);const criterionId=id(match[3]!);
+        if(method==="PATCH")json(res,200,{definitionOfDone:workspaces.saveDodCriterion({scope,scopeId,criterionId,patch:await body(req)})});
+        else if(method==="DELETE")json(res,200,{definitionOfDone:workspaces.removeDodCriterion(scope,scopeId,criterionId)});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
     const completeMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/complete$/);
     if(completeMatch){
       if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {
         const promptId=id(completeMatch[1]!);
         const input=await body(req);
-        workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
+        const written=workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
         await pipelineScheduler.onPromptCompleted(promptId);
-        json(res,200,{completed:true});
+        // `status` rather than a bare `completed:true`: an operator override is
+        // always honoured, but saying so is not the same as saying nothing was
+        // outstanding, and the caller shows what was closed over.
+        json(res,200,{completed:written==="DONE",status:written});
       }
       return true;
     }

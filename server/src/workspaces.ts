@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, REVIEW_TRIGGERS, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, REVIEW_TRIGGERS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, reviewTriggerFor, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -804,6 +804,74 @@ if (afterTwentyOne < 22) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(22,?)").run(new Date().toISOString());
 }
 
+const afterTwentyTwo = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyTwo < 23) {
+  // "Done" becomes something the app can check rather than something it is told.
+  //
+  // The only acceptance criteria this app had were whatever `compactWorkItem`
+  // could scrape out of a work item's markdown with a regex that had one
+  // installation's domain headings written into it — "gst verification", "money
+  // rules". On any other repository it matched almost nothing, so the reviewer
+  // was handed an empty checklist and asked to judge against it.
+  //
+  // Three kinds of criterion, because they are checked by three different
+  // things and only one of them cannot be argued with: PROSE is judged by the
+  // reviewer agent, CHILDREN_CLOSED is read off the child rollup, and COMMAND is
+  // run by this server with its exit code taken as the verdict.
+  //
+  // Purely additive: three CREATE TABLEs, no rebuild and no DROP, so there is no
+  // cascade to get wrong and no `PRAGMA foreign_keys` to misplace. Proven
+  // against a copy of the live database before it was written — 138,103 rows
+  // across 29 pre-existing tables unchanged, integrity_check ok, foreign_key_check
+  // clean. Migration 22's incident is why that is now the routine and not an
+  // extra step.
+  const migrate23 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE definition_of_done (
+        id INTEGER PRIMARY KEY,
+        scope TEXT NOT NULL CHECK(scope IN ('workspace','program','suite','prompt')),
+        scope_id INTEGER NOT NULL,
+        enforcement TEXT CHECK(enforcement IN ('block','warn','off')),
+        updated_at TEXT NOT NULL,
+        UNIQUE(scope, scope_id)
+      );
+      CREATE TABLE dod_criterion (
+        id INTEGER PRIMARY KEY,
+        dod_id INTEGER NOT NULL REFERENCES definition_of_done(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('PROSE','COMMAND','CHILDREN_CLOSED')),
+        text TEXT NOT NULL DEFAULT '',
+        command TEXT,
+        cwd TEXT,
+        expect_exit_code INTEGER NOT NULL DEFAULT 0,
+        timeout_ms INTEGER NOT NULL DEFAULT 120000,
+        required INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX dod_criterion_idx ON dod_criterion(dod_id, sort_order, id);
+      CREATE TABLE dod_result (
+        id INTEGER PRIMARY KEY,
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        criterion_id INTEGER NOT NULL REFERENCES dod_criterion(id) ON DELETE CASCADE,
+        -- Provenance, not a relationship this app navigates, and deliberately
+        -- without a foreign key. Every FK edge into agent_run is one more
+        -- cascade a later migration can get wrong, and migration 22 is what
+        -- that costs. A run id that outlives its run is a stale label here;
+        -- a cascade would be lost evidence.
+        run_id TEXT,
+        source TEXT NOT NULL CHECK(source IN ('AGENT','REVIEWER','RUNNER','HUMAN')),
+        result TEXT NOT NULL CHECK(result IN ('PASSED','FAILED','UNVERIFIED')),
+        evidence TEXT NOT NULL DEFAULT '',
+        output TEXT NOT NULL DEFAULT '',
+        exit_code INTEGER,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX dod_result_idx ON dod_result(prompt_id, criterion_id, id);
+    `);
+  });
+  migrate23();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(23,?)").run(new Date().toISOString());
+}
+
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -1143,10 +1211,20 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   // The agent posting for itself is the most direct evidence there is, so the
   // row that records it is the one the transition table locks against override.
   const decision=decide(target==="DONE"?"agent_posted_done":"agent_posted_blocked");
-  writeStatus({promptId:run.prompt_id,to:target,expect:"IN_PROGRESS",trigger:decision.row.trigger,ruleId:decision.row.id,actor:"AGENT",runId,reason,verificationSummary:verification,result});
+  const written=writeStatus({promptId:run.prompt_id,to:target,expect:"IN_PROGRESS",trigger:decision.row.trigger,ruleId:decision.row.id,actor:"AGENT",runId,reason,verificationSummary:verification,result});
   const eventId=Number((db.prepare("SELECT id FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1").get(run.prompt_id) as {id:number}).id);
+  // The agent's own claim is kept whatever the gate decided — it said it was
+  // finished and gave its evidence, and that is worth reading next to the
+  // criteria that disagreed.
   db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?, 'AGENT',?)").run(run.prompt_id,runId,target==="DONE"?"COMPLETION":"BLOCKER",result,now);
-  return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:target,result,createdAt:now};
+  // `status` is what was actually stored, not what was asked for. Replying
+  // "DONE" to an agent whose close the definition of done refused would be the
+  // app telling the same lie it was built to stop telling — and the agent has
+  // a use for the truth: `definitionOfDone` lists what is still failing, so a
+  // run with budget left can fix it instead of ending on a false success.
+  const gate=written.to===target?null:workspaces.definitionOfDoneEvaluation(run.prompt_id);
+  return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:written.to,requestedStatus:target,result,createdAt:now,
+    ...(gate===null?{}:{definitionOfDone:{satisfied:false,unmet:unmetCriteria(gate).map(entry=>({criterion:entry.text,result:entry.result,evidence:entry.evidence}))}})};
 }));
 
 /**
@@ -1301,9 +1379,19 @@ interface StatusWrite {
   result?: string | null;
   /** A remark to file alongside, as the agent-facing API already does. */
   remark?: { kind: RemarkKind; content: string } | null;
+  /**
+   * Close even though the definition of done is not met.
+   *
+   * Only an operator may set this. A human override is always allowed — the
+   * point of the gate is to stop the *pipeline* concluding something it has not
+   * established, never to stop the person who owns the work from saying so —
+   * and it is recorded as `operator_override` with the unmet criteria attached,
+   * so a close made over a red criterion is visible as exactly that.
+   */
+  overrideDefinitionOfDone?: boolean;
 }
 
-function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boolean } {
+function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boolean; to: StepStatus } {
   const row = db.prepare("SELECT status FROM prompt WHERE id=?").get(write.promptId) as { status: StepStatus } | undefined;
   if (row === undefined) throw new WorkspaceError(404, "not_found", "Work item not found");
   const previous = row.status;
@@ -1315,23 +1403,280 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
     // disagree with the database the moment the underlying fact changed.
     throw new WorkspaceError(422, "invalid_status", `${write.to} is not a storable status`);
   }
+
+  /*
+   * The closing gate.
+   *
+   * Sitting it inside the one writer rather than at each call site is the whole
+   * reason `writeStatus` exists: there were thirteen ways to reach DONE, and a
+   * gate spelled thirteen times is a gate with holes in it. Whatever route the
+   * close came by — the agent's own post, a reviewer's verdict, a rule — it
+   * passes here.
+   *
+   * A refused close is not an error and does not throw. The work item lands on
+   * the state the `dod-unmet` rule row names, with the failing criteria as its
+   * evidence, because "we could not confirm this" is an outcome the operator
+   * has to be able to see and act on, not an exception for a caller to swallow.
+   * Callers learn what was actually written from the returned `to`.
+   */
+  let to = write.to;
+  let trigger = write.trigger;
+  let ruleId = write.ruleId ?? null;
+  let reason = write.reason;
+  let result = write.result;
+  let evidence = write.evidence;
+  let remark = write.remark;
+  if (write.to === "DONE") {
+    const dod = evaluateDefinitionOfDone(write.promptId);
+    if (!dod.satisfied && dod.blocking && write.overrideDefinitionOfDone !== true) {
+      const rule = matchStepTransition({ signal: "dod_unmet" });
+      to = rule?.to ?? "NEEDS_REVIEW";
+      ruleId = rule?.id ?? "dod-unmet";
+      // The rule row decides *where* it lands; the trigger names *what* went
+      // wrong, and those are two fields on the ledger for a reason. A failing
+      // command is a sharper answer than "a criterion did not pass", and it is
+      // the sentence the operator reads next to the badge.
+      trigger = dod.criteria.some((entry) => entry.required && entry.kind === "COMMAND" && entry.result === "FAILED")
+        ? "dod_command_failed"
+        : (rule?.trigger ?? "dod_unmet");
+      reason = dodUnmetReason(dod);
+      result = reason;
+      evidence = dodUnmetEvidence(dod);
+      remark = { kind: "BLOCKER", content: reason };
+    } else if (!dod.satisfied) {
+      // Closed anyway, under `warn` or an operator override. The criteria that
+      // did not pass are recorded on the very event that closed it, so nobody
+      // reading this later has to work out that it was closed over a red check.
+      evidence = {
+        ...(write.evidence ?? {}),
+        ...dodUnmetEvidence(dod),
+        definitionOfDone: write.overrideDefinitionOfDone === true
+          ? "Not met; you closed this work item anyway."
+          : `Not met; enforcement is "${dod.enforcement}", so it did not stop the close.`,
+      };
+    }
+  }
+
   const now = new Date().toISOString();
-  const terminal = statusDefinition(resolvedStatusCatalog(), write.to).isTerminal;
+  const terminal = statusDefinition(resolvedStatusCatalog(), to).isTerminal;
   db.prepare("UPDATE prompt SET status=?,result=COALESCE(?,result),completed_at=?,updated_at=? WHERE id=?")
-    .run(write.to, write.result ?? null, terminal ? now : null, now, write.promptId);
+    .run(to, result ?? null, terminal ? now : null, now, write.promptId);
   db.prepare(`INSERT INTO prompt_status_event
       (prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at,trigger_id,rule_id,evidence_json)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
     .run(
-      write.promptId, write.runId ?? null, previous, write.to, write.reason,
-      write.verificationSummary ?? "", write.actor, now, write.trigger,
-      write.ruleId ?? null, write.evidence === undefined || write.evidence === null ? null : JSON.stringify(write.evidence),
+      write.promptId, write.runId ?? null, previous, to, reason,
+      write.verificationSummary ?? "", write.actor, now, trigger,
+      ruleId, evidence === undefined || evidence === null ? null : JSON.stringify(evidence),
     );
-  if (write.remark != null && write.remark.content.trim() !== "") {
+  if (remark != null && remark.content.trim() !== "") {
     db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?,?,?)")
-      .run(write.promptId, write.runId ?? null, write.remark.kind, write.remark.content.slice(0, 20000), write.actor, now);
+      .run(write.promptId, write.runId ?? null, remark.kind, remark.content.slice(0, 20000), write.actor, now);
   }
-  return { previous, changed: previous !== write.to };
+  return { previous, changed: previous !== to, to };
+}
+
+/*
+ * Forget definitions of done whose scope no longer exists.
+ *
+ * `definition_of_done` is keyed by (scope, scope_id) rather than by four
+ * nullable foreign keys, which is what lets one table serve all four levels —
+ * and it means SQLite will not clean it up for us. That matters more than it
+ * sounds: SQLite reuses an INTEGER PRIMARY KEY once the row holding it is gone,
+ * so a deleted work item's criteria do not merely linger, they silently attach
+ * themselves to the next work item to be given that id. The symptom is a work
+ * item that will not close for reasons nobody wrote.
+ *
+ * One statement rather than a cleanup at each delete site, because the delete
+ * sites are not the whole story: removing a suite takes its prompts with it by
+ * cascade, and a per-site cleanup would have to re-derive every one of those
+ * paths by hand and stay correct as they change. Asking "is the thing this row
+ * points at still there" cannot go stale.
+ */
+const forgetOrphanedDefinitionsOfDone = db.transaction(() => {
+  db.prepare(`
+    DELETE FROM definition_of_done WHERE
+      (scope='workspace' AND scope_id NOT IN (SELECT id FROM workspace)) OR
+      (scope='program'   AND scope_id NOT IN (SELECT id FROM program))   OR
+      (scope='suite'     AND scope_id NOT IN (SELECT id FROM suite))     OR
+      (scope='prompt'    AND scope_id NOT IN (SELECT id FROM prompt))
+  `).run();
+});
+
+/* ------------------------------------------------------------------ */
+/* The definition of done                                              */
+/* ------------------------------------------------------------------ */
+
+type DodRow = { id: number; scope: string; scope_id: number; enforcement: string | null };
+type DodCriterionRow = {
+  id: number; dod_id: number; kind: string; text: string; command: string | null; cwd: string | null;
+  expect_exit_code: number; timeout_ms: number; required: number; sort_order: number;
+};
+
+function criterionDto(row: DodCriterionRow): DodCriterion {
+  return {
+    id: row.id,
+    kind: isDodCriterionKind(row.kind) ? row.kind : "PROSE",
+    text: row.text,
+    command: row.command,
+    cwd: row.cwd,
+    expectExitCode: row.expect_exit_code,
+    timeoutMs: clampDodTimeout(row.timeout_ms),
+    required: row.required === 1,
+    sortOrder: row.sort_order,
+  };
+}
+
+/**
+ * Every scope a work item inherits from, broadest first.
+ *
+ * Narrower entries come later so a single pass can let the nearest one win,
+ * which is the same shape `resolveReviewerConfig` uses.
+ */
+function dodScopeChain(promptId: number): Array<[DodScope, number]> {
+  const row = db.prepare(`
+    SELECT p.id promptId, s.id suiteId, g.id programId, g.workspace_id workspaceId
+    FROM prompt p JOIN suite s ON s.id = p.suite_id JOIN program g ON g.id = s.program_id
+    WHERE p.id = ?
+  `).get(promptId) as { promptId: number; suiteId: number; programId: number; workspaceId: number } | undefined;
+  if (row === undefined) throw new WorkspaceError(404, "not_found", "Work item not found");
+  return [["workspace", row.workspaceId], ["program", row.programId], ["suite", row.suiteId], ["prompt", row.promptId]];
+}
+
+const selectDod = () => db.prepare("SELECT id,scope,scope_id,enforcement FROM definition_of_done WHERE scope=? AND scope_id=?");
+const selectCriteria = () => db.prepare("SELECT * FROM dod_criterion WHERE dod_id=? ORDER BY sort_order,id");
+
+/** What one scope says on its own, with nothing inherited. For the editors. */
+function ownDefinitionOfDone(scope: DodScope, scopeId: number): DefinitionOfDone {
+  const row = selectDod().get(scope, scopeId) as DodRow | undefined;
+  const criteria = row === undefined ? [] : (selectCriteria().all(row.id) as DodCriterionRow[]).map(criterionDto);
+  return {
+    scope,
+    scopeId,
+    enforcement: isDodEnforcement(row?.enforcement) ? row.enforcement : settings.pipelinePolicy.dodEnforcement,
+    inheritedFrom: criteria.length === 0 ? null : { scope, scopeId },
+    criteria,
+  };
+}
+
+/*
+ * What a work item is actually judged against.
+ *
+ * Two different resolutions, deliberately:
+ *
+ * - **Enforcement** resolves field-wise, narrowest non-null wins, over the
+ *   `pipeline.dodEnforcement` house rule. So a suite can say "warn" without
+ *   also having to restate the workspace's criteria.
+ * - **Criteria** are taken whole from the nearest scope that has any, rather
+ *   than accumulated down the chain. Accumulating reads well until an item
+ *   needs to *drop* something its workspace imposes, at which point there is no
+ *   way to say so; "this item has its own definition of done, which replaces
+ *   the one above it" is a rule an operator can hold in their head.
+ */
+function resolveDefinitionOfDone(promptId: number): DefinitionOfDone {
+  const chain = dodScopeChain(promptId);
+  const select = selectDod();
+  const criteriaFor = selectCriteria();
+  let enforcement: DodEnforcement = settings.pipelinePolicy.dodEnforcement;
+  let criteria: DodCriterion[] = [];
+  let inheritedFrom: { scope: DodScope; scopeId: number } | null = null;
+  for (const [scope, scopeId] of chain) {
+    const row = select.get(scope, scopeId) as DodRow | undefined;
+    if (row === undefined) continue;
+    if (isDodEnforcement(row.enforcement)) enforcement = row.enforcement;
+    const found = (criteriaFor.all(row.id) as DodCriterionRow[]).map(criterionDto);
+    if (found.length > 0) { criteria = found; inheritedFrom = { scope, scopeId }; }
+  }
+  const [, promptScopeId] = chain[chain.length - 1]!;
+  return { scope: "prompt", scopeId: promptScopeId, enforcement, inheritedFrom, criteria };
+}
+
+/** The newest thing anyone recorded about each criterion on this work item. */
+function latestDodResults(promptId: number, criterionIds: number[]): Map<number, {
+  source: string; result: string; evidence: string; output: string; exit_code: number | null;
+  run_id: string | null; created_at: string;
+}> {
+  const results = new Map<number, ReturnType<typeof latestDodResults> extends Map<number, infer V> ? V : never>();
+  if (criterionIds.length === 0) return results;
+  const select = db.prepare(`
+    SELECT source,result,evidence,output,exit_code,run_id,created_at FROM dod_result
+    WHERE prompt_id=? AND criterion_id=? ORDER BY created_at DESC, id DESC LIMIT 1
+  `);
+  for (const id of criterionIds) {
+    const row = select.get(promptId, id) as {
+      source: string; result: string; evidence: string; output: string; exit_code: number | null;
+      run_id: string | null; created_at: string;
+    } | undefined;
+    if (row !== undefined) results.set(id, row);
+  }
+  return results;
+}
+
+/**
+ * Whether every sub-step has settled cleanly. Read off the same catalog the
+ * board rolls up with, so an operator who marks a state terminal changes this
+ * and the parent's badge together rather than one of them.
+ */
+function childrenClosed(promptId: number): { result: DodResult; evidence: string } {
+  const children = db.prepare("SELECT id,status FROM prompt WHERE parent_prompt_id=?").all(promptId) as Array<{ id: number; status: StepStatus }>;
+  if (children.length === 0) return { result: "PASSED", evidence: "This work item has no sub-steps." };
+  const catalog = resolvedStatusCatalog();
+  const open = children.filter((child) => !statusDefinition(catalog, child.status).isTerminal);
+  if (open.length > 0) {
+    return { result: "FAILED", evidence: `${open.length} of ${children.length} sub-steps have not settled (${open.map((child) => child.status).join(", ")}).` };
+  }
+  const worst = rollupStatus(catalog, children.map((child) => child.status));
+  if (worst !== null) return { result: "FAILED", evidence: `A sub-step is ${statusDefinition(catalog, worst).label}.` };
+  return { result: "PASSED", evidence: `All ${children.length} sub-steps closed cleanly.` };
+}
+
+/*
+ * The gate, as a read.
+ *
+ * Deliberately synchronous and evidence-only: it consults what has been
+ * *recorded* about each criterion and never runs anything itself. Executing a
+ * command from in here would mean holding a SQLite write transaction open for
+ * the length of a test suite, and it would put a several-minute block on the
+ * event loop of a console whose whole job is watching live agents.
+ *
+ * Producing the evidence is `runDefinitionOfDoneCommands`' job, and the paths
+ * that intend to close a work item call it first. A COMMAND nobody has run is
+ * UNVERIFIED, which does not close anything — the same rule as a run that ended
+ * without reporting. Absence of evidence is not evidence.
+ */
+function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
+  const definition = resolveDefinitionOfDone(promptId);
+  if (definition.enforcement === "off" || definition.criteria.length === 0) {
+    return { enforcement: definition.enforcement, satisfied: true, blocking: false, criteria: [] };
+  }
+  const recorded = latestDodResults(promptId, definition.criteria.filter((entry) => entry.kind !== "CHILDREN_CLOSED").map((entry) => entry.id));
+  const criteria: DodCriterionResult[] = definition.criteria.map((criterion) => {
+    const base = { criterionId: criterion.id, kind: criterion.kind, text: criterion.text, required: criterion.required };
+    if (criterion.kind === "CHILDREN_CLOSED") {
+      const children = childrenClosed(promptId);
+      return { ...base, ...children, source: "RUNNER" as DodResultSource, output: "", exitCode: null, runId: null, createdAt: null };
+    }
+    const row = recorded.get(criterion.id);
+    if (row === undefined) {
+      return {
+        ...base, result: "UNVERIFIED" as DodResult, source: null,
+        evidence: criterion.kind === "COMMAND" ? "This command has not been run yet." : "No reviewer has judged this yet.",
+        output: "", exitCode: null, runId: null, createdAt: null,
+      };
+    }
+    return {
+      ...base,
+      result: isDodResult(row.result) ? row.result : "UNVERIFIED",
+      source: isDodResultSource(row.source) ? row.source : null,
+      evidence: row.evidence,
+      output: row.output,
+      exitCode: row.exit_code,
+      runId: row.run_id,
+      createdAt: row.created_at,
+    };
+  });
+  const satisfied = criteria.every((entry) => !entry.required || entry.result === "PASSED");
+  return { enforcement: definition.enforcement, satisfied, blocking: definition.enforcement === "block", criteria };
 }
 
 /*
@@ -1477,6 +1822,128 @@ export const workspaces = {
     db.prepare("DELETE FROM reviewer_config WHERE scope=? AND scope_id IS ? AND trigger_id=?").run(scope, scopeId, trigger);
     return resolveReviewerConfig(trigger, scope === "prompt" ? scopeId : null);
   },
+  /* ---------------------------------------------------------------- */
+  /* Definition of done                                                */
+  /* ---------------------------------------------------------------- */
+
+  /** What one scope says on its own — what the editor for that scope shows. */
+  definitionOfDone(scope: string, scopeId: number): DefinitionOfDone {
+    if (!isDodScope(scope)) throw new WorkspaceError(404, "not_found", `No definition-of-done scope called ${scope}`);
+    return ownDefinitionOfDone(scope, scopeId);
+  },
+  /** What a work item is judged against, after inheritance. */
+  resolvedDefinitionOfDone(promptId: number): DefinitionOfDone { return resolveDefinitionOfDone(promptId); },
+  /** The gate, as a read. See `evaluateDefinitionOfDone`. */
+  definitionOfDoneEvaluation(promptId: number): DodEvaluation { return evaluateDefinitionOfDone(promptId); },
+
+  /** Change what an unmet definition of done does at one scope. */
+  setDodEnforcement(scope: string, scopeId: number, enforcement: string | null): DefinitionOfDone {
+    if (!isDodScope(scope)) throw new WorkspaceError(404, "not_found", `No definition-of-done scope called ${scope}`);
+    if (enforcement !== null && !isDodEnforcement(enforcement)) {
+      throw new WorkspaceError(422, "validation_error", "Some changes were refused", { enforcement: "Must be block, warn or off" });
+    }
+    const now = new Date().toISOString();
+    sqliteGuard(() => db.transaction(() => {
+      db.prepare("INSERT INTO definition_of_done(scope,scope_id,enforcement,updated_at) VALUES(?,?,?,?) ON CONFLICT(scope,scope_id) DO UPDATE SET enforcement=excluded.enforcement,updated_at=excluded.updated_at")
+        .run(scope, scopeId, enforcement, now);
+    })());
+    return ownDefinitionOfDone(scope, scopeId);
+  },
+
+  /**
+   * Add or change one criterion.
+   *
+   * Everything a `COMMAND` needs is validated here rather than at run time,
+   * because this is the operator's side of the API and the run happens
+   * unattended: a criterion that cannot be run is a work item that can never
+   * close, discovered hours later. The command length, the timeout range and
+   * the relative-path rule are the same bounds `dodCommands.ts` enforces, and
+   * they are stated once in `shared` so the two cannot drift.
+   */
+  saveDodCriterion(args: { scope: string; scopeId: number; criterionId?: number | null; patch: Record<string, unknown> }): DefinitionOfDone {
+    if (!isDodScope(args.scope)) throw new WorkspaceError(404, "not_found", `No definition-of-done scope called ${args.scope}`);
+    const patch = args.patch;
+    const errors: Record<string, string> = {};
+
+    const kind = patch.kind;
+    if (!isDodCriterionKind(kind)) errors.kind = "Must be PROSE, COMMAND or CHILDREN_CLOSED";
+    const text = typeof patch.text === "string" ? patch.text.trim().slice(0, 2000) : "";
+    const command = typeof patch.command === "string" ? patch.command.trim() : "";
+    if (kind === "COMMAND") {
+      if (command === "") errors.command = "A command criterion needs a command to run";
+      else if (command.length > DOD_COMMAND_MAX_LENGTH) errors.command = `Must be under ${DOD_COMMAND_MAX_LENGTH} characters`;
+    }
+    if (text === "" && command === "") errors.text = "Say what this criterion is, in your own words";
+    const cwd = typeof patch.cwd === "string" && patch.cwd.trim() !== "" ? patch.cwd.trim() : null;
+    if (cwd !== null && (isAbsolute(cwd) || cwd.split("/").includes(".."))) {
+      errors.cwd = "Must be a path inside the workspace, relative to its root";
+    }
+    const expectExitCode = typeof patch.expectExitCode === "number" && Number.isInteger(patch.expectExitCode) ? patch.expectExitCode : 0;
+    if (expectExitCode < 0 || expectExitCode > 255) errors.expectExitCode = "Must be between 0 and 255";
+    const timeoutMs = clampDodTimeout(typeof patch.timeoutMs === "number" ? patch.timeoutMs : DOD_COMMAND_TIMEOUT_DEFAULT_MS);
+    const required = patch.required === undefined ? true : patch.required === true;
+    if (Object.keys(errors).length > 0) throw new WorkspaceError(422, "validation_error", "Some changes were refused", errors);
+
+    const now = new Date().toISOString();
+    sqliteGuard(() => db.transaction(() => {
+      db.prepare("INSERT INTO definition_of_done(scope,scope_id,updated_at) VALUES(?,?,?) ON CONFLICT(scope,scope_id) DO UPDATE SET updated_at=excluded.updated_at")
+        .run(args.scope, args.scopeId, now);
+      const dodId = (db.prepare("SELECT id FROM definition_of_done WHERE scope=? AND scope_id=?").get(args.scope, args.scopeId) as { id: number }).id;
+      const label = text === "" ? command : text;
+      if (args.criterionId != null) {
+        const owned = db.prepare("SELECT 1 FROM dod_criterion WHERE id=? AND dod_id=?").get(args.criterionId, dodId);
+        if (!owned) throw new WorkspaceError(404, "not_found", "That criterion does not belong to this definition of done");
+        db.prepare("UPDATE dod_criterion SET kind=?,text=?,command=?,cwd=?,expect_exit_code=?,timeout_ms=?,required=? WHERE id=?")
+          .run(kind, label, kind === "COMMAND" ? command : null, kind === "COMMAND" ? cwd : null, expectExitCode, timeoutMs, required ? 1 : 0, args.criterionId);
+      } else {
+        const next = (db.prepare("SELECT COALESCE(MAX(sort_order),-1)+1 n FROM dod_criterion WHERE dod_id=?").get(dodId) as { n: number }).n;
+        db.prepare("INSERT INTO dod_criterion(dod_id,kind,text,command,cwd,expect_exit_code,timeout_ms,required,sort_order) VALUES(?,?,?,?,?,?,?,?,?)")
+          .run(dodId, kind, label, kind === "COMMAND" ? command : null, kind === "COMMAND" ? cwd : null, expectExitCode, timeoutMs, required ? 1 : 0, next);
+      }
+    })());
+    return ownDefinitionOfDone(args.scope, args.scopeId);
+  },
+
+  removeDodCriterion(scope: string, scopeId: number, criterionId: number): DefinitionOfDone {
+    if (!isDodScope(scope)) throw new WorkspaceError(404, "not_found", `No definition-of-done scope called ${scope}`);
+    const dod = selectDod().get(scope, scopeId) as DodRow | undefined;
+    if (dod === undefined) throw new WorkspaceError(404, "not_found", "This scope has no definition of done");
+    if (db.prepare("DELETE FROM dod_criterion WHERE id=? AND dod_id=?").run(criterionId, dod.id).changes === 0) {
+      throw new WorkspaceError(404, "not_found", "That criterion does not belong to this definition of done");
+    }
+    return ownDefinitionOfDone(scope, scopeId);
+  },
+
+  /**
+   * What has to be run before a work item can close, and where.
+   *
+   * Handed out rather than acted on here: this module owns the database and the
+   * gate that reads it, and executing a shell command belongs somewhere it can
+   * be read on its own. `definitionOfDone.ts` is the caller.
+   */
+  dodCommandPlan(promptId: number): { workDirectory: string; criteria: DodCriterion[] } {
+    const home = this.promptHome(promptId);
+    const definition = resolveDefinitionOfDone(promptId);
+    const workDirectory = (db.prepare("SELECT work_directory FROM workspace WHERE id=?").get(home.workspaceId) as { work_directory: string }).work_directory;
+    if (definition.enforcement === "off") return { workDirectory, criteria: [] };
+    return { workDirectory, criteria: definition.criteria.filter((entry) => entry.kind === "COMMAND" && entry.command !== null) };
+  },
+
+  /** File what something concluded about one criterion. Append-only. */
+  recordDodResult(args: {
+    promptId: number; criterionId: number; runId?: string | null; source: DodResultSource;
+    result: DodResult; evidence?: string; output?: string; exitCode?: number | null;
+  }): void {
+    sqliteGuard(() => {
+      db.prepare("INSERT INTO dod_result(prompt_id,criterion_id,run_id,source,result,evidence,output,exit_code,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(
+          args.promptId, args.criterionId, args.runId ?? null, args.source, args.result,
+          (args.evidence ?? "").slice(0, 4000), (args.output ?? "").slice(0, DOD_COMMAND_OUTPUT_MAX_BYTES),
+          args.exitCode ?? null, new Date().toISOString(),
+        );
+    });
+  },
+
   /** The resolved status catalog. See `resolvedStatusCatalog`. */
   statusCatalog(): StatusDefinition[] { return resolvedStatusCatalog(); },
   triggerSentences(): Record<string, string> { return resolvedTriggerSentences(); },
@@ -1606,7 +2073,10 @@ export const workspaces = {
     if (!revision) throw new WorkspaceError(404, "not_found", "Revision not found for this workspace");
     return this.update(id, { [revision.field]: revision.content, reason: `Restored revision ${revisionId}` });
   },
-  remove(id: number): void { if (db.prepare("DELETE FROM workspace WHERE id=?").run(id).changes === 0) throw new WorkspaceError(404, "not_found", "Workspace not found"); },
+  remove(id: number): void {
+    if (db.prepare("DELETE FROM workspace WHERE id=?").run(id).changes === 0) throw new WorkspaceError(404, "not_found", "Workspace not found");
+    forgetOrphanedDefinitionsOfDone();
+  },
   tree(id: number): WorkspaceTree {
     const workspace = this.get(id);
     const programs = (db.prepare("SELECT * FROM program WHERE workspace_id=? ORDER BY sort_order").all(id) as ProgramRow[]).map((p): ProgramRecord => ({ id:p.id, workspaceId:p.workspace_id, name:p.name, overview:p.overview, sortOrder:p.sort_order, createdAt:p.created_at, updatedAt:p.updated_at, externalKey:p.external_key, suites:(db.prepare("SELECT * FROM suite WHERE program_id=? ORDER BY sort_order").all(p.id) as SuiteRow[]).map((s): SuiteRecord => ({ id:s.id, programId:s.program_id, name:s.name, overview:s.overview, sortOrder:s.sort_order, createdAt:s.created_at, updatedAt:s.updated_at, externalKey:s.external_key, prompts:(db.prepare("SELECT * FROM prompt WHERE suite_id=? ORDER BY sort_order").all(s.id) as PromptRow[]).map(promptDto) })) }));
@@ -1661,7 +2131,10 @@ export const workspaces = {
       return {title:revision.title,content:revision.content,reason:`Restored revision ${revisionId}`};
     })());
   },
-  removeChild(kind:"program"|"suite"|"prompt",id:number):void { if(db.prepare(`DELETE FROM ${kind} WHERE id=?`).run(id).changes===0) throw new WorkspaceError(404,"not_found",`${kind} not found`); },
+  removeChild(kind:"program"|"suite"|"prompt",id:number):void {
+    if(db.prepare(`DELETE FROM ${kind} WHERE id=?`).run(id).changes===0) throw new WorkspaceError(404,"not_found",`${kind} not found`);
+    forgetOrphanedDefinitionsOfDone();
+  },
   importProgram(workspaceId:number,pack:ImportedProgram):WorkspaceTree { return sqliteGuard(()=>{ importProgramTransaction(workspaceId,pack); return this.tree(workspaceId); }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
   beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
@@ -2588,8 +3061,8 @@ export const workspaces = {
    * work was *not* done, and an explicit dependency on a skipped prerequisite
    * goes on blocking, because `blockedBy` clears only on DONE.
    */
-  completePrompt(promptId:number,actor:"SYSTEM"|"USER",input:{reason?:unknown;verificationSummary:unknown}):void {
-    sqliteGuard(()=>db.transaction(()=>{
+  completePrompt(promptId:number,actor:"SYSTEM"|"USER",input:{reason?:unknown;verificationSummary:unknown}):StepStatus {
+    return sqliteGuard(()=>db.transaction(()=>{
       const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
       if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
       if(prompt.status==="DONE")throw new WorkspaceError(409,"already_complete","Work item is already complete");
@@ -2607,7 +3080,12 @@ export const workspaces = {
       // SYSTEM here is a reviewer closing a station on its verdict; USER is the
       // operator overriding. The trigger keeps those apart, which is what lets
       // the UI say "closed by review" rather than implying the agent finished.
-      writeStatus({promptId,to:"DONE",trigger:actor==="USER"?"operator_override":"review_complete",ruleId:actor==="USER"?null:"review-complete",actor,runId,reason,verificationSummary:verification,result:verification,remark:{kind:"COMPLETION",content:verification}});
+      // The operator is allowed past the definition-of-done gate and a reviewer
+      // is not. The gate exists to stop the *pipeline* concluding something it
+      // has not established; the person who owns the work saying "I have looked,
+      // this is done" is the one authority it was never meant to override. It
+      // is recorded either way — see the evidence written in `writeStatus`.
+      return writeStatus({promptId,to:"DONE",trigger:actor==="USER"?"operator_override":"review_complete",ruleId:actor==="USER"?null:"review-complete",actor,runId,reason,verificationSummary:verification,result:verification,remark:{kind:"COMPLETION",content:verification},overrideDefinitionOfDone:actor==="USER"}).to;
     })());
   },
 
@@ -2880,20 +3358,55 @@ export const workspaces = {
    * question, and reviewing past it would be a machine overruling a request for
    * a human decision.
    */
+  /**
+   * Which situation a reviewer would be sent into for this work item, or null
+   * when none applies.
+   *
+   * The status alone is not enough: NEEDS_REVIEW is where an unmet definition
+   * of done, a reviewer that could not tell either way, and a sub-step in
+   * trouble all land, and they are three different questions. The cause was
+   * recorded on the ledger row at the time precisely so it would not have to be
+   * guessed at afterwards, so this reads it.
+   */
+  reviewSituation(promptId:number):ReviewTrigger|null {
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+    if(!prompt)return null;
+    const latest=db.prepare("SELECT trigger_id FROM prompt_status_event WHERE prompt_id=? ORDER BY created_at DESC, id DESC LIMIT 1").get(promptId) as {trigger_id:string|null}|undefined;
+    const trigger=isStatusTrigger(latest?.trigger_id)?latest.trigger_id:null;
+    return reviewTriggerFor(prompt.status,trigger);
+  },
   endedWithoutAgentStatus(promptId:number):boolean {
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)return false;
     return endedWithoutAgentStatus(prompt.status);
   },
   /**
-   * Everything an auditor is allowed to see about a finished run, plus the
-   * acceptance criteria it is judged against. Same evidence budget as a
-   * handoff dossier — the transport limit is the provider's argv, not the
-   * question being asked.
+   * Everything an auditor is allowed to see about a finished run, plus what it
+   * is judging the work against. Same evidence budget as a handoff dossier —
+   * the transport limit is the provider's argv, not the question being asked.
+   *
+   * `definitionOfDone` is the structured list, each criterion carrying the id
+   * the reviewer must quote back so its verdict lands on the right row. The
+   * commands are named but marked as already run by this server: a reviewer
+   * re-running them is welcome to, and its opinion of the result changes
+   * nothing, because the exit code was recorded before it was asked.
+   *
+   * `acceptanceCriteria` stays as the work item's own prose. It is background
+   * rather than the checklist now, but a work item with no definition of done
+   * written yet still has to be reviewable against *something*, and the thing
+   * the operator wrote is the best available answer.
    */
   completionAuditDossier(workspaceId:number,promptId:number,sourceRunId:string):string {
     const content=this.agentContext(workspaceId,promptId).prompt.content;
+    const evaluation=evaluateDefinitionOfDone(promptId);
     return JSON.stringify({
+      definitionOfDone:{
+        enforcement:evaluation.enforcement,
+        criteria:evaluation.criteria.map(entry=>({
+          criterionId:entry.criterionId,kind:entry.kind,criterion:entry.text,required:entry.required,
+          alreadyChecked:entry.kind==="PROSE"?null:{result:entry.result,evidence:entry.evidence},
+        })),
+      },
       acceptanceCriteria:compactWorkItem(content),
       suggestedChecks:uniqueCommands([content]).slice(0,20),
       evidence:JSON.parse(this.handoffDossier(workspaceId,promptId,sourceRunId)) as unknown,

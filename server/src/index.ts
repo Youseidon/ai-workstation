@@ -11,6 +11,7 @@ import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
 import { runRoleStartError } from "./runner.ts";
+import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
@@ -172,9 +173,17 @@ const httpServer = createServer((req, res) => {
         return;
       }
       if((operation==="remarks"||operation==="status"||operation==="decompose")&&req.method==="POST"){
-        void readJsonBody(req).then(body=>{
+        void readJsonBody(req).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
+          // An agent claiming DONE is the moment the definition-of-done commands
+          // are worth running: the gate that reads their results is a synchronous
+          // database read, so the evidence has to exist before it looks. Awaited
+          // here rather than inside the write because a test suite must not be
+          // run with a SQLite transaction held open.
+          if(operation==="status"&&(body as Record<string,unknown>).status==="DONE"&&memory.promptId!==null){
+            await runDefinitionOfDoneCommands(memory.promptId,runId);
+          }
           const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):operation==="status"?workspaces.updateAgentStatus(runId,body):workspaces.decomposePrompt(runId,body);
           // The agent cannot see the runner's counters. Riding the reply it is
           // already making is the one channel that reaches every provider, so a
@@ -217,7 +226,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/statuses" || url.pathname === "/api/reviewers" || url.pathname.startsWith("/api/reviewers/") || url.pathname === "/api/triggers" || url.pathname.startsWith("/api/statuses/") || url.pathname.startsWith("/api/triggers/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/statuses" || url.pathname === "/api/reviewers" || url.pathname.startsWith("/api/reviewers/") || url.pathname === "/api/triggers" || url.pathname.startsWith("/api/statuses/") || url.pathname.startsWith("/api/triggers/") || url.pathname.startsWith("/api/definition-of-done/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }
