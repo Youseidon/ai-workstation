@@ -221,8 +221,13 @@ test("a budget-stopped run is recoverable, not awaiting a human answer", () => {
     // what it achieved, which is UNREPORTED — not BLOCKED, which would claim a
     // human was asked something, and not FAILED, which would claim a crash.
     assert.equal(prompt.status, "UNREPORTED");
+    // Still recoverable — the Recover button is offered — but it is *shown* as
+    // what it is. This used to display "Recovery needed", because the overlay
+    // fired on `recoverable` alone and masked the stored status; that threw
+    // away the distinction between a run that said nothing and one that
+    // crashed, at the very last step.
     assert.equal(prompt.recoverable, true);
-    assert.equal(operationalState(prompt), "RECOVERY_NEEDED");
+    assert.equal(operationalState(prompt), "UNREPORTED");
   } finally {
     ctx.cleanup();
   }

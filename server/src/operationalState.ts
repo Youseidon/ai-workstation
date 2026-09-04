@@ -14,7 +14,16 @@ export const OPERATIONAL_STATES:PromptOperationalState[]=[...STEP_DISPLAY_STATUS
  */
 export function operationalState(prompt:PromptOption):PromptOperationalState {
   if(prompt.currentRun?.processActive)return "WORKING";
-  if(prompt.recoverable)return "RECOVERY_NEEDED";
+  // Only the genuine crash-before-bookkeeping case: still marked in progress,
+  // but the process is gone and nothing ever recorded how it ended.
+  //
+  // This used to be a bare `prompt.recoverable`, which covers UNREPORTED and
+  // FAILED too — so every one of them displayed as "Recovery needed" and the
+  // distinction between "the run said nothing" and "the process failed" was
+  // masked at the last step, after all the work to store it. `recoverable`
+  // stays broad, because the Recover button should still be offered for those;
+  // it just no longer decides what the item is called.
+  if(prompt.recoverable&&prompt.status==="IN_PROGRESS")return "RECOVERY_NEEDED";
   if(prompt.status==="BLOCKED")return "BLOCKED";
   if(prompt.status==="DONE")return "DONE";
   if(prompt.status==="SKIPPED")return "SKIPPED";

@@ -131,6 +131,15 @@ export function StationCard({
           <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted">
             {subSteps.done}/{subSteps.total} sub-steps done
           </span>
+          {/* A parent with a failed sub-step used to read only "Waiting", which
+              is true and useless — the trouble was a drill-down away and the
+              card gave no reason to look. */}
+          {item.childAttention !== null && (
+            <Badge tone={TONE[item.childAttention]}>
+              {item.childAttentionCount > 1 && `${item.childAttentionCount} `}
+              {LABEL[item.childAttention].toLowerCase()}
+            </Badge>
+          )}
           {onOpenSubPipeline !== undefined && (
             <span className="shrink-0 text-[11px] text-accent">Open ›</span>
           )}

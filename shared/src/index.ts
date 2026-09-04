@@ -1087,6 +1087,24 @@ export interface OperationsPrompt {
    * agent on one (see `PipelineSubStepRule`).
    */
   children: OperationsPrompt[];
+  /**
+   * The worst outcome among this item's descendants, or null when none of them
+   * needs anything.
+   *
+   * Derived on every read, never stored. A parent's own status is deliberately
+   * left alone: after a decompose, once every sub-step is done, a fresh run
+   * resumes the *parent* to do final integration and post its own outcome.
+   * Overwriting the parent's status from its children would take that decision
+   * away from the agent that is about to make it — and would put a status on
+   * the item that nothing had actually established about it.
+   *
+   * So this is a separate signal. It answers "is there trouble underneath me"
+   * without claiming anything about the parent's own work. Without it a parent
+   * with a failed child sits at "Waiting", which is true and useless.
+   */
+  childAttention: StepDisplayStatus | null;
+  /** How many descendants are in that state, so the badge can say "2 failed". */
+  childAttentionCount: number;
 }
 
 export interface HumanInterventionStep {

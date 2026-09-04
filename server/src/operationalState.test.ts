@@ -7,7 +7,13 @@ function prompt(status:PromptStatus,overrides:Partial<PromptOption>={}):PromptOp
 
 test("operational state prioritises live ownership and recovery",()=>{
   assert.equal(operationalState(prompt("IN_PROGRESS",{currentRun:{id:"run",provider:"codex",model:null,role:"execute",state:"RUNNING",startedAt:"",endedAt:null,processActive:true}})),"WORKING");
-  assert.equal(operationalState(prompt("BLOCKED",{recoverable:true})),"RECOVERY_NEEDED");
+  // Recovery is the crash-before-bookkeeping case only: still marked in
+  // progress, but the process is gone. A BLOCKED item is an agent's question to
+  // a human, and showing it as needing recovery would offer the wrong action.
+  assert.equal(operationalState(prompt("IN_PROGRESS",{recoverable:true})),"RECOVERY_NEEDED");
+  assert.equal(operationalState(prompt("BLOCKED",{recoverable:true})),"BLOCKED");
+  assert.equal(operationalState(prompt("FAILED",{recoverable:true})),"FAILED");
+  assert.equal(operationalState(prompt("UNREPORTED",{recoverable:true})),"UNREPORTED");
 });
 
 test("operational state separates intervention, dependency, and terminal states",()=>{

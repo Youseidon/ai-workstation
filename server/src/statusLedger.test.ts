@@ -252,3 +252,76 @@ test("the decision names a row, and the row lands where the ladder says", () => 
   assert.equal(decide("run_crashed").to, "FAILED");
   assert.equal(decide("run_start_failed").to, "FAILED");
 });
+
+/* ------------------------------------------------------------------ */
+/* What a parent knows about its children                              */
+/* ------------------------------------------------------------------ */
+
+test("a parent surfaces the worst outcome underneath it, without taking it on", () => {
+  const ctx = fixture();
+  try {
+    // Decompose the work item, then fail one sub-step and block another.
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    workspaces.decomposePrompt(runId, {
+      requestId: unique("req"),
+      resumeBrief: "split it",
+      children: [
+        { title: unique("a"), content: "first slice" },
+        { title: unique("b"), content: "second slice" },
+      ],
+    });
+
+    const children = workspaces.promptOptions(ctx.workspace.id).filter((p) => p.parentPromptId === ctx.prompt.id);
+    assert.equal(children.length, 2);
+
+    const first = beginExecute(children[0]!.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(first);
+    workspaces.finishAgentRun(first, "error");            // → FAILED
+    const second = beginExecute(children[1]!.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(second);
+    workspaces.finishAgentRun(second, "done");            // → UNREPORTED
+
+    const suite = workspaces.operations(ctx.workspace.id).suites[0]!;
+    const parent = suite.prompts.find((p) => p.prompt.id === ctx.prompt.id)!;
+
+    // FAILED outranks UNREPORTED, so that is what surfaces.
+    assert.equal(parent.childAttention, "FAILED");
+    assert.equal(parent.childAttentionCount, 1);
+
+    // And the parent's own status is untouched. After a decompose a fresh run
+    // resumes the parent for final integration and posts its own outcome;
+    // writing a status onto it from its children would pre-empt that decision
+    // and assert something nothing had established about the parent's own work.
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("children that all finished cleanly propagate nothing", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    workspaces.decomposePrompt(runId, {
+      requestId: unique("req"), resumeBrief: "split it",
+      children: [{ title: unique("a"), content: "one" }, { title: unique("b"), content: "two" }],
+    });
+    for (const child of workspaces.promptOptions(ctx.workspace.id).filter((p) => p.parentPromptId === ctx.prompt.id)) {
+      const run = beginExecute(child.id, ctx.workspace.id);
+      workspaces.markAgentRunRunning(run);
+      workspaces.updateAgentStatus(run, {
+        requestId: unique("req"), expectedStatus: "IN_PROGRESS", status: "DONE",
+        reason: "done", verificationSummary: "checked it",
+      });
+    }
+    const suite = workspaces.operations(ctx.workspace.id).suites[0]!;
+    const parent = suite.prompts.find((p) => p.prompt.id === ctx.prompt.id)!;
+    // Nothing to raise, so the parent is free to be picked up for integration.
+    assert.equal(parent.childAttention, null);
+    assert.equal(parent.childAttentionCount, 0);
+  } finally {
+    ctx.cleanup();
+  }
+});
