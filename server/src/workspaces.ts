@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
-import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
@@ -11,13 +12,55 @@ import { decide, endOfRunReason, endOfRunSignal } from "./statusTransition.ts";
 import type { RunOutcome } from "./statusTransition.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 
-// Tests must never open the console's own database: they create and delete
-// workspaces, and a crashed or cancelled run leaves that debris in real data.
-// `AGENT_CONSOLE_DB` lets the test runner point somewhere disposable.
+/*
+ * Where the orchestration database lives, and why it is not in the repo.
+ *
+ * It used to default to `<repoRoot>/.agent-console/console.sqlite`. That is the
+ * one place it must not be: `repoRoot` is very often the directory a workspace
+ * points at, which is the directory an agent is given as its cwd with edit
+ * permissions. The app told agents "never open or modify SQLite directly" in a
+ * Markdown block and then left the file inside their sandbox — a rule enforced
+ * by asking nicely.
+ *
+ * XDG state is the right home for it: per-user, outside every repository, and
+ * conventional. `AGENT_CONSOLE_DB` still wins, which is how the tests point
+ * somewhere disposable — they must never open the console's own database, since
+ * they create and delete workspaces and a cancelled run leaves that debris in
+ * real data.
+ */
+function defaultDatabasePath(): string {
+  const state = process.env.XDG_STATE_HOME;
+  const base = state !== undefined && state.trim() !== ""
+    ? resolve(state.trim())
+    : resolve(homedir(), ".local/state");
+  return resolve(base, "agent-console/console.sqlite");
+}
+
 const databasePath = process.env.AGENT_CONSOLE_DB !== undefined && process.env.AGENT_CONSOLE_DB !== ""
   ? resolve(process.env.AGENT_CONSOLE_DB)
-  : resolve(config.repoRoot, ".agent-console/console.sqlite");
+  : defaultDatabasePath();
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
+
+/*
+ * One-time move of an existing database out of the repository.
+ *
+ * Copied and left behind rather than deleted: if this is wrong for someone's
+ * setup, their data is still where it was. The WAL and SHM are deliberately not
+ * copied — SQLite rebuilds them, and a WAL paired with the wrong database is
+ * worse than none. A checkpoint first makes sure nothing is only in the WAL.
+ */
+const legacyDatabasePath = resolve(config.repoRoot, ".agent-console/console.sqlite");
+if (process.env.AGENT_CONSOLE_DB === undefined && !existsSync(databasePath) && existsSync(legacyDatabasePath)) {
+  const legacy = new Database(legacyDatabasePath);
+  try {
+    legacy.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    legacy.close();
+  }
+  copyFileSync(legacyDatabasePath, databasePath);
+  chmodSync(databasePath, 0o600);
+}
+
 const db = new Database(databasePath);
 db.pragma("foreign_keys = ON");
 db.pragma("journal_mode = WAL");
@@ -1206,6 +1249,36 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
 
 export const workspaces = {
   databasePath,
+  /**
+   * Refuse to run with the database inside a directory an agent can write to.
+   *
+   * This is the guarantee. The prompt text asking agents not to touch SQLite is
+   * an instruction a model may drop; a file it cannot reach is a fact. Checked
+   * at boot rather than at write time because by the time an agent has opened
+   * the file the damage — a status set behind the API's back, with no ledger
+   * row and no trigger — has already happened and is indistinguishable from a
+   * legitimate change.
+   *
+   * Realpaths on both sides, so a symlinked workspace cannot slip past.
+   */
+  assertDatabaseOutOfReach(): void {
+    let database: string;
+    try { database = realpathSync(databasePath); } catch { database = databasePath; }
+    for (const workspace of this.list()) {
+      if (!workspace.workDirectoryExists) continue;
+      let root: string;
+      try { root = realpathSync(workspace.workDirectory); } catch { continue; }
+      if (database === root || database.startsWith(`${root}/`)) {
+        throw new Error(
+          `The orchestration database is inside workspace "${workspace.name}" (${root}).\n`
+          + `  database: ${database}\n`
+          + "Agents run there with write access, so they could change their own status without going\n"
+          + "through the API — no ledger row, no recorded cause, and no way to tell that from a real\n"
+          + "change. Move the database with AGENT_CONSOLE_DB, or point the workspace elsewhere.",
+        );
+      }
+    }
+  },
   /** The resolved status catalog. See `resolvedStatusCatalog`. */
   statusCatalog(): StatusDefinition[] { return resolvedStatusCatalog(); },
   triggerSentences(): Record<string, string> { return resolvedTriggerSentences(); },

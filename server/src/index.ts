@@ -14,6 +14,7 @@ import { runRoleStartError } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
+import { removeAllAgentShims } from "./agentShim.ts";
 import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
@@ -554,6 +555,18 @@ httpServer.listen(config.port, config.host, () => {
     }
     throw error;
   }
+  // The database must not sit inside a directory an agent is given write access
+  // to. Refused rather than warned about: a warning at boot is a line nobody
+  // reads, and the whole point of routing agents through the API is that a
+  // status change without a recorded cause becomes impossible rather than
+  // merely discouraged.
+  try {
+    workspaces.assertDatabaseOutOfReach();
+  } catch (error) {
+    log.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+
   // Safe only here: this process now demonstrably owns the database, so runs
   // still marked in flight really did die with the last one.
   workspaces.recoverAbandonedRuns();
@@ -590,6 +603,8 @@ const shutdown = () => {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down");
+  // Every run credential this process wrote to tmp goes with it.
+  removeAllAgentShims();
   wss.clients.forEach((client) => client.close());
   httpServer.close();
   // Runs are stopped before the database closes so each one records its own

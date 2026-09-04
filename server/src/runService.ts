@@ -5,6 +5,7 @@ import { config } from "./config.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
+import { createAgentShim, removeAgentShim } from "./agentShim.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
 import { materialize, readBack } from "./workspaceInstructions.ts";
@@ -134,8 +135,12 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         throw error;
       }
       activeContextRunId = plannedRunId;
-      const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
       const depth = workspaces.decomposeDepth(promptId);
+      // One command with this run's credentials already in it, rather than a
+      // curl the model has to assemble. Per-run rather than per-process: the
+      // Claude adapter runs in this process, so credentials on process.env
+      // would be shared by every concurrent run.
+      const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
       // The context is inlined rather than fetched. Handing it over as a tool
       // result cost a turn before any work started, put it where it could not
       // serve as a cached prompt prefix, and led agents to fetch it more than
@@ -144,15 +149,13 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       resolvedPrompt = [
         `# Execute saved work item ${record.externalKey ?? record.title}`,
         "",
-        "The context below is authoritative and complete. Do not search for a Markdown prompt file and never modify SQLite directly. Post remarks through the Progress API as you verify each slice, and post a final DONE or BLOCKED status before finishing.",
-        "",
-        `Re-read this context at any time with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}`,
+        "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit — this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.",
         "",
         "---",
         "",
         contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
         "",
-        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH }),
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, shimPath }),
       ].join("\n");
     }
   } else {
@@ -194,6 +197,10 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       if (activeContextRunId !== null) {
         workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics);
         runContexts.complete(activeContextRunId);
+        // The launcher holds this run's token. The credential is collapsed to a
+        // short TTL above, but a live-looking token sitting in tmp after its run
+        // is over is not something to leave lying around.
+        removeAgentShim(activeContextRunId);
         activeContextRunId = null;
       }
       if (clarificationId !== null) {

@@ -175,7 +175,14 @@ contains programs, programs contain suites, and suites contain reusable
 prompts. The console lets you select a workspace and either type a custom
 prompt or choose one of those saved prompts.
 
-Data is stored in `.agent-console/console.sqlite`. The browser only uses the
+Data is stored in `$XDG_STATE_HOME/agent-console/console.sqlite` (falling back
+to `~/.local/state/agent-console/`), **deliberately outside the repository**. A
+workspace usually points at this repo, and that directory is an agent's cwd with
+write access — a database sitting inside it could be changed without going
+through the API, leaving a status with no recorded cause. An existing
+`.agent-console/console.sqlite` is copied to the new location on first start and
+left in place; `AGENT_CONSOLE_DB` overrides both. The server refuses to start if
+the resolved path is inside any workspace's directory. The browser only uses the
 REST API; it never reads or writes SQLite directly. There is no default
 workspace: create one on the Workspaces page, pointing it at an existing
 directory, before you can add programs, suites, or run an agent. Each run
@@ -194,9 +201,24 @@ SQLite, shared standing instructions are copied into the workspace description,
 and no source path, file hash, or continuing filesystem link is stored.
 
 When a saved prompt runs, its body is not pasted into the composer or transcript.
-The server creates a persisted run and random bearer token, then gives the
-provider a short bootstrap instruction pointing to
-`GET /api/agent/runs/:runId/context`. That
+The server creates a persisted run and a random bearer token, writes a per-run
+`agent-step` launcher with that credential baked in (mode `0700`, removed when
+the run ends), and tells the agent to use it:
+
+```bash
+agent-step remark --kind PROGRESS --text "What changed or was verified"
+agent-step done    --verification "The commands you ran and what you observed"
+agent-step blocked --reason "Observed evidence" --action "What only a human can do"
+```
+
+The credential is per-run rather than per-process because the Claude adapter
+runs its SDK in-process, so environment variables would be shared by every
+concurrent run. The raw HTTP contract stays documented and working as a
+fallback. Every call an agent makes — accepted, refused or replayed — appears in
+the transcript as a flagged `⛁` line with the tables it touched, so a run that
+never reported is visibly different from one that reported and was refused.
+
+The underlying endpoint is still `GET /api/agent/runs/:runId/context`. That
 read-only endpoint composes workspace instructions, program and suite context,
 prompt content, dependency results, and gate information directly from SQLite.
 It returns Markdown by default and JSON for `Accept: application/json`, expires

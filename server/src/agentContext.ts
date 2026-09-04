@@ -62,6 +62,11 @@ export function consultWorkspaceMarkdown(args:{workspace:{name:string;workDirect
 }
 
 export interface ProgressApiArgs {
+  /**
+   * Absolute path to this run's `agent-step` launcher, or null when it could
+   * not be written — in which case the raw HTTP contract is emitted instead.
+   */
+  shimPath?: string | null;
   runId: string;
   token: string;
   port: number;
@@ -77,12 +82,27 @@ export interface ProgressApiArgs {
 export function progressApiMarkdown(args: ProgressApiArgs): string {
   const base = `http://127.0.0.1:${args.port}/api/agent/runs/${args.runId}`;
   const auth = `-H 'Authorization: Bearer ${args.token}' -H 'Content-Type: application/json'`;
-  const decompose = args.canDecompose
-    ? `If the remaining scope will not realistically fit in this execution window (large, mostly-independent chunks of work — e.g. a long list of endpoints, files, or modules), decompose instead of grinding until you run out of room or report a false BLOCKED. Split the remaining work into 2-12 sub-steps, each independently completable and independently verifiable, and hand off:\n\n\`\`\`bash\ncurl -fsS -X POST ${auth} ${base}/decompose -d '{"requestId":"unique-decompose-id","resumeBrief":"What you already established and verified, so the run that resumes this work item after every sub-step is done does not repeat it","children":[{"title":"Short unique title","content":"Full, self-contained instructions for this slice - this is the only context that sub-step run will see"},{"title":"...","content":"..."}]}'\n\`\`\`\n\nEach sub-step runs to its own DONE or BLOCKED, in the order listed, as a real tracked work item. Once every sub-step is DONE, a fresh run resumes this same work item with their outcomes in its history to do final integration and post this item's own DONE or BLOCKED. Decomposing is not itself DONE or BLOCKED and does not require expectedStatus.\n\n`
-    : `This work item is a sub-step at the maximum depth and cannot be decomposed; that request will be refused. Finish it or report BLOCKED.\n\n`;
-  return `## Progress API
 
-This run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.
+  // When the launcher could not be written the raw HTTP contract is all there
+  // is, so it stays in the document either way. It is demoted to a fallback
+  // rather than removed: a model that cannot run the command must still have a
+  // way to report, and silently having none is the failure this all guards
+  // against.
+  const step = args.shimPath ?? null;
+  const cmd = step === null ? null : JSON.stringify(step);
+
+  const decomposeCommand = cmd === null
+    ? `\`\`\`bash\ncurl -fsS -X POST ${auth} ${base}/decompose -d '{"requestId":"unique-decompose-id","resumeBrief":"What you already established and verified","children":[{"title":"Short unique title","content":"Full, self-contained instructions for this slice"}]}'\n\`\`\``
+    : `\`\`\`bash\n# children.json: [{"title":"…","content":"…"}, …]\n${cmd} decompose --file children.json\n\`\`\``;
+
+  const decompose = args.canDecompose
+    ? `If the remaining scope will not realistically fit in this execution window (large, mostly-independent chunks of work — e.g. a long list of endpoints, files, or modules), decompose instead of grinding until you run out of room or report a false BLOCKED. Split the remaining work into 2-12 sub-steps, each independently completable and independently verifiable, and hand off:\n\n${decomposeCommand}\n\nEach child's \`content\` is the only context that sub-step run will see, so make it self-contained. Each sub-step runs to its own DONE or BLOCKED, in the order listed, as a real tracked work item. Once every sub-step is DONE, a fresh run resumes this same work item with their outcomes in its history to do final integration and post this item's own DONE or BLOCKED. Decomposing is not itself DONE or BLOCKED.\n\n`
+    : `This work item is a sub-step at the maximum depth and cannot be decomposed; that request will be refused. Finish it or report BLOCKED.\n\n`;
+
+  if (cmd === null) {
+    return `## Recording your progress
+
+This run is already marked IN_PROGRESS. These endpoints are the only way to change orchestration records. **The database is outside this working directory and you cannot reach it any other way** — there is no tracker file to edit, and nothing you write in the repository changes this work item's status.
 
 Post a remark with:
 
@@ -92,15 +112,15 @@ curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"unique-remark-id","k
 
 Allowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.
 
-**Every response from this API carries a \`budget\` object** with this run's remaining tool calls, wall clock, input tokens and tool-output bytes, plus a \`warning\` when little is left. Post a PROGRESS remark after each verified slice: it is how you check the budget, and it is what makes your work resumable if the run is stopped. A run that banks nothing and is then stopped has produced nothing.
+**Every response carries a \`budget\` object** with this run's remaining tool calls, wall clock, input tokens and tool-output bytes. Post a PROGRESS remark after each verified slice: it is how you check the budget, and it is what makes your work resumable if the run is stopped. A run that banks nothing and is then stopped has produced nothing.
 
-Before finishing, post exactly one terminal prompt status. For success:
+Before finishing, post exactly one terminal status:
 
 \`\`\`bash
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'
 \`\`\`
 
-BLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:
+BLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker.
 
 \`\`\`bash
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'
@@ -109,6 +129,33 @@ curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","ex
 ${decompose}Every requestId must be unique for this run.
 
 `;
+  }
+
+  return `## Recording your progress
+
+This run is already marked IN_PROGRESS. One command records everything; it already holds this run's credentials, so there is no URL, header or id for you to assemble:
+
+\`\`\`bash
+${cmd} remark --kind PROGRESS --text "What changed or was verified"
+${cmd} done    --verification "The commands you ran and what you observed"
+${cmd} blocked --reason "Observed evidence" --action "The exact action only the human can take"
+${cmd} context   # re-read this work item
+${cmd} state     # everything recorded against it so far
+\`\`\`
+
+**The database is outside this working directory and you cannot reach it any other way.** There is no tracker file to edit, and nothing you write in the repository changes this work item's status. Run \`${cmd} help\` for the full usage.
+
+Allowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.
+
+**Each command prints this run's remaining budget** — tool calls, wall clock, input tokens and tool-output bytes. Post a PROGRESS remark after each verified slice: it is how you see the budget, and it is what makes your work resumable if the run is stopped. A run that banks nothing and is then stopped has produced nothing.
+
+**Before finishing you must run exactly one of \`done\` or \`blocked\`.** A run that ends without one is recorded as *unreported* — not as success and not as failure — and a reviewer is sent to work out whether the work was actually finished. That costs an extra agent run, so report your own outcome.
+
+The command exits non-zero and says why if it is refused. Read the message and act on it; do not assume a status was recorded.
+
+BLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker — do it.
+
+${decompose}`;
 }
 
 /**
