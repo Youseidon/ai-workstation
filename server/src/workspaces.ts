@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, REVIEW_TRIGGERS, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -717,6 +717,93 @@ if (afterTwenty < 21) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(21,?)").run(new Date().toISOString());
 }
 
+const afterTwentyOne = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyOne < 22) {
+  // The reviewer becomes configurable, and addressable.
+  //
+  // There was one global switch — auditOnBlocked: off | report | autocomplete —
+  // so every situation the app has no first-hand account of had to be handled
+  // identically. An operator could not say "check a run that went quiet, but
+  // leave a crash for me", and could not choose which agent does the checking:
+  // providerFor() simply took the first available one that was not the agent on
+  // trial. That is a reasonable default and a poor rule.
+  //
+  // Sparse and scoped, like status_definition: a row exists only where someone
+  // has actually said something, and resolution runs prompt → suite → pipeline
+  // → global → the shipped defaults.
+  const migrate22 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE reviewer_config (
+        scope TEXT NOT NULL CHECK(scope IN ('global','pipeline','suite','prompt')),
+        scope_id INTEGER,
+        trigger_id TEXT NOT NULL,
+        enabled INTEGER,
+        provider TEXT,
+        model TEXT,
+        max_attempts INTEGER,
+        must_differ_from_source INTEGER,
+        on_complete TEXT,
+        on_incomplete TEXT,
+        on_unverifiable TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope, scope_id, trigger_id)
+      );
+    `);
+
+    // A reviewer run is now its own role, so its sessions are distinguishable
+    // in the activity view instead of being filed under the role it borrowed.
+    // The TS union and this CHECK are two copies of one list and have to move
+    // together, which is why the table is rebuilt rather than left alone.
+    //
+    // Foreign keys are disabled by the caller, OUTSIDE this transaction.
+    // `PRAGMA foreign_keys` is a silent no-op inside one, and getting that
+    // wrong here is catastrophic rather than merely buggy: four tables cascade
+    // off agent_run, so DROP TABLE takes the entire transcript history,
+    // the idempotency ledger, every handoff and every audit with it. Migration
+    // 13 rebuilds the same table and does it correctly; this is why.
+    db.exec(`
+      CREATE TABLE agent_run_role (
+        id TEXT PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        prompt_id INTEGER REFERENCES prompt(id) ON DELETE CASCADE,
+        role TEXT NOT NULL DEFAULT 'execute' CHECK(role IN ('execute','consult','handoff','review')),
+        provider TEXT NOT NULL,
+        model TEXT,
+        state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        context_token_hash TEXT NOT NULL,
+        token_expires_at TEXT NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        tool_calls INTEGER,
+        tool_output_bytes INTEGER,
+        stop_reason TEXT
+      );
+      INSERT INTO agent_run_role SELECT
+        id, workspace_id, prompt_id, role, provider, model, state, started_at, ended_at,
+        context_token_hash, token_expires_at, input_tokens, output_tokens,
+        cached_input_tokens, tool_calls, tool_output_bytes, stop_reason
+      FROM agent_run;
+      DROP TABLE agent_run;
+      ALTER TABLE agent_run_role RENAME TO agent_run;
+      CREATE UNIQUE INDEX active_prompt_run_uq ON agent_run(prompt_id)
+        WHERE state IN ('STARTING','RUNNING') AND role = 'execute';
+      CREATE INDEX agent_run_prompt_idx ON agent_run(prompt_id,started_at);
+      CREATE INDEX agent_run_workspace_role_idx ON agent_run(workspace_id,role,started_at);
+    `);
+  });
+  // Outside the transaction, where the pragma actually takes effect.
+  db.pragma("foreign_keys = OFF");
+  try {
+    migrate22();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(22,?)").run(new Date().toISOString());
+}
+
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -1247,6 +1334,57 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
   return { previous, changed: previous !== write.to };
 }
 
+/*
+ * The reviewer's instructions for one situation, resolved from the narrowest
+ * scope that has anything to say about it.
+ *
+ * prompt → suite → pipeline → global → what ships. Each *field* resolves
+ * independently, so setting a provider on one suite does not silently freeze
+ * everything else about how that suite is reviewed.
+ */
+function resolveReviewerConfig(trigger: ReviewTrigger, promptId: number | null): ReviewerConfig {
+  const scopes: Array<[string, number | null]> = [["global", null]];
+  if (promptId !== null) {
+    const row = db.prepare(`
+      SELECT p.id promptId, s.id suiteId,
+             (SELECT ps.pipeline_id FROM pipeline_stage ps WHERE ps.suite_id = s.id LIMIT 1) pipelineId
+      FROM prompt p JOIN suite s ON s.id = p.suite_id WHERE p.id = ?
+    `).get(promptId) as { promptId: number; suiteId: number; pipelineId: number | null } | undefined;
+    if (row !== undefined) {
+      if (row.pipelineId !== null) scopes.push(["pipeline", row.pipelineId]);
+      scopes.push(["suite", row.suiteId]);
+      scopes.push(["prompt", row.promptId]);
+    }
+  }
+  let resolved: ReviewerConfig = { ...DEFAULT_REVIEWER_CONFIG[trigger] };
+  const select = db.prepare("SELECT * FROM reviewer_config WHERE scope=? AND scope_id IS ? AND trigger_id=?");
+  for (const [scope, scopeId] of scopes) {
+    const row = select.get(scope, scopeId, trigger) as Record<string, unknown> | undefined;
+    if (row === undefined) continue;
+    if (row.enabled !== null && row.enabled !== undefined) resolved.enabled = row.enabled === 1;
+    if (typeof row.provider === "string") resolved.provider = row.provider;
+    if (typeof row.model === "string") resolved.model = row.model;
+    if (typeof row.max_attempts === "number") resolved.maxAttempts = row.max_attempts;
+    if (row.must_differ_from_source !== null && row.must_differ_from_source !== undefined) {
+      resolved.mustDifferFromSource = row.must_differ_from_source === 1;
+    }
+    if (isReviewAction(row.on_complete)) resolved.onComplete = row.on_complete;
+    if (isReviewAction(row.on_incomplete)) resolved.onIncomplete = row.on_incomplete;
+    if (isReviewAction(row.on_unverifiable)) resolved.onUnverifiable = row.on_unverifiable;
+  }
+  // The old global switch still has the final say on the two questions it was
+  // able to express, so an operator who set it keeps the behaviour they chose
+  // until they say something more specific here.
+  const legacy = settings.pipelinePolicy.auditOnBlocked;
+  const touched = select.get("global", null, trigger) !== undefined;
+  if (!touched) {
+    if (legacy === "off") resolved.enabled = false;
+    else if (legacy === "report") resolved.onComplete = "park";
+  }
+  return resolved;
+}
+
+
 export const workspaces = {
   databasePath,
   /**
@@ -1278,6 +1416,66 @@ export const workspaces = {
         );
       }
     }
+  },
+  /** How a reviewer should behave for one situation on one work item. */
+  reviewerConfig(trigger: ReviewTrigger, promptId: number | null = null): ReviewerConfig {
+    return resolveReviewerConfig(trigger, promptId);
+  },
+  /** Every situation's resolved instructions, for the rules screen. */
+  reviewerConfigs(promptId: number | null = null): ReviewerConfig[] {
+    return REVIEW_TRIGGERS.map((trigger) => resolveReviewerConfig(trigger, promptId));
+  },
+  /** Say something about one situation at one scope. Null clears a field. */
+  setReviewerConfig(args: { scope: string; scopeId: number | null; trigger: string; patch: Record<string, unknown> }): ReviewerConfig {
+    if (!["global", "pipeline", "suite", "prompt"].includes(args.scope)) {
+      throw new WorkspaceError(422, "validation_error", "Unknown scope", { scope: "Must be global, pipeline, suite or prompt" });
+    }
+    if (!isReviewTrigger(args.trigger)) throw new WorkspaceError(404, "not_found", `No reviewer situation called ${args.trigger}`);
+    const columns: Array<[string, string, "flag" | "text" | "count" | "action"]> = [
+      ["enabled", "enabled", "flag"], ["provider", "provider", "text"], ["model", "model", "text"],
+      ["maxAttempts", "max_attempts", "count"], ["mustDifferFromSource", "must_differ_from_source", "flag"],
+      ["onComplete", "on_complete", "action"], ["onIncomplete", "on_incomplete", "action"],
+      ["onUnverifiable", "on_unverifiable", "action"],
+    ];
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const errors: Record<string, string> = {};
+    for (const [key, column, kind] of columns) {
+      if (!(key in args.patch)) continue;
+      const value = args.patch[key];
+      if (value === null) { fields.push(`${column}=?`); values.push(null); continue; }
+      if (kind === "flag") {
+        if (typeof value !== "boolean") { errors[key] = "Must be true or false"; continue; }
+        fields.push(`${column}=?`); values.push(value ? 1 : 0);
+      } else if (kind === "count") {
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 5) { errors[key] = "Must be between 1 and 5"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      } else if (kind === "action") {
+        if (!isReviewAction(value)) { errors[key] = "Not a known action"; continue; }
+        fields.push(`${column}=?`); values.push(value);
+      } else {
+        if (typeof value !== "string" || value.trim() === "") { errors[key] = "Must be some text"; continue; }
+        if (key === "provider" && !isProviderId(value)) { errors[key] = "Not a known agent"; continue; }
+        fields.push(`${column}=?`); values.push(value.trim());
+      }
+    }
+    if (Object.keys(errors).length > 0) throw new WorkspaceError(422, "validation_error", "Some changes were refused", errors);
+    const now = new Date().toISOString();
+    sqliteGuard(() => db.transaction(() => {
+      db.prepare("INSERT INTO reviewer_config(scope,scope_id,trigger_id,updated_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING")
+        .run(args.scope, args.scopeId, args.trigger, now);
+      if (fields.length > 0) {
+        db.prepare(`UPDATE reviewer_config SET ${fields.join(",")},updated_at=? WHERE scope=? AND scope_id IS ? AND trigger_id=?`)
+          .run(...values, now, args.scope, args.scopeId, args.trigger);
+      }
+    })());
+    return resolveReviewerConfig(args.trigger, args.scope === "prompt" ? args.scopeId : null);
+  },
+  /** Drop what one scope said about one situation. */
+  clearReviewerConfig(scope: string, scopeId: number | null, trigger: string): ReviewerConfig {
+    if (!isReviewTrigger(trigger)) throw new WorkspaceError(404, "not_found", `No reviewer situation called ${trigger}`);
+    db.prepare("DELETE FROM reviewer_config WHERE scope=? AND scope_id IS ? AND trigger_id=?").run(scope, scopeId, trigger);
+    return resolveReviewerConfig(trigger, scope === "prompt" ? scopeId : null);
   },
   /** The resolved status catalog. See `resolvedStatusCatalog`. */
   statusCatalog(): StatusDefinition[] { return resolvedStatusCatalog(); },

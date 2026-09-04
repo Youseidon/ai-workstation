@@ -1611,8 +1611,16 @@ export {
  * explicit for the same reason; keep it that way.
  */
 export {
+  DEFAULT_REVIEWER_CONFIG,
   DEFAULT_STATUS_CATALOG,
   DEFAULT_TRIGGER_SENTENCES,
+  REVIEW_ACTIONS,
+  REVIEW_ACTION_LABEL,
+  REVIEW_TRIGGERS,
+  REVIEW_TRIGGER_LABEL,
+  isReviewAction,
+  isReviewTrigger,
+  reviewTriggerFor,
   OVERLAY_STATUSES,
   STATUS_ICONS,
   STATUS_ON_ENTER,
@@ -1641,6 +1649,9 @@ export {
   statusFieldEditable,
 } from "./statusModel";
 export type {
+  ReviewAction,
+  ReviewTrigger,
+  ReviewerConfig,
   StatusDefinition,
   StatusEditableKey,
   StatusIcon,

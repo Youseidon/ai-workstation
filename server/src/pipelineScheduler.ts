@@ -1,4 +1,4 @@
-import { autoHandoffAllowed, isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { autoHandoffAllowed, isProviderId, reviewTriggerFor, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -751,7 +751,17 @@ async function settleAudit(args: { promptId: number; sourceRunId: string; verdic
     && active.currentPromptId === args.promptId
     && active.waitReason === "audit_running";
 
-  if (args.verdict === "COMPLETE" && settings.pipelinePolicy.auditOnBlocked === "autocomplete") {
+  // What the operator has said this verdict should do, for this situation, at
+  // the narrowest scope that says anything. This used to be one global
+  // three-way switch, so "close a run that went quiet" and "close one whose
+  // process crashed" could not be answered differently.
+  const trigger = reviewTriggerFor(workspaces.promptOutcome(args.promptId).status) ?? "unreported";
+  const reviewer = workspaces.reviewerConfig(trigger, args.promptId);
+  const action = args.verdict === "COMPLETE" ? reviewer.onComplete
+    : args.verdict === "INCOMPLETE" ? reviewer.onIncomplete
+    : reviewer.onUnverifiable;
+
+  if (args.verdict === "COMPLETE" && action === "close") {
     try {
       workspaces.completePrompt(args.promptId, "SYSTEM", {
         reason: AUDIT_COMPLETE_REASON,

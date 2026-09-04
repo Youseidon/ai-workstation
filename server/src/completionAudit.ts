@@ -1,4 +1,4 @@
-import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId } from "@agent-console/shared";
+import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, reviewTriggerFor, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -25,20 +25,29 @@ const log = createLogger("audit");
  * with no failed check is allowed to close the station.
  */
 
-/** One audit per source run is automatic; the rest are operator-requested. */
-const AUTO_ATTEMPTS_PER_RUN = 1;
-
 /**
  * Read-only is the whole point, so a provider that cannot be held read-only
- * cannot audit — and neither can the agent whose own run is on trial, which
- * would be marking its own homework.
+ * cannot review.
+ *
+ * `exclude` is the agent whose own run is on trial — marking your own homework
+ * is the failure this mechanism exists to avoid. It is now a configured
+ * preference rather than a hard rule, because on a single-provider setup the
+ * old behaviour meant no review ever happened at all, silently. When excluding
+ * the source would leave nobody, the operator's `mustDifferFromSource` decides
+ * whether to fall back to it or to decline and say so.
  */
-async function providerFor(requested: ProviderId | undefined, exclude: ProviderId): Promise<ProviderId | null> {
+async function providerFor(
+  requested: ProviderId | undefined,
+  exclude: ProviderId,
+  mustDiffer: boolean,
+): Promise<ProviderId | null> {
   const providers = await detectProviders();
-  const eligible = providers.filter((item) => item.available && item.id !== "cursor" && item.id !== exclude);
-  if (eligible.length === 0) return null;
-  if (requested !== undefined && eligible.some((item) => item.id === requested)) return requested;
-  return eligible[0]!.id;
+  const readOnly = providers.filter((item) => item.available && item.id !== "cursor");
+  const eligible = readOnly.filter((item) => item.id !== exclude);
+  const pool = eligible.length > 0 || mustDiffer ? eligible : readOnly;
+  if (pool.length === 0) return null;
+  if (requested !== undefined && pool.some((item) => item.id === requested)) return requested;
+  return pool[0]!.id;
 }
 
 function list(value: unknown, max = 30): string[] {
@@ -134,16 +143,27 @@ export async function scheduleCompletionAudit(args: ScheduleAuditArgs): Promise<
   // The station must be blocked *by the system*. An agent that posted BLOCKED
   // itself asked a human a question, and no amount of tree-reading answers it.
   if (!workspaces.endedWithoutAgentStatus(args.promptId)) return { started: false, block: "not_auditable" };
+  // Which situation this is, and what the operator has said about it. An
+  // automatic review that is switched off for this situation must not happen;
+  // one the operator asked for by hand always may.
+  const trigger = reviewTriggerFor(outcome.status) ?? "unreported";
+  const config = workspaces.reviewerConfig(trigger, args.promptId);
+  if (args.automatic !== false && !config.enabled) return { started: false, block: "not_auditable" };
+
   const previous = workspaces.completionAuditsForRun(args.sourceRunId);
   if (previous.some((item) => item.state === "QUEUED" || item.state === "RUNNING")) return { started: false, block: "audit_running" };
-  if (args.automatic !== false && previous.length >= AUTO_ATTEMPTS_PER_RUN) return { started: false, block: "attempt_limit" };
+  if (args.automatic !== false && previous.length >= config.maxAttempts) return { started: false, block: "attempt_limit" };
 
-  const provider = await providerFor(args.auditProvider, args.sourceProvider);
+  // An operator asking for a specific reviewer outranks the configured one,
+  // which outranks whatever happens to be available.
+  const preferred = args.auditProvider
+    ?? (isProviderId(config.provider) ? config.provider : undefined);
+  const provider = await providerFor(preferred, args.sourceProvider, config.mustDifferFromSource);
   if (provider === null) {
     log.warn(`no read-only provider available for audit prompt=${args.promptId}`);
     return { started: false, block: "provider_unavailable" };
   }
-  const model = args.auditModel ?? null;
+  const model = args.auditModel ?? config.model ?? null;
   const id = newId("audit");
   const record = workspaces.createCompletionAudit({ id, workspaceId: args.workspaceId, promptId: args.promptId, sourceRunId: args.sourceRunId, provider, model });
 

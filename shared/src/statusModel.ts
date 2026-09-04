@@ -874,3 +874,110 @@ export function rollupStatus(
   }
   return winner === null ? null : winner.id;
 }
+
+/* ------------------------------------------------------------------ */
+/* The reviewer                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The situations a reviewer can be sent into.
+ *
+ * These are the states where the app has no first-hand account of what
+ * happened. There used to be one global switch — `auditOnBlocked`, with the
+ * values off / report / autocomplete — which meant every one of these
+ * situations had to be handled identically, and the operator could not say
+ * "check an unreported run, but never touch one I was asked a question about".
+ */
+export const REVIEW_TRIGGERS = ["unreported", "failed", "dodUnmet", "childFailed"] as const;
+export type ReviewTrigger = (typeof REVIEW_TRIGGERS)[number];
+
+export function isReviewTrigger(value: unknown): value is ReviewTrigger {
+  return typeof value === "string" && (REVIEW_TRIGGERS as readonly string[]).includes(value);
+}
+
+export const REVIEW_TRIGGER_LABEL: Record<ReviewTrigger, string> = {
+  unreported: "A run ended without reporting",
+  failed: "The agent process failed",
+  dodUnmet: "The definition of done was not satisfied",
+  childFailed: "A sub-step needs attention",
+};
+
+/** What a verdict is allowed to do. */
+export const REVIEW_ACTIONS = ["close", "handoff", "retry", "park", "markReview"] as const;
+export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
+
+export function isReviewAction(value: unknown): value is ReviewAction {
+  return typeof value === "string" && (REVIEW_ACTIONS as readonly string[]).includes(value);
+}
+
+export const REVIEW_ACTION_LABEL: Record<ReviewAction, string> = {
+  close: "Close the work item",
+  handoff: "Prepare a continuation brief",
+  retry: "Run it again",
+  park: "Hold and wait for you",
+  markReview: "Mark it as needing review",
+};
+
+/**
+ * What a reviewer does in one situation.
+ *
+ * `null` on provider or model means "pick an available one", which is what the
+ * app did unconditionally before this was configurable.
+ */
+export interface ReviewerConfig {
+  trigger: ReviewTrigger;
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  maxAttempts: number;
+  /**
+   * The reviewer must not be the agent whose run is on trial. Configurable
+   * rather than fixed because a single-provider setup would otherwise never get
+   * a review at all — but it defaults on, since marking your own homework is
+   * the failure mode this whole mechanism exists to avoid.
+   */
+  mustDifferFromSource: boolean;
+  onComplete: ReviewAction;
+  onIncomplete: ReviewAction;
+  onUnverifiable: ReviewAction;
+}
+
+/**
+ * What ships. Reproduces the behaviour of the old three-way `auditOnBlocked`
+ * switch on its `autocomplete` setting, so nothing changes until it is changed.
+ */
+export const DEFAULT_REVIEWER_CONFIG: Record<ReviewTrigger, ReviewerConfig> = {
+  unreported: {
+    trigger: "unreported", enabled: true, provider: null, model: null,
+    maxAttempts: 1, mustDifferFromSource: true,
+    onComplete: "close", onIncomplete: "handoff", onUnverifiable: "park",
+  },
+  failed: {
+    trigger: "failed", enabled: true, provider: null, model: null,
+    maxAttempts: 1, mustDifferFromSource: true,
+    // A crashed run may still have finished the work, so it is worth checking —
+    // but a crash is an observed fact, and closing on it deserves more caution
+    // than closing on a run that merely went quiet.
+    onComplete: "close", onIncomplete: "handoff", onUnverifiable: "park",
+  },
+  dodUnmet: {
+    trigger: "dodUnmet", enabled: false, provider: null, model: null,
+    maxAttempts: 1, mustDifferFromSource: true,
+    onComplete: "close", onIncomplete: "park", onUnverifiable: "park",
+  },
+  childFailed: {
+    trigger: "childFailed", enabled: false, provider: null, model: null,
+    maxAttempts: 1, mustDifferFromSource: true,
+    onComplete: "close", onIncomplete: "park", onUnverifiable: "park",
+  },
+};
+
+/** The situation a status puts a work item in, or null if none needs a reviewer. */
+export function reviewTriggerFor(status: StepStatus): ReviewTrigger | null {
+  if (status === "UNREPORTED") return "unreported";
+  if (status === "FAILED") return "failed";
+  // BLOCKED is deliberately absent. An agent that stopped to ask a human a
+  // question has not left an unanswered question about *the work* — reviewing
+  // past it would be a machine overruling a request for a human decision.
+  return null;
+}

@@ -78,7 +78,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/reviewers" && !url.pathname.startsWith("/api/reviewers/") && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -110,6 +110,31 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if(match){
         if(method==="PATCH"){const input=await body(req);json(res,200,{triggers:workspaces.updateTriggerSentence(match[1]!,input.sentence)});}
         else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    // What a reviewer does in each situation the app has no first-hand account
+    // of. `?prompt=` resolves through that work item's scopes; without it the
+    // global answer is returned.
+    if(url.pathname==="/api/reviewers"){
+      if(method==="GET"){
+        const value=url.searchParams.get("prompt");
+        json(res,200,{reviewers:workspaces.reviewerConfigs(value===null?null:id(value))});
+      } else if(method==="PATCH"){
+        const input=await body(req);
+        const scope=typeof input.scope==="string"?input.scope:"global";
+        const scopeId=typeof input.scopeId==="number"?input.scopeId:null;
+        const trigger=typeof input.trigger==="string"?input.trigger:"";
+        const patch=typeof input.patch==="object"&&input.patch!==null?input.patch as Record<string,unknown>:{};
+        json(res,200,{reviewer:workspaces.setReviewerConfig({scope,scopeId,trigger,patch})});
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    {
+      const match=url.pathname.match(/^\/api\/reviewers\/([a-zA-Z]+)$/);
+      if(match&&method==="DELETE"){
+        const value=url.searchParams.get("scopeId");
+        json(res,200,{reviewer:workspaces.clearReviewerConfig(url.searchParams.get("scope")??"global",value===null?null:id(value),match[1]!)});
         return true;
       }
     }
