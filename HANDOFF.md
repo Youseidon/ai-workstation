@@ -5,8 +5,9 @@ self-hosted web console that drives local CLI coding agents (Claude Code, Codex,
 Copilot) through a pipeline of work items. Node/TS monorepo: `shared/`, `server/`, `web/`
 (Next.js). SQLite via `better-sqlite3`, hand-rolled versioned migrations.
 
-Eight commits landed before you (`git log f0032f7..HEAD`). Read this whole file before touching
-anything — there are two things that will bite you, and one of them already destroyed data.
+Ten commits landed before you (`git log f0032f7..HEAD`). The redesign's named scope is finished;
+what is left is listed under "What is left" below. Read this whole file before touching anything —
+there are two things that will bite you, and one of them already destroyed data.
 
 ---
 
@@ -63,6 +64,14 @@ AGENT_CONSOLE_DB=/tmp/mig-test.sqlite npx tsx -e "import('./server/src/workspace
 
 Ask the owner before letting a new migration touch the live database.
 
+Migration 23 was done this way and it is the routine to copy: copy the database,
+run the migration's **exact SQL** against the copy in a standalone script, and
+diff every table's row count plus `integrity_check` and `foreign_key_check`
+before and after. Doing it as a standalone script rather than by saving
+`workspaces.ts` is what avoids the race — the file save *is* the deployment.
+It reported 138,103 rows across 29 pre-existing tables unchanged, and the same
+counts held on the live file afterwards.
+
 ---
 
 ## What is already done
@@ -77,8 +86,10 @@ Ask the owner before letting a new migration touch the live database.
 | `4c9453f` | Database relocated out of every workspace; `agent-step` shim replaces the curl contract. |
 | `1713291` | Child outcomes roll up to the parent as a *derived* signal. |
 | `a3657a5` | Reviewer matrix (`reviewer_config`, migration 22) + the migration fix above. |
+| `a710577` | Definition of done: three kinds of criterion, inherited, gated in `writeStatus`. Migration 23. |
+| `84d92ab` | The reviewer matrix and the definition of done get a UI. |
 
-Current: **schema 22**, 327 tests passing, `npm run build` clean.
+Current: **schema 23**, 367 tests passing, `npm run build` clean.
 
 ### The status model, in brief
 
@@ -96,100 +107,58 @@ Current: **schema 22**, 327 tests passing, `npm run build` clean.
 
 ---
 
-## Your scope: three items
+## What the last session did with that scope
 
-### 1. Definition of done  ← the main piece
+**1. Definition of done — done.** Migration 23 adds `definition_of_done`,
+`dod_criterion` and `dod_result` exactly as specified. `PROSE` criteria are
+judged by the reviewer, which now receives them structured with ids and quotes
+each id back, so a verdict lands on the row it was about instead of being
+matched to one by string similarity. `COMMAND` criteria are executed by the
+server (`dodCommands.ts`) and judged on the exit code. `CHILDREN_CLOSED` is read
+off the child rollup.
 
-This is the last of the owner's named asks. They chose: **prose criteria judged by a reviewer,
-plus optional commands that must exit 0, with children-all-closed as an automatic criterion.**
+The gate lives inside `writeStatus`, not at the call sites: there were thirteen
+routes to DONE and a gate spelled thirteen times has holes in it. It is a
+*synchronous read* of recorded results and never executes anything — running a
+test suite from inside a SQLite write transaction would block the event loop of
+a console whose job is watching live agents. Producing the evidence is
+`definitionOfDone.ts`' job, and the paths that intend to close an item call it
+first (the agent door in `index.ts`, and `settleAudit` in the scheduler). A
+COMMAND nobody ran is UNVERIFIED, and UNVERIFIED closes nothing.
 
-Today "acceptance criteria" is prose scraped out of the work item's markdown by a regex with the
-owner's old domain baked into it (`server/src/suiteVerification.ts:1`):
+The dangling `pipeline.dodEnforcement` is resolved: the setting exists in
+Pipeline policy, defaulting to `block`. `dod_unmet`, the `dod-unmet` transition
+row and the `dodUnmet` reviewer entry are all reachable now — `writeStatus`
+emits the signal, and `workspaces.reviewSituation` reads the recorded cause off
+the ledger rather than guessing from the status, because NEEDS_REVIEW is where
+three different problems land.
 
-```ts
-const USEFUL_SECTION = /^(objective|scope|verification\b|acceptance\b|exit\b|constraints|rules\b|money rules\b|rounding\b|snapshots\b|gst verification\b|cross-module boundaries\b|financial-records deletion\b)/i;
-```
+**2. Reviewer matrix UI — done.** `ReviewerMatrixPanel.tsx`, in `RulesPanel`
+next to the status catalog, deriving its rows from `REVIEW_TRIGGERS` and its
+verdict actions from `REVIEW_ACTIONS`.
 
-`gst verification` and `money rules` in a general orchestration tool are leftovers. Replace this
-with structured criteria.
-
-**Migration 23** — three tables, inherited workspace → program → suite → work item:
-
-```sql
-definition_of_done(id, scope, scope_id, enforcement TEXT('block'|'warn'|'off'), updated_at)
-dod_criterion(id, dod_id, kind TEXT('PROSE'|'COMMAND'|'CHILDREN_CLOSED'),
-              text, command, cwd, expect_exit_code, timeout_ms, required, sort_order)
-dod_result(id, prompt_id, criterion_id, run_id,
-           source TEXT('AGENT'|'REVIEWER'|'RUNNER'|'HUMAN'),
-           result TEXT('PASSED'|'FAILED'|'UNVERIFIED'), evidence, output, created_at)
-```
-
-- `PROSE` → judged by the reviewer agent. Its existing `checks[]` array
-  (`server/src/completionAudit.ts`, `parseReport`) maps straight onto `dod_result` rows.
-- `COMMAND` → **executed by the server, not the agent**, in the workspace directory, with a
-  timeout, recording exit code and captured output. This is the part that cannot be talked into
-  passing, and it is the reason the owner picked this option. Treat it as security-sensitive:
-  commands come from the database and run as the server's user. Cap the timeout, cap captured
-  output, run with the workspace as cwd, and do not interpolate anything from an agent into them.
-- `CHILDREN_CLOSED` → evaluated automatically from the existing child rollup.
-
-**The closing gate.** `workspaces.completePrompt` (`server/src/workspaces.ts:2591`) and the
-`DONE` path in `writeStatus` must consult `dodSatisfied(promptId)`. Unmet under
-`enforcement='block'` → the item lands in `NEEDS_REVIEW` with trigger `dod_unmet` and the failing
-criteria as `evidence_json`, instead of `DONE`. A human override is always allowed and is
-recorded as `operator_override` with their reason.
-
-**Scaffolding already in place for you** (all currently inert — wire it up, don't rebuild it):
-
-- `STATUS_TRIGGERS` already contains `dod_unmet` and `dod_command_failed`
-  (`shared/src/statusModel.ts:512`), with sentences.
-- `STEP_SIGNALS` contains `dod_unmet` and `STEP_TRANSITIONS` has a `dod-unmet` row landing on
-  `NEEDS_REVIEW` (`statusModel.ts:771`). **Nothing in the server emits that signal yet** — the
-  table is total, but the row is unreachable from real code. Your job includes making it reachable.
-- `REVIEW_TRIGGERS` contains `dodUnmet` with a shipped `DEFAULT_REVIEWER_CONFIG` entry
-  (`statusModel.ts:963`), currently `enabled: false`.
-- `completionAuditDossier` (`server/src/workspaces.ts:2894`) is where `acceptanceCriteria` is
-  handed to the reviewer. Feed structured criteria through here.
-
-**⚠️ Dangling reference you must resolve.** `PolicyKey` in `statusModel.ts:78` includes
-`"pipeline.dodEnforcement"`, and two `STEP_TRANSITIONS` rows point at it — but **that setting does
-not exist** in `server/src/settings.ts`. Either add the field (one entry in the `FIELDS` table,
-`envVar: "PIPELINE_DOD_ENFORCEMENT"`, options `block|warn|off`) or remove the `PolicyKey` member.
-Right now the rules panel offers to open a setting that isn't there.
-
-If you add a settings field, two tests police that surface:
-`server/src/settingsCoverage.test.ts:26-45` reads `AgentsView.tsx` **as text**, and
-`web/components/agents/settingsGroups.test.ts:16-25` hardcodes the group list.
-
-**UI**: per-item DoD editing in `web/components/tasks/WorkItemDetail.tsx`; scope defaults
-alongside the status catalog in `web/components/pipeline/RulesPanel.tsx`. Results belong in the
-`WhyThisStatus` panel (`web/components/tasks/WhyThisStatus.tsx`) — it already renders
-`evidence_json` as key/value pairs, so failing criteria will show up there once you record them.
-
-### 2. Reviewer matrix UI
-
-The server side is done and tested (`server/src/reviewerConfig.test.ts`, 7 tests). There is **no
-UI at all** — `GET/PATCH /api/reviewers`, `DELETE /api/reviewers/:trigger` exist and nothing calls
-them.
-
-Build it next to the status catalog in `RulesPanel`. One row per `REVIEW_TRIGGERS` entry
-(`unreported · failed · dodUnmet · childFailed`) with: enabled, agent, model, max attempts,
-"must differ from the agent on trial", and the three verdict actions
-(`onComplete · onIncomplete · onUnverifiable` → `close|handoff|retry|park|markReview`).
-`REVIEW_TRIGGER_LABEL` and `REVIEW_ACTION_LABEL` in `statusModel.ts` give you the wording.
-
-Follow `web/components/pipeline/StatusCatalogPanel.tsx` — same shape, same toast handling, same
-convention of showing a locked field's *reason* rather than hiding the control.
-
-### 3. Optional cleanup, only if asked
-
-Flagged and deliberately out of scope so far — do not fold these into the above:
-
-- **Two coexisting pipeline systems.** Migration 14 copied `prompt_pipeline_rule` into
-  `pipeline_step` but deleted neither the legacy tables nor `/api/suites/:id/play`.
-- **`agent_run_event` has no retention policy.** It is why the database is ~150 MB.
+**3. Optional cleanup — still not done**, and still deliberately out of scope.
+Both items below are unchanged.
 
 ---
+
+## What is left
+
+- **The two coexisting pipeline systems.** Migration 14 copied
+  `prompt_pipeline_rule` into `pipeline_step` and deleted neither the legacy
+  tables nor `/api/suites/:id/play`.
+- **`agent_run_event` has no retention policy.** It is why the database is
+  ~150 MB.
+- **Nothing here has been used by a real agent.** The reviewer's
+  structured-criteria prompt has never faced a live provider, and the
+  agent-posts-DONE-over-a-failing-criterion path is covered by a test against
+  real SQLite rather than by an actual agent run. Neither new panel has been
+  clicked through in a browser.
+- **`reviewer_config` has the bug `definition_of_done` just had fixed.** Both
+  are keyed by `(scope, scope_id)` with no foreign key, and SQLite reuses a
+  deleted row's id — so a deleted suite's reviewer settings will silently attach
+  themselves to the next suite given that id. `forgetOrphanedDefinitionsOfDone`
+  in `workspaces.ts` is the pattern; `reviewer_config` needs the same sweep.
 
 ## Invariants — do not break these
 
@@ -219,7 +188,25 @@ Flagged and deliberately out of scope so far — do not fold these into the abov
    actions, `pipeline_run.state`. Widening a union without a migration fails at runtime, and
    `tsc` will not tell you.
 
-7. **`shared/src/index.ts` re-exports by name, never `export *`.** Node's ESM linker resolves a
+7. **A model never overturns a recorded exit code.** `recordReviewerVerdicts`
+   files a reviewer's answers only against `PROSE` criteria, however
+   confidently it reports on the others. A `COMMAND` is settled by its exit
+   code and `CHILDREN_CLOSED` by the rollup — that is the entire reason they
+   are not prose, and letting a verdict overwrite one hands back the thing the
+   definition of done was built to take away.
+
+8. **The definition-of-done gate reads; it does not run.** See above. If you
+   need fresh evidence, call `runDefinitionOfDoneCommands` before the write,
+   never from inside it.
+
+9. **A table keyed by `(scope, scope_id)` needs an orphan sweep.** SQLite hands
+   out a deleted row's INTEGER PRIMARY KEY again, so criteria written for a
+   deleted work item do not merely linger — they attach to the next item given
+   that id, and it will not close for reasons nobody wrote. Ask "is the thing
+   this row points at still there" rather than cleaning up at each delete site;
+   cascades mean the delete sites are not the whole story.
+
+10. **`shared/src/index.ts` re-exports by name, never `export *`.** Node's ESM linker resolves a
    `.ts` barrel's named exports before tsx transpiles the starred module, so `export *` links and
    exposes nothing — every importer fails at runtime while `tsc` stays happy. There is a comment
    there explaining it.
@@ -234,15 +221,23 @@ npm test             # 327 currently passing — none may regress
 npm run build        # Next.js build must stay clean
 ```
 
-Then, in the real app (`npm run dev`, <http://localhost:3000>):
+All four of these were run against a real server on a disposable database
+(`PORT=4137 AGENT_CONSOLE_DB=/tmp/... node --import tsx src/index.ts`), which is
+the way to exercise the real app without creating test items in the owner's live
+console. Re-run them after anything that touches the gate:
 
-1. Point a work item's definition of done at a command that fails; confirm `DONE` is refused and
-   the failing command's **real output** appears as evidence on the item.
-2. Confirm a passing command actually ran — check the recorded exit code, do not take the
-   reviewer's word for it.
-3. Rename a status on the rules screen; confirm it changes on the board, the station card and the
-   status bar from that one edit.
-4. Kill an agent mid-run; confirm the item shows `UNREPORTED` — **not** failed, **not** blocked.
+1. Point a work item's definition of done at a command that fails; confirm the
+   close is refused and the failing command's **real output** appears as
+   evidence. ✓ — the compiler's own `error TS2322` line lands in
+   `evidence_json`. Note that the operator's own **Mark complete** is an
+   override and is *meant* to get through; it records what it closed over.
+2. Confirm a passing command actually ran — check the recorded exit code, do not
+   take the reviewer's word for it. ✓ — `exit 0`, source `RUNNER`.
+3. Rename a status on the rules screen; confirm it changes on the board, the
+   station card and the status bar from that one edit. ✓
+4. Kill an agent mid-run; confirm the item shows `UNREPORTED` — **not** failed,
+   **not** blocked. ✓ — worth re-running after any `writeStatus` change, since
+   that path goes through it.
 
 Write tests that assert the *claim*, not the implementation. The existing suites are written that
 way and their names say what is being protected — read
