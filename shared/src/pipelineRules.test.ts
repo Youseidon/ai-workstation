@@ -11,6 +11,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  HANDOFF_TRIGGERS,
+  autoHandoffAllowed,
   PIPELINE_STATES,
   type OnBlockedAction,
   type OnDoneAction,
@@ -363,4 +365,50 @@ test("the retry consequence counts the operator's own limit", () => {
   const thrice = onBlockedConsequence({ onBlocked: "retry", retryLimit: 3, recoverProvider: null }, DEFAULT_PIPELINE_POLICY);
   assert.match(once, /once/);
   assert.match(thrice, /up to 3 times/);
+});
+
+/* ------------------------------------------------------------------ */
+/* When a handoff is prepared without being asked                      */
+/* ------------------------------------------------------------------ */
+
+const handoff = (over: Partial<Parameters<typeof autoHandoffAllowed>[0]> = {}) =>
+  autoHandoffAllowed({ trigger: "reviewerIncomplete", status: "UNREPORTED", producedWork: true, reviewed: true, ...over });
+
+test("a question an agent asked is never summarised", () => {
+  // The case that motivated narrowing this. BLOCKED means the agent stopped to
+  // ask the operator something — that is a question, not unfinished work, and
+  // paying a full agent run to report that somebody needs to answer it is
+  // exactly the waste the old boolean caused.
+  for (const trigger of HANDOFF_TRIGGERS) {
+    assert.equal(handoff({ trigger, status: "BLOCKED" }), false, `${trigger} summarised a question`);
+  }
+});
+
+test("nothing produced means nothing to hand over", () => {
+  assert.equal(handoff({ producedWork: false }), false);
+  assert.equal(handoff({ trigger: "anyUnfinished", producedWork: false }), false);
+});
+
+test("the default waits for a reviewer to call the work unfinished", () => {
+  assert.equal(handoff({ reviewed: true }), true);
+  assert.equal(handoff({ reviewed: false }), false, "a brief was prepared before anything judged the work");
+  // The broader setting does not wait for that judgement, which is the whole
+  // difference between the two.
+  assert.equal(handoff({ trigger: "anyUnfinished", reviewed: false }), true);
+});
+
+test("manual only means manual only", () => {
+  for (const status of ["UNREPORTED", "FAILED", "NEEDS_REVIEW"]) {
+    assert.equal(handoff({ trigger: "manualOnly", status, reviewed: true }), false);
+  }
+});
+
+test("every handoff trigger is a real choice", () => {
+  // A setting whose options behave identically is a setting that lies about
+  // having options.
+  const outcomes = HANDOFF_TRIGGERS.map((trigger) =>
+    ["UNREPORTED", "FAILED"].flatMap((status) =>
+      [true, false].map((reviewed) => handoff({ trigger, status, reviewed })),
+    ).join(","));
+  assert.equal(new Set(outcomes).size, HANDOFF_TRIGGERS.length);
 });

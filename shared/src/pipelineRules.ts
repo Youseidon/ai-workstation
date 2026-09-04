@@ -58,6 +58,47 @@ export const RESTART_POLICIES = ["newRun", "resumeSameRun"] as const;
 export type RestartPolicy = (typeof RESTART_POLICIES)[number];
 
 /**
+ * When the pipeline may summon a handoff agent without being asked.
+ *
+ * A handoff exists to stop a successor redoing work a previous run already did.
+ * That makes it worth a run in exactly one situation: the work is unfinished
+ * *and* something was produced. It replaces the old `autoHandoffOnBlocked`
+ * boolean, which fired on any station whose rule was "wait" — including one an
+ * agent had deliberately blocked to ask a question. Summarising a question
+ * costs a full agent run to report that somebody needs to answer it.
+ */
+export const HANDOFF_TRIGGERS = ["reviewerIncomplete", "anyUnfinished", "manualOnly"] as const;
+export type HandoffTrigger = (typeof HANDOFF_TRIGGERS)[number];
+
+export function isHandoffTrigger(value: unknown): value is HandoffTrigger {
+  return typeof value === "string" && (HANDOFF_TRIGGERS as readonly string[]).includes(value);
+}
+
+/**
+ * Whether a station that just ended should have a handoff prepared for it.
+ *
+ * `status` is the work item's stored status, which is what makes this decidable
+ * at all: before it was stored, "the agent asked a question" and "the run said
+ * nothing" were both spelled BLOCKED and could not be told apart here.
+ */
+export function autoHandoffAllowed(args: {
+  trigger: HandoffTrigger;
+  status: string;
+  /** The run made at least one tool call, so there is something to summarise. */
+  producedWork: boolean;
+  /** A reviewer has already judged the work genuinely unfinished. */
+  reviewed: boolean;
+}): boolean {
+  if (args.trigger === "manualOnly") return false;
+  // An agent that stopped to ask a human a question has not left unfinished
+  // work; it has left a question. Never summarise that.
+  if (args.status === "BLOCKED") return false;
+  if (!args.producedWork) return false;
+  if (args.trigger === "anyUnfinished") return true;
+  return args.reviewed;
+}
+
+/**
  * What happens when a station blocks because its run ended without ever
  * posting DONE or BLOCKED — a dropped status post, not an agent asking a
  * question. "off" keeps the old behaviour. "report" sends a read-only auditor
@@ -90,8 +131,8 @@ export interface PipelinePolicy {
   onRestart: RestartPolicy;
   /** When resuming a station should first prepare a continuation brief. */
   handoffRequirement: HandoffRequirement;
-  /** Whether a station that blocks summons a handoff agent instead of just parking. */
-  autoHandoffOnBlocked: boolean;
+  /** When a station that did not finish summons a handoff agent by itself. */
+  handoffTrigger: HandoffTrigger;
   /** Whether a station blocked by a missing status post is audited before anything else. */
   auditOnBlocked: AuditOnBlockedMode;
   /** Hard cap on handoff generations for one station. */
@@ -106,7 +147,7 @@ export const DEFAULT_PIPELINE_POLICY: PipelinePolicy = {
   stopInterruptsAgent: true,
   onRestart: "newRun",
   handoffRequirement: "whenWorkProduced",
-  autoHandoffOnBlocked: false,
+  handoffTrigger: "reviewerIncomplete",
   auditOnBlocked: "autocomplete",
   maxHandoffGenerations: 3,
   defaultOnBlocked: "wait",

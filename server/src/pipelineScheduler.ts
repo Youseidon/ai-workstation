@@ -1,4 +1,4 @@
-import { isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { autoHandoffAllowed, isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -339,7 +339,17 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
   }
 
   if (rule.onBlocked === "wait") {
-    if (settings.pipelinePolicy.autoHandoffOnBlocked && sourceRunId !== undefined && !held) {
+    // Whether a handoff is worth an agent run. The status is what makes this
+    // decidable: before it was stored, "the agent asked a question" and "the run
+    // said nothing" were both spelled BLOCKED, so this could not tell them
+    // apart and summarised questions nobody needed summarised.
+    const allowed = sourceRunId !== undefined && !held && autoHandoffAllowed({
+      trigger: settings.pipelinePolicy.handoffTrigger,
+      status: workspaces.promptOutcome(promptId).status,
+      producedWork: workspaces.promptProducedWork(promptId),
+      reviewed: options.audited === true || options.parkReason === "audit_incomplete",
+    });
+    if (allowed && sourceRunId !== undefined) {
       if (await tryAutoHandoff(pipeline, promptId, sourceRunId)) {
         return park(pipeline, promptId, "handoff_running");
       }

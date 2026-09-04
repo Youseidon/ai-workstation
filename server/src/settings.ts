@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import {
   DEFAULT_PIPELINE_POLICY,
   isAuditOnBlockedMode,
+  isHandoffTrigger,
   isOnBlockedAction,
   isOnDoneAction,
   type PipelinePolicy,
@@ -182,17 +183,23 @@ const FIELDS: FieldDef[] = [
     isDangerous: (value) => value === "never",
   },
   {
-    key: "pipeline.autoHandoffOnBlocked",
-    label: "Summon a handoff when a station blocks",
+    key: "pipeline.handoffTrigger",
+    label: "When a handoff is prepared without you",
     group: "Pipeline policy",
-    type: "boolean",
-    envVar: "PIPELINE_AUTO_HANDOFF_ON_BLOCKED",
-    fallback: false,
+    type: "select",
+    envVar: "PIPELINE_HANDOFF_TRIGGER",
+    fallback: "reviewerIncomplete",
     description:
-      "On, a station whose rule is 'wait' first has a read-only agent write a continuation brief, and the "
-      + "run carries on by itself if that agent says the work can continue. Off, the run simply parks and "
-      + "waits for you. This is the one setting here that can start an agent without you pressing anything.",
-    isDangerous: (value) => value === true,
+      "A handoff exists so a successor does not redo work a previous run already did. That is worth an "
+      + "agent run when the work is unfinished and something was produced — and never when an agent "
+      + "deliberately stopped to ask you a question, which is not unfinished work but a question. "
+      + "This is the one setting here that can start an agent without you pressing anything.",
+    options: [
+      option("reviewerIncomplete", "Only when a reviewer says the work is genuinely unfinished", "The narrowest trigger, and the default"),
+      option("anyUnfinished", "Whenever a run ends unfinished having produced something", "Prepares more briefs, some of which will not be needed", true),
+      option("manualOnly", "Never — only when you press the button", "Resuming may redo work a previous run already did", true),
+    ],
+    isDangerous: (value) => value === "anyUnfinished" || value === "manualOnly",
   },
   {
     key: "pipeline.auditOnBlocked",
@@ -917,6 +924,7 @@ export const settings = {
   get pipelinePolicy(): PipelinePolicy {
     const pauseMode = text("pipeline.pauseMode");
     const requirement = text("pipeline.handoffRequirement");
+    const handoffTrigger = text("pipeline.handoffTrigger");
     const onBlocked = text("pipeline.defaultOnBlocked");
     const onDone = text("pipeline.defaultOnDone");
     const generations = count("pipeline.maxHandoffGenerations");
@@ -929,7 +937,11 @@ export const settings = {
         requirement === "always" || requirement === "never"
           ? (requirement satisfies HandoffRequirement)
           : "whenWorkProduced",
-      autoHandoffOnBlocked: flag("pipeline.autoHandoffOnBlocked"),
+      // The old boolean is honoured for one release: an operator who had turned
+      // it on meant "prepare briefs by yourself", which is the broader trigger.
+      handoffTrigger: isHandoffTrigger(handoffTrigger)
+        ? handoffTrigger
+        : flag("pipeline.autoHandoffOnBlocked") ? "anyUnfinished" : DEFAULT_PIPELINE_POLICY.handoffTrigger,
       auditOnBlocked: isAuditOnBlockedMode(audit) ? audit : DEFAULT_PIPELINE_POLICY.auditOnBlocked,
       maxHandoffGenerations:
         generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,

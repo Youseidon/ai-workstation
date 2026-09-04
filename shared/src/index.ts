@@ -1530,6 +1530,9 @@ export {
   describeStopReason,
   handoffRequired,
   isAuditOnBlockedMode,
+  isHandoffTrigger,
+  autoHandoffAllowed,
+  HANDOFF_TRIGGERS,
   matchTransition,
   onBlockedConsequence,
   onDoneConsequence,
@@ -1594,6 +1597,7 @@ import type { StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel
 export type {
   AuditOnBlockedMode,
   HandoffRequirement,
+  HandoffTrigger,
   PauseMode,
   PipelineControl,
   PipelinePolicy,
