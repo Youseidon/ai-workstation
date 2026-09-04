@@ -2,6 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
+import type { DbAccessPayload, NormalizedEvent } from "@agent-console/shared";
+import { newId } from "./lib/ids.ts";
+import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { config } from "./config.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
@@ -89,6 +92,38 @@ async function broadcastSettingsChange(): Promise<void> {
   }
 }
 
+
+/**
+ * Record one trip an agent made to this app's database.
+ *
+ * Emitted here, at the agent API's single route handler, rather than by each
+ * adapter — so a raw curl, the CLI shim and a provider's own tool call all
+ * produce the same line, and no adapter has to cooperate for the operator to
+ * see it. The event rides the normal transcript channel, so it streams live and
+ * is replayed to a tab that opens mid-run like anything else.
+ *
+ * Failures here are swallowed. Losing a log line is bad; failing an agent's
+ * status post because the logging of it broke would be very much worse.
+ */
+function recordDbAccess(runId:string,payload:DbAccessPayload):void{
+  try{
+    const live=runHub.get(runId);
+    const event:NormalizedEvent={
+      id:newId("evt"),
+      runId,
+      provider:live?.provider??"claude",
+      model:live?.model??null,
+      timestamp:new Date().toISOString(),
+      type:"db_access",
+      payload,
+    };
+    workspaces.recordAgentEvent(runId,event);
+    runHub.event(runId,event);
+  }catch(error){
+    log.warn(`could not record database access for run=${runId}`,error);
+  }
+}
+
 const httpServer = createServer((req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") {
@@ -107,6 +142,7 @@ const httpServer = createServer((req, res) => {
       const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
       if(persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose"))throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks, status, or decompose.");
+      const startedAt=Date.now();
       if(operation==="context"&&req.method==="GET"){
         if(persisted.role==="consult"){
           const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question);
@@ -124,27 +160,56 @@ const httpServer = createServer((req, res) => {
           res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
           res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH})}\n\n${api}${budgetMarkdown(budget)}`);
         }
+        recordDbAccess(runId,describeRead({operation:"context",summary:`read work item ${context.prompt.externalKey??context.prompt.title}`,durationMs:Date.now()-startedAt}));
         return;
       }
       if(operation==="state"&&req.method==="GET"){
         if(memory.promptId===null){sendJson(res,200,{events:[],remarks:[],runs:[]});return;}
-        sendJson(res,200,workspaces.promptHistory(memory.promptId));return;
+        const history=workspaces.promptHistory(memory.promptId);
+        sendJson(res,200,history);
+        recordDbAccess(runId,describeRead({operation:"state",summary:`read ${(history.events as unknown[]).length} status events and ${(history.remarks as unknown[]).length} remarks`,durationMs:Date.now()-startedAt}));
+        return;
       }
       if((operation==="remarks"||operation==="status"||operation==="decompose")&&req.method==="POST"){
         void readJsonBody(req).then(body=>{
+          const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
+          const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
           const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):operation==="status"?workspaces.updateAgentStatus(runId,body):workspaces.decomposePrompt(runId,body);
           // The agent cannot see the runner's counters. Riding the reply it is
           // already making is the one channel that reaches every provider, so a
           // run learns to bank its work before the budget stops it.
           const live=runHub.get(runId)?.handle.budget()??null;
           sendJson(res,200,live===null?result:{...result as Record<string,unknown>,budget:live});
+          const after=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
+          // An idempotent replay changed nothing; saying "IN_PROGRESS → DONE"
+          // twice would have the operator hunting a transition that only ever
+          // happened once.
+          recordDbAccess(runId,describeAcceptedWrite({
+            operation:operation as DbOperation,
+            before,after,requestId,
+            remarkKind:typeof (body as Record<string,unknown>).kind==="string"?(body as Record<string,unknown>).kind as string:null,
+            durationMs:Date.now()-startedAt,
+          }));
           runHub.operationsChanged();
           // A terminal status or a decompose is the agent's authoritative
           // signal that this run is done with the work item. End the provider
           // after the HTTP response is flushed so a CLI that waits after its
           // final tool call cannot leave DONE shown as WORKING.
           if(operation==="status"||operation==="decompose")void runHub.complete(runId);
-        }).catch(error=>sendJson(res,error instanceof WorkspaceError?error.status:400,{error:{code:error instanceof WorkspaceError?error.code:"invalid_request",message:error instanceof Error?error.message:String(error)}}));return;
+        }).catch(error=>{
+          const status=error instanceof WorkspaceError?error.status:400;
+          const code=error instanceof WorkspaceError?error.code:"invalid_request";
+          sendJson(res,status,{error:{code,message:error instanceof Error?error.message:String(error)}});
+          // A refusal is the most important line in this log. Without it, an
+          // agent whose status post was rejected — a stale expectedStatus, a
+          // missing verification summary — looks exactly like one that never
+          // tried, and the operator blames the wrong side.
+          recordDbAccess(runId,describeRejectedWrite({
+            operation:operation as DbOperation,httpStatus:status,errorCode:code,
+            message:error instanceof Error?error.message:String(error),
+            requestId:null,durationMs:Date.now()-startedAt,
+          }));
+        });return;
       }
       sendJson(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
     }catch(error){sendJson(res,error instanceof WorkspaceError?error.status:500,{error:{code:error instanceof WorkspaceError?error.code:"internal_error",message:error instanceof Error?error.message:"Agent API failed"}});}

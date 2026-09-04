@@ -504,13 +504,45 @@ interface EventBase {
   timestamp: string;
 }
 
+/**
+ * One trip an agent made to this app's database, through the only door it has.
+ *
+ * Synthesized server-side at the agent API's single route handler rather than
+ * emitted by an adapter, so it covers every way an agent can reach the data —
+ * a raw curl, the CLI shim, or a provider's own tool call — identically and
+ * without each adapter having to cooperate.
+ *
+ * This exists because the operator could not previously see whether an agent
+ * had talked to the app at all. A run that silently never posted looked exactly
+ * like a run that posted and was ignored, and the difference decides whether to
+ * distrust the agent or the app.
+ */
+export interface DbAccessPayload {
+  /** Whether this read the app's state or changed it. */
+  direction: "read" | "write";
+  operation: "context" | "state" | "remarks" | "status" | "decompose";
+  method: string;
+  /** Accepted, refused, or replayed from the idempotency ledger. */
+  outcome: "accepted" | "rejected" | "replayed";
+  httpStatus: number;
+  durationMs: number;
+  requestId: string | null;
+  /** What actually happened, in a few words: "IN_PROGRESS → DONE". */
+  summary: string;
+  /** The tables this touched, so a write is never merely implied. */
+  changed: string[];
+  /** The server's own error code when it refused, e.g. stale_status. */
+  errorCode: string | null;
+}
+
 export type NormalizedEvent =
   | (EventBase & { type: "assistant_text"; payload: AssistantTextPayload })
   | (EventBase & { type: "tool_use"; payload: ToolUsePayload })
   | (EventBase & { type: "tool_result"; payload: ToolResultPayload })
   | (EventBase & { type: "status"; payload: StatusPayload })
   | (EventBase & { type: "result"; payload: ResultPayload })
-  | (EventBase & { type: "error"; payload: ErrorPayload });
+  | (EventBase & { type: "error"; payload: ErrorPayload })
+  | (EventBase & { type: "db_access"; payload: DbAccessPayload });
 
 export type NormalizedEventType = NormalizedEvent["type"];
 

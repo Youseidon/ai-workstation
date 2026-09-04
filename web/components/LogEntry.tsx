@@ -36,6 +36,24 @@ function stringifyInput(input: unknown): string {
   }
 }
 
+/**
+ * The database icon, drawn rather than typed.
+ *
+ * A glyph would inherit whatever the terminal font decided, and this mark has
+ * to be recognisable at a glance in a fast-scrolling log — it is the one thing
+ * that tells the operator an agent reached the app's own records rather than
+ * the repository.
+ */
+function DatabaseIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden className={`shrink-0 ${className}`}>
+      <ellipse cx="8" cy="3.6" rx="5.2" ry="2.1" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M2.8 3.6v8.8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V3.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  );
+}
+
 export function LogEntry({ item, streaming = false }: { item: LogItem; streaming?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const theme = providerTheme[item.provider];
@@ -150,6 +168,52 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
             <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-danger/70">
               {item.detail}
             </pre>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (item.kind === "db") {
+    // Tone follows the outcome, not the direction: a refused write is the one
+    // an operator has to see, and a read that succeeded should stay quiet.
+    const tone =
+      item.outcome === "rejected"
+        ? "text-danger"
+        : item.direction === "write"
+          ? "text-success"
+          : "text-fg-dim";
+    // Arrows point the way the data moved, so a write is distinguishable from a
+    // read without reading the words.
+    const arrow = item.direction === "write" ? "↑" : "↓";
+    return (
+      <div className="mt-1 flex gap-3">
+        <Gutter item={item} />
+        <div
+          className={`flex min-w-0 flex-1 items-center gap-1.5 rounded border-l-2 py-0.5 pl-2 text-[11px] ${
+            item.outcome === "rejected" ? "border-danger/50 bg-danger/5" : "border-accent/40 bg-accent/[0.04]"
+          }`}
+          title={`${item.method} ${item.operation} · ${item.httpStatus} · ${item.durationMs}ms`}
+        >
+          <DatabaseIcon className={tone} />
+          <span className={`${tone} tabular-nums`}>{arrow}</span>
+          <span className="shrink-0 text-fg-dim">{item.operation}</span>
+          <span className="shrink-0 tabular-nums text-fg-dim/70">{item.httpStatus}</span>
+          <span className="text-fg-dim/50">·</span>
+          <span className={`truncate ${item.outcome === "rejected" ? "text-danger" : "text-fg"}`}>
+            {item.outcome === "rejected" && item.errorCode !== null
+              ? `refused: ${item.errorCode}`
+              : item.summary}
+          </span>
+          {item.outcome === "replayed" && (
+            <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-fg-dim/60">
+              replayed
+            </span>
+          )}
+          {item.changed.length > 0 && item.outcome !== "replayed" && (
+            <span className="ml-auto shrink-0 text-[10px] text-fg-dim/60">
+              {item.changed.join(" · ")}
+            </span>
           )}
         </div>
       </div>
