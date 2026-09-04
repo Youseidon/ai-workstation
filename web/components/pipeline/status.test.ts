@@ -15,6 +15,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { OnBlockedAction, PromptPipelineRule } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, STEP_DISPLAY_STATUSES, statusDefinition } from "@agent-console/shared";
 import {
   CONTROL_LABEL,
   LABEL,
@@ -218,7 +219,7 @@ test("every control the table can emit has a label", () => {
 test("a terminal run never offers Resume, whatever the station is doing", () => {
   const states = ["STOPPED", "INTERRUPTED", "COMPLETE"] as const;
   for (const state of states) {
-    for (const stationState of [null, "RECOVERY_NEEDED", "AWAITING_RESPONSE", "READY"] as const) {
+    for (const stationState of [null, "RECOVERY_NEEDED", "BLOCKED", "READY"] as const) {
       const view = status({ run: { state, stopReason: null, waitReason: null }, stationState });
       assert.notEqual(view.primary, "resume", `${state}/${stationState} offered Resume`);
       assert.ok(!view.secondary.includes("resume"), `${state}/${stationState} offered Resume`);
@@ -227,7 +228,7 @@ test("a terminal run never offers Resume, whatever the station is doing", () => 
 });
 
 test("recovery takes precedence over the ordinary blocked path", () => {
-  const blocked = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, stationState: "AWAITING_RESPONSE" });
+  const blocked = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, stationState: "BLOCKED" });
   const dead = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, stationState: "RECOVERY_NEEDED" });
   assert.equal(blocked.primary, "resume");
   assert.equal(dead.primary, "recover");
@@ -315,11 +316,54 @@ test("every stopReason the scheduler writes has a human sentence", () => {
 /* ------------------------------------------------------------------ */
 
 test("every operational state has a label and a tone", () => {
+  // Counted against the vocabulary rather than a literal. This assertion used
+  // to read `assert.equal(states.length, 8)`, which meant adding a state to the
+  // shared model broke the test in a way that said nothing about what was
+  // wrong, and removing one from the label map would not have broken it at all.
   const states = Object.keys(LABEL) as Array<keyof typeof LABEL>;
-  assert.equal(states.length, 8);
+  assert.deepEqual([...states].sort(), [...STEP_DISPLAY_STATUSES].sort());
   for (const state of states) {
     assert.ok(LABEL[state].length > 0, `${state} has no label`);
     assert.ok(TONE[state] !== undefined, `${state} has no tone`);
+  }
+});
+
+test("every state in the catalog explains itself", () => {
+  // A state the operator cannot understand is a state they cannot act on, and
+  // the description is what the "why this status" panel renders.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    assert.ok(definition.description.length > 20, `${state} has no usable description`);
+    assert.ok(definition.shortLabel.length > 0, `${state} has no short label`);
+    if (definition.locked.length > 0) {
+      assert.ok(definition.lockedReason !== null, `${state} locks fields without saying why`);
+    }
+  }
+});
+
+test("no state both satisfies a dependency and is unfinished", () => {
+  // The asymmetry that matters: SKIPPED settles a parent but must not entitle a
+  // dependant to run against work that was never done.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    if (definition.satisfiesDependency) {
+      assert.ok(definition.isTerminal, `${state} satisfies a dependency without being terminal`);
+    }
+  }
+  assert.equal(statusDefinition(DEFAULT_STATUS_CATALOG, "SKIPPED").isTerminal, true);
+  assert.equal(statusDefinition(DEFAULT_STATUS_CATALOG, "SKIPPED").satisfiesDependency, false);
+});
+
+test("only a state that needs attention can win a parent rollup", () => {
+  // Precedence is meaningless on a state that never propagates; a non-zero one
+  // there would look configurable while doing nothing.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    if (!definition.needsAttention) {
+      assert.equal(definition.precedence, 0, `${state} has a precedence but never propagates`);
+    } else {
+      assert.ok(definition.precedence > 0, `${state} needs attention but cannot win a rollup`);
+    }
   }
 });
 

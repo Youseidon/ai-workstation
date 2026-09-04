@@ -290,15 +290,15 @@ export function WorkItemDetail({
               </div>
             )}
 
-            {(item.operationalState === "AWAITING_RESPONSE" ||
+            {(item.operationalState === "BLOCKED" ||
               item.operationalState === "RECOVERY_NEEDED") && (
               <div className="rounded-panel border border-line bg-surface-1 p-4">
                 <TextArea
-                  label={item.operationalState === "AWAITING_RESPONSE" ? "Your response" : "Evidence"}
+                  label={item.operationalState === "BLOCKED" ? "Your response" : "Evidence"}
                   rows={4}
                   value={response}
                   hint={
-                    item.operationalState === "AWAITING_RESPONSE"
+                    item.operationalState === "BLOCKED"
                       ? "Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
                       : "Paste the agent's own summary here if the work is already finished, then mark it complete."
                   }
@@ -306,7 +306,7 @@ export function WorkItemDetail({
                   onChange={(event) => onResponseChange(event.target.value)}
                 />
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {item.operationalState === "AWAITING_RESPONSE" && (
+                  {item.operationalState === "BLOCKED" && (
                     <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
                       Respond and resume
                     </Button>

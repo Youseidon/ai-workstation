@@ -49,12 +49,12 @@ function context(over: Partial<RuleContext> = {}): RuleContext {
 const STATION_STATES: Array<PromptOperationalState | null> = [
   null,
   "WORKING",
-  "AWAITING_RESPONSE",
+  "BLOCKED",
   "RECOVERY_NEEDED",
   "FAILED",
   "READY",
   "WAITING_DEPENDENCY",
-  "COMPLETE",
+  "DONE",
   "SKIPPED",
 ];
 
@@ -259,7 +259,7 @@ test("a station left mid-run is recovered before anything else is offered", () =
 });
 
 test("recovery does not hijack a station that is merely blocked", () => {
-  const row = matchTransition(context({ runState: "WAITING_HUMAN", stationState: "AWAITING_RESPONSE" }));
+  const row = matchTransition(context({ runState: "WAITING_HUMAN", stationState: "BLOCKED" }));
   assert.equal(row.primary, "resume");
   assert.equal(row.id, "waiting-human-rule");
 });

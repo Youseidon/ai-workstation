@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, isStatusIcon, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, statusDefinition, statusFieldEditable, type StatusDefinition, type StatusEditableKey, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -592,6 +592,86 @@ if (afterNineteen < 20) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(20,?)").run(new Date().toISOString());
 }
 
+const afterTwenty = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwenty < 21) {
+  // The status vocabulary becomes data.
+  //
+  // Two problems are being fixed at once. The labels were hardcoded in the web
+  // in two maps that disagreed with the shared rule table about what to call
+  // the same state, and the operator could not change any of it. And a status
+  // carried no record of what caused it: `prompt_status_event` stored a free-
+  // text `reason`, which is fine for a human to read and useless for the app to
+  // reason about, so nothing could tell an operator *which rule* had decided.
+  //
+  // `status_definition` is sparse on purpose. A row exists only for a field the
+  // operator has actually changed; everything else falls through to
+  // DEFAULT_STATUS_CATALOG in shared/src/statusModel.ts. That way a new status
+  // shipped in a later release appears immediately rather than being invisible
+  // until someone re-seeds a table, and an operator's edits survive an upgrade
+  // that rewords the default.
+  const migrate21 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE status_definition (
+        id TEXT PRIMARY KEY,
+        label TEXT,
+        short_label TEXT,
+        description TEXT,
+        tone TEXT,
+        icon TEXT,
+        is_terminal INTEGER,
+        satisfies_dependency INTEGER,
+        blocks_parent INTEGER,
+        needs_attention INTEGER,
+        precedence INTEGER,
+        on_enter TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE trigger_definition (
+        id TEXT PRIMARY KEY,
+        sentence TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      ALTER TABLE prompt_status_event ADD COLUMN trigger_id TEXT;
+      ALTER TABLE prompt_status_event ADD COLUMN rule_id TEXT;
+      ALTER TABLE prompt_status_event ADD COLUMN evidence_json TEXT;
+    `);
+
+    // Backfill the ledger. Existing rows have an actor and a reason but no
+    // trigger, and leaving them null would make "every status change names its
+    // cause" false for all the history the operator can still see. The mapping
+    // below is the same one the code used to make implicitly.
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='import' WHERE actor_type='IMPORT' AND trigger_id IS NULL`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='agent_post' WHERE actor_type='AGENT' AND trigger_id IS NULL`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='operator_override' WHERE actor_type='USER' AND trigger_id IS NULL`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='run_started' WHERE actor_type='SYSTEM' AND new_status='IN_PROGRESS' AND trigger_id IS NULL`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='operator_skip' WHERE actor_type='SYSTEM' AND new_status='SKIPPED' AND trigger_id IS NULL`).run();
+    // The system only ever wrote BLOCKED for one reason: a run that ended
+    // without posting. That is exactly what UNREPORTED now means.
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='run_ended_without_post' WHERE actor_type='SYSTEM' AND new_status='BLOCKED' AND trigger_id IS NULL`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='operator_retry' WHERE trigger_id IS NULL AND new_status='TODO'`).run();
+    db.prepare(`UPDATE prompt_status_event SET trigger_id='operator_override' WHERE trigger_id IS NULL`).run();
+
+    // Migrate the statuses themselves. A prompt sitting at BLOCKED whose most
+    // recent block was posted by the system is not blocked on a human at all —
+    // it is a run that ended without reporting. That distinction used to be
+    // recomputed on every read by looking up the last status event's actor;
+    // storing it is the point of this release, so it is stored once, here.
+    const systemBlocked = db.prepare(`
+      SELECT p.id FROM prompt p
+      WHERE p.status = 'BLOCKED'
+        AND (
+          SELECT e.actor_type FROM prompt_status_event e
+          WHERE e.prompt_id = p.id AND e.new_status = 'BLOCKED'
+          ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+        ) = 'SYSTEM'
+    `).all() as Array<{ id: number }>;
+    const reclassify = db.prepare("UPDATE prompt SET status='UNREPORTED' WHERE id=?");
+    for (const row of systemBlocked) reclassify.run(row.id);
+  });
+  migrate21();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(21,?)").run(new Date().toISOString());
+}
+
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -970,8 +1050,65 @@ const importProgramTransaction = db.transaction((workspaceId: number, pack: Impo
   return programId;
 });
 
+/*
+ * The resolved status catalog: the shipped defaults with the operator's edits
+ * layered on top.
+ *
+ * Memoized because it is read once per work item in the operations snapshot,
+ * which walks every prompt in every suite in every workspace. The cache is
+ * dropped on any write to `status_definition`, and nothing else can change it.
+ */
+let statusCatalogCache: StatusDefinition[] | null = null;
+
+function resolvedStatusCatalog(): StatusDefinition[] {
+  if (statusCatalogCache !== null) return statusCatalogCache;
+  const overrides = new Map(
+    (db.prepare("SELECT * FROM status_definition").all() as Array<Record<string, unknown>>)
+      .map(row => [row.id as string, row]),
+  );
+  statusCatalogCache = DEFAULT_STATUS_CATALOG.map(base => {
+    const row = overrides.get(base.id);
+    if (row === undefined) return base;
+    // A null column means "not overridden", so each field falls through to the
+    // shipped default independently. An operator who renames one state has not
+    // opted out of every later improvement to the others.
+    const text = (key: string, fallback: string): string =>
+      typeof row[key] === "string" && (row[key] as string).length > 0 ? row[key] as string : fallback;
+    const flag = (key: string, fallback: boolean): boolean =>
+      row[key] === null || row[key] === undefined ? fallback : row[key] === 1;
+    const editable = (field: StatusEditableKey): boolean => statusFieldEditable(base, field);
+    return {
+      ...base,
+      label: text("label", base.label),
+      shortLabel: text("short_label", base.shortLabel),
+      description: text("description", base.description),
+      tone: isStatusTone(row.tone) ? row.tone : base.tone,
+      icon: isStatusIcon(row.icon) ? row.icon : base.icon,
+      // A locked field ignores whatever is in the row. The API refuses these
+      // writes, but the invariants they protect are load-bearing enough that a
+      // row inserted by hand must not be able to break them either.
+      isTerminal: editable("isTerminal") ? flag("is_terminal", base.isTerminal) : base.isTerminal,
+      satisfiesDependency: editable("satisfiesDependency") ? flag("satisfies_dependency", base.satisfiesDependency) : base.satisfiesDependency,
+      blocksParent: editable("blocksParent") ? flag("blocks_parent", base.blocksParent) : base.blocksParent,
+      needsAttention: editable("needsAttention") ? flag("needs_attention", base.needsAttention) : base.needsAttention,
+      precedence: editable("precedence") && typeof row.precedence === "number" ? row.precedence : base.precedence,
+      onEnter: editable("onEnter") && isStatusOnEnter(row.on_enter) ? row.on_enter : base.onEnter,
+    };
+  });
+  return statusCatalogCache;
+}
+
+/** The operator's sentence for each trigger, over the shipped defaults. */
+function resolvedTriggerSentences(): Record<string, string> {
+  const rows = db.prepare("SELECT id,sentence FROM trigger_definition").all() as Array<{ id: string; sentence: string }>;
+  return { ...DEFAULT_TRIGGER_SENTENCES, ...Object.fromEntries(rows.map(r => [r.id, r.sentence])) };
+}
+
 export const workspaces = {
   databasePath,
+  /** The resolved status catalog. See `resolvedStatusCatalog`. */
+  statusCatalog(): StatusDefinition[] { return resolvedStatusCatalog(); },
+  triggerSentences(): Record<string, string> { return resolvedTriggerSentences(); },
   list(): WorkspaceRecord[] { return (db.prepare("SELECT * FROM workspace ORDER BY name COLLATE NOCASE").all() as WorkspaceRow[]).map(workspaceDto); },
   get(id: number): WorkspaceRecord {
     const row = db.prepare("SELECT * FROM workspace WHERE id = ?").get(id) as WorkspaceRow | undefined;
@@ -1204,7 +1341,7 @@ export const workspaces = {
     const activePipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1");
     const latestPipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? ORDER BY started_at DESC LIMIT 1");
     const suites:OperationsSuite[]=[];
-    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const handoffRow=latestHandoff.get(prompt.id) as Record<string,unknown>|undefined;const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:state==="AWAITING_RESPONSE"||state==="RECOVERY_NEEDED"||state==="FAILED",latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestHandoff:handoffRow?handoffDto(handoffRow):null,latestAudit:auditRow?completionAuditDto(auditRow):null,pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined),children:[]};});
+    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const handoffRow=latestHandoff.get(prompt.id) as Record<string,unknown>|undefined;const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:statusDefinition(this.statusCatalog(),state).needsAttention,latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestHandoff:handoffRow?handoffDto(handoffRow):null,latestAudit:auditRow?completionAuditDto(auditRow):null,pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined),children:[]};});
       // Sub-steps are real OperationsPrompt items, but they nest under the
       // parent's `children` rather than appearing as flowchart entries.
       const byId=new Map(allPrompts.map(item=>[item.prompt.id,item]));
@@ -1678,7 +1815,7 @@ export const workspaces = {
         pTotal+=stepIds.length;
         for(const promptId of stepIds){
           const prompt=ops?.prompts.find(item=>item.prompt.id===promptId);
-          if(prompt?.operationalState==="COMPLETE"||prompt?.operationalState==="SKIPPED") pCompleted++;
+          if(prompt!==undefined&&isTerminalDisplayStatus(this.statusCatalog(),prompt.operationalState)) pCompleted++;
           if(prompt?.attention===true){
             pAttention++;
             blockedStations.push({

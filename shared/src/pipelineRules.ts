@@ -18,20 +18,14 @@ import type {
   PromptOperationalState,
   PromptPipelineRule,
 } from "./index";
+import type { PolicyKey, RulePolicy, StatusTone } from "./statusModel";
 
 /**
- * Semantic colour roles. Mirrors the web `Badge` vocabulary, which imports this
- * type rather than declaring its own, so the two cannot drift.
+ * The tone and rule-policy vocabularies moved to `statusModel`, which sits
+ * below this module so a status can describe itself without depending on the
+ * transport interlocking. Re-exported here so existing importers do not care.
  */
-export type StatusTone =
-  | "neutral"
-  | "accent"
-  | "success"
-  | "warning"
-  | "caution"
-  | "danger"
-  | "info"
-  | "violet";
+export type { PolicyKey, RulePolicy, StatusTone } from "./statusModel";
 
 export const PIPELINE_CONTROLS = ["play", "resume", "newRun", "recover", "pause", "stop"] as const;
 
@@ -49,25 +43,6 @@ export const CONTROL_LABEL: Record<PipelineControl, string> = {
   pause: "Pause",
   stop: "Stop",
 };
-
-/**
- * Settings keys a row can defer to. Only keys an actual row references live
- * here; the rest of the pipeline policy group joins as rows start using it.
- */
-export type PolicyKey = "pipeline.pauseMode" | "pipeline.onRestart";
-
-/**
- * How much of a row the operator is allowed to change.
- *
- * `locked` is not an oversight — some rows are invariants rather than
- * preferences, and a settings screen that could break them would be worse than
- * no settings screen. The reason is shown in the UI instead of a missing
- * control, so a locked row explains itself.
- */
-export type RulePolicy =
-  | { kind: "locked"; reason: string }
-  | { kind: "setting"; key: PolicyKey; reason: string }
-  | { kind: "stationRule"; field: "onDone" | "onBlocked"; reason: string };
 
 /* ------------------------------------------------------------------ */
 /* Operator-settable policy                                            */

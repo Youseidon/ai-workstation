@@ -350,7 +350,7 @@ export function PipelineBoard({
     if (!byId.has(step.promptId)) return false;
     if (!hideCompleted) return true;
     const item = byId.get(step.promptId);
-    return item?.operationalState !== "COMPLETE" && item?.operationalState !== "SKIPPED";
+    return item?.operationalState !== "DONE" && item?.operationalState !== "SKIPPED";
   });
   const displayedSteps = flowSteps.flatMap((step) => {
     const item = byId.get(step.promptId);
@@ -428,7 +428,7 @@ export function PipelineBoard({
     if (suite === null) return null;
     return nextPipelineLeaf(suite.prompts);
   }, [resumeSuiteOps, suiteOps]);
-  const stuckPrompt = pendingPrompt?.operationalState === "RECOVERY_NEEDED" || pendingPrompt?.operationalState === "AWAITING_RESPONSE"
+  const stuckPrompt = pendingPrompt?.operationalState === "RECOVERY_NEEDED" || pendingPrompt?.operationalState === "BLOCKED"
     ? pendingPrompt
     : null;
 
@@ -442,7 +442,7 @@ export function PipelineBoard({
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
       return `${occupancy.provider} is already writing this workspace`;
     }
-    if (stuckPrompt?.operationalState === "AWAITING_RESPONSE") {
+    if (stuckPrompt?.operationalState === "BLOCKED") {
       const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
       return `${label} is blocked and needs a human response first`;
     }
@@ -1167,7 +1167,7 @@ export function PipelineBoard({
                       const liveRun = stationOccupancy(item, console_.runs, view?.active);
                       const current = view?.active?.currentPromptId === step.promptId;
                       const doneChildren = item.children.filter(
-                        (child) => child.operationalState === "COMPLETE" || child.operationalState === "SKIPPED",
+                        (child) => child.operationalState === "DONE" || child.operationalState === "SKIPPED",
                       ).length;
                       return (
                         <StationCard

@@ -61,7 +61,7 @@ export function PipelineConstellation({
         const selected = selectedSuiteId === stage.suiteId;
         const live = current && pipelineState === "PLAYING";
         const ops = stage.operations;
-        const done = ops?.counts.COMPLETE ?? 0;
+        const done = ops?.counts.DONE ?? 0;
         const total = ops?.prompts.length ?? stage.promptCount;
         return (
           <button

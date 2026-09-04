@@ -29,9 +29,9 @@ export function SuiteHeader({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const done = suite.counts.COMPLETE;
+  const done = suite.counts.DONE;
   const total = suite.prompts.length;
-  const waiting = suite.counts.AWAITING_RESPONSE + suite.counts.RECOVERY_NEEDED;
+  const waiting = suite.counts.BLOCKED + suite.counts.RECOVERY_NEEDED;
 
   useEffect(() => {
     if (!menuOpen) return;

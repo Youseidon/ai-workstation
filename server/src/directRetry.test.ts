@@ -258,7 +258,7 @@ test("an agent-posted BLOCKED still asks for a human answer", () => {
     workspaces.finishAgentRun(runId, "done");
     const prompt = workspaces.promptOptions(ctx.workspace.id).find((item) => item.id === ctx.prompt.id)!;
     assert.equal(prompt.recoverable, false);
-    assert.equal(operationalState(prompt), "AWAITING_RESPONSE");
+    assert.equal(operationalState(prompt), "BLOCKED");
     assert.throws(() => workspaces.recoverPrompt(ctx.prompt.id, runId), /not an abandoned or system-interrupted run/);
   } finally {
     ctx.cleanup();

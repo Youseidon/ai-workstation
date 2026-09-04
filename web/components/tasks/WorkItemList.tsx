@@ -166,7 +166,7 @@ function RowAction({
       </Button>
     );
   }
-  if (entry.operationalState === "AWAITING_RESPONSE") {
+  if (entry.operationalState === "BLOCKED") {
     return (
       <Button size="sm" variant="secondary" disabled={busy} onClick={onRespond}>
         Respond

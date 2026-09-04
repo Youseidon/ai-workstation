@@ -10,11 +10,14 @@ import type {
   OnDoneAction,
   RuleContext,
   RulePolicy,
+  StatusDefinition,
   SuitePipelineRun,
   TransitionRow,
 } from "@agent-console/shared";
 import {
   CONTROL_LABEL,
+  DEFAULT_STATUS_CATALOG,
+  STEP_DISPLAY_STATUSES,
   DEFAULT_PIPELINE_POLICY,
   PIPELINE_CONTROLS,
   STOP_REASON,
@@ -22,31 +25,55 @@ import {
   describeStopReason,
   matchTransition,
   modelLabel,
+  statusDefinition,
 } from "@agent-console/shared";
 import type { Tone } from "@/components/ui/Badge";
 import type { RunStatus } from "@/lib/agentConsole";
 
-export const LABEL: Record<PromptOperationalState, string> = {
-  WORKING: "Agent working",
-  AWAITING_RESPONSE: "Needs response",
-  RECOVERY_NEEDED: "Recovery needed",
-  FAILED: "Failed",
-  READY: "Ready",
-  WAITING_DEPENDENCY: "Waiting",
-  COMPLETE: "Complete",
-  SKIPPED: "Skipped",
-};
+/**
+ * Labels and tones come from the status catalog, not from a map kept here.
+ *
+ * There used to be two hardcoded maps in this file, and they disagreed with the
+ * shared rule table about what to call the same state — `WAITING_HUMAN` read
+ * "blocked" in one place and "Needs you" in another. Deriving both from the one
+ * catalog is what stops that recurring, and it is what lets an operator rename
+ * a state once and see it change everywhere.
+ *
+ * These are the shipped defaults. Once the operator's edits are persisted these
+ * views take the resolved catalog from the operations snapshot instead; the
+ * lookup helpers below already accept one.
+ */
+export const LABEL: Record<PromptOperationalState, string> = Object.fromEntries(
+  STEP_DISPLAY_STATUSES.map((id) => [id, statusDefinition(DEFAULT_STATUS_CATALOG, id).label]),
+) as Record<PromptOperationalState, string>;
 
-export const TONE: Record<PromptOperationalState, Tone> = {
-  WORKING: "info",
-  AWAITING_RESPONSE: "warning",
-  RECOVERY_NEEDED: "caution",
-  FAILED: "danger",
-  READY: "accent",
-  WAITING_DEPENDENCY: "neutral",
-  COMPLETE: "success",
-  SKIPPED: "neutral",
-};
+export const TONE: Record<PromptOperationalState, Tone> = Object.fromEntries(
+  STEP_DISPLAY_STATUSES.map((id) => [id, statusDefinition(DEFAULT_STATUS_CATALOG, id).tone]),
+) as Record<PromptOperationalState, Tone>;
+
+/** The operator's label for a state, falling back to the shipped one. */
+export function statusLabel(
+  id: PromptOperationalState,
+  catalog: readonly StatusDefinition[] = DEFAULT_STATUS_CATALOG,
+): string {
+  return statusDefinition(catalog, id).label;
+}
+
+/** The operator's tone for a state, falling back to the shipped one. */
+export function statusTone(
+  id: PromptOperationalState,
+  catalog: readonly StatusDefinition[] = DEFAULT_STATUS_CATALOG,
+): Tone {
+  return statusDefinition(catalog, id).tone;
+}
+
+/** Whether a state settles a parent and lets the pipeline move past it. */
+export function isTerminalState(
+  id: PromptOperationalState,
+  catalog: readonly StatusDefinition[] = DEFAULT_STATUS_CATALOG,
+): boolean {
+  return statusDefinition(catalog, id).isTerminal;
+}
 
 export function onDoneChip(action: OnDoneAction): string {
   if (action === "continue") return "→ next";
@@ -69,9 +96,16 @@ export function overrideChip(rule: PromptPipelineRule): string | null {
   return model === null ? rule.provider : `${rule.provider} · ${model}`;
 }
 
+/**
+ * Short lowercase names for a run state, used on stage badges where there is no
+ * `RuleContext` to match a transition row against. Kept deliberately in step
+ * with the `TRANSITIONS` labels — this map said "blocked" where the rule table
+ * said "Needs you", so the same run read as two different things depending on
+ * which part of the board you looked at.
+ */
 export const PIPELINE_LABEL: Record<PipelineState, string> = {
   PLAYING: "running",
-  WAITING_HUMAN: "blocked",
+  WAITING_HUMAN: "needs you",
   PAUSED: "paused",
   COMPLETE: "complete",
   STOPPED: "stopped",

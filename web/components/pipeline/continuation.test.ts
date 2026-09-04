@@ -14,8 +14,8 @@ function item(id: number, state: OperationsPrompt["operationalState"], children:
 test("a fresh run targets the first unfinished leaf, not its previously-run parent", () => {
   const leaf = item(85, "READY");
   const parent = item(51, "WAITING_DEPENDENCY", [
-    item(79, "COMPLETE"),
-    item(80, "COMPLETE"),
+    item(79, "DONE"),
+    item(80, "DONE"),
     leaf,
   ]);
 
@@ -28,5 +28,5 @@ test("the search follows nested unfinished children depth-first", () => {
 });
 
 test("there is no continuation after every station is terminal", () => {
-  assert.equal(nextPipelineLeaf([item(1, "COMPLETE"), item(2, "SKIPPED")]), null);
+  assert.equal(nextPipelineLeaf([item(1, "DONE"), item(2, "SKIPPED")]), null);
 });

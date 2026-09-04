@@ -617,7 +617,15 @@ export interface PromptRecord {
   childOrder: number;
 }
 
-export type PromptStatus = "TODO" | "IN_PROGRESS" | "DONE" | "BLOCKED" | "SKIPPED";
+/**
+ * The stored status of a work item.
+ *
+ * Defined in `statusModel`, which owns the whole vocabulary — the catalog that
+ * gives each value a label and a set of consequences, the triggers that record
+ * what caused a change, and the transition table that decides them. Aliased
+ * here because most of the app knows this name.
+ */
+export type PromptStatus = StepStatus;
 
 /** Terminal stations have no remaining work to summarize for a successor. */
 export function promptNeedsHandoff(status: PromptStatus): boolean {
@@ -743,7 +751,15 @@ export interface ClarificationExchange { id:number; promptId:number; question:st
 export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
 export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number|null; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus|null; programName:string; suiteName:string }
 
-export type PromptOperationalState = "WORKING" | "AWAITING_RESPONSE" | "RECOVERY_NEEDED" | "FAILED" | "READY" | "WAITING_DEPENDENCY" | "COMPLETE" | "SKIPPED";
+/**
+ * What a work item shows on a card: its stored status, unless a live overlay
+ * (a running process, or an unmet prerequisite) describes it better.
+ *
+ * `AWAITING_RESPONSE` and `COMPLETE` are retained as aliases of `BLOCKED` and
+ * `DONE` so that a status the operator relabels reads the same everywhere; the
+ * set itself is `StepDisplayStatus`, defined in `statusModel`.
+ */
+export type PromptOperationalState = StepDisplayStatus;
 
 export const ON_DONE_ACTIONS = ["continue", "stop", "skip_rest"] as const;
 export type OnDoneAction = (typeof ON_DONE_ACTIONS)[number];
@@ -1501,6 +1517,62 @@ export {
   onDoneConsequence,
   RESTART_POLICIES,
 } from "./pipelineRules";
+/*
+ * Re-exported by name rather than with `export *`.
+ *
+ * Node's ESM linker resolves the named exports of a `.ts` barrel before tsx has
+ * transpiled the module it stars from, so `export *` links but exposes nothing —
+ * every importer fails at runtime with "does not provide an export named …"
+ * while `tsc` stays perfectly happy. Every other re-export in this file is
+ * explicit for the same reason; keep it that way.
+ */
+export {
+  DEFAULT_STATUS_CATALOG,
+  DEFAULT_TRIGGER_SENTENCES,
+  OVERLAY_STATUSES,
+  STATUS_ICONS,
+  STATUS_ON_ENTER,
+  STATUS_TONES,
+  STATUS_TRIGGERS,
+  STEP_DISPLAY_STATUSES,
+  STEP_NEXT_ACTIONS,
+  STEP_SIGNALS,
+  STEP_STATUSES,
+  STEP_TRANSITIONS,
+  defaultStatusDefinition,
+  describeTrigger,
+  isStatusIcon,
+  isStatusOnEnter,
+  isStatusTone,
+  isStatusTrigger,
+  isStepDisplayStatus,
+  isStepSignal,
+  isStepStatus,
+  isTerminalDisplayStatus,
+  matchStepTransition,
+  needsAttention,
+  rollupStatus,
+  satisfiesDependency,
+  statusDefinition,
+  statusFieldEditable,
+} from "./statusModel";
+export type {
+  StatusDefinition,
+  StatusEditableKey,
+  StatusIcon,
+  StatusOnEnter,
+  StatusPolicy,
+  StatusPolicyKey,
+  StatusPresentation,
+  StatusTrigger,
+  StepDisplayStatus,
+  StepNextAction,
+  StepSignal,
+  StepStatus,
+  StepTransitionRow,
+} from "./statusModel";
+import type { StepDisplayStatus, StepStatus } from "./statusModel";
+
 export type {
   AuditOnBlockedMode,
   HandoffRequirement,

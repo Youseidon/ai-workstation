@@ -71,7 +71,7 @@ export function StationCard({
           <AgentAvatar
             provider={rule.provider}
             size={28}
-            activity={occupancy !== null ? "tooling" : item.operationalState === "COMPLETE" ? "done" : "idle"}
+            activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"}
           />
         ) : (
           <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
@@ -181,7 +181,7 @@ function stuckNote(state: OperationsPrompt["operationalState"]): string | null {
   // nothing about whether the work got done, and re-running an agent to
   // re-report finished work is the expensive way out of that.
   if (state === "RECOVERY_NEEDED") return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
-  if (state === "AWAITING_RESPONSE") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
+  if (state === "BLOCKED") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
   return null;
 }
 
