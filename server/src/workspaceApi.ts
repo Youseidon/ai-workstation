@@ -5,6 +5,7 @@ import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
 import { isProviderId } from "@agent-console/shared";
+import { respondAndContinue } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
@@ -260,6 +261,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="GET"){json(res,200,workspaces.promptHistory(id(match[1]!)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/activity$/);
     if(match&&method==="GET"){json(res,200,workspaces.promptActivity(id(match[1]!)));return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/respond-and-continue$/);
+    if(match&&method==="POST"){json(res,200,await respondAndContinue(id(match[1]!),await body(req)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);

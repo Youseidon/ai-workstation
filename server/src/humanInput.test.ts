@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
+import { respondAndContinue } from "./humanInput.ts";
+import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { workspaces } from "./workspaces.ts";
 
 function fixture() {
@@ -41,4 +43,55 @@ test("a TODO task with an unanswered handoff stays in attention and accepts a fo
     const history = workspaces.promptActivity(f.prompt.id);
     assert.equal(history.events[0]?.previousStatus, "TODO");
   } finally { f.cleanup(); }
+});
+
+
+test("answers resume their owning named pipeline and duplicate submissions do not start another run", async () => {
+  const f = fixture();
+  let starts = 0;
+  try {
+    workspaces.addPipelineStep(f.prompt.id, { provider: "claude" });
+    const pipeline = workspaces.createPipeline({ workspaceId: f.workspace.id, name: "Pipeline", suiteIds: [f.suite.id] });
+    const named = workspaces.createNamedPipelineRun({ id: `named-${f.workspace.id}`, pipelineId: pipeline.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    const suite = workspaces.createPipelineRun({ id: `suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: named.id });
+    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    workspaces.updateNamedPipelineRun(named.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suite.id });
+    setPipelineStationStarter(async args => {
+      starts++;
+      assert.equal(args.pipelineRunId, suite.id);
+      assert.equal(args.provider, "claude", "preserve the pipeline's assigned agent");
+      const runId = `successor-${f.workspace.id}`;
+      workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: args.provider, model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
+      return { runId };
+    });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    workspaces.updateHandoff(f.handoff.id, { completedAt: new Date().toISOString() });
+    const result = await respondAndContinue(f.prompt.id, { content: "Use directory.example", provider: "codex" });
+    assert.equal(result.started, true, result.error);
+    assert.equal(workspaces.activeNamedPipelineRun(pipeline.id)?.state, "PLAYING");
+    const replay = await respondAndContinue(f.prompt.id, { responseId: result.responseId, provider: "codex" });
+    assert.equal(replay.runId, result.runId);
+    assert.equal(starts, 1);
+  } finally { setPipelineStationStarter(null); f.cleanup(); }
+});
+
+test("failed continuation preserves the answer and retries without another human response", async () => {
+  const f = fixture();
+  try {
+    workspaces.addPipelineStep(f.prompt.id, { provider: "claude" });
+    const suite = workspaces.createPipelineRun({ id: `suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    setPipelineStationStarter(async () => { throw new Error("Agent unavailable"); });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    workspaces.updateHandoff(f.handoff.id, { completedAt: new Date().toISOString() });
+    const result = await respondAndContinue(f.prompt.id, { content: "Use directory.example", provider: "claude" });
+    assert.equal(result.started, false);
+    assert.match(result.error!, /Agent unavailable/);
+    const count = workspaces.promptActivity(f.prompt.id).remarks.length;
+    setPipelineStationStarter(async () => ({ runId: "retry-successor" }));
+    const retry = await respondAndContinue(f.prompt.id, { responseId: result.responseId, provider: "claude" });
+    assert.equal(retry.started, true, retry.error);
+    assert.equal(workspaces.promptActivity(f.prompt.id).remarks.length, count);
+    await assert.rejects(respondAndContinue(f.prompt.id, { responseId: -1, provider: "claude" }), /no longer current/);
+  } finally { setPipelineStationStarter(null); f.cleanup(); }
 });

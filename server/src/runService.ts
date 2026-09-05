@@ -110,7 +110,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     const record = workspaces.resolvePrompt(workspaceId, promptId);
     savedPrompt = record;
     if (mode === "clarify") {
-      if (record.status !== "BLOCKED") throw new WorkspaceError(409, "prompt_not_blocked", "Clarification is only available while a prompt is blocked");
+      if (record.status !== "BLOCKED" && workspaces.pendingHumanQuestion(promptId) === null) throw new WorkspaceError(409, "prompt_not_blocked", "Clarification is only available while a prompt needs input");
       if (typeof question !== "string" || question.trim() === "") throw new WorkspaceError(422, "validation_error", "A clarification question is required");
       clarificationId = workspaces.beginClarification(promptId, question, provider, model);
       resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId), "clarify")}\n\n## Human question\n\n${question.trim()}`;
