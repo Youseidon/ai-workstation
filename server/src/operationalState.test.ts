@@ -18,3 +18,9 @@ test("operational state separates intervention, dependency, and terminal states"
   assert.equal(operationalState(prompt("SKIPPED")),"SKIPPED");
   assert.equal(operationalState(prompt("IN_PROGRESS")),"FAILED");
 });
+
+ test("unresolved handoff questions keep TODO tasks in attention without overriding terminal states", () => {
+  assert.equal(operationalState(prompt("TODO"), true), "AWAITING_RESPONSE");
+  assert.equal(operationalState(prompt("DONE"), true), "COMPLETE");
+  assert.equal(operationalState(prompt("SKIPPED"), true), "SKIPPED");
+});

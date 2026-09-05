@@ -2,8 +2,9 @@ import type { PromptOperationalState, PromptOption } from "@agent-console/shared
 
 export const OPERATIONAL_STATES:PromptOperationalState[]=["WORKING","AWAITING_RESPONSE","RECOVERY_NEEDED","FAILED","READY","WAITING_DEPENDENCY","COMPLETE","SKIPPED"];
 
-export function operationalState(prompt:PromptOption):PromptOperationalState {
+export function operationalState(prompt:PromptOption, hasHumanQuestion = false):PromptOperationalState {
   if(prompt.currentRun?.processActive)return "WORKING";
+  if(hasHumanQuestion && prompt.status!=="DONE" && prompt.status!=="SKIPPED")return "AWAITING_RESPONSE";
   if(prompt.recoverable)return "RECOVERY_NEEDED";
   if(prompt.status==="BLOCKED")return "AWAITING_RESPONSE";
   if(prompt.status==="DONE")return "COMPLETE";
