@@ -51,7 +51,7 @@ async function submit(promptId: number, input: Record<string, unknown>): Promise
     const { workspace, prompt } = activity.item;
     const active = workspaces.activePipeline(prompt.suiteId);
     const latest = workspaces.latestPipeline(prompt.suiteId);
-    const owner = active ?? (latest?.stopReason === "start_failed" ? latest : null);
+    const owner = active ?? ((latest?.stopReason === "start_failed" || latest?.stopReason === "server_restart") ? latest : null);
     if (owner !== null) {
       if (owner.currentPromptId !== promptId) throw new Error("Another task owns this pipeline. Your answer is saved; resume it when that task finishes.");
       if (owner.pipelineRunId !== null) {

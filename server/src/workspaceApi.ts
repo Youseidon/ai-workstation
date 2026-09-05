@@ -5,6 +5,7 @@ import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
 import { isProviderId } from "@agent-console/shared";
+import { startExecute } from "./runService.ts";
 import { respondAndContinue } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 
@@ -261,6 +262,14 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="GET"){json(res,200,workspaces.promptHistory(id(match[1]!)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/activity$/);
     if(match&&method==="GET"){json(res,200,workspaces.promptActivity(id(match[1]!)));return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/clarify$/);
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);const input=await body(req);
+      if(!isProviderId(input.provider))throw new WorkspaceError(422,"provider_required","Choose an agent for clarification.");
+      if(typeof input.question!=="string"||!input.question.trim())throw new WorkspaceError(422,"validation_error","A clarification question is required.");
+      const home=workspaces.promptHome(promptId);
+      json(res,201,await startExecute({workspaceId:home.workspaceId,promptId,provider:input.provider,model:typeof input.model==="string"?input.model:null,mode:"clarify",question:input.question}));return true;
+    }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/respond-and-continue$/);
     if(match&&method==="POST"){json(res,200,await respondAndContinue(id(match[1]!),await body(req)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);

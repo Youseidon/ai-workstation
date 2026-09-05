@@ -7,7 +7,6 @@ import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { TextArea } from "@/components/ui/Field";
 import { cn } from "@/lib/cn";
 import { applyEvent, type LogItem } from "@/lib/log";
 
@@ -19,14 +18,12 @@ export function WorkItemDetail({
   suite,
   item,
   activity,
-  response,
   busy,
   canStart,
   verifyingItem,
   connectionOpen,
   providerLabel,
   model,
-  onResponseChange,
   onRun,
   onStop,
   onRecover,
@@ -37,14 +34,12 @@ export function WorkItemDetail({
   suite: OperationsSuite | null;
   item: OperationsPrompt | null;
   activity: ActivityPayload | null;
-  response: string;
   busy: boolean;
   canStart: boolean;
   verifyingItem: boolean;
   connectionOpen: boolean;
   providerLabel: string;
   model: string | null;
-  onResponseChange(value: string): void;
   onRun(): void;
   onStop(): void;
   onRecover(): void;
@@ -158,6 +153,13 @@ export function WorkItemDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {tab === "overview" && (
           <div className="space-y-4">
+            {(item.operationalState === "AWAITING_RESPONSE" || (item.prompt.status === "TODO" && activity?.remarks.some(entry => entry.kind === "HUMAN_RESPONSE"))) && (
+              <div className="rounded-panel border border-warning/40 bg-warning/5 p-4">
+                <h3 className="mb-2 text-sm font-semibold text-warning">{item.operationalState === "AWAITING_RESPONSE" ? "Needs your input" : "Answer saved"}</h3>
+                <p className="mb-3 text-xs leading-5 text-fg-muted">Review the latest question, answer it, or change the instructions before continuing.</p>
+                <Button variant="success" onClick={onRespond}>{item.operationalState === "AWAITING_RESPONSE" ? "Review and respond" : "Continue with saved answer"}</Button>
+              </div>
+            )}
             {item.latestHandoff !== null && (
               <div className="rounded-panel border border-info/30 bg-info/5 p-4">
                 <div className="text-[10px] uppercase tracking-wider text-info">
@@ -219,24 +221,6 @@ export function WorkItemDetail({
                   Latest intervention
                 </div>
                 <div className="whitespace-pre-wrap text-sm leading-6">{item.latestIntervention}</div>
-              </div>
-            )}
-
-            {item.operationalState === "AWAITING_RESPONSE" && (
-              <div className="rounded-panel border border-line bg-surface-1 p-4">
-                <TextArea
-                  label="Your response"
-                  rows={4}
-                  value={response}
-                  hint="Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
-                  placeholder="What the agent needs to know to continue…"
-                  onChange={(event) => onResponseChange(event.target.value)}
-                />
-                <div className="mt-3">
-                  <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
-                    Respond and resume
-                  </Button>
-                </div>
               </div>
             )}
 

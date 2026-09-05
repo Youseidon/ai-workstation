@@ -15,6 +15,8 @@ import type {
   WorkspaceTree,
 } from "@agent-console/shared";
 import { modelLabel, PROVIDER_IDS } from "@agent-console/shared";
+import { needsHumanResponse } from "@/lib/humanInput";
+import { HumanInputDialog } from "@/components/HumanInputDialog";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -30,6 +32,7 @@ import { agentState, type AgentActivity } from "@/lib/agentState";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { providerTheme } from "@/lib/providerTheme";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { usePreferredProvider } from "@/lib/usePreferredProvider";
 import { useWorkspace } from "@/lib/workspaceContext";
 import { ModelMenu } from "@/components/ModelMenu";
 import { PageChrome } from "@/components/shell/chrome";
@@ -52,6 +55,8 @@ import {
 
 export function PipelineBoard() {
   const console_ = useAgentConsole();
+  const { selected: inputProvider } = usePreferredProvider(console_.providers);
+  const [inputItem, setInputItem] = useState<OperationsPrompt | null>(null);
   const toast = useToast();
   const dialogs = useDialogs();
   const params = useSearchParams();
@@ -401,6 +406,10 @@ export function PipelineBoard() {
                 disabled={playBlocked !== null || busy}
                 title={playBlocked ?? undefined}
                 onClick={() => {
+                  if (resumeItem !== null && (needsHumanResponse(resumeItem) || (resumeItem.prompt.status === "TODO" && resumeItem.latestHandoff?.recommendation === "WAIT_FOR_HUMAN"))) {
+                    setInputItem(resumeItem);
+                    return;
+                  }
                   if (kind === "resume" && resumeItem !== null) {
                     const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
                     const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
@@ -409,7 +418,7 @@ export function PipelineBoard() {
                   void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
                 }}
               >
-                {kind === "resume" ? "Resume" : "Play"}
+                {kind === "resume" ? (needsHumanResponse(resumeItem) ? "Review and respond" : "Resume") : "Play"}
               </Button>
             )}
           </div>
@@ -606,8 +615,15 @@ export function PipelineBoard() {
               </div>
             </div>
 
-            {live?.state === "WAITING_HUMAN" && (
-              <Banner tone="warning">Blocked — a station is waiting for you. Answer it, then Resume.</Banner>
+            {(live?.state === "WAITING_HUMAN" || needsHumanResponse(resumeItem)) && (
+              <Banner tone="warning">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1">Blocked — the current station needs a response before the pipeline can continue.</span>
+                  {resumeItem !== null && needsHumanResponse(resumeItem) && (
+                    <Button size="sm" variant="success" onClick={() => setInputItem(resumeItem)}>Review and respond</Button>
+                  )}
+                </div>
+              </Banner>
             )}
             {live?.state === "PAUSED" && (
               <Banner tone="caution">Paused — the current station will finish, then the rail holds.</Banner>
@@ -817,6 +833,7 @@ export function PipelineBoard() {
         </Modal>
       )}
 
+      {inputItem !== null && <HumanInputDialog item={inputItem} provider={inputProvider} model={models.resolve(inputProvider)} pipeline onClose={() => setInputItem(null)} />}
       {handoffOpen && resumeItem !== null && pipelineId !== null && (
         <Modal
           open
@@ -853,7 +870,7 @@ function CrewStrip({
   );
 }
 
-function Banner({ tone, children }: { tone: "caution" | "warning"; children: string }) {
+function Banner({ tone, children }: { tone: "caution" | "warning"; children: React.ReactNode }) {
   return (
     <div
       className={cn(

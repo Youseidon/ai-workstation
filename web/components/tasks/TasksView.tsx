@@ -10,6 +10,7 @@ import { useDialogs } from "@/components/ui/Dialogs";
 import { useToast } from "@/components/ui/Toast";
 import { SuiteHeader } from "@/components/tasks/SuiteHeader";
 import { SuiteRail } from "@/components/tasks/SuiteRail";
+import { HumanInputDialog } from "@/components/HumanInputDialog";
 import { WorkItemDetail } from "@/components/tasks/WorkItemDetail";
 import { WorkItemList, type TasksFilter } from "@/components/tasks/WorkItemList";
 import { cn } from "@/lib/cn";
@@ -48,7 +49,7 @@ export function TasksView() {
   );
   const [busy, setBusy] = useState(false);
   const [auditing, setAuditing] = useState(false);
-  const [response, setResponse] = useState("");
+  const [inputItem, setInputItem] = useState<OperationsPrompt | null>(null);
   const [pane, setPane] = useState<Pane>("list");
   const [focusRecordId, setFocusRecordId] = useState<number | null>(null);
   const [detailHeight, setDetailHeight] = useState(DETAIL_HEIGHT_DEFAULT);
@@ -280,28 +281,6 @@ export function TasksView() {
     if (!ok) toast.error("Could not start", "The agent connection is unavailable.");
   };
 
-  const respond = () =>
-    void act(async () => {
-      if (listItem === null) return;
-      await workspaceApi.respond(
-        SERVER_URL,
-        listItem.prompt.id,
-        response.trim() ||
-          "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.",
-      );
-      setResponse("");
-      if (
-        !console_.startRun(
-          listItem.workspace.id,
-          provider,
-          { promptId: listItem.prompt.id },
-          selectedModel,
-        )
-      ) {
-        throw new Error("Response saved, but the agent connection was unavailable. Run it from Chat.");
-      }
-    }, "Response sent");
-
   const recoverAndResume = (target: OperationsPrompt | null = listItem) =>
     void act(async () => {
       if (target === null) return;
@@ -432,24 +411,23 @@ export function TasksView() {
     suite,
     item: listItem,
     activity,
-    response,
     busy,
     canStart,
     verifyingItem: liveVerification !== null,
     connectionOpen: console_.connection === "open",
     providerLabel: providerInfo?.label ?? provider,
     model: selectedModel,
-    onResponseChange: setResponse,
     onRun: () => start(),
     onStop: () => void stopAgent(),
     onRecover: () => recoverAndResume(),
-    onRespond: respond,
+    onRespond: () => setInputItem(listItem),
     onVerifyItem: () => void verifyWorkItem(),
   } as const;
 
   return (
     <main className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-fg">
       <PageChrome title="Tasks" />
+      {inputItem !== null && <HumanInputDialog item={inputItem} provider={provider} model={selectedModel} pipeline={suite?.pipeline?.active != null} onClose={() => setInputItem(null)} />}
 
       {loadError !== null && (
         <div

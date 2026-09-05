@@ -46,7 +46,7 @@ test("a TODO task with an unanswered handoff stays in attention and accepts a fo
 });
 
 
-test("answers resume their owning named pipeline and duplicate submissions do not start another run", async () => {
+for (const restarted of [false, true]) test(`answers resume their owning named pipeline${restarted ? " after a server restart" : ""} without duplicate execution`, async () => {
   const f = fixture();
   let starts = 0;
   try {
@@ -56,9 +56,13 @@ test("answers resume their owning named pipeline and duplicate submissions do no
     const suite = workspaces.createPipelineRun({ id: `suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: named.id });
     workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
     workspaces.updateNamedPipelineRun(named.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suite.id });
+    if (restarted) {
+      workspaces.updatePipelineRun(suite.id, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
+      workspaces.updateNamedPipelineRun(named.id, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
+    }
     setPipelineStationStarter(async args => {
       starts++;
-      assert.equal(args.pipelineRunId, suite.id);
+      assert.equal(workspaces.pipelineById(args.pipelineRunId!)?.suiteId, f.suite.id);
       assert.equal(args.provider, "claude", "preserve the pipeline's assigned agent");
       const runId = `successor-${f.workspace.id}`;
       workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: args.provider, model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });

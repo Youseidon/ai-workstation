@@ -45,6 +45,8 @@ export const workspaceApi = {
   history(serverUrl:string,id:number){return request<{events:PromptStatusEvent[];remarks:PromptRemark[];runs:unknown[]}>(serverUrl,`/api/prompts/${id}/history`);},
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},
+  respondAndContinue(serverUrl:string,id:number,value:{content?:string;responseId?:number;provider:ProviderId;model:string|null}){return request<{responseId:number;started:boolean;runId:string|null;error?:string}>(serverUrl,`/api/prompts/${id}/respond-and-continue`,{method:"POST",...json(value)});},
+  clarify(serverUrl:string,id:number,value:{question:string;provider:ProviderId;model:string|null}){return request<{runId:string}>(serverUrl,`/api/prompts/${id}/clarify`,{method:"POST",...json(value)});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
   startHandoff(serverUrl:string,id:number,value:{handoffProvider:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number}){return request<{started:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},
   pipeline(serverUrl:string,suiteId:number){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`);},
