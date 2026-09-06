@@ -46,6 +46,18 @@ export type LogItem =
       fatal: boolean;
     })
   | (LogItemBase & {
+      kind: "db";
+      direction: "read" | "write";
+      operation: string;
+      method: string;
+      outcome: "accepted" | "rejected" | "replayed";
+      httpStatus: number;
+      summary: string;
+      changed: string[];
+      errorCode: string | null;
+      durationMs: number;
+    })
+  | (LogItemBase & {
       kind: "result";
       state: Extract<RunState, "done" | "interrupted" | "error">;
       elapsedMs: number;
@@ -187,6 +199,32 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
           state: event.payload.state,
           elapsedMs: event.payload.elapsedMs,
           usage: event.payload.usage,
+        },
+      ];
+
+    case "db_access":
+      // Deliberately its own line rather than folded into the tool call that
+      // made it. The operator's question is "did this agent talk to the app,
+      // and what did it change" — an answer buried inside a curl's output is
+      // one they would have to go looking for.
+      return [
+        ...items,
+        {
+          id: event.id,
+          provider: event.provider,
+          model: event.model,
+          runId: event.runId,
+          timestamp: event.timestamp,
+          kind: "db",
+          direction: event.payload.direction,
+          operation: event.payload.operation,
+          method: event.payload.method,
+          outcome: event.payload.outcome,
+          httpStatus: event.payload.httpStatus,
+          summary: event.payload.summary,
+          changed: event.payload.changed,
+          errorCode: event.payload.errorCode,
+          durationMs: event.payload.durationMs,
         },
       ];
 

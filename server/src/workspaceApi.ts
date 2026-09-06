@@ -5,9 +5,42 @@ import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
 import { isProviderId, promptNeedsHandoff } from "@agent-console/shared";
-import { resumeReadyHandoff, scheduleHandoff } from "./handoffCoordinator.ts";
+import { resumeReadyHandoff, scheduleHandoff, type HandoffBlock } from "./handoffCoordinator.ts";
+import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
+
+// One message per reason: "something is in the way" left operators guessing
+// which of three unrelated conditions they had hit, and what to do about it.
+const HANDOFF_BLOCK_CODE: Record<HandoffBlock, string> = {
+  already_complete: "station_already_complete",
+  handoff_running: "handoff_in_progress",
+  reusable: "handoff_reusable",
+  attempt_limit: "handoff_limit_reached",
+  provider_unavailable: "handoff_provider_unavailable",
+};
+const HANDOFF_BLOCK_MESSAGE: Record<HandoffBlock, string> = {
+  already_complete: "This station is already complete; resume the pipeline to start the next ready station",
+  handoff_running: "A handoff agent is already preparing a brief for this run; wait for it to finish",
+  reusable: "A handoff brief for this run is ready; continue with it instead of preparing another",
+  attempt_limit: "This station reached the handoff attempt limit; raise it in Pipeline policy or retry the station directly",
+  provider_unavailable: "The selected handoff provider is unavailable; choose another read-only agent",
+};
+
+const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
+  already_complete: "station_already_complete",
+  not_auditable: "station_not_auditable",
+  audit_running: "audit_in_progress",
+  attempt_limit: "audit_limit_reached",
+  provider_unavailable: "audit_provider_unavailable",
+};
+const AUDIT_BLOCK_MESSAGE: Record<AuditBlock, string> = {
+  already_complete: "This station is already complete; there is nothing to audit",
+  not_auditable: "Only a station blocked because its run ended without posting a status can be audited. A station that reported BLOCKED asked you a specific question, and no amount of reading the tree answers it",
+  audit_running: "An audit of this run is already going; wait for its verdict",
+  attempt_limit: "This run has already been audited automatically; read that verdict, or complete or retry the station yourself",
+  provider_unavailable: "No read-only agent is available to audit — it cannot be Cursor, and it cannot be the agent whose own run is being judged",
+};
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -45,7 +78,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/reviewers" && !url.pathname.startsWith("/api/reviewers/") && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/definition-of-done/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -54,6 +87,57 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   }
   try {
     const method = req.method ?? "GET";
+    // The status catalog: what each state is called, what it means, and what
+    // entering it sets in motion. Locked fields are refused with the reason
+    // rather than silently dropped — see workspaces.updateStatusDefinition.
+    if(url.pathname==="/api/statuses"){
+      if(method==="GET")json(res,200,{statuses:workspaces.statusCatalog(),triggers:workspaces.triggerSentences()});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    {
+      const match=url.pathname.match(/^\/api\/statuses\/([A-Z_]+)$/);
+      if(match){
+        const statusId=match[1]!;
+        if(method==="PATCH")json(res,200,{status:workspaces.updateStatusDefinition(statusId,await body(req))});
+        else if(method==="DELETE")json(res,200,{status:workspaces.resetStatusDefinition(statusId)});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    {
+      const match=url.pathname.match(/^\/api\/triggers\/([a-z_]+)$/);
+      if(match){
+        if(method==="PATCH"){const input=await body(req);json(res,200,{triggers:workspaces.updateTriggerSentence(match[1]!,input.sentence)});}
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    // What a reviewer does in each situation the app has no first-hand account
+    // of. `?prompt=` resolves through that work item's scopes; without it the
+    // global answer is returned.
+    if(url.pathname==="/api/reviewers"){
+      if(method==="GET"){
+        const value=url.searchParams.get("prompt");
+        json(res,200,{reviewers:workspaces.reviewerConfigs(value===null?null:id(value))});
+      } else if(method==="PATCH"){
+        const input=await body(req);
+        const scope=typeof input.scope==="string"?input.scope:"global";
+        const scopeId=typeof input.scopeId==="number"?input.scopeId:null;
+        const trigger=typeof input.trigger==="string"?input.trigger:"";
+        const patch=typeof input.patch==="object"&&input.patch!==null?input.patch as Record<string,unknown>:{};
+        json(res,200,{reviewer:workspaces.setReviewerConfig({scope,scopeId,trigger,patch})});
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    {
+      const match=url.pathname.match(/^\/api\/reviewers\/([a-zA-Z]+)$/);
+      if(match&&method==="DELETE"){
+        const value=url.searchParams.get("scopeId");
+        json(res,200,{reviewer:workspaces.clearReviewerConfig(url.searchParams.get("scope")??"global",value===null?null:id(value),match[1]!)});
+        return true;
+      }
+    }
     if(url.pathname==="/api/operations"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}
@@ -250,6 +334,67 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
+    // What a work item is judged against, and how each criterion currently
+    // stands. `?run=1` runs the command criteria first, which is the operator's
+    // "check it now" — the same execution the closing gate depends on, so what
+    // they see here is exactly what a close would be decided on.
+    const dodPromptMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/definition-of-done$/);
+    if(dodPromptMatch){
+      const promptId=id(dodPromptMatch[1]!);
+      if(method==="GET"){
+        json(res,200,{definitionOfDone:workspaces.resolvedDefinitionOfDone(promptId),evaluation:workspaces.definitionOfDoneEvaluation(promptId)});
+      } else if(method==="POST"){
+        const { runDefinitionOfDoneCommands }=await import("./definitionOfDone.ts");
+        await runDefinitionOfDoneCommands(promptId,null);
+        json(res,200,{definitionOfDone:workspaces.resolvedDefinitionOfDone(promptId),evaluation:workspaces.definitionOfDoneEvaluation(promptId)});
+        runHub.operationsChanged();
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    // The definition of done at one scope, on its own — what an editor for that
+    // scope shows and writes. Separate from the resolved view above because
+    // "this suite says nothing and inherits" has to be editable as itself.
+    {
+      const match=url.pathname.match(/^\/api\/definition-of-done\/([a-z]+)\/(\d+)$/);
+      if(match){
+        const scope=match[1]!;const scopeId=id(match[2]!);
+        if(method==="GET")json(res,200,{definitionOfDone:workspaces.definitionOfDone(scope,scopeId)});
+        else if(method==="PATCH"){
+          const input=await body(req);
+          const enforcement=input.enforcement===null?null:typeof input.enforcement==="string"?input.enforcement:undefined;
+          if(enforcement===undefined)throw new WorkspaceError(422,"validation_error","Some changes were refused",{enforcement:"Must be block, warn, off, or null to inherit"});
+          json(res,200,{definitionOfDone:workspaces.setDodEnforcement(scope,scopeId,enforcement)});
+        }
+        else if(method==="POST")json(res,200,{definitionOfDone:workspaces.saveDodCriterion({scope,scopeId,patch:await body(req)})});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    {
+      const match=url.pathname.match(/^\/api\/definition-of-done\/([a-z]+)\/(\d+)\/criteria\/(\d+)$/);
+      if(match){
+        const scope=match[1]!;const scopeId=id(match[2]!);const criterionId=id(match[3]!);
+        if(method==="PATCH")json(res,200,{definitionOfDone:workspaces.saveDodCriterion({scope,scopeId,criterionId,patch:await body(req)})});
+        else if(method==="DELETE")json(res,200,{definitionOfDone:workspaces.removeDodCriterion(scope,scopeId,criterionId)});
+        else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        return true;
+      }
+    }
+    const completeMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/complete$/);
+    if(completeMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const promptId=id(completeMatch[1]!);
+        const input=await body(req);
+        const written=workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
+        await pipelineScheduler.onPromptCompleted(promptId);
+        // `status` rather than a bare `completed:true`: an operator override is
+        // always honoured, but saying so is not the same as saying nothing was
+        // outstanding, and the caller shows what was closed over.
+        json(res,200,{completed:written==="DONE",status:written});
+      }
+      return true;
+    }
     let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
     if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
     if(url.pathname==="/api/sessions"){
@@ -346,6 +491,23 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       const run=await pipelineScheduler.playNamed(pipelineId,{provider,model:typeof input.model==="string"?input.model:null,preferPlayTarget:true});
       json(res,202,{started:true,run});return true;
     }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audit$/);
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);const input=await body(req);
+      const sourceRunId=workspaces.latestExecuteRunId(promptId);const source=workspaces.runSummary(sourceRunId);
+      const auditProvider=input.provider;
+      if(auditProvider!==undefined&&!isProviderId(auditProvider))throw new WorkspaceError(422,"validation_error","Choose a valid read-only provider");
+      if(auditProvider==="cursor")throw new WorkspaceError(422,"audit_not_supported","Cursor cannot be held read-only, so it cannot audit");
+      const result=await scheduleCompletionAudit({
+        workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,automatic:false,
+        ...(auditProvider===undefined?{}:{auditProvider}),
+        ...(typeof input.model==="string"?{auditModel:input.model}:{}),
+      });
+      if(!result.started)throw new WorkspaceError(409,AUDIT_BLOCK_CODE[result.block],AUDIT_BLOCK_MESSAGE[result.block]);
+      json(res,202,{started:true,auditId:result.auditId});return true;
+    }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audits$/);
+    if(match&&method==="GET"){json(res,200,{audits:workspaces.completionAuditsForPrompt(id(match[1]!))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;
@@ -359,8 +521,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       if(!isProviderId(handoffProvider))throw new WorkspaceError(422,"validation_error","Choose a valid handoff provider");
       if(handoffProvider==="cursor")throw new WorkspaceError(422,"handoff_not_supported","Cursor cannot guarantee a read-only handoff");
-      const started=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
-      if(!started)throw new WorkspaceError(409,"handoff_not_started","A handoff already exists for this run, the attempt limit was reached, or the selected provider is unavailable");
+      const result=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
+      if(!result.started)throw new WorkspaceError(409,HANDOFF_BLOCK_CODE[result.block],HANDOFF_BLOCK_MESSAGE[result.block]);
       json(res,202,{started:true});return true;
     }
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;

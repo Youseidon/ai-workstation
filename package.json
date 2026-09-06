@@ -18,7 +18,8 @@
     "start:web": "npm run start --workspace web",
     "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web",
     "test": "npm run test --workspace shared && npm run test --workspace server && npm run test --workspace web",
-    "verify:contrast": "node scripts/verify-contrast.mjs"
+    "verify:contrast": "node scripts/verify-contrast.mjs",
+    "sync:cursor-models": "node scripts/sync-cursor-models.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

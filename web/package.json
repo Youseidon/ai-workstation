@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test components/**/*.test.ts"
+    "test": "node --import tsx --test components/**/*.test.ts lib/**/*.test.ts"
   },
   "dependencies": {
     "@agent-console/shared": "*",

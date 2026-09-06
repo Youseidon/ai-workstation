@@ -1,0 +1,364 @@
+import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, isReconfigureKind, reviewTriggerFor, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId, type ReconfigureDirective } from "@agent-console/shared";
+import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { recordReviewerVerdicts } from "./definitionOfDone.ts";
+import { newId } from "./lib/ids.ts";
+import { createLogger } from "./lib/logger.ts";
+import { runHub } from "./runHub.ts";
+import { runContexts } from "./runContext.ts";
+import { startRun } from "./runner.ts";
+import { materialize } from "./workspaceInstructions.ts";
+import { workspaces, type RunCostMetrics } from "./workspaces.ts";
+
+const log = createLogger("audit");
+
+/*
+ * The problem this exists for: a developer agent finishes a work item, then
+ * ends without posting DONE. `finishAgentRun` has to assume the worst and marks
+ * the station BLOCKED, so the pipeline parks — and an operator who comes back
+ * hours later finds a rail stopped on its first station with the work already
+ * sitting in the tree. Cursor is the frequent offender, but a crashed process,
+ * an exhausted budget or a lost network call produce exactly the same record.
+ *
+ * The fix is not to trust the previous agent. It is to send a *different*,
+ * read-only agent to check the tree against the work item's own acceptance
+ * criteria and say whether the work is there. That agent cannot edit anything
+ * and cannot post a status; it returns a verdict, and only a COMPLETE verdict
+ * with no failed check is allowed to close the station.
+ */
+
+/**
+ * Read-only is the whole point, so a provider that cannot be held read-only
+ * cannot review.
+ *
+ * `exclude` is the agent whose own run is on trial — marking your own homework
+ * is the failure this mechanism exists to avoid. It is now a configured
+ * preference rather than a hard rule, because on a single-provider setup the
+ * old behaviour meant no review ever happened at all, silently. When excluding
+ * the source would leave nobody, the operator's `mustDifferFromSource` decides
+ * whether to fall back to it or to decline and say so.
+ */
+async function providerFor(
+  requested: ProviderId | undefined,
+  exclude: ProviderId,
+  mustDiffer: boolean,
+): Promise<ProviderId | null> {
+  const providers = await detectProviders();
+  const readOnly = providers.filter((item) => item.available && item.id !== "cursor");
+  const eligible = readOnly.filter((item) => item.id !== exclude);
+  const pool = eligible.length > 0 || mustDiffer ? eligible : readOnly;
+  if (pool.length === 0) return null;
+  if (requested !== undefined && pool.some((item) => item.id === requested)) return requested;
+  return pool[0]!.id;
+}
+
+function list(value: unknown, max = 30): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, max) : [];
+}
+
+/**
+ * Pipeline changes the reviewer says are needed, filtered to the kinds that
+ * exist. Whether any of them is *allowed* is the scheduler's decision, not this
+ * one: parsing keeps a directive the operator has switched off, so the report
+ * can still show the operator what the reviewer wanted and was refused.
+ */
+function parseReconfigure(value: unknown): ReconfigureDirective[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .slice(0, 8)
+    .flatMap((row) => {
+      if (!isReconfigureKind(row.kind)) return [];
+      const multiplier = typeof row.multiplier === "number" && Number.isFinite(row.multiplier) ? row.multiplier : null;
+      return [{
+        kind: row.kind,
+        multiplier,
+        provider: typeof row.provider === "string" && row.provider.trim() !== "" ? row.provider.trim().slice(0, 40) : null,
+        why: String(row.why ?? "").slice(0, 1000),
+      }];
+    });
+}
+
+function parseChecks(value: unknown): CompletionAuditCheck[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .slice(0, 40)
+    .map((row) => ({
+      criterion: String(row.criterion ?? "").slice(0, 500),
+      // Anything that is not a plain integer is treated as "the reviewer did
+      // not name a criterion". A coerced id would file a verdict against the
+      // wrong one, which is worse than filing it against none.
+      criterionId: typeof row.criterionId === "number" && Number.isInteger(row.criterionId) ? row.criterionId : null,
+      result: typeof row.result === "string" && AUDIT_CHECK_RESULTS.includes(row.result.toUpperCase() as never)
+        ? (row.result.toUpperCase() as CompletionAuditCheck["result"])
+        : "UNVERIFIED",
+      evidence: String(row.evidence ?? "").slice(0, 2000),
+      command: typeof row.command === "string" && row.command.trim() !== "" ? row.command.trim().slice(0, 500) : null,
+    }))
+    .filter((check) => check.criterion !== "");
+}
+
+/**
+ * The auditor's own word is taken for INCOMPLETE and UNVERIFIABLE, but a
+ * COMPLETE is only honoured when its own evidence supports it: at least one
+ * criterion checked, none failed, and none left unverified. An agent that says
+ * COMPLETE while reporting a failed check has contradicted itself, and the
+ * contradiction is resolved against closing the station.
+ */
+export function reconcileVerdict(claimed: CompletionVerdict, checks: CompletionAuditCheck[]): CompletionVerdict {
+  if (claimed !== "COMPLETE") return claimed;
+  if (checks.length === 0) return "UNVERIFIABLE";
+  if (checks.some((check) => check.result === "FAILED")) return "INCOMPLETE";
+  if (checks.some((check) => check.result === "UNVERIFIED")) return "UNVERIFIABLE";
+  return "COMPLETE";
+}
+
+export function parseReport(text: string): CompletionAuditReport {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  const candidate = fenced ?? text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+  const raw = JSON.parse(candidate) as Record<string, unknown>;
+  const claimed: CompletionVerdict = typeof raw.verdict === "string" && COMPLETION_VERDICTS.includes(raw.verdict.toUpperCase() as never)
+    ? (raw.verdict.toUpperCase() as CompletionVerdict)
+    : "UNVERIFIABLE";
+  const checks = parseChecks(raw.checks);
+  const confidence = typeof raw.confidence === "string" && ["HIGH", "MEDIUM", "LOW"].includes(raw.confidence.toUpperCase())
+    ? (raw.confidence.toUpperCase() as CompletionAuditReport["confidence"])
+    : "LOW";
+  return {
+    version: 1,
+    verdict: reconcileVerdict(claimed, checks),
+    confidence,
+    checks,
+    remainingWork: list(raw.remainingWork),
+    reconfigure: parseReconfigure(raw.reconfigure),
+    verificationSummary: typeof raw.verificationSummary === "string" ? raw.verificationSummary.slice(0, 20000) : "",
+    reasoning: typeof raw.reasoning === "string" ? raw.reasoning.slice(0, 20000) : "",
+  };
+}
+
+export function auditMarkdown(report: CompletionAuditReport, provider: ProviderId, sourceRunId: string): string {
+  const rows = report.checks.length === 0
+    ? "_The auditor checked nothing it could name._"
+    : ["| Criterion | Result | Evidence | Command |", "| --- | --- | --- | --- |"]
+      .concat(report.checks.map((check) => `| ${cell(check.criterion)} | ${check.result} | ${cell(check.evidence)} | ${cell(check.command ?? "")} |`))
+      .join("\n");
+  const remaining = report.remainingWork.length === 0 ? "- None found." : report.remainingWork.map((item) => `- ${item}`).join("\n");
+  // Shown even when the operator's allowlist will refuse them: a reviewer that
+  // keeps asking for a capped change is evidence about the cap, and that is
+  // only visible if what it asked for is on the record.
+  const changes = report.reconfigure.length === 0
+    ? ""
+    : `\n\n## Pipeline changes asked for\n\n${report.reconfigure.map((item) => `- **${item.kind}**${item.multiplier === null ? "" : ` (${item.multiplier}x)`}${item.provider === null ? "" : ` → ${item.provider}`} — ${item.why}`).join("\n")}`;
+  return `# Completion audit\n\n**Verdict: ${report.verdict}** (confidence ${report.confidence}) — read-only ${provider} audit of run \`${sourceRunId}\`.\n\n## Checks\n\n${rows}\n\n## Work still missing\n\n${remaining}${changes}\n\n## Reasoning\n\n${report.reasoning || "_Not given._"}\n`;
+}
+
+/** Markdown tables cannot carry a raw pipe or newline; neither is worth losing the row over. */
+function cell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ").slice(0, 300);
+}
+
+export type AuditBlock = "already_complete" | "not_auditable" | "audit_running" | "attempt_limit" | "provider_unavailable";
+export type ScheduleAuditResult = { started: true; auditId: string } | { started: false; block: AuditBlock };
+
+export interface ScheduleAuditArgs {
+  workspaceId: number;
+  promptId: number;
+  sourceRunId: string;
+  sourceProvider: ProviderId;
+  /** Set by an operator asking for a specific auditor; otherwise one is chosen. */
+  auditProvider?: ProviderId;
+  auditModel?: string | null;
+  /** False for a manual audit, which is allowed past the automatic attempt cap. */
+  automatic?: boolean;
+}
+
+export async function scheduleCompletionAudit(args: ScheduleAuditArgs): Promise<ScheduleAuditResult> {
+  const outcome = workspaces.promptOutcome(args.promptId);
+  if (outcome.status === "DONE" || outcome.status === "SKIPPED") return { started: false, block: "already_complete" };
+  // There has to be a situation a reviewer can actually be sent into. An agent
+  // that posted BLOCKED itself asked a human a question, and no amount of
+  // tree-reading answers it; `reviewSituation` reads the recorded cause rather
+  // than guessing from the status, which is what lets an item held back by an
+  // unmet definition of done be reviewed while a genuine question is not.
+  if (workspaces.reviewSituation(args.promptId) === null) return { started: false, block: "not_auditable" };
+  // Which situation this is, and what the operator has said about it. An
+  // automatic review that is switched off for this situation must not happen;
+  // one the operator asked for by hand always may.
+  const trigger = workspaces.reviewSituation(args.promptId) ?? "unreported";
+  const config = workspaces.reviewerConfig(trigger, args.promptId);
+  if (args.automatic !== false && !config.enabled) return { started: false, block: "not_auditable" };
+
+  const previous = workspaces.completionAuditsForRun(args.sourceRunId);
+  if (previous.some((item) => item.state === "QUEUED" || item.state === "RUNNING")) return { started: false, block: "audit_running" };
+  if (args.automatic !== false && previous.length >= config.maxAttempts) return { started: false, block: "attempt_limit" };
+
+  // An operator asking for a specific reviewer outranks the configured one,
+  // which outranks whatever happens to be available.
+  const preferred = args.auditProvider
+    ?? (isProviderId(config.provider) ? config.provider : undefined);
+  const provider = await providerFor(preferred, args.sourceProvider, config.mustDifferFromSource);
+  if (provider === null) {
+    log.warn(`no read-only provider available for audit prompt=${args.promptId}`);
+    return { started: false, block: "provider_unavailable" };
+  }
+  const model = args.auditModel ?? config.model ?? null;
+  const id = newId("audit");
+  const record = workspaces.createCompletionAudit({ id, workspaceId: args.workspaceId, promptId: args.promptId, sourceRunId: args.sourceRunId, provider, model });
+
+  const runId = newId("run");
+  const credential = runContexts.create(runId, args.workspaceId, args.promptId);
+  // Recorded with the handoff role: like a handoff this is a read-only
+  // support run, and that role is what forces the provider's read-only mode,
+  // keeps it out of "a writer is active in this workspace", and stops it
+  // owning the station's single active-execute slot.
+  workspaces.beginHandoffAgentRun({ runId, workspaceId: args.workspaceId, promptId: args.promptId, provider, model, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt });
+  workspaces.updateCompletionAudit(id, { state: "RUNNING", auditRunId: runId });
+
+  const workspace = workspaces.get(args.workspaceId);
+  const dossier = workspaces.completionAuditDossier(args.workspaceId, args.promptId, args.sourceRunId);
+  const saved = workspaces.resolvePrompt(args.workspaceId, args.promptId);
+  const prompt = auditPrompt(dossier, outcome.result);
+
+  let answer = "";
+  materialize(workspace);
+  const handle = startRun({
+    runId,
+    adapter: getAdapter(provider),
+    prompt,
+    cwd: workspace.workDirectory,
+    model,
+    role: "handoff",
+    permissionOverride: "handoff",
+    onEvent: (event) => {
+      if (event.type === "assistant_text" && event.payload.kind === "message") answer += event.payload.text;
+      if (event.type === "result" && event.payload.text) answer = event.payload.text;
+      workspaces.recordAgentEvent(runId, event);
+      runHub.event(runId, event);
+    },
+    onEnd: (ended, state, metrics) => {
+      void finishAudit(record.id, ended, state, answer, args, metrics).catch((error) => log.error("finish failed", error));
+    },
+  });
+  workspaces.markAgentRunRunning(runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: { type: "audit", auditId: id, promptId: args.promptId, promptKey: saved.externalKey, title: saved.title, sourceRunId: args.sourceRunId },
+    role: "handoff",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error) => log.error("run failed", error));
+  log.info(`audit started prompt=${args.promptId} provider=${provider} source=${args.sourceRunId}`);
+  return { started: true, auditId: id };
+}
+
+function auditPrompt(dossier: string, blockReason: string): string {
+  return `You are a read-only completion auditor. You cannot edit files, run mutating commands, or post any orchestration status. Another agent was asked to do the work item below and its process ended without ever reporting an outcome, so the orchestrator had to record it as blocked:
+
+"${blockReason.slice(0, 1000)}"
+
+Your only job is to answer one question from evidence in the working tree: did that agent actually finish this work item, or is real work still missing?
+
+Method, in this order:
+1. Read \`definitionOfDone.criteria\` in the dossier — that is the checklist, and each entry carries a criterionId you must quote back. A criterion marked \`alreadyChecked\` was run by the orchestrator itself; its result is a fact you cannot overturn, so report it as you found it. Where no criteria are listed, fall back to \`acceptanceCriteria\` and turn that prose into a checklist of your own.
+2. Inspect the current working tree yourself. Read the files the criteria are about. Use git (status, diff, log, show) to see what actually changed. Run the read-only verification commands the work item names — builds, tests, type checks, linters — and read their real output.
+3. Judge each criterion only on what you observed. The previous agent's own claims in the transcript are a hint about where to look, never evidence that something is done.
+
+Verdicts:
+- COMPLETE — every acceptance criterion is satisfied in the tree right now. Use this only when your own checks passed. This closes the work item, so a wrong COMPLETE silently loses work.
+- INCOMPLETE — you found something specific that is missing, broken, or failing. Name it.
+- UNVERIFIABLE — you could not check enough to be sure. Not being able to run a command, or an ambiguous criterion, belongs here. This is a safe answer; a guess is not.
+
+If your verdict is INCOMPLETE, \`remainingWork\` is not a description for a human to read — it is the brief a developer agent will be given to finish this item, and it is the only thing that agent is told to do. Write each entry as a concrete, self-contained instruction: name the exact files, routes, ids or commands involved, and say what "done" looks like. "The catalog flip was not performed" is a finding; "Flip x-implementation from mock to dotnet for these 12 routes in contracts/catalog/endpoints/commercial.json: <list>" is an instruction. Write instructions.
+
+Also judge whether finishing this item needs the *pipeline* changed, not just more work. Use \`reconfigure\` for that, and only when you have evidence from the transcript or the tree — an empty list is the normal answer:
+- \`raiseBudget\` — the run was killed by its own budget while still doing necessary work, and a bigger allowance would let it finish. Give \`multiplier\` (e.g. 2 for twice the normal allowance). Do not ask for this because a run was slow or repetitive; ask when the ceiling itself was the blocker.
+- \`decompose\` — the item is too large for one run at any plausible budget, and should be split into sub-steps.
+- \`switchProvider\` — this agent repeatedly failed in a way another would not. Give \`provider\`.
+Each entry needs a \`why\` citing what you observed. The operator caps what may be applied, so a directive may be recorded and refused; say what you think regardless.
+
+Return one JSON object only, no prose around it, with keys: verdict (COMPLETE, INCOMPLETE, or UNVERIFIABLE), confidence (HIGH, MEDIUM, or LOW), checks (array of {criterionId, criterion, result: PASSED|FAILED|UNVERIFIED, evidence, command} — criterionId is the number from the dossier, or null for a criterion of your own), remainingWork (array of instruction strings, empty if COMPLETE), reconfigure (array of {kind: raiseBudget|decompose|switchProvider, multiplier, provider, why}, usually empty), verificationSummary (one paragraph of the concrete commands you ran and the results you saw — this is recorded as the work item's evidence if you say COMPLETE), reasoning (why this verdict follows from the checks).
+
+DOSSIER
+${dossier}`;
+}
+
+async function finishAudit(
+  id: string,
+  runId: string,
+  state: "done" | "interrupted" | "error",
+  answer: string,
+  args: ScheduleAuditArgs,
+  metrics?: RunCostMetrics,
+): Promise<void> {
+  workspaces.finishAgentRun(runId, state, "", metrics);
+  runContexts.complete(runId);
+  runHub.end(runId, state);
+  const now = new Date().toISOString();
+  const { pipelineScheduler } = await import("./pipelineScheduler.ts");
+
+  if (state !== "done") {
+    workspaces.updateCompletionAudit(id, { state: "FAILED", error: `Audit agent ended ${state}`, completedAt: now });
+    await pipelineScheduler.onAuditSettled({ promptId: args.promptId, sourceRunId: args.sourceRunId, verdict: null });
+    runHub.operationsChanged();
+    return;
+  }
+
+  let report: CompletionAuditReport;
+  try {
+    report = parseReport(answer);
+  } catch (error) {
+    workspaces.updateCompletionAudit(id, { state: "FAILED", error: error instanceof Error ? error.message : String(error), completedAt: now });
+    await pipelineScheduler.onAuditSettled({ promptId: args.promptId, sourceRunId: args.sourceRunId, verdict: null });
+    runHub.operationsChanged();
+    return;
+  }
+
+  // Before the verdict is acted on: the reviewer's per-criterion answers become
+  // `dod_result` rows, so the definition of done accumulates evidence from the
+  // review rather than the review being a separate opinion sitting beside it.
+  // Only PROSE criteria are taken — a command's exit code is already recorded
+  // and is not a model's to overturn.
+  const filed = recordReviewerVerdicts({ promptId: args.promptId, runId, checks: report.checks });
+  if (filed > 0) log.info(`recorded ${filed} definition-of-done verdicts from the reviewer prompt=${args.promptId}`);
+
+  const provider = workspaces.completionAuditById(id)?.provider ?? args.sourceProvider;
+  workspaces.updateCompletionAudit(id, {
+    state: "READY",
+    verdict: report.verdict,
+    report,
+    reportMarkdown: auditMarkdown(report, provider, args.sourceRunId),
+    completedAt: now,
+  });
+  log.info(`audit verdict=${report.verdict} prompt=${args.promptId} confidence=${report.confidence}`);
+
+  // The verdict is recorded either way. Whether a COMPLETE is allowed to close
+  // the station is a separate, operator-owned decision, and it is the
+  // scheduler's to make — an audit started by hand on a station no pipeline is
+  // sitting on must not silently complete it.
+  const applied = await pipelineScheduler.onAuditSettled({
+    promptId: args.promptId,
+    sourceRunId: args.sourceRunId,
+    verdict: report.verdict,
+    verificationSummary: verificationText(report, provider),
+    // The report itself, not just its verdict: `remediate` turns the
+    // reviewer's own `remainingWork` into the next run's brief, and its
+    // `reconfigure` list into the changes made before that run starts.
+    report,
+    auditId: id,
+  });
+  if (applied) workspaces.updateCompletionAudit(id, { applied: true });
+  runHub.operationsChanged();
+}
+
+/**
+ * What lands on the work item as its completion evidence. It names the auditor
+ * and the run it adjudicated, because a station closed this way was never
+ * confirmed by the agent that did the work, and anyone reading the record later
+ * must be able to see that immediately.
+ */
+export function verificationText(report: CompletionAuditReport, provider: ProviderId): string {
+  const passed = report.checks.filter((check) => check.result === "PASSED");
+  const evidence = passed.length === 0 ? "" : `\n\nChecks:\n${passed.map((check) => `- ${check.criterion}${check.command === null ? "" : ` (\`${check.command}\`)`} — ${check.evidence}`).join("\n")}`;
+  return `Closed by a read-only ${provider} completion audit, not by the agent that did the work: its run ended without posting a status. ${report.verificationSummary}${evidence}`;
+}

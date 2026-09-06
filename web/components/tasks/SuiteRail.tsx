@@ -81,7 +81,7 @@ export function SuiteRail({
                   {program}
                 </div>
                 {items.map((entry) => {
-                  const done = entry.counts.COMPLETE;
+                  const done = entry.counts.DONE;
                   const total = entry.prompts.length;
                   const ratio = total === 0 ? 0 : Math.round((done / total) * 100);
                   return (

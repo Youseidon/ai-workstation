@@ -1,4 +1,18 @@
-const USEFUL_SECTION = /^(objective|scope|verification\b|acceptance\b|exit\b|constraints|rules\b|money rules\b|rounding\b|snapshots\b|gst verification\b|cross-module boundaries\b|financial-records deletion\b)/i;
+/*
+ * Which sections of a work item are worth putting in front of a reviewer.
+ *
+ * This list used to end with `money rules`, `gst verification`, `rounding`,
+ * `snapshots` and `financial-records deletion` — one installation's domain
+ * headings, hardcoded into a general orchestration tool. On any other
+ * repository they matched nothing, so a reviewer was handed a near-empty
+ * checklist and asked to judge against it.
+ *
+ * The generic headings below are a *fallback*, not the mechanism: what a work
+ * item is actually judged against is its definition of done (see migration 23),
+ * which is structured, inherited and checkable. This is what is shown when
+ * nobody has written one yet.
+ */
+const USEFUL_SECTION = /^(objective|goal|purpose|scope|context|background|requirements?|deliverables?|definition of done|acceptance\b|verification\b|validation\b|testing\b|exit\b|success\b|constraints|rules\b|invariants?\b|non-?goals?\b|out of scope)/i;
 
 /** Keep decision and verification material while dropping report templates and repeated policy prose. */
 export function compactWorkItem(content:string):string {

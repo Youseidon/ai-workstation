@@ -27,7 +27,7 @@ export function PipelineOverview({
     const ops = snapshot?.suites.find((suite) => suite.id === stage.suiteId);
     if (ops === undefined || stage.stepCount === 0) return sum;
     const incomplete = ops.prompts.filter(
-      (item) => item.operationalState !== "COMPLETE" && item.operationalState !== "SKIPPED",
+      (item) => item.operationalState !== "DONE" && item.operationalState !== "SKIPPED",
     ).length;
     return sum + Math.max(0, stage.stepCount - incomplete);
   }, 0));

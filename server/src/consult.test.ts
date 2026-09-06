@@ -58,7 +58,7 @@ test("schema version 9 rebuilds agent_run with nullable prompt_id and execute-on
   assert.match(migrate9, /prompt_id INTEGER REFERENCES prompt\(id\) ON DELETE CASCADE/);
   assert.doesNotMatch(migrate9, /prompt_id INTEGER NOT NULL/);
   assert.match(migrate9, /WHERE state IN \('STARTING','RUNNING'\) AND role = 'execute'/);
-  const recover = source.slice(source.indexOf("const recoverAbandonedRuns"), source.indexOf("recoverAbandonedRuns();"));
+  const recover = source.slice(source.indexOf("const recoverAbandonedRuns"), source.indexOf("/** What a finished run spent"));
   assert.match(recover, /role='execute'/);
   assert.doesNotMatch(recover, /role='consult'/);
 });
@@ -120,7 +120,10 @@ test("consult finish leaves an IN_PROGRESS execute prompt untouched", () => {
     workspaces.finishAgentRun(consultId, "done");
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "IN_PROGRESS");
     workspaces.finishAgentRun(executeId, "error");
-    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "BLOCKED");
+    // The execute process failed, so the run failed. It is not BLOCKED: nothing
+    // asked the operator anything, and saying so would park the pipeline on a
+    // question that does not exist.
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "FAILED");
   } finally {
     ctx.cleanup();
   }

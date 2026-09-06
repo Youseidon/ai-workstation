@@ -71,7 +71,7 @@ export function StationCard({
           <AgentAvatar
             provider={rule.provider}
             size={28}
-            activity={occupancy !== null ? "tooling" : item.operationalState === "COMPLETE" ? "done" : "idle"}
+            activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"}
           />
         ) : (
           <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
@@ -131,6 +131,15 @@ export function StationCard({
           <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted">
             {subSteps.done}/{subSteps.total} sub-steps done
           </span>
+          {/* A parent with a failed sub-step used to read only "Waiting", which
+              is true and useless — the trouble was a drill-down away and the
+              card gave no reason to look. */}
+          {item.childAttention !== null && (
+            <Badge tone={TONE[item.childAttention]}>
+              {item.childAttentionCount > 1 && `${item.childAttentionCount} `}
+              {LABEL[item.childAttention].toLowerCase()}
+            </Badge>
+          )}
           {onOpenSubPipeline !== undefined && (
             <span className="shrink-0 text-[11px] text-accent">Open ›</span>
           )}
@@ -177,8 +186,11 @@ export function StationCard({
  * than as just another status chip.
  */
 function stuckNote(state: OperationsPrompt["operationalState"]): string | null {
-  if (state === "RECOVERY_NEEDED") return "The agent process ended without posting a status. Retry to run it again, or skip it.";
-  if (state === "AWAITING_RESPONSE") return "Blocked on a human response. Answer it on the work item, or skip it.";
+  // "Mark complete" is named in both: the run ending without a status says
+  // nothing about whether the work got done, and re-running an agent to
+  // re-report finished work is the expensive way out of that.
+  if (state === "RECOVERY_NEEDED") return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
+  if (state === "BLOCKED") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
   return null;
 }
 

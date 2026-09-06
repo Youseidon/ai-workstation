@@ -349,6 +349,10 @@ test("onBlocked retry retries then stops on process-failure exhaustion", async (
   const ctx = fixture(1);
   const started = stubStarts();
   try {
+    // Isolate the rule. A run that ends without posting a status is normally
+    // audited before any rule applies (see completionAudit.test.ts); this test
+    // is about what retry does once that audit has had its say.
+    updateSettings({ "pipeline.auditOnBlocked": "off" });
     workspaces.upsertPipelineRule(ctx.prompts[0]!.id, { onBlocked: "retry", retryLimit: 1 });
     const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
     await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "process" });
@@ -361,6 +365,7 @@ test("onBlocked retry retries then stops on process-failure exhaustion", async (
     assert.equal(latest.state, "STOPPED");
     assert.equal(latest.stopReason, "retry_exhausted");
   } finally {
+    resetSettings(["pipeline.auditOnBlocked"]);
     ctx.cleanup();
   }
 });
@@ -384,29 +389,36 @@ test("retry exhaustion on a human BLOCKED waits instead of stopping", async () =
   }
 });
 
-test("autoHandoffOnBlocked is off by default: a blocked station just parks", async () => {
+test("a station the agent blocked with a question just parks, whatever the trigger", async () => {
   const ctx = fixture(2);
   stubStarts();
   try {
+    // Deliberately the *broadest* trigger. The point is not that the default is
+    // conservative — it is that an agent's question is excluded even when the
+    // operator has asked for briefs as freely as the setting allows. BLOCKED is
+    // a question, and summarising it would burn a run to say someone must answer.
+    updateSettings({ "pipeline.handoffTrigger": "anyUnfinished" });
     const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
     await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
     const parked = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "BLOCKED");
     assert.equal(parked?.state, "WAITING_HUMAN");
     assert.equal(parked?.waitReason, null, "nothing should have been summoned");
     assert.equal(workspaces.handoffsForPrompt(ctx.prompts[0]!.id).length, 0);
   } finally {
+    resetSettings(["pipeline.handoffTrigger"]);
     ctx.cleanup();
   }
 });
 
-test("autoHandoffOnBlocked parks normally when no handoff can be started", async () => {
+test("the broadest handoff trigger still parks cleanly when none can be started", async () => {
   const ctx = fixture(2);
   stubStarts();
   try {
     // No provider is actually available in the test process, so scheduleHandoff
     // declines. The run must still park cleanly rather than claim a handoff is
     // running — a wait reason that never resolves would strand the operator.
-    updateSettings({ "pipeline.autoHandoffOnBlocked": true });
+    updateSettings({ "pipeline.handoffTrigger": "anyUnfinished" });
     const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
     await endStation({ runId: playing.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
     const parked = workspaces.activePipeline(ctx.suite.id);
@@ -417,7 +429,7 @@ test("autoHandoffOnBlocked parks normally when no handoff can be started", async
       `unexpected wait reason ${String(parked?.waitReason)}`,
     );
   } finally {
-    resetSettings(["pipeline.autoHandoffOnBlocked"]);
+    resetSettings(["pipeline.handoffTrigger"]);
     ctx.cleanup();
   }
 });

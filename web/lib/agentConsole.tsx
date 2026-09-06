@@ -98,6 +98,8 @@ function sourceText(source: RunSource): string {
       return `Consulting: ${source.question}`;
     case "handoff":
       return `Preparing handoff for ${source.promptKey ?? source.title}`;
+    case "audit":
+      return `Auditing whether ${source.promptKey ?? source.title} was actually finished`;
   }
 }
 

@@ -2,8 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_PIPELINE_POLICY,
+  isAuditOnBlockedMode,
+  isDodEnforcement,
+  isHandoffTrigger,
   isOnBlockedAction,
   isOnDoneAction,
+  isReconfigureKind,
   type PipelinePolicy,
   type HandoffRequirement,
   type PauseMode,
@@ -90,7 +94,7 @@ const FIELDS: FieldDef[] = [
     envVar: "BUDGET_MAX_INPUT_TOKENS",
     fallback: 8000000,
     description:
-      "Cumulative input tokens, cached included. This is the number that turns into money: an agentic loop resends its whole transcript every turn. 0 disables.",
+      "Cumulative input tokens, weighted by cost: cache reads count at their cache-read rate, not at full price. This is the number that turns into money — an agentic loop resends its whole transcript every turn, and almost all of that is cached. 0 disables.",
   },
   {
     key: "budget.maxToolOutputBytes",
@@ -181,17 +185,62 @@ const FIELDS: FieldDef[] = [
     isDangerous: (value) => value === "never",
   },
   {
-    key: "pipeline.autoHandoffOnBlocked",
-    label: "Summon a handoff when a station blocks",
+    key: "pipeline.handoffTrigger",
+    label: "When a handoff is prepared without you",
     group: "Pipeline policy",
-    type: "boolean",
-    envVar: "PIPELINE_AUTO_HANDOFF_ON_BLOCKED",
-    fallback: false,
+    type: "select",
+    envVar: "PIPELINE_HANDOFF_TRIGGER",
+    fallback: "reviewerIncomplete",
     description:
-      "On, a station whose rule is 'wait' first has a read-only agent write a continuation brief, and the "
-      + "run carries on by itself if that agent says the work can continue. Off, the run simply parks and "
-      + "waits for you. This is the one setting here that can start an agent without you pressing anything.",
-    isDangerous: (value) => value === true,
+      "A handoff exists so a successor does not redo work a previous run already did. That is worth an "
+      + "agent run when the work is unfinished and something was produced — and never when an agent "
+      + "deliberately stopped to ask you a question, which is not unfinished work but a question. "
+      + "This is the one setting here that can start an agent without you pressing anything.",
+    options: [
+      option("reviewerIncomplete", "Only when a reviewer says the work is genuinely unfinished", "The narrowest trigger, and the default"),
+      option("anyUnfinished", "Whenever a run ends unfinished having produced something", "Prepares more briefs, some of which will not be needed", true),
+      option("manualOnly", "Never — only when you press the button", "Resuming may redo work a previous run already did", true),
+    ],
+    isDangerous: (value) => value === "anyUnfinished" || value === "manualOnly",
+  },
+  {
+    key: "pipeline.auditOnBlocked",
+    label: "Audit a station that blocked without posting a status",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_AUDIT_ON_BLOCKED",
+    fallback: "autocomplete",
+    description:
+      "Some agents finish the work and then never post DONE, and the station blocks with 'Agent process "
+      + "ended ... without posting the required DONE or BLOCKED status'. This sends a different, read-only "
+      + "agent to check the working tree against the item's acceptance criteria before anything else "
+      + "happens. It never runs for a station that blocked with a real question for you.",
+    options: [
+      option("autocomplete", "Audit, and close the station if the work is really done", "Keeps an unattended pipeline moving; a COMPLETE verdict marks the station DONE with the auditor's evidence", true),
+      option("report", "Audit and record the verdict, but still wait for me", "You get the answer when you come back; nothing is completed automatically"),
+      option("off", "Do not audit", "The station parks or follows its rule exactly as before"),
+    ],
+    isDangerous: (value) => value === "autocomplete",
+  },
+  {
+    key: "pipeline.dodEnforcement",
+    label: "When a definition of done is not met",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DOD_ENFORCEMENT",
+    fallback: "block",
+    description:
+      "A work item's definition of done is a list of criteria — prose a reviewer judges, commands "
+      + "this server runs itself and checks the exit code of, and whether every sub-step is closed. "
+      + "This is the house default for what happens when a required criterion does not pass; a "
+      + "workspace, program, suite or single item can say something different. With no criteria "
+      + "written anywhere, there is nothing to fail and this setting does nothing.",
+    options: [
+      option("block", "Refuse to close the work item", "It lands in Needs review, with the failing criteria and the real command output recorded as its evidence"),
+      option("warn", "Close it anyway, but record what did not pass", "The item completes; the failing criteria are still visible on it", true),
+      option("off", "Do not check", "Nothing is evaluated and no evidence is recorded", true),
+    ],
+    isDangerous: (value) => value !== "block",
   },
   {
     key: "pipeline.maxHandoffGenerations",
@@ -203,6 +252,42 @@ const FIELDS: FieldDef[] = [
     description:
       "How many times one station may be handed off before the pipeline refuses another. Guards against a "
       + "station that hands off to itself forever without progressing.",
+  },
+  {
+    key: "pipeline.maxRemediationAttempts",
+    label: "Max reviewer remediation runs per work item",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_REMEDIATION_ATTEMPTS",
+    fallback: 2,
+    description:
+      "How many times a reviewer may start a developer run to finish the work it found missing, for one work "
+      + "item. A remediation run can itself end unfinished and be reviewed again, so this is what stops that "
+      + "being a loop. 0 disables remediation entirely.",
+  },
+  {
+    key: "pipeline.reviewerReconfigure",
+    label: "Pipeline changes a reviewer may make",
+    group: "Pipeline policy",
+    type: "string",
+    envVar: "PIPELINE_REVIEWER_RECONFIGURE",
+    fallback: "raiseBudget,decompose,switchProvider",
+    description:
+      "Comma-separated allowlist of changes a reviewer may apply by itself before remediating: raiseBudget, "
+      + "decompose, switchProvider. Empty means it may finish work but never reconfigure anything. Every "
+      + "applied change is recorded on the work item.",
+    isDangerous: (value) => String(value).trim() !== "",
+  },
+  {
+    key: "pipeline.maxReviewerBudgetMultiplier",
+    label: "Max budget multiple a reviewer may grant",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_REVIEWER_BUDGET_MULTIPLIER",
+    fallback: 4,
+    description:
+      "Ceiling on raiseBudget: the largest multiple of a work item's normal run budget a reviewer may give it. "
+      + "1 disables budget raises while leaving the rest of the allowlist alone.",
   },
   {
     key: "pipeline.defaultOnBlocked",
@@ -897,9 +982,12 @@ export const settings = {
   get pipelinePolicy(): PipelinePolicy {
     const pauseMode = text("pipeline.pauseMode");
     const requirement = text("pipeline.handoffRequirement");
+    const handoffTrigger = text("pipeline.handoffTrigger");
     const onBlocked = text("pipeline.defaultOnBlocked");
     const onDone = text("pipeline.defaultOnDone");
     const generations = count("pipeline.maxHandoffGenerations");
+    const audit = text("pipeline.auditOnBlocked");
+    const enforcement = text("pipeline.dodEnforcement");
     return {
       pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
       stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
@@ -908,9 +996,25 @@ export const settings = {
         requirement === "always" || requirement === "never"
           ? (requirement satisfies HandoffRequirement)
           : "whenWorkProduced",
-      autoHandoffOnBlocked: flag("pipeline.autoHandoffOnBlocked"),
+      // The old boolean is honoured for one release: an operator who had turned
+      // it on meant "prepare briefs by yourself", which is the broader trigger.
+      handoffTrigger: isHandoffTrigger(handoffTrigger)
+        ? handoffTrigger
+        : flag("pipeline.autoHandoffOnBlocked") ? "anyUnfinished" : DEFAULT_PIPELINE_POLICY.handoffTrigger,
+      auditOnBlocked: isAuditOnBlockedMode(audit) ? audit : DEFAULT_PIPELINE_POLICY.auditOnBlocked,
+      dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
       maxHandoffGenerations:
         generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
+      // 0 is meaningful here — it switches remediation off — so this deliberately
+      // does not use the `> 0 ? value : fallback` shape the other counters use.
+      // The descriptor's own fallback seeds `defaults`, so an unset key already
+      // reads as 2 rather than as 0.
+      maxRemediationAttempts: Math.max(0, count("pipeline.maxRemediationAttempts")),
+      reviewerReconfigure: text("pipeline.reviewerReconfigure")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(isReconfigureKind),
+      maxReviewerBudgetMultiplier: Math.max(1, count("pipeline.maxReviewerBudgetMultiplier") || DEFAULT_PIPELINE_POLICY.maxReviewerBudgetMultiplier),
       defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,
       defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
     };

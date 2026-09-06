@@ -6,6 +6,11 @@
  *   node scripts/rewrite-prompts.mjs            # dry run: print the diffs
  *   node scripts/rewrite-prompts.mjs --apply    # write them
  *   node scripts/rewrite-prompts.mjs --key S6-00
+ *   node scripts/rewrite-prompts.mjs --edits scripts/prompt-edits-<name>.json
+ *
+ * An applied edit set is spent: its `find` text no longer exists, so re-running it
+ * reports misses. Each rewrite gets its own file rather than overwriting the last,
+ * so the record of what was changed and why survives.
  *
  * Edits are exact string replacements, keyed by prompt external key. An edit
  * whose `find` text is absent is reported as a miss and exits non-zero rather
@@ -16,12 +21,15 @@ import { readFileSync } from "node:fs";
 
 const API = process.env.AGENT_CONSOLE_API ?? "http://127.0.0.1:4000";
 const apply = process.argv.includes("--apply");
-const onlyKey = (() => {
-  const index = process.argv.indexOf("--key");
-  return index === -1 ? null : process.argv[index + 1];
-})();
+const flag = (name, fallback = null) => {
+  const index = process.argv.indexOf(`--${name}`);
+  return index === -1 ? fallback : process.argv[index + 1];
+};
+const onlyKey = flag("key");
+const editsFile = flag("edits", "./prompt-edits.json");
+const reason = flag("reason", "Cost normalisation: stage-level verification");
 
-const EDITS = JSON.parse(readFileSync(new URL("./prompt-edits.json", import.meta.url), "utf8"));
+const EDITS = JSON.parse(readFileSync(new URL(editsFile, import.meta.url), "utf8"));
 
 /** Line-level diff, enough to review a prose edit without pulling in a dep. */
 function diff(before, after) {
@@ -85,7 +93,7 @@ for (const [key, edits] of Object.entries(EDITS)) {
     await json(`/api/prompts/${prompt.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: next, reason: "Cost normalisation: stage-level verification" }),
+      body: JSON.stringify({ content: next, reason }),
     });
   }
 }

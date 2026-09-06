@@ -19,7 +19,7 @@ export interface SubTrailEntry {
 }
 
 function isDone(item: OperationsPrompt): boolean {
-  return item.operationalState === "COMPLETE" || item.operationalState === "SKIPPED";
+  return item.operationalState === "DONE" || item.operationalState === "SKIPPED";
 }
 
 /**
@@ -68,7 +68,7 @@ export function SubPipeline({
   const pinned = items.filter((item) => !ruleFor(item.prompt.id).inherited).length;
   // The first slice the scheduler will refuse to walk past.
   const blocking = items.find(
-    (item) => item.operationalState === "RECOVERY_NEEDED" || item.operationalState === "AWAITING_RESPONSE",
+    (item) => item.operationalState === "RECOVERY_NEEDED" || item.operationalState === "BLOCKED",
   );
 
   return (

@@ -1,4 +1,4 @@
-import { isProviderId, type PipelineRun, type PromptPipelineRule, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { autoHandoffAllowed, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type ReconfigureDirective, type ReconfigureKind, type ReviewAction, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -31,8 +31,21 @@ function enqueue<T>(workspaceId: number, work: () => Promise<T>): Promise<T> {
   return current;
 }
 
-function processFailureBlocked(result: string): boolean {
-  return result.startsWith("Agent process ended") || result.startsWith("No active agent run");
+/**
+ * Whether retries were exhausted against something no further retry can fix.
+ *
+ * A station that keeps failing to *run* will keep failing to run, so the
+ * pipeline stops rather than parking for an operator who has nothing to answer.
+ * A station that keeps ending without reporting is a different matter: the work
+ * may well be getting done, so that parks and waits for a reviewer.
+ *
+ * This used to sniff the prompt's result text for the prefixes "Agent process
+ * ended" and "No active agent run", which meant rewording an operator-facing
+ * sentence silently changed the scheduler's behaviour. The status now carries
+ * the fact, so it is read instead of guessed at.
+ */
+function processFailureBlocked(status: PromptStatus): boolean {
+  return status === "FAILED";
 }
 
 function optionalPlayProvider(input: Record<string, unknown>, field: "provider" | "model", present: boolean): ProviderId | string | null | undefined {
@@ -255,7 +268,7 @@ async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sour
     const source = workspaces.runSummary(sourceRunId);
     const { scheduleHandoff } = await import("./handoffCoordinator.ts");
     const namedPipelineId = namedPipelineIdFor(pipeline);
-    return await scheduleHandoff({
+    const result = await scheduleHandoff({
       workspaceId: pipeline.workspaceId,
       promptId,
       sourceRunId,
@@ -264,26 +277,84 @@ async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sour
       processState: "done",
       ...(namedPipelineId === undefined ? {} : { namedPipelineId }),
     });
+    return result.started;
   } catch (error) {
     log.warn(`auto-handoff failed suite=${pipeline.suiteId} prompt=${promptId}`, error);
     return false;
   }
 }
 
-async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string): Promise<SuitePipelineRun> {
+/**
+ * Summon a read-only auditor for a station that blocked without any agent ever
+ * posting a status. The distinction is the whole point: that block means "the
+ * process ended and we do not know what happened", which is the one case where
+ * the work may already be finished and only the status post was lost.
+ *
+ * `scheduleCompletionAudit` re-checks that itself and declines otherwise, so a
+ * station that blocked with a real question for a human is never audited past.
+ */
+async function tryCompletionAudit(pipeline: SuitePipelineRun, promptId: number, sourceRunId: string): Promise<boolean> {
+  if (settings.pipelinePolicy.auditOnBlocked === "off") return false;
+  try {
+    const source = workspaces.runSummary(sourceRunId);
+    const { scheduleCompletionAudit } = await import("./completionAudit.ts");
+    const result = await scheduleCompletionAudit({
+      workspaceId: pipeline.workspaceId,
+      promptId,
+      sourceRunId,
+      sourceProvider: source.provider,
+      automatic: true,
+    });
+    return result.started;
+  } catch (error) {
+    log.warn(`audit failed to start suite=${pipeline.suiteId} prompt=${promptId}`, error);
+    return false;
+  }
+}
+
+interface BlockedOptions {
+  /** Set once an audit has already had its say, so the gate cannot loop. */
+  audited?: boolean;
+  /** Wait reason to park under, when the audit explained why we are here. */
+  parkReason?: string | null;
+}
+
+async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string, options: BlockedOptions = {}): Promise<SuitePipelineRun> {
   // A paused run must not spend an attempt. Retry and recover both mutate the
   // prompt and the counter before starting anything, so the hold is checked
   // here rather than after those writes — otherwise pausing on a blocked
   // station silently burned a retry the operator never saw run.
   const held = workspaces.pipelineById(pipeline.id)?.state === "PAUSED";
 
+  // Before any rule runs, find out whether there is anything left to do. Every
+  // rule is the wrong move when the work is already finished: "wait" strands
+  // the rail for hours, and "retry" and "recover" pay another full developer
+  // run to redo work that is sitting in the tree. This gate applies to all of
+  // them — except "skip", where the operator has already said the station's
+  // outcome does not matter.
+  if (!held && !options.audited && sourceRunId !== undefined && rule.onBlocked !== "skip") {
+    if (await tryCompletionAudit(pipeline, promptId, sourceRunId)) {
+      return park(pipeline, promptId, "audit_running");
+    }
+  }
+
   if (rule.onBlocked === "wait") {
-    if (settings.pipelinePolicy.autoHandoffOnBlocked && sourceRunId !== undefined && !held) {
+    // Whether a handoff is worth an agent run. The status is what makes this
+    // decidable: before it was stored, "the agent asked a question" and "the run
+    // said nothing" were both spelled BLOCKED, so this could not tell them
+    // apart and summarised questions nobody needed summarised.
+    const allowed = sourceRunId !== undefined && !held && autoHandoffAllowed({
+      trigger: settings.pipelinePolicy.handoffTrigger,
+      status: workspaces.promptOutcome(promptId).status,
+      producedWork: workspaces.promptProducedWork(promptId),
+      reviewed: options.audited === true || options.parkReason === "audit_incomplete",
+    });
+    if (allowed && sourceRunId !== undefined) {
       if (await tryAutoHandoff(pipeline, promptId, sourceRunId)) {
         return park(pipeline, promptId, "handoff_running");
       }
     }
-    return park(pipeline, promptId, null);
+    return park(pipeline, promptId, options.parkReason ?? null);
   }
   if (rule.onBlocked === "retry") {
     if (pipeline.attempt < rule.retryLimit) {
@@ -294,7 +365,7 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
       const updated = workspaces.updatePipelineRun(pipeline.id, { attempt, recovering: false, currentPromptId: promptId, currentRunId: null });
       return startCurrentStation(updated, promptId);
     }
-    if (processFailureBlocked(result)) return terminate(pipeline, "STOPPED", "retry_exhausted");
+    if (processFailureBlocked(workspaces.promptOutcome(promptId).status)) return terminate(pipeline, "STOPPED", "retry_exhausted");
     return park(pipeline, promptId, "retry_exhausted");
   }
   if (rule.onBlocked === "recover") {
@@ -316,6 +387,19 @@ async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRu
   workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it blocked.");
   return advance(pipeline);
 }
+
+/**
+ * Statuses that hand the station to `applyOnBlocked` — the path for "this run
+ * did not finish the work, decide what to do about it".
+ *
+ * All three are the same situation from the scheduler's point of view: the run
+ * is over and the item is not closed. They differ in *why*, which is what the
+ * status now records and what the reviewer keys off, but not in what the
+ * pipeline must do next. Listing them here rather than testing `!== "DONE"`
+ * keeps `unexpected_status` meaning something: a status the scheduler genuinely
+ * does not know how to handle should still stop the run rather than be guessed at.
+ */
+const UNFINISHED_STATUSES = new Set<PromptStatus>(["BLOCKED", "UNREPORTED", "FAILED", "NEEDS_REVIEW"]);
 
 async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, promptId: number): Promise<void> {
   const live = workspaces.pipelineById(pipeline.id);
@@ -341,7 +425,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
       await advance(live);
       return;
     }
-    if (posted.status === "BLOCKED") {
+    if (UNFINISHED_STATUSES.has(posted.status)) {
       await applyOnBlocked(live, rule, promptId, posted.result, runId);
       return;
     }
@@ -352,7 +436,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     await applyOnDone(live, rule);
     return;
   }
-  if (posted.status === "BLOCKED") {
+  if (UNFINISHED_STATUSES.has(posted.status)) {
     await applyOnBlocked(live, rule, promptId, posted.result, runId);
     return;
   }
@@ -396,7 +480,7 @@ function notReadyReason(workspaceId: number, blockingPromptId: number | null, de
   const prompt = workspaces.resolvePrompt(workspaceId, target);
   const label = prompt.externalKey ?? prompt.title;
   if (prompt.recoverable) {
-    return `${label} needs recovery before this pipeline can continue — its agent process ended without posting a status. Retry or skip it, then play again.`;
+    return `${label} needs recovery before this pipeline can continue — its last run stopped without posting a status. Retry or skip it, then play again.`;
   }
   if (prompt.status === "BLOCKED") {
     return `${label} is blocked and needs a human response. Answer or skip it, then play again.`;
@@ -625,6 +709,352 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   return startNextNamedStage(created, preferPlayTarget);
 }
 
+/**
+ * Restarts a pipeline parked on a station a human has just resolved out of band
+ * — skipped, or marked complete. Only a rail actually waiting on *this* station
+ * moves; anything else is left exactly as it is.
+ */
+async function resumeAfterHumanResolution(promptId: number): Promise<void> {
+  const home = workspaces.promptHome(promptId);
+  await enqueue(home.workspaceId, async () => {
+    const active = workspaces.activePipeline(home.suiteId);
+    if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
+    const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+    await syncNamedFromSuite(playing);
+    const live = workspaces.pipelineById(playing.id);
+    if (live === null) return;
+    await advance(live);
+  });
+}
+
+/**
+ * The reason recorded on a station that an audit closed. Deliberately explicit
+ * about who decided: nobody reading this record later should have to work out
+ * that the agent which did the work never confirmed it.
+ */
+const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work item against its acceptance criteria after the run that did the work ended without posting a status.";
+
+/**
+ * Act on a finished audit. Runs inside the workspace queue, so it must never
+ * call back into anything that enqueues — the tail it would wait on is the one
+ * it is already holding.
+ *
+ * Returns whether the verdict actually closed the station, which is what the
+ * audit record stores as `applied`.
+ */
+async function settleAudit(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
+  const home = workspaces.promptHome(args.promptId);
+  const active = workspaces.activePipeline(home.suiteId);
+  // Only a run parked on this exact station by this audit may be moved by it.
+  const parked = active !== null
+    && active.state === "WAITING_HUMAN"
+    && active.currentPromptId === args.promptId
+    && active.waitReason === "audit_running";
+
+  // What the operator has said this verdict should do, for this situation, at
+  // the narrowest scope that says anything. This used to be one global
+  // three-way switch, so "close a run that went quiet" and "close one whose
+  // process crashed" could not be answered differently.
+  const trigger = workspaces.reviewSituation(args.promptId) ?? "unreported";
+  const reviewer = workspaces.reviewerConfig(trigger, args.promptId);
+  const action = args.verdict === "COMPLETE" ? reviewer.onComplete
+    : args.verdict === "INCOMPLETE" ? reviewer.onIncomplete
+    : reviewer.onUnverifiable;
+
+  // Set when the definition of done refused a close the reviewer wanted to make.
+  // It changes what the station parks under, so the operator reads "a criterion
+  // did not pass" rather than "an audit could not confirm it".
+  let refusedByDod = false;
+  if (args.verdict === "COMPLETE" && action === "close") {
+    try {
+      // A reviewer's COMPLETE is an opinion; the definition-of-done commands are
+      // not. Run them here so the gate inside `completePrompt` is reading fresh
+      // evidence rather than whatever was last recorded — this is the one path
+      // where a machine closes a station unattended, so it is the one that most
+      // needs the checks to have actually happened.
+      const { runDefinitionOfDoneCommands } = await import("./definitionOfDone.ts");
+      await runDefinitionOfDoneCommands(args.promptId, args.sourceRunId);
+      const written = workspaces.completePrompt(args.promptId, "SYSTEM", {
+        reason: AUDIT_COMPLETE_REASON,
+        verificationSummary: args.verificationSummary ?? "",
+      });
+      // The gate refused: the item is on NEEDS_REVIEW with the failing criteria
+      // recorded, not on DONE. Reporting this as applied would tell the audit
+      // record it closed a station it did not close. It falls through to the
+      // station rule below rather than returning, because a pipeline parked on
+      // `audit_running` is only ever unparked down there — returning here would
+      // leave the rail waiting on an audit that has already finished.
+      if (written === "DONE") {
+        log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
+        if (parked) {
+          const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+          await syncNamedFromSuite(playing);
+          const live = workspaces.pipelineById(playing.id);
+          if (live !== null) await advance(live);
+        }
+        return true;
+      }
+      refusedByDod = true;
+      log.info(`audit COMPLETE refused by the definition of done suite=${home.suiteId} prompt=${args.promptId}`);
+    } catch (error) {
+      // The station moved under us, or the verdict carried no evidence to
+      // record. Either way it is not complete, so fall through to the rule.
+      log.warn(`audit COMPLETE could not be applied prompt=${args.promptId}`, error);
+    }
+  }
+
+  if (!parked) return false;
+  const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+  await syncNamedFromSuite(playing);
+  const live = workspaces.pipelineById(playing.id) ?? playing;
+  const rule = workspaces.pipelineRule(args.promptId, namedPipelineIdFor(live));
+  const outcome = workspaces.promptOutcome(args.promptId);
+  const parkReason = refusedByDod ? "dod_unmet"
+    : args.verdict === "INCOMPLETE" ? "audit_incomplete"
+    : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable"
+    : null;
+
+  /*
+   * What the reviewer's verdict actually does.
+   *
+   * `action` used to be computed here and then read exactly once, for
+   * COMPLETE + close. Every other combination the reviewer matrix offers —
+   * `handoff`, `retry`, `park`, `markReview` — was stored, rendered in the
+   * settings screen, editable, and inert: the run fell through to the station
+   * rule as if the reviewer had said nothing. That is most of why a reviewer
+   * whose verdicts were correct never changed an outcome.
+   *
+   * A refused close is deliberately not routed here. The definition of done
+   * has already spoken, and `dod_unmet` is the reason the operator needs to
+   * see — not a second opinion from the reviewer's own configuration.
+   *
+   * A null verdict is not routed here either. It means the auditor's own run
+   * died without producing one, and acting on `onUnverifiable` would attribute
+   * an opinion to an agent that never gave it. The station falls back to its
+   * rule, having lost nothing but the cost of the read-only run.
+   */
+  if (!refusedByDod && args.verdict !== null) {
+    const handled = await applyReviewAction({
+      pipeline: live,
+      action,
+      promptId: args.promptId,
+      verdict: args.verdict,
+      report: args.report ?? null,
+      auditId: args.auditId ?? null,
+      sourceRunId: args.sourceRunId,
+      parkReason,
+    });
+    if (handled) return false;
+  }
+
+  await applyOnBlocked(live, rule, args.promptId, outcome.result, args.sourceRunId, { audited: true, parkReason });
+  return false;
+}
+
+/**
+ * Apply the pipeline changes the reviewer asked for, as far as the operator
+ * allows. Every directive is recorded either way — an applied one so the change
+ * is attributable and reversible, a refused one because a reviewer that keeps
+ * asking for a capped change is evidence the cap is wrong.
+ *
+ * `decompose` is recorded but never applied here: splitting a work item is an
+ * agent-only command (it needs an active execute run, so the split is always
+ * attributable to one). The remediation brief carries it as an instruction
+ * instead, which is why this returns what it accepted.
+ */
+function applyReconfigure(pipeline: SuitePipelineRun, promptId: number, auditId: string | null, directives: readonly ReconfigureDirective[]): ReconfigureKind[] {
+  const policy = settings.pipelinePolicy;
+  const accepted: ReconfigureKind[] = [];
+  for (const directive of directives) {
+    const record = (applied: boolean, refusedReason: string | null, multiplier: number | null = null) => {
+      workspaces.recordReviewerReconfigure({
+        promptId, auditId, kind: directive.kind, multiplier,
+        provider: directive.provider, why: directive.why, applied, refusedReason,
+      });
+    };
+    if (!policy.reviewerReconfigure.includes(directive.kind)) {
+      record(false, "The operator has not allowed a reviewer to make this kind of change.");
+      continue;
+    }
+    if (directive.kind === "raiseBudget") {
+      const cap = policy.maxReviewerBudgetMultiplier;
+      if (cap <= 1) {
+        record(false, "Budget raises are capped at 1x, which disables them.");
+        continue;
+      }
+      // A missing multiplier means "more than it had"; 2x is the smallest
+      // raise that is worth restarting a run for.
+      const wanted = directive.multiplier === null || directive.multiplier < 1 ? 2 : directive.multiplier;
+      const granted = Math.min(wanted, cap);
+      record(true, granted < wanted ? `Asked for ${wanted}x, capped at ${cap}x.` : null, granted);
+      log.info(`reviewer raised budget prompt=${promptId} to ${granted}x`);
+      accepted.push(directive.kind);
+      continue;
+    }
+    if (directive.kind === "switchProvider") {
+      if (!isProviderId(directive.provider)) {
+        record(false, `"${directive.provider ?? "none"}" is not a provider this install knows.`);
+        continue;
+      }
+      try {
+        // A sub-step under a named pipeline carries its rule on the pipeline
+        // step, not on the prompt, and writing the wrong one would switch an
+        // agent everywhere except where the run actually reads it.
+        const namedId = namedPipelineIdFor(pipeline);
+        if (namedId === undefined) workspaces.upsertPipelineRule(promptId, { provider: directive.provider });
+        else workspaces.upsertNamedPipelineRule(namedId, promptId, { provider: directive.provider });
+        record(true, null);
+        log.info(`reviewer switched provider prompt=${promptId} to ${directive.provider}`);
+        accepted.push(directive.kind);
+      } catch (error) {
+        record(false, error instanceof Error ? error.message : String(error));
+      }
+      continue;
+    }
+    // decompose — carried in the brief, not applied here.
+    record(true, null);
+    accepted.push(directive.kind);
+  }
+  return accepted;
+}
+
+/** The brief a remediation run is given: what to do, and what not to redo. */
+function remediationBrief(report: CompletionAuditReport, accepted: readonly ReconfigureKind[]): string {
+  const bullets = (items: readonly string[]) => (items.length === 0 ? "- None recorded." : items.map((item) => `- ${item}`).join("\n"));
+  const confirmed = report.checks.filter((check) => check.result === "PASSED").map((check) => check.criterion);
+  const split = accepted.includes("decompose")
+    ? "\n\n## Split this first\n\nA reviewer judged this item too large to finish in one run. Before doing any of the work above, split it with `decompose` and let the sub-steps carry it.\n"
+    : "";
+  return `# What is still missing
+
+A read-only reviewer inspected the working tree after the previous run and found the work below still outstanding. **This list is your task.** Do exactly it.
+
+## Do this
+
+${bullets(report.remainingWork)}${split}
+
+## Already confirmed done — do not redo
+
+${bullets(confirmed)}
+
+## How the reviewer reached that
+
+${report.reasoning || "_Not given._"}
+`;
+}
+
+/**
+ * Start a developer run scoped to the work the reviewer named, and let the rail
+ * carry on by itself.
+ *
+ * The bound that matters is `maxRemediationAttempts`: a remediation run can end
+ * unfinished, be reviewed again, and be remediated again. The count comes off
+ * the status ledger rather than the run or the pipeline row, both of which this
+ * path resets.
+ */
+async function tryRemediate(args: {
+  pipeline: SuitePipelineRun;
+  promptId: number;
+  report: CompletionAuditReport | null;
+  auditId: string | null;
+}): Promise<boolean> {
+  const { pipeline, promptId, report } = args;
+  const limit = settings.pipelinePolicy.maxRemediationAttempts;
+  if (limit <= 0) return false;
+  // Nothing to instruct. A run started on an empty brief would rediscover the
+  // problem from scratch, which is the loop this replaces — so this falls back
+  // to the station rule and the operator sees the reviewer's report instead.
+  if (report === null || report.remainingWork.length === 0) {
+    log.info(`reviewer named no remaining work prompt=${promptId}; falling back to the station rule`);
+    return false;
+  }
+  const spent = workspaces.remediationCount(promptId);
+  if (spent >= limit) {
+    log.info(`remediation limit reached prompt=${promptId} (${spent}/${limit})`);
+    return false;
+  }
+
+  // Order matters: a raised budget or a switched agent has to be in force
+  // before the run starts, or the remediation dies exactly where its
+  // predecessor did.
+  const accepted = applyReconfigure(pipeline, promptId, args.auditId, report.reconfigure);
+
+  workspaces.preparePromptForRemediation(promptId, args.auditId ?? "unknown", remediationBrief(report, accepted));
+  const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
+  log.info(`remediating prompt=${promptId} attempt=${spent + 1}/${limit} items=${report.remainingWork.length}`);
+  await startCurrentStation(updated, promptId);
+  return true;
+}
+
+/**
+ * Carry out the reviewer's configured action. Returns whether it took
+ * responsibility for the run; `false` falls back to the station's own rule,
+ * which is the right answer whenever the action cannot be carried out — a
+ * `remediate` with nothing to remediate, a `handoff` that could not start.
+ */
+async function applyReviewAction(args: {
+  pipeline: SuitePipelineRun;
+  action: ReviewAction;
+  promptId: number;
+  verdict: CompletionVerdict;
+  report: CompletionAuditReport | null;
+  auditId: string | null;
+  sourceRunId: string;
+  parkReason: string | null;
+}): Promise<boolean> {
+  const { pipeline, action, promptId } = args;
+
+  if (action === "close") {
+    // Reached only on a verdict that is not COMPLETE — the COMPLETE path
+    // returned long before this. An operator can select `close` against
+    // INCOMPLETE in the matrix, and honouring it would mark work done on the
+    // reviewer's own evidence that it is not. Refused, loudly, and the station
+    // falls to its rule.
+    log.warn(`reviewer action "close" refused on a ${args.verdict} verdict prompt=${promptId}`);
+    return false;
+  }
+
+  if (action === "remediate") return tryRemediate(args);
+
+  if (action === "retry") {
+    log.info(`reviewer retry prompt=${promptId}`);
+    workspaces.resetPromptToTodo(promptId, "A reviewer's verdict retried this station.");
+    const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
+    await startCurrentStation(updated, promptId);
+    return true;
+  }
+
+  if (action === "handoff") {
+    // The same gate the automatic path uses. A brief summarising a run that
+    // produced nothing is a full agent run spent describing an empty tree, and
+    // choosing `handoff` in the matrix is not a reason to pay for one — it says
+    // what to do when there *is* something to hand over. Refused, the station
+    // falls back to its rule and the operator still gets the reviewer's report.
+    const allowed = autoHandoffAllowed({
+      trigger: settings.pipelinePolicy.handoffTrigger,
+      status: workspaces.promptOutcome(promptId).status,
+      producedWork: workspaces.promptProducedWork(promptId),
+      reviewed: true,
+    });
+    if (allowed && await tryAutoHandoff(pipeline, promptId, args.sourceRunId)) {
+      await park(pipeline, promptId, "handoff_running");
+      return true;
+    }
+    return false;
+  }
+
+  if (action === "markReview") {
+    workspaces.markPromptNeedsReview(promptId, "A reviewer could not settle this work item, so it is flagged for you.");
+    await park(pipeline, promptId, args.parkReason);
+    return true;
+  }
+
+  // "park" — hold here with the reviewer's reason, whatever the station rule
+  // would otherwise have done.
+  await park(pipeline, promptId, args.parkReason);
+  return true;
+}
+
 export const pipelineScheduler = {
   async play(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
     const suite = workspaces.suiteHeader(suiteId);
@@ -707,21 +1137,35 @@ export const pipelineScheduler = {
     promptId: number;
     processState: "done" | "interrupted" | "error";
   }): Promise<void> {
+    // A run that ended because the server is shutting down is not a station
+    // outcome: advancing here would start the successor inside a dying process
+    // and orphan it. The pipeline is left PLAYING so the next boot marks it
+    // interrupted and the operator resumes or retries deliberately.
+    if (runHub.isClosing()) return;
     const pointed = workspaces.pipelineByCurrentRun(args.runId);
     if (pointed === null) return;
     await enqueue(args.workspaceId, () => applyExecuteEnded(pointed, args.runId, args.promptId));
   },
 
-  async onPromptSkipped(promptId: number): Promise<void> {
-    const home = workspaces.promptHome(promptId);
-    await enqueue(home.workspaceId, async () => {
-      const active = workspaces.activePipeline(home.suiteId);
-      if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
-      const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
-      await syncNamedFromSuite(playing);
-      const live = workspaces.pipelineById(playing.id);
-      if (live === null) return;
-      await advance(live);
-    });
+  /**
+   * A completion audit finished. `verdict` is null when the auditor itself
+   * failed, which is treated exactly like UNVERIFIABLE: the station falls back
+   * to its own rule, having lost nothing but the cost of the read-only run.
+   */
+  async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
+    const home = workspaces.promptHome(args.promptId);
+    return enqueue(home.workspaceId, () => settleAudit(args));
+  },
+
+  onPromptSkipped(promptId: number): Promise<void> {
+    return resumeAfterHumanResolution(promptId);
+  },
+
+  /**
+   * The operator marked a parked station complete by hand. Same resumption as a
+   * skip: the station is terminal either way, so the rail can move on.
+   */
+  onPromptCompleted(promptId: number): Promise<void> {
+    return resumeAfterHumanResolution(promptId);
   },
 };

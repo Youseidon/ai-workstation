@@ -48,6 +48,7 @@ import { PIPELINE_POLICY_GROUP } from "@/lib/settingsGroups";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
 import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
+import { nextPipelineLeaf } from "./continuation";
 import {
   onDoneChip,
   PIPELINE_LABEL,
@@ -349,7 +350,7 @@ export function PipelineBoard({
     if (!byId.has(step.promptId)) return false;
     if (!hideCompleted) return true;
     const item = byId.get(step.promptId);
-    return item?.operationalState !== "COMPLETE" && item?.operationalState !== "SKIPPED";
+    return item?.operationalState !== "DONE" && item?.operationalState !== "SKIPPED";
   });
   const displayedSteps = flowSteps.flatMap((step) => {
     const item = byId.get(step.promptId);
@@ -419,24 +420,17 @@ export function PipelineBoard({
     });
   }, [console_.items, console_.lastRun, console_.providers, console_.runs, stages]);
 
-  // The scheduler walks depth-first into a station's sub-steps, and refuses to
-  // start when the next open one is not TODO. Find that item here so the board
-  // names it instead of letting play fail with a generic refusal.
-  const stuckPrompt = useMemo(() => {
+  // Mirror the scheduler's depth-first walk. The suite run may still point at
+  // a parent that ran earlier even though its next unstarted child is the item
+  // a fresh run will actually launch.
+  const pendingPrompt = useMemo(() => {
     const suite = resumeSuiteOps ?? suiteOps;
     if (suite === null) return null;
-    const unfinished = (item: OperationsPrompt) =>
-      item.operationalState !== "COMPLETE" && item.operationalState !== "SKIPPED";
-    const station = suite.prompts.find(unfinished);
-    if (station === undefined) return null;
-    let node: OperationsPrompt = station;
-    while (true) {
-      const next = node.children.find(unfinished);
-      if (next === undefined) break;
-      node = next;
-    }
-    return node.operationalState === "RECOVERY_NEEDED" || node.operationalState === "AWAITING_RESPONSE" ? node : null;
+    return nextPipelineLeaf(suite.prompts);
   }, [resumeSuiteOps, suiteOps]);
+  const stuckPrompt = pendingPrompt?.operationalState === "RECOVERY_NEEDED" || pendingPrompt?.operationalState === "BLOCKED"
+    ? pendingPrompt
+    : null;
 
   const playBlocked = useMemo(() => {
     if (console_.connection !== "open") return "the backend is disconnected";
@@ -448,7 +442,7 @@ export function PipelineBoard({
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
       return `${occupancy.provider} is already writing this workspace`;
     }
-    if (stuckPrompt?.operationalState === "AWAITING_RESPONSE") {
+    if (stuckPrompt?.operationalState === "BLOCKED") {
       const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
       return `${label} is blocked and needs a human response first`;
     }
@@ -559,11 +553,9 @@ export function PipelineBoard({
       }, "Pipeline stopped");
       return;
     }
-    // A fresh run restarts the same unfinished station, so it needs the same
-    // handoff offer a resume does — the previous agent's work is still there.
-    // Prefer the deepest recovery-needed child: that is the actual run which
-    // was interrupted, and it may not be present in the top-level station list.
-    const continuationItem = stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem;
+    // Resolve the same leaf the scheduler will launch before deciding whether
+    // that leaf has prior work worth handing off.
+    const continuationItem = pendingPrompt ?? resumeItem;
     const continuing = control === "resume" || control === "newRun" || control === "recover";
     if (continuing && continuationItem !== null) {
       const available = console_.providers.find((provider) => provider.available)?.id ?? firstAvailable;
@@ -589,7 +581,14 @@ export function PipelineBoard({
           toast.success(control === "newRun" ? "New run started" : "Pipeline is running");
           return;
         }
-        const reusable = activity.handoffs.find((handoff) => handoff.state === "READY" && handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id) ?? null;
+        // Either the brief launched a successor that then failed, or it never
+        // launched one (its recommendation parked the station for a human).
+        // Both leave a written brief, and preparing a second one would pay a
+        // read-only agent to summarise the same run twice.
+        const reusable = activity.handoffs.find((handoff) => handoff.state === "READY"
+          && (handoff.successorRunId === null
+            ? handoff.sourceRunId === latestExecute.id
+            : handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id)) ?? null;
         setSuccessorProvider((latestExecute.provider as ProviderId | undefined) ?? available);
         setDirectRetry(activity.directRetry);
         setReusableHandoff(reusable);
@@ -976,6 +975,10 @@ export function PipelineBoard({
                       setConfigId(resumeItem.prompt.id);
                     }
               }
+              // The board renders labels from the catalog on the operations
+              // snapshot, so a rename has to be re-read before it shows here.
+              onStatusesChanged={() => void refreshCatalog()}
+              suiteId={activeSuiteId}
             />
 
             {policyOpen && (
@@ -1168,7 +1171,7 @@ export function PipelineBoard({
                       const liveRun = stationOccupancy(item, console_.runs, view?.active);
                       const current = view?.active?.currentPromptId === step.promptId;
                       const doneChildren = item.children.filter(
-                        (child) => child.operationalState === "COMPLETE" || child.operationalState === "SKIPPED",
+                        (child) => child.operationalState === "DONE" || child.operationalState === "SKIPPED",
                       ).length;
                       return (
                         <StationCard
@@ -1307,8 +1310,11 @@ export function PipelineBoard({
         </Modal>
       )}
 
-      {handoffOpen && (stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem) !== null && pipelineId !== null && (() => {
-        const continuationItem = stuckPrompt?.operationalState === "RECOVERY_NEEDED" ? stuckPrompt : resumeItem!;
+      {handoffOpen && (pendingPrompt ?? resumeItem) !== null && pipelineId !== null && (() => {
+        const continuationItem = (pendingPrompt ?? resumeItem)!;
+        // The read-only agent advises the automatic path; an operator resuming
+        // by hand overrides it, and should see what they are overriding.
+        const advice = reusableHandoff === null || reusableHandoff.recommendation === null || reusableHandoff.recommendation === "CONTINUE" ? "" : ` It recommended ${reusableHandoff.recommendation.toLowerCase().replace(/_/g, " ")} rather than continuing, so nothing started automatically.`;
         return (
         <Modal
           open
@@ -1322,7 +1328,7 @@ export function PipelineBoard({
             {reusableHandoff===null&&!directRetry&&<label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>}
             <label className="space-y-1.5 text-xs text-fg-muted"><span>Successor developer agent</span><select value={successorProvider} onChange={(event)=>setSuccessorProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available).map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {directRetry?"default":modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
           </div>
-          <p className="mt-4 text-xs leading-5 text-fg-dim">{directRetry?"Launch failures retry with the provider default, so the invalid per-station model is not reused.":reusableHandoff===null?"Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.":`Prepared by ${reusableHandoff.provider}${reusableHandoff.completedAt===null?"":` on ${new Date(reusableHandoff.completedAt).toLocaleString()}`}. No handoff agent will run again.`}</p>
+          <p className="mt-4 text-xs leading-5 text-fg-dim">{directRetry?"Launch failures retry with the provider default, so the invalid per-station model is not reused.":reusableHandoff===null?"Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.":`Prepared by ${reusableHandoff.provider}${reusableHandoff.completedAt===null?"":` on ${new Date(reusableHandoff.completedAt).toLocaleString()}`}.${advice} No handoff agent will run again.`}</p>
         </Modal>
         );
       })()}
