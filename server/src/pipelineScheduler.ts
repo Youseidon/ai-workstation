@@ -1,4 +1,4 @@
-import { autoHandoffAllowed, isProviderId, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { autoHandoffAllowed, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type ReconfigureDirective, type ReconfigureKind, type ReviewAction, type SuitePipelineRun } from "@agent-console/shared";
 import { getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -742,7 +742,7 @@ const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work i
  * Returns whether the verdict actually closed the station, which is what the
  * audit record stores as `applied`.
  */
-async function settleAudit(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string }): Promise<boolean> {
+async function settleAudit(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
   const home = workspaces.promptHome(args.promptId);
   const active = workspaces.activePipeline(home.suiteId);
   // Only a run parked on this exact station by this audit may be moved by it.
@@ -813,8 +813,246 @@ async function settleAudit(args: { promptId: number; sourceRunId: string; verdic
     : args.verdict === "INCOMPLETE" ? "audit_incomplete"
     : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable"
     : null;
+
+  /*
+   * What the reviewer's verdict actually does.
+   *
+   * `action` used to be computed here and then read exactly once, for
+   * COMPLETE + close. Every other combination the reviewer matrix offers —
+   * `handoff`, `retry`, `park`, `markReview` — was stored, rendered in the
+   * settings screen, editable, and inert: the run fell through to the station
+   * rule as if the reviewer had said nothing. That is most of why a reviewer
+   * whose verdicts were correct never changed an outcome.
+   *
+   * A refused close is deliberately not routed here. The definition of done
+   * has already spoken, and `dod_unmet` is the reason the operator needs to
+   * see — not a second opinion from the reviewer's own configuration.
+   *
+   * A null verdict is not routed here either. It means the auditor's own run
+   * died without producing one, and acting on `onUnverifiable` would attribute
+   * an opinion to an agent that never gave it. The station falls back to its
+   * rule, having lost nothing but the cost of the read-only run.
+   */
+  if (!refusedByDod && args.verdict !== null) {
+    const handled = await applyReviewAction({
+      pipeline: live,
+      action,
+      promptId: args.promptId,
+      verdict: args.verdict,
+      report: args.report ?? null,
+      auditId: args.auditId ?? null,
+      sourceRunId: args.sourceRunId,
+      parkReason,
+    });
+    if (handled) return false;
+  }
+
   await applyOnBlocked(live, rule, args.promptId, outcome.result, args.sourceRunId, { audited: true, parkReason });
   return false;
+}
+
+/**
+ * Apply the pipeline changes the reviewer asked for, as far as the operator
+ * allows. Every directive is recorded either way — an applied one so the change
+ * is attributable and reversible, a refused one because a reviewer that keeps
+ * asking for a capped change is evidence the cap is wrong.
+ *
+ * `decompose` is recorded but never applied here: splitting a work item is an
+ * agent-only command (it needs an active execute run, so the split is always
+ * attributable to one). The remediation brief carries it as an instruction
+ * instead, which is why this returns what it accepted.
+ */
+function applyReconfigure(pipeline: SuitePipelineRun, promptId: number, auditId: string | null, directives: readonly ReconfigureDirective[]): ReconfigureKind[] {
+  const policy = settings.pipelinePolicy;
+  const accepted: ReconfigureKind[] = [];
+  for (const directive of directives) {
+    const record = (applied: boolean, refusedReason: string | null, multiplier: number | null = null) => {
+      workspaces.recordReviewerReconfigure({
+        promptId, auditId, kind: directive.kind, multiplier,
+        provider: directive.provider, why: directive.why, applied, refusedReason,
+      });
+    };
+    if (!policy.reviewerReconfigure.includes(directive.kind)) {
+      record(false, "The operator has not allowed a reviewer to make this kind of change.");
+      continue;
+    }
+    if (directive.kind === "raiseBudget") {
+      const cap = policy.maxReviewerBudgetMultiplier;
+      if (cap <= 1) {
+        record(false, "Budget raises are capped at 1x, which disables them.");
+        continue;
+      }
+      // A missing multiplier means "more than it had"; 2x is the smallest
+      // raise that is worth restarting a run for.
+      const wanted = directive.multiplier === null || directive.multiplier < 1 ? 2 : directive.multiplier;
+      const granted = Math.min(wanted, cap);
+      record(true, granted < wanted ? `Asked for ${wanted}x, capped at ${cap}x.` : null, granted);
+      log.info(`reviewer raised budget prompt=${promptId} to ${granted}x`);
+      accepted.push(directive.kind);
+      continue;
+    }
+    if (directive.kind === "switchProvider") {
+      if (!isProviderId(directive.provider)) {
+        record(false, `"${directive.provider ?? "none"}" is not a provider this install knows.`);
+        continue;
+      }
+      try {
+        // A sub-step under a named pipeline carries its rule on the pipeline
+        // step, not on the prompt, and writing the wrong one would switch an
+        // agent everywhere except where the run actually reads it.
+        const namedId = namedPipelineIdFor(pipeline);
+        if (namedId === undefined) workspaces.upsertPipelineRule(promptId, { provider: directive.provider });
+        else workspaces.upsertNamedPipelineRule(namedId, promptId, { provider: directive.provider });
+        record(true, null);
+        log.info(`reviewer switched provider prompt=${promptId} to ${directive.provider}`);
+        accepted.push(directive.kind);
+      } catch (error) {
+        record(false, error instanceof Error ? error.message : String(error));
+      }
+      continue;
+    }
+    // decompose — carried in the brief, not applied here.
+    record(true, null);
+    accepted.push(directive.kind);
+  }
+  return accepted;
+}
+
+/** The brief a remediation run is given: what to do, and what not to redo. */
+function remediationBrief(report: CompletionAuditReport, accepted: readonly ReconfigureKind[]): string {
+  const bullets = (items: readonly string[]) => (items.length === 0 ? "- None recorded." : items.map((item) => `- ${item}`).join("\n"));
+  const confirmed = report.checks.filter((check) => check.result === "PASSED").map((check) => check.criterion);
+  const split = accepted.includes("decompose")
+    ? "\n\n## Split this first\n\nA reviewer judged this item too large to finish in one run. Before doing any of the work above, split it with `decompose` and let the sub-steps carry it.\n"
+    : "";
+  return `# What is still missing
+
+A read-only reviewer inspected the working tree after the previous run and found the work below still outstanding. **This list is your task.** Do exactly it.
+
+## Do this
+
+${bullets(report.remainingWork)}${split}
+
+## Already confirmed done — do not redo
+
+${bullets(confirmed)}
+
+## How the reviewer reached that
+
+${report.reasoning || "_Not given._"}
+`;
+}
+
+/**
+ * Start a developer run scoped to the work the reviewer named, and let the rail
+ * carry on by itself.
+ *
+ * The bound that matters is `maxRemediationAttempts`: a remediation run can end
+ * unfinished, be reviewed again, and be remediated again. The count comes off
+ * the status ledger rather than the run or the pipeline row, both of which this
+ * path resets.
+ */
+async function tryRemediate(args: {
+  pipeline: SuitePipelineRun;
+  promptId: number;
+  report: CompletionAuditReport | null;
+  auditId: string | null;
+}): Promise<boolean> {
+  const { pipeline, promptId, report } = args;
+  const limit = settings.pipelinePolicy.maxRemediationAttempts;
+  if (limit <= 0) return false;
+  // Nothing to instruct. A run started on an empty brief would rediscover the
+  // problem from scratch, which is the loop this replaces — so this falls back
+  // to the station rule and the operator sees the reviewer's report instead.
+  if (report === null || report.remainingWork.length === 0) {
+    log.info(`reviewer named no remaining work prompt=${promptId}; falling back to the station rule`);
+    return false;
+  }
+  const spent = workspaces.remediationCount(promptId);
+  if (spent >= limit) {
+    log.info(`remediation limit reached prompt=${promptId} (${spent}/${limit})`);
+    return false;
+  }
+
+  // Order matters: a raised budget or a switched agent has to be in force
+  // before the run starts, or the remediation dies exactly where its
+  // predecessor did.
+  const accepted = applyReconfigure(pipeline, promptId, args.auditId, report.reconfigure);
+
+  workspaces.preparePromptForRemediation(promptId, args.auditId ?? "unknown", remediationBrief(report, accepted));
+  const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
+  log.info(`remediating prompt=${promptId} attempt=${spent + 1}/${limit} items=${report.remainingWork.length}`);
+  await startCurrentStation(updated, promptId);
+  return true;
+}
+
+/**
+ * Carry out the reviewer's configured action. Returns whether it took
+ * responsibility for the run; `false` falls back to the station's own rule,
+ * which is the right answer whenever the action cannot be carried out — a
+ * `remediate` with nothing to remediate, a `handoff` that could not start.
+ */
+async function applyReviewAction(args: {
+  pipeline: SuitePipelineRun;
+  action: ReviewAction;
+  promptId: number;
+  verdict: CompletionVerdict;
+  report: CompletionAuditReport | null;
+  auditId: string | null;
+  sourceRunId: string;
+  parkReason: string | null;
+}): Promise<boolean> {
+  const { pipeline, action, promptId } = args;
+
+  if (action === "close") {
+    // Reached only on a verdict that is not COMPLETE — the COMPLETE path
+    // returned long before this. An operator can select `close` against
+    // INCOMPLETE in the matrix, and honouring it would mark work done on the
+    // reviewer's own evidence that it is not. Refused, loudly, and the station
+    // falls to its rule.
+    log.warn(`reviewer action "close" refused on a ${args.verdict} verdict prompt=${promptId}`);
+    return false;
+  }
+
+  if (action === "remediate") return tryRemediate(args);
+
+  if (action === "retry") {
+    log.info(`reviewer retry prompt=${promptId}`);
+    workspaces.resetPromptToTodo(promptId, "A reviewer's verdict retried this station.");
+    const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
+    await startCurrentStation(updated, promptId);
+    return true;
+  }
+
+  if (action === "handoff") {
+    // The same gate the automatic path uses. A brief summarising a run that
+    // produced nothing is a full agent run spent describing an empty tree, and
+    // choosing `handoff` in the matrix is not a reason to pay for one — it says
+    // what to do when there *is* something to hand over. Refused, the station
+    // falls back to its rule and the operator still gets the reviewer's report.
+    const allowed = autoHandoffAllowed({
+      trigger: settings.pipelinePolicy.handoffTrigger,
+      status: workspaces.promptOutcome(promptId).status,
+      producedWork: workspaces.promptProducedWork(promptId),
+      reviewed: true,
+    });
+    if (allowed && await tryAutoHandoff(pipeline, promptId, args.sourceRunId)) {
+      await park(pipeline, promptId, "handoff_running");
+      return true;
+    }
+    return false;
+  }
+
+  if (action === "markReview") {
+    workspaces.markPromptNeedsReview(promptId, "A reviewer could not settle this work item, so it is flagged for you.");
+    await park(pipeline, promptId, args.parkReason);
+    return true;
+  }
+
+  // "park" — hold here with the reviewer's reason, whatever the station rule
+  // would otherwise have done.
+  await park(pipeline, promptId, args.parkReason);
+  return true;
 }
 
 export const pipelineScheduler = {
@@ -914,7 +1152,7 @@ export const pipelineScheduler = {
    * failed, which is treated exactly like UNVERIFIABLE: the station falls back
    * to its own rule, having lost nothing but the cost of the read-only run.
    */
-  async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string }): Promise<boolean> {
+  async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
     const home = workspaces.promptHome(args.promptId);
     return enqueue(home.workspaceId, () => settleAudit(args));
   },

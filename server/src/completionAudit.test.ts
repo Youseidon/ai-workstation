@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { CompletionAuditCheck, ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
+import type { CompletionAuditCheck, CompletionAuditReport, ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { auditMarkdown, parseReport, reconcileVerdict, scheduleCompletionAudit, verificationText } from "./completionAudit.ts";
 import { newId } from "./lib/ids.ts";
 import { pipelineScheduler, setPipelineStationStarter } from "./pipelineScheduler.ts";
@@ -39,7 +39,12 @@ function fixture(count = 2) {
     prompts,
     cleanup() {
       setPipelineStationStarter(null);
-      resetSettings(["pipeline.auditOnBlocked"]);
+      resetSettings([
+        "pipeline.auditOnBlocked",
+        "pipeline.maxRemediationAttempts",
+        "pipeline.reviewerReconfigure",
+        "pipeline.maxReviewerBudgetMultiplier",
+      ]);
       workspaces.remove(workspace.id);
       rmSync(dir, { recursive: true, force: true });
     },
@@ -282,6 +287,205 @@ test("a verdict for a station no run is parked on does not move a pipeline", asy
     assert.equal(applied, true, "the verdict still closes the work item it was asked about");
     assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "DONE");
     assert.equal(started.length, 1, "a stopped pipeline is not restarted by a verdict");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+
+
+
+/* ------------------------------------------------------------------ */
+/* The reviewer acting on its own findings                             */
+/* ------------------------------------------------------------------ */
+
+/** A parsed report, with the fields these tests turn on set explicitly. */
+function report(over: Partial<CompletionAuditReport> = {}): CompletionAuditReport {
+  return {
+    version: 1,
+    verdict: "INCOMPLETE",
+    confidence: "HIGH",
+    checks: [check({ criterion: "routes are implemented", result: "PASSED" })],
+    remainingWork: ["Flip x-implementation to dotnet for the 12 commercial routes"],
+    reconfigure: [],
+    verificationSummary: "",
+    reasoning: "The code is there; the catalog flip is not.",
+    ...over,
+  };
+}
+
+/**
+ * A station whose run ended in error resolves to the `failed` situation, and an
+ * install may carry a stored reviewer_config for it. These tests are about what
+ * an action *does*, so they pin the action rather than inheriting one.
+ *
+ * Written at `prompt` scope, which is the narrowest and therefore wins, and
+ * which belongs to the fixture's own throwaway work item. The global scope is
+ * the operator's own setting and a test has no business writing to it — these
+ * run against the developer's real database.
+ */
+function reviewerAction(promptId: number, action: string): void {
+  for (const trigger of ["unreported", "failed"]) {
+    workspaces.setReviewerConfig({ scope: "prompt", scopeId: promptId, trigger, patch: { onIncomplete: action } });
+  }
+}
+
+function briefOn(promptId: number): string {
+  const history = workspaces.promptHistory(promptId) as { remarks: Array<{ content: string }> };
+  return history.remarks.map((remark) => remark.content).join("\n");
+}
+
+/**
+ * The failure this path exists for. The reviewer found the missing work and
+ * named it precisely; the old default spent a second read-only run writing that
+ * finding out as prose and then parked, and the station was retried from the
+ * top by an agent who had to rediscover everything.
+ */
+test("an INCOMPLETE verdict that names the missing work starts a run to do it", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "remediate");
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: runId, verdict: "INCOMPLETE", report: report(), auditId: "audit_x" });
+
+    const live = workspaces.activePipeline(ctx.suite.id);
+    assert.equal(live?.state, "PLAYING", "the rail carries on by itself");
+    assert.equal(live?.currentPromptId, promptId, "on the same station");
+    assert.equal(started.length, 2, "a developer run was started for the remaining work");
+
+    // The reviewer's own list reaches the agent as its brief. That is the whole
+    // difference from a handoff, which produces a description instead.
+    const brief = briefOn(promptId);
+    assert.match(brief, /Flip x-implementation to dotnet/);
+    assert.match(brief, /do not redo/i, "and says what is already confirmed");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a vague INCOMPLETE starts no run and falls back to the station rule", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "remediate");
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    // A run started on an empty brief would rediscover the problem from
+    // scratch, which is the loop remediation exists to replace.
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: runId, verdict: "INCOMPLETE", report: report({ remainingWork: [] }), auditId: "audit_x" });
+    assert.equal(started.length, 1, "no remediation run was started");
+    assert.equal(workspaces.activePipeline(ctx.suite.id)?.state, "WAITING_HUMAN");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("remediation is bounded, so a station cannot remediate itself forever", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "remediate");
+    updateSettings({ "pipeline.maxRemediationAttempts": 1 });
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: runId, verdict: "INCOMPLETE", report: report(), auditId: "a1" });
+    assert.equal(started.length, 2, "the first remediation runs");
+    assert.equal(workspaces.remediationCount(promptId), 1);
+
+    const second = started[1]!;
+    workspaces.finishAgentRun(second, "error");
+    await pipelineScheduler.onExecuteEnded({ runId: second, workspaceId: ctx.workspace.id, promptId, processState: "error" });
+    const live = workspaces.activePipeline(ctx.suite.id);
+    if (live !== null) workspaces.updatePipelineRun(live.id, { state: "WAITING_HUMAN", waitReason: "audit_running" });
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: second, verdict: "INCOMPLETE", report: report(), auditId: "a2" });
+    assert.equal(workspaces.remediationCount(promptId), 1, "the limit refused the second");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a reviewer may raise a budget it says was the blocker, up to the operator's cap", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "remediate");
+    updateSettings({ "pipeline.maxReviewerBudgetMultiplier": 3 });
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    assert.equal(workspaces.promptBudgetMultiplier(promptId), 1, "nothing is raised until a reviewer raises it");
+
+    await pipelineScheduler.onAuditSettled({
+      promptId, sourceRunId: runId, verdict: "INCOMPLETE", auditId: "a1",
+      report: report({ reconfigure: [{ kind: "raiseBudget", multiplier: 8, provider: null, why: "killed by budget_tool_output_bytes while still reading" }] }),
+    });
+
+    assert.equal(workspaces.promptBudgetMultiplier(promptId), 3, "granted, but capped");
+    const rows = workspaces.reviewerReconfiguresForPrompt(promptId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.applied, true);
+    assert.match(rows[0]!.refusedReason ?? "", /capped at 3x/, "and the cap is recorded rather than silent");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a change the operator has not allowed is refused and recorded with the reason", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "remediate");
+    updateSettings({ "pipeline.reviewerReconfigure": "decompose" });
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    await pipelineScheduler.onAuditSettled({
+      promptId, sourceRunId: runId, verdict: "INCOMPLETE", auditId: "a1",
+      report: report({ reconfigure: [{ kind: "raiseBudget", multiplier: 2, provider: null, why: "it ran out" }] }),
+    });
+    assert.equal(workspaces.promptBudgetMultiplier(promptId), 1, "the budget was not raised");
+    const rows = workspaces.reviewerReconfiguresForPrompt(promptId);
+    assert.equal(rows[0]!.applied, false);
+    assert.match(rows[0]!.refusedReason ?? "", /not allowed/, "a refusal a reviewer keeps hitting is worth seeing");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/*
+ * `action` was computed and then read exactly once, for COMPLETE + close.
+ * Every other cell of the reviewer matrix was stored, rendered, editable and
+ * inert: the run fell through to the station rule as if the reviewer had said
+ * nothing.
+ */
+test("a configured reviewer action decides the outcome, not the station rule", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "park");
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    // Set after the block, or the rule fires on the way in and spends its own
+    // retry before the reviewer has said anything.
+    workspaces.upsertPipelineRule(promptId, { onBlocked: "retry", retryLimit: 3 });
+    assert.equal(started.length, 1, "nothing has retried yet");
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: runId, verdict: "INCOMPLETE", report: report(), auditId: "a1" });
+    assert.equal(started.length, 1, "the rule's retry did not fire over the reviewer's hold");
+    assert.equal(workspaces.activePipeline(ctx.suite.id)?.state, "WAITING_HUMAN");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("close is refused on a verdict that is not COMPLETE, whatever the matrix says", async () => {
+  const ctx = fixture(2);
+  stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    reviewerAction(promptId, "close");
+    const { runId } = await stationBlockedWithoutStatus(ctx);
+    await pipelineScheduler.onAuditSettled({ promptId, sourceRunId: runId, verdict: "INCOMPLETE", report: report(), auditId: "a1" });
+    assert.notEqual(workspaces.promptOutcome(promptId).status, "DONE", "work is never marked done on evidence that it is not");
   } finally {
     ctx.cleanup();
   }

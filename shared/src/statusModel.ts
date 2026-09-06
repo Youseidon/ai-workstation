@@ -75,6 +75,7 @@ export type PolicyKey =
   | "pipeline.pauseMode"
   | "pipeline.onRestart"
   | "pipeline.handoffTrigger"
+  | "pipeline.auditOnBlocked"
   | "pipeline.dodEnforcement";
 
 /**
@@ -1119,7 +1120,7 @@ export const REVIEW_TRIGGER_LABEL: Record<ReviewTrigger, string> = {
 };
 
 /** What a verdict is allowed to do. */
-export const REVIEW_ACTIONS = ["close", "handoff", "retry", "park", "markReview"] as const;
+export const REVIEW_ACTIONS = ["close", "remediate", "handoff", "retry", "park", "markReview"] as const;
 export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
 
 export function isReviewAction(value: unknown): value is ReviewAction {
@@ -1128,10 +1129,26 @@ export function isReviewAction(value: unknown): value is ReviewAction {
 
 export const REVIEW_ACTION_LABEL: Record<ReviewAction, string> = {
   close: "Close the work item",
+  remediate: "Finish the work it named, then carry on",
   handoff: "Prepare a continuation brief",
   retry: "Run it again",
   park: "Hold and wait for you",
   markReview: "Mark it as needing review",
+};
+
+/**
+ * One line on what each action actually costs and does, for the reviewer
+ * matrix. `remediate` and `handoff` both spend an agent run, and the difference
+ * between them is the whole point: one writes the missing work, the other
+ * writes a description of it.
+ */
+export const REVIEW_ACTION_CONSEQUENCE: Record<ReviewAction, string> = {
+  close: "Marks the item DONE. Only ever honoured on a COMPLETE verdict whose own checks passed, and the definition of done still gets the last word.",
+  remediate: "Starts a developer run scoped to the remaining work the reviewer named, then continues the rail by itself. Needs a non-empty `remainingWork`; falls back to holding when there is none.",
+  handoff: "Spends a read-only run writing a continuation brief, then holds. Useful before a human takes over; pure cost if the next step is another agent.",
+  retry: "Runs the whole item again from the top. The previous run's work stays in the tree, but nothing tells the next agent what was already done.",
+  park: "Stops and waits for you, with the reviewer's report on the item.",
+  markReview: "Flags the item NEEDS_REVIEW and holds, so it shows on the attention list without claiming an outcome.",
 };
 
 /**
@@ -1159,14 +1176,24 @@ export interface ReviewerConfig {
 }
 
 /**
- * What ships. Reproduces the behaviour of the old three-way `auditOnBlocked`
- * switch on its `autocomplete` setting, so nothing changes until it is changed.
+ * What ships.
+ *
+ * `onIncomplete` was `handoff`, which is what made a correct reviewer useless:
+ * it found the missing work, named it precisely, and then spent a second
+ * read-only run writing that finding out as prose before parking. The station
+ * was retried from the top by an agent who had to rediscover everything. The
+ * verdict was right every time and nothing acted on it.
+ *
+ * `remediate` sends the reviewer's own `remainingWork` list to a developer run
+ * as its brief. It falls back to `handoff` when the reviewer named no remaining
+ * work, so a vague INCOMPLETE still gets a human-readable summary rather than a
+ * run with nothing to do.
  */
 export const DEFAULT_REVIEWER_CONFIG: Record<ReviewTrigger, ReviewerConfig> = {
   unreported: {
     trigger: "unreported", enabled: true, provider: null, model: null,
     maxAttempts: 1, mustDifferFromSource: true,
-    onComplete: "close", onIncomplete: "handoff", onUnverifiable: "park",
+    onComplete: "close", onIncomplete: "remediate", onUnverifiable: "park",
   },
   failed: {
     trigger: "failed", enabled: true, provider: null, model: null,
@@ -1174,7 +1201,7 @@ export const DEFAULT_REVIEWER_CONFIG: Record<ReviewTrigger, ReviewerConfig> = {
     // A crashed run may still have finished the work, so it is worth checking —
     // but a crash is an observed fact, and closing on it deserves more caution
     // than closing on a run that merely went quiet.
-    onComplete: "close", onIncomplete: "handoff", onUnverifiable: "park",
+    onComplete: "close", onIncomplete: "remediate", onUnverifiable: "park",
   },
   dodUnmet: {
     trigger: "dodUnmet", enabled: false, provider: null, model: null,

@@ -1,4 +1,4 @@
-import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, reviewTriggerFor, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId } from "@agent-console/shared";
+import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, isReconfigureKind, reviewTriggerFor, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId, type ReconfigureDirective } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { recordReviewerVerdicts } from "./definitionOfDone.ts";
 import { newId } from "./lib/ids.ts";
@@ -55,6 +55,29 @@ function list(value: unknown, max = 30): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, max) : [];
 }
 
+/**
+ * Pipeline changes the reviewer says are needed, filtered to the kinds that
+ * exist. Whether any of them is *allowed* is the scheduler's decision, not this
+ * one: parsing keeps a directive the operator has switched off, so the report
+ * can still show the operator what the reviewer wanted and was refused.
+ */
+function parseReconfigure(value: unknown): ReconfigureDirective[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .slice(0, 8)
+    .flatMap((row) => {
+      if (!isReconfigureKind(row.kind)) return [];
+      const multiplier = typeof row.multiplier === "number" && Number.isFinite(row.multiplier) ? row.multiplier : null;
+      return [{
+        kind: row.kind,
+        multiplier,
+        provider: typeof row.provider === "string" && row.provider.trim() !== "" ? row.provider.trim().slice(0, 40) : null,
+        why: String(row.why ?? "").slice(0, 1000),
+      }];
+    });
+}
+
 function parseChecks(value: unknown): CompletionAuditCheck[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -107,6 +130,7 @@ export function parseReport(text: string): CompletionAuditReport {
     confidence,
     checks,
     remainingWork: list(raw.remainingWork),
+    reconfigure: parseReconfigure(raw.reconfigure),
     verificationSummary: typeof raw.verificationSummary === "string" ? raw.verificationSummary.slice(0, 20000) : "",
     reasoning: typeof raw.reasoning === "string" ? raw.reasoning.slice(0, 20000) : "",
   };
@@ -119,7 +143,13 @@ export function auditMarkdown(report: CompletionAuditReport, provider: ProviderI
       .concat(report.checks.map((check) => `| ${cell(check.criterion)} | ${check.result} | ${cell(check.evidence)} | ${cell(check.command ?? "")} |`))
       .join("\n");
   const remaining = report.remainingWork.length === 0 ? "- None found." : report.remainingWork.map((item) => `- ${item}`).join("\n");
-  return `# Completion audit\n\n**Verdict: ${report.verdict}** (confidence ${report.confidence}) — read-only ${provider} audit of run \`${sourceRunId}\`.\n\n## Checks\n\n${rows}\n\n## Work still missing\n\n${remaining}\n\n## Reasoning\n\n${report.reasoning || "_Not given._"}\n`;
+  // Shown even when the operator's allowlist will refuse them: a reviewer that
+  // keeps asking for a capped change is evidence about the cap, and that is
+  // only visible if what it asked for is on the record.
+  const changes = report.reconfigure.length === 0
+    ? ""
+    : `\n\n## Pipeline changes asked for\n\n${report.reconfigure.map((item) => `- **${item.kind}**${item.multiplier === null ? "" : ` (${item.multiplier}x)`}${item.provider === null ? "" : ` → ${item.provider}`} — ${item.why}`).join("\n")}`;
+  return `# Completion audit\n\n**Verdict: ${report.verdict}** (confidence ${report.confidence}) — read-only ${provider} audit of run \`${sourceRunId}\`.\n\n## Checks\n\n${rows}\n\n## Work still missing\n\n${remaining}${changes}\n\n## Reasoning\n\n${report.reasoning || "_Not given._"}\n`;
 }
 
 /** Markdown tables cannot carry a raw pipe or newline; neither is worth losing the row over. */
@@ -239,7 +269,15 @@ Verdicts:
 - INCOMPLETE — you found something specific that is missing, broken, or failing. Name it.
 - UNVERIFIABLE — you could not check enough to be sure. Not being able to run a command, or an ambiguous criterion, belongs here. This is a safe answer; a guess is not.
 
-Return one JSON object only, no prose around it, with keys: verdict (COMPLETE, INCOMPLETE, or UNVERIFIABLE), confidence (HIGH, MEDIUM, or LOW), checks (array of {criterionId, criterion, result: PASSED|FAILED|UNVERIFIED, evidence, command} — criterionId is the number from the dossier, or null for a criterion of your own), remainingWork (array of strings, empty if COMPLETE), verificationSummary (one paragraph of the concrete commands you ran and the results you saw — this is recorded as the work item's evidence if you say COMPLETE), reasoning (why this verdict follows from the checks).
+If your verdict is INCOMPLETE, \`remainingWork\` is not a description for a human to read — it is the brief a developer agent will be given to finish this item, and it is the only thing that agent is told to do. Write each entry as a concrete, self-contained instruction: name the exact files, routes, ids or commands involved, and say what "done" looks like. "The catalog flip was not performed" is a finding; "Flip x-implementation from mock to dotnet for these 12 routes in contracts/catalog/endpoints/commercial.json: <list>" is an instruction. Write instructions.
+
+Also judge whether finishing this item needs the *pipeline* changed, not just more work. Use \`reconfigure\` for that, and only when you have evidence from the transcript or the tree — an empty list is the normal answer:
+- \`raiseBudget\` — the run was killed by its own budget while still doing necessary work, and a bigger allowance would let it finish. Give \`multiplier\` (e.g. 2 for twice the normal allowance). Do not ask for this because a run was slow or repetitive; ask when the ceiling itself was the blocker.
+- \`decompose\` — the item is too large for one run at any plausible budget, and should be split into sub-steps.
+- \`switchProvider\` — this agent repeatedly failed in a way another would not. Give \`provider\`.
+Each entry needs a \`why\` citing what you observed. The operator caps what may be applied, so a directive may be recorded and refused; say what you think regardless.
+
+Return one JSON object only, no prose around it, with keys: verdict (COMPLETE, INCOMPLETE, or UNVERIFIABLE), confidence (HIGH, MEDIUM, or LOW), checks (array of {criterionId, criterion, result: PASSED|FAILED|UNVERIFIED, evidence, command} — criterionId is the number from the dossier, or null for a criterion of your own), remainingWork (array of instruction strings, empty if COMPLETE), reconfigure (array of {kind: raiseBudget|decompose|switchProvider, multiplier, provider, why}, usually empty), verificationSummary (one paragraph of the concrete commands you ran and the results you saw — this is recorded as the work item's evidence if you say COMPLETE), reasoning (why this verdict follows from the checks).
 
 DOSSIER
 ${dossier}`;
@@ -298,7 +336,17 @@ async function finishAudit(
   // the station is a separate, operator-owned decision, and it is the
   // scheduler's to make — an audit started by hand on a station no pipeline is
   // sitting on must not silently complete it.
-  const applied = await pipelineScheduler.onAuditSettled({ promptId: args.promptId, sourceRunId: args.sourceRunId, verdict: report.verdict, verificationSummary: verificationText(report, provider) });
+  const applied = await pipelineScheduler.onAuditSettled({
+    promptId: args.promptId,
+    sourceRunId: args.sourceRunId,
+    verdict: report.verdict,
+    verificationSummary: verificationText(report, provider),
+    // The report itself, not just its verdict: `remediate` turns the
+    // reviewer's own `remainingWork` into the next run's brief, and its
+    // `reconfigure` list into the changes made before that run starts.
+    report,
+    auditId: id,
+  });
   if (applied) workspaces.updateCompletionAudit(id, { applied: true });
   runHub.operationsChanged();
 }

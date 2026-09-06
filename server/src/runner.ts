@@ -107,6 +107,11 @@ export interface StartRunArgs {
   permissionOverride?: PermissionOverride;
   /** Decomposition depth of the work item; sub-steps get a smaller allowance. */
   budgetDepth?: number;
+  /**
+   * Multiple of the normal allowance for this run, from a reviewer that judged
+   * the ceiling itself to be the blocker. 1 (or omitted) is the normal budget.
+   */
+  budgetMultiplier?: number;
   /** Omitted budgets fall back to the settings defaults for this run's depth. */
   budget?: Partial<RunBudget>;
   onEvent(event: NormalizedEvent): void;
@@ -147,7 +152,23 @@ export function startRun(args: StartRunArgs): RunHandle {
 
   // Consults and handoffs are single-shot reads; the budgets exist to bound the
   // open-ended execute loop, so only that role is metered.
-  const defaults = settings.budgetFor(role === "execute" ? (args.budgetDepth ?? 0) : 0);
+  const base = settings.budgetFor(role === "execute" ? (args.budgetDepth ?? 0) : 0);
+  // A reviewer may have judged this item's ceiling to be what stopped it. The
+  // scale is applied here rather than inside `budgetFor` so the settings stay
+  // the house rules and this stays a per-run exception with a record behind it.
+  //
+  // `noProgressToolCalls` and `maxToolResultBytes` are deliberately not scaled:
+  // a thrash loop is a thrash loop at any allowance, and per-result truncation
+  // bounds context rather than spend.
+  const scale = role === "execute" ? Math.max(1, args.budgetMultiplier ?? 1) : 1;
+  const grow = (value: number | null): number | null => (value === null || scale === 1 ? value : Math.round(value * scale));
+  const defaults = {
+    ...base,
+    maxToolCalls: grow(base.maxToolCalls),
+    maxWallClockMs: grow(base.maxWallClockMs),
+    maxInputTokens: grow(base.maxInputTokens),
+    maxToolOutputBytes: grow(base.maxToolOutputBytes),
+  };
   const budget: RunBudget = {
     maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : defaults.maxToolCalls,
     maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : defaults.maxWallClockMs,

@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, REVIEW_TRIGGERS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, reviewTriggerFor, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, REVIEW_TRIGGERS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, reviewTriggerFor, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type ReconfigureKind, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -872,6 +872,76 @@ if (afterTwentyTwo < 23) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(23,?)").run(new Date().toISOString());
 }
 
+const afterTwentyThree = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyThree < 24) {
+  // A reviewer may now change the pipeline, not only report on it.
+  //
+  // The ledger *is* the state. There is deliberately no `budget_multiplier`
+  // column on `prompt`: the effective multiplier is derived from the applied
+  // rows here, so "what did the reviewer change, when, and why" and "what is in
+  // force right now" cannot drift apart, and reverting a change is deleting its
+  // row rather than remembering to reset a field somewhere else.
+  //
+  // Refused directives are stored too, with the reason. A reviewer that keeps
+  // asking for something the operator has capped is telling them something, and
+  // that is only visible if the refusals are kept.
+  //
+  // Additive: one CREATE TABLE and one index, no rebuild, no DROP, no foreign
+  // key into agent_run (migration 22's lesson: provenance is a label, and a
+  // cascade there is lost evidence).
+  const migrate24 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE reviewer_reconfigure (
+        id INTEGER PRIMARY KEY,
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        audit_id TEXT,
+        kind TEXT NOT NULL CHECK(kind IN ('raiseBudget','decompose','switchProvider')),
+        multiplier REAL,
+        provider TEXT,
+        why TEXT NOT NULL DEFAULT '',
+        applied INTEGER NOT NULL DEFAULT 0,
+        refused_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX reviewer_reconfigure_idx ON reviewer_reconfigure(prompt_id, id);
+    `);
+  });
+  migrate24();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(24,?)").run(new Date().toISOString());
+}
+
+const afterTwentyFour = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyFour < 25) {
+  // `reviewer_config` has been silently accumulating duplicate rows.
+  //
+  // Its PRIMARY KEY is (scope, scope_id, trigger_id), and `scope_id` is NULL for
+  // the global scope — which is every row the settings screen writes. SQLite
+  // permits any number of NULLs in a primary key on a rowid table, so the
+  // `ON CONFLICT DO NOTHING` in `setReviewerConfig` never had a conflict to
+  // detect: each save inserted another row instead of updating the one there.
+  // One installation reached 85 rows for 2 distinct keys.
+  //
+  // It read correctly by luck. `resolveReviewerConfig` takes the first row, and
+  // the companion UPDATE has no LIMIT so it writes every duplicate — so the
+  // first row is a superset of the others and dropping the rest changes no
+  // resolved value. That is what makes this safe to collapse rather than merge.
+  //
+  // The index uses IFNULL because a plain UNIQUE would reproduce the bug
+  // exactly: NULLs are distinct to a unique index too.
+  const migrate25 = db.transaction(() => {
+    db.exec(`
+      DELETE FROM reviewer_config
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid) FROM reviewer_config GROUP BY scope, IFNULL(scope_id, -1), trigger_id
+      );
+      CREATE UNIQUE INDEX reviewer_config_scope_idx
+        ON reviewer_config(scope, IFNULL(scope_id, -1), trigger_id);
+    `);
+  });
+  migrate25();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(25,?)").run(new Date().toISOString());
+}
+
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -1237,6 +1307,13 @@ const CONTEXT_REMARK_LIMIT=8;
 const HANDOFF_EVENT_BUDGET_BYTES=16000;
 
 export const DECOMPOSE_MAX_DEPTH=2;
+/**
+ * Marks a status event as "a reviewer started a run to finish this". Counting
+ * these is what bounds remediation, so it is a constant rather than a literal
+ * repeated at the write and the read.
+ */
+const REMEDIATION_RULE_ID="reviewer-remediation";
+
 const DECOMPOSE_MIN_CHILDREN=2;
 const DECOMPOSE_MAX_CHILDREN=12;
 
@@ -1493,7 +1570,7 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
  * paths by hand and stay correct as they change. Asking "is the thing this row
  * points at still there" cannot go stale.
  */
-const forgetOrphanedDefinitionsOfDone = db.transaction(() => {
+const forgetOrphanedScopedRows = db.transaction(() => {
   db.prepare(`
     DELETE FROM definition_of_done WHERE
       (scope='workspace' AND scope_id NOT IN (SELECT id FROM workspace)) OR
@@ -1501,7 +1578,25 @@ const forgetOrphanedDefinitionsOfDone = db.transaction(() => {
       (scope='suite'     AND scope_id NOT IN (SELECT id FROM suite))     OR
       (scope='prompt'    AND scope_id NOT IN (SELECT id FROM prompt))
   `).run();
+  // `reviewer_config` is scoped the same way and carries the same hazard: a
+  // prompt-scoped row that outlives its work item does not merely linger, it
+  // attaches itself to whichever work item is next given that id, and then
+  // quietly decides how that one is reviewed. The global scope is excluded
+  // because its scope_id is NULL by design and points at nothing.
+  db.prepare(`
+    DELETE FROM reviewer_config WHERE
+      (scope='pipeline' AND scope_id NOT IN (SELECT id FROM pipeline)) OR
+      (scope='suite'    AND scope_id NOT IN (SELECT id FROM suite))    OR
+      (scope='prompt'   AND scope_id NOT IN (SELECT id FROM prompt))
+  `).run();
 });
+
+// Once at boot as well as after every delete. The delete sites only cover rows
+// orphaned by this process: a row can also be orphaned by an older build that
+// lacked the cleanup, or by a delete that happened while a different version
+// was running, and an id waiting to be reused is a hazard however it got there.
+// Two indexed anti-joins over small tables, so it costs nothing to be sure.
+forgetOrphanedScopedRows();
 
 /* ------------------------------------------------------------------ */
 /* The definition of done                                              */
@@ -2075,7 +2170,7 @@ export const workspaces = {
   },
   remove(id: number): void {
     if (db.prepare("DELETE FROM workspace WHERE id=?").run(id).changes === 0) throw new WorkspaceError(404, "not_found", "Workspace not found");
-    forgetOrphanedDefinitionsOfDone();
+    forgetOrphanedScopedRows();
   },
   tree(id: number): WorkspaceTree {
     const workspace = this.get(id);
@@ -2133,7 +2228,7 @@ export const workspaces = {
   },
   removeChild(kind:"program"|"suite"|"prompt",id:number):void {
     if(db.prepare(`DELETE FROM ${kind} WHERE id=?`).run(id).changes===0) throw new WorkspaceError(404,"not_found",`${kind} not found`);
-    forgetOrphanedDefinitionsOfDone();
+    forgetOrphanedScopedRows();
   },
   importProgram(workspaceId:number,pack:ImportedProgram):WorkspaceTree { return sqliteGuard(()=>{ importProgramTransaction(workspaceId,pack); return this.tree(workspaceId); }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
@@ -3089,6 +3184,20 @@ export const workspaces = {
     })());
   },
 
+  /**
+   * Flag a work item for human attention without claiming an outcome for it.
+   *
+   * Distinct from parking the run: the run's state says where the *rail* is,
+   * this says the *item* was left unsettled, and an operator scanning the
+   * attention list needs the second even when no pipeline is sitting on it.
+   */
+  markPromptNeedsReview(promptId:number,reason:string):void { sqliteGuard(()=>db.transaction(()=>{
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+    if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+    writeStatus({promptId,to:"NEEDS_REVIEW",trigger:"review_unverifiable",ruleId:"reviewer-mark-review",actor:"SYSTEM",reason});
+  })()); },
+
   resetPromptToTodo(promptId:number,reason:string):void {
     sqliteGuard(()=>db.transaction(()=>{
       const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
@@ -3433,6 +3542,53 @@ export const workspaces = {
     if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
     writeStatus({promptId,to:"TODO",trigger:"review_incomplete",ruleId:"review-incomplete-with-work",actor:"SYSTEM",reason:"A handoff prepared a continuation brief, so a successor can pick this up without redoing the work.",result:"",evidence:{handoffId},remark:{kind:"PROGRESS",content:`${briefMarkdown}\n\nHandoff: ${handoffId}`}});
   })()); },
+  /**
+   * File the reviewer's continuation brief on the work item and put it back to
+   * TODO so a developer run can pick it up.
+   *
+   * The handoff equivalent writes a summary of what happened; this writes what
+   * to do. That difference is the point of the whole path: the remark becomes
+   * the next run's brief, so the reviewer's `remainingWork` reaches the agent
+   * that has to act on it instead of a human who has to relay it.
+   */
+  preparePromptForRemediation(promptId:number,auditId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+    writeStatus({promptId,to:"TODO",trigger:"review_incomplete",ruleId:REMEDIATION_RULE_ID,actor:"SYSTEM",reason:"A reviewer found specific work still missing and scoped a run to finish it.",result:"",evidence:{auditId},remark:{kind:"PROGRESS",content:`${briefMarkdown}\n\nCompletion audit: ${auditId}`}});
+  })()); },
+
+  /**
+   * How many remediation runs this work item has already been given.
+   *
+   * Counted from the status ledger rather than a column, so it survives the
+   * resets that remediation itself performs — a counter on the run or on the
+   * pipeline row would be cleared by the very transition it is meant to bound.
+   */
+  remediationCount(promptId:number):number {
+    const row=db.prepare("SELECT COUNT(*) n FROM prompt_status_event WHERE prompt_id=? AND rule_id=?").get(promptId,REMEDIATION_RULE_ID) as {n:number};
+    return row.n;
+  },
+
+  recordReviewerReconfigure(input:{promptId:number;auditId:string|null;kind:ReconfigureKind;multiplier:number|null;provider:string|null;why:string;applied:boolean;refusedReason:string|null}):void {
+    sqliteGuard(()=>{db.prepare("INSERT INTO reviewer_reconfigure(prompt_id,audit_id,kind,multiplier,provider,why,applied,refused_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(input.promptId,input.auditId,input.kind,input.multiplier,input.provider,input.why.slice(0,1000),input.applied?1:0,input.refusedReason,new Date().toISOString());});
+  },
+
+  reviewerReconfiguresForPrompt(promptId:number):Array<{id:number;kind:ReconfigureKind;multiplier:number|null;provider:string|null;why:string;applied:boolean;refusedReason:string|null;createdAt:string}> {
+    return (db.prepare("SELECT id,kind,multiplier,provider,why,applied,refused_reason refusedReason,created_at createdAt FROM reviewer_reconfigure WHERE prompt_id=? ORDER BY id").all(promptId) as Array<Record<string,unknown>>)
+      .map(row=>({id:row.id as number,kind:row.kind as ReconfigureKind,multiplier:row.multiplier as number|null,provider:row.provider as string|null,why:String(row.why??""),applied:row.applied===1,refusedReason:row.refusedReason as string|null,createdAt:String(row.createdAt)}));
+  },
+
+  /**
+   * The run-budget multiple in force for this work item, from applied
+   * `raiseBudget` rows. 1 when a reviewer has never raised it, which is every
+   * item until one does.
+   */
+  promptBudgetMultiplier(promptId:number):number {
+    const row=db.prepare("SELECT MAX(multiplier) m FROM reviewer_reconfigure WHERE prompt_id=? AND kind='raiseBudget' AND applied=1").get(promptId) as {m:number|null};
+    return row.m===null||!Number.isFinite(row.m)||row.m<1?1:row.m;
+  },
+
   preparePromptForHandoffRetry(promptId:number,handoffId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
     if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");

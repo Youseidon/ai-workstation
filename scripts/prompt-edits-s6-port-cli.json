@@ -1,0 +1,164 @@
+{
+  "S6-00": [
+    {
+      "find": "**Review the burn-down list at the start of each module rather than porting on autopilot.**\n\n**Triage is the module's job, and is done once.** If you are a sub-step of a module, your parent has\nalready triaged; inherit its decisions from the work-item context and do not re-derive them. Re-run\nthe audit only if you have reason to believe it is stale.\n\nRe-run `node contracts/tools/scope-audit.mjs` (no `--module` flag). `contracts/catalog/scope-audit.json`\nis ~630 KB — never read it whole. Query `byNamespace` for the namespaces\n`src/backend/module-map.json` assigns to this module:\n\n```\nnode -e \"const a=require('./contracts/catalog/scope-audit.json'); const ns=['<ns>']; for (const n of ns) console.log(n, JSON.stringify(a.byNamespace[n]?.map(e=>[e.route,e.bucket])))\"\n```\n\nFor each endpoint confirm its bucket:\n- `delete` — prototype-only. Remove from the burn-down; do not port.\n- `unused` — contracted but nothing calls it and it is not in the public allowlist. **Report it and\n  ask** before porting; do not port on the assumption someone might want it.\n- `defer` — real, but its feature is off at launch. Skip for now, record the deferral.\n- `port` — build it.\n\nReport the triage result **before writing code**. State how many endpoints you removed from the\nburn-down and why.",
+      "replace": "**Triage is the module's job, and is done once.**\n\n```\nnode harness/port.mjs triage --module <S6-xx>\n```\n\nThat reads `contracts/catalog/scope-audit.json` — which is ~630 KB, so never read it directly — and\nreports the module's endpoints by bucket:\n\n- `delete` — prototype-only. Dropped from the burn-down; do not port.\n- `unused` — contracted but nothing calls it and it is not in the public allowlist. The command lists\n  these individually. **Report them and ask.** Do not port on the assumption someone might want it.\n- `defer` — real, but its feature is off at launch. Skipped, deferral recorded.\n- `port` — build it.\n\nIt writes the decisions to `harness/port-work/triage/<S6-xx>.json`. That file is what the module's\ndefinition of done checks and what its sub-steps inherit: **if you are a sub-step, read it and do not\nre-run triage.** Report the counts the command prints, before writing code.\n\nThe module's namespaces come from `harness/s6-modules.json`. That is not\n`src/backend/module-map.json`, which maps namespaces onto .NET assemblies and answers where a handler\ngoes, not which endpoints this work item owns."
+    },
+    {
+      "find": "For each endpoint you will port:\n1. Its contract in `contracts/schemas/<ns>.schema.json` — request, response, `x-route`, `x-source`.\n   These run to ~77 KB; extract the definitions for your endpoints rather than reading the file.\n2. Its goldens in `harness/goldens/<ns>/` — success **and every error scenario**. **Open\n   `success.json` and read its status first** — `harness/path-params.json` sometimes supplies a\n   synthetic id, so `success` pins a 404 and the 200 body is pinned by nothing\n   (`GET /admin/permissions/portals/{portalId}` is the worked example).\n3. Its implementation in `prototype/backend/services/<ns>*.js` — the behavioural reference.\n4. Its read-site reports from S2-01/S2-02, if the data it reads was normalised.\n\n**If an endpoint has no error goldens, do not port it.** Capture them first. An endpoint ported\nagainst success-only goldens has an unverified error surface, and the UI branches on error metadata.",
+      "replace": "```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nOne dossier per endpoint, assembled from the artifacts that own each fact:\n\n1. Its contract — the definitions carrying its `x-route`, plus everything they `$ref`, sliced out of\n   the ~77 KB schema so you never read the whole file.\n2. Its goldens, per replay pass, **with the status each one pins**. A `success.json` pinning a 404\n   means `harness/path-params.json` supplied a synthetic id and the 200 body is pinned by nothing\n   (`GET /admin/permissions/portals/{portalId}` is the worked example); the dossier says so.\n3. Its reference implementation in `prototype/backend/services/<ns>*.js`, located by facade method.\n4. Its frontend call sites and feature ids.\n\n**A route with no error goldens comes back `BLOCKED` and the command exits non-zero.** Do not port it:\ncapture the goldens first, or report it and stop. An endpoint ported against success-only goldens has\nan unverified error surface, and the UI branches on error metadata.\n\nRead the read-site reports from S2-01/S2-02 as well, if the data it reads was normalised."
+    },
+    {
+      "find": "Host API via `npm run dev:api` against warm `npm run dev:infra`. Live-target replay needs:\n\n```\nMF_DEMO_CLOCK=2026-01-15T00:00:00.000Z MF_DETERMINISTIC=1 \\\nMF_DETERMINISTIC_SEED=2654435769 \\\nMF_JWT_SECRET=materioforge-deterministic-harness-secret\n```\n\n```\nnode harness/replay.mjs --target http://localhost:8080 --route \"<method> <path>\"\n```\nGreen on **every scenario**, including errors, before you go further. Then the whole namespace:\n```\nnode harness/replay.mjs --target http://localhost:8080 --namespace <ns>\n```\n\n## Step 4 — Flip\n\n```\nnode contracts/tools/set-implementation.mjs --route \"<method> <path>\" --value dotnet\nnode harness/burndown.mjs\n```\n\nFlip **only** routes whose goldens are green. A flipped route is covered by the local\n`--only-implemented` gate forever after; flipping a red route breaks the build for everyone.",
+      "replace": "Host API via `npm run dev:api` against warm `npm run dev:infra`.\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt replays the route on **every** scenario with the deterministic clock, seed and secret already set,\nreads `harness/replay-report.json`, and prints GREEN or RED with the failing pointers.\n\n## Step 4 — Flip\n\nThere is no separate flip step. `--flip` is applied by `verify` itself, and only when the report it\njust read has zero failures and zero missing goldens over at least one comparison. An unreachable\ntarget exits 3 and flips nothing — an API that is down is not a green route, and it is not a red one\neither.\n\n**Do not call `contracts/tools/set-implementation.mjs` by hand.** A flipped route is covered by the\nlocal `--only-implemented` gate forever after; flipping a red route breaks the build for everyone,\nand the whole point of routing the flip through the report is that no one has to be trusted to have\nrun the replay first.\n\nThen the whole namespace:\n\n```\nnode harness/port.mjs verify --namespace <ns>\n```"
+    },
+    {
+      "find": "```\nnode harness/replay.mjs --target http://localhost:8080 --namespace <ns>\n```\nUse `--reset-between-passes` when proving flipped .NET state (Postgres is not reset by recreating\nthe mock).\n\nPorting one endpoint can break another through shared state, shared repositories or a changed query,\nso the **whole suite** must also be replayed:\n\n```\nnode harness/replay.mjs --target http://localhost:8080     # the WHOLE suite\n```\n\n**That full-suite pass belongs to the module, once — not to each slice of it.** If this module was\nsplit into sub-steps, the sub-steps replay their own routes and namespace; the run that resumes the\nmodule after the last sub-step is the one that replays everything. Running the full suite once per\nsub-step multiplies the most expensive check in the program by the number of slices and tells you\nnothing the module-level pass will not.",
+      "replace": "Pass `--reset-between-passes` when proving flipped .NET state (Postgres is not reset by recreating\nthe mock).\n\nPorting one endpoint can break another through shared state, shared repositories or a changed query,\nso the **whole suite** must also be replayed:\n\n```\nnode harness/port.mjs verify --full --reset-between-passes\n```\n\n**That full-suite pass belongs to the module, once — not to each slice of it.** If this module was\nsplit into sub-steps, the sub-steps verify their own routes and namespace; the run that resumes the\nmodule after the last sub-step is the one that verifies everything. `node harness/port.mjs done`\nruns it for you as criterion 3, so you do not run it separately as well. Running the full suite once\nper sub-step multiplies the most expensive check in the program by the number of slices and tells you\nnothing the module-level pass will not."
+    },
+    {
+      "find": "This is the **module's** exit, checked by the module's own run. A sub-step is done when its own\nendpoints replay green on every scenario and are flipped; items 3-5 are the module's to prove.\n\n1. Every `port` endpoint replays green on all scenarios.\n2. Every one is flipped to `dotnet` in the catalog.\n3. The full suite is green (or only pre-recorded split-state reds remain, none introduced here).\n4. The architecture analyser passes.\n5. The triage decisions are reported with counts.",
+      "replace": "```\nnode harness/port.mjs done --module <S6-xx>\n```\n\nThis is the **module's** exit, checked by the module's own run. A sub-step is done when its own\nendpoints verify green and are flipped; items 3-5 are the module's to prove.\n\n1. Every `port` endpoint replays green on all scenarios — replayed per namespace, now.\n2. Every one is flipped to `dotnet` in the catalog — read from the catalog, not from your notes.\n3. The full suite is green (or only pre-recorded split-state reds remain, none introduced here).\n4. The architecture analyser passes — `dotnet build` under `TreatWarningsAsErrors`.\n5. The triage decisions are reported with counts — `harness/port-work/triage/<S6-xx>.json` exists.\n\nEach criterion is reported with the evidence used, and the result is written to\n`harness/port-work/done/<S6-xx>.json`. A criterion the command could not check reports `skip`, never\n`ok`, and the module is not done. **Report its output rather than asserting the module is finished:\nthe claim is not the check.**"
+    }
+  ],
+  "S6-01": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-01\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-02": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-02\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-03": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-03\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-04": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-04\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-05": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-05\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-06": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-06\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-07": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-07\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-08": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-08\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-09": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-09\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-10": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-10\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-11": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-11\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-12": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-12\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-13": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-13\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-14": [
+    {
+      "find": "## Exit\n\nPlaybook definition of done, plus:",
+      "replace": "## Exit\n\n```\nnode harness/port.mjs done --module S6-14\n```\n\nReport every criterion with the evidence it used.\n\nThen also report:"
+    }
+  ],
+  "S6-08.4": [
+    {
+      "find": "## Verify\nReplay each route; namespace slice of these routes green; flip only green. Explicitly verify buyer-of-record resolution matches mock (A/B :5050 vs :8080 on get-resolved-state if useful). Progress remarks; no commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-08.4.3": [
+    {
+      "find": "## Verify\nReplay both routes green (all scenarios). Flip only green. Progress remarks; DONE/BLOCKED via agent-step. No commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    },
+    {
+      "find": "- harness/goldens/commercial/GET_commercial-get-credit-register and GET_commercial-get-my-credit-status — note my-credit-status forbidden/unauthenticated goldens return 200 (mock quirk; port exactly)",
+      "replace": "- harness/goldens/commercial/GET_commercial-get-credit-register and GET_commercial-get-my-credit-status\n- **GET /commercial/get-my-credit-status has no error goldens**: success, unauthenticated and\n  forbidden all pin 200, so nothing pins its error surface. `dossier` returns it BLOCKED. Do not port\n  it against success-only goldens — report the blocker and ask whether to capture error goldens\n  first or drop the route from this sub-step. get-credit-register is unaffected; port that one."
+    }
+  ],
+  "S6-08.4.4": [
+    {
+      "find": "## Verify\nReplay the route green (all scenarios). Flip only green. Progress remarks; DONE/BLOCKED via agent-step. No commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-08.4.5": [
+    {
+      "find": "## Verify\nReplay each of the four routes green (all scenarios). Flip only green. Progress remarks; DONE/BLOCKED via agent-step. No commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-08.5": [
+    {
+      "find": "## Verify\nPer-route replay with --reset-between-passes on writes; flip green only; confirm S6-08-4 flipped reads still green if writes touch shared state. Progress remarks; no commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-08.6": [
+    {
+      "find": "## Verify\nPer-route replay (public token routes included); flip green only; money fields cent-exact vs goldens. Progress remarks; no commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-08.7": [
+    {
+      "find": "## Verify\nReplay each route then --namespace compliance and --namespace disputes; flip green only; burndown. Progress remarks; DONE/BLOCKED; no commits.",
+      "replace": "## Verify\n\nBefore writing anything, for each route in the inherited triage above:\n\n```\nnode harness/port.mjs dossier --route \"<method> <path>\"\n```\n\nIt returns the contract slice, the goldens with the status each pins, and the reference\nimplementation — and it **refuses a route whose error goldens are missing**. The playbook forbids\nporting such a route as it stands: report it and stop, do not port blind.\n\nThen, per route:\n\n```\nnode harness/port.mjs verify --route \"<method> <path>\" --flip\n```\n\nIt flips only on a replay report with zero failures and zero missing goldens, and flips nothing when\nthe target is unreachable. Never call `set-implementation.mjs` by hand. Progress remarks;\nDONE/BLOCKED via agent-step. No commits."
+    }
+  ],
+  "S6-15": [
+    {
+      "find": "```\nnode harness/burndown.mjs\n```\nEnumerate every route still marked `mock`. For each, determine why it is still there:",
+      "replace": "```\nnode harness/port.mjs doctor\nnode harness/burndown.mjs\n```\n\n`doctor` reports what would silently block a close-out: routes listed more than once in the catalog\n(`set-implementation` refuses to flip those), namespaces belonging to no module, `port` routes with\nno goldens or no error goldens, and routes already flipped to `dotnet` with nothing pinning them.\nClear those first — several are not portable as they stand and need a decision, not a port.\n\nThen enumerate every route still marked `mock`. For each, determine why it is still there:"
+    },
+    {
+      "find": "```\nnode harness/replay.mjs --target http://localhost:8080\n```\nThe **entire** golden suite, every namespace, every scenario, green. This is the single most important\nnumber in the program.",
+      "replace": "```\nnode harness/port.mjs verify --full --reset-between-passes\n```\nThe **entire** golden suite, every namespace, every scenario, green. This is the single most important\nnumber in the program. Report the counts the command prints — compared, passed, failed,\nmissingGolden — not a summary of them."
+    }
+  ]
+}

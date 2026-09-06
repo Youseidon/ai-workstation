@@ -262,12 +262,50 @@ test("a missing station falls back to a generic phrase rather than 'null'", () =
 });
 
 test("WAITING_HUMAN says something different when an intervention is unanswered", () => {
-  const onRule = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, awaitingHuman: false });
-  const onIntervention = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, awaitingHuman: true });
+  const parked = { state: "WAITING_HUMAN", stopReason: null, waitReason: null } as const;
+  const onRule = status({ run: parked, stationState: "BLOCKED", awaitingHuman: false });
+  const onIntervention = status({ run: parked, stationState: "BLOCKED", awaitingHuman: true });
   assert.notEqual(onRule.headline, onIntervention.headline);
   assert.notEqual(onRule.hint, onIntervention.hint);
   assert.match(onRule.headline, /reported blocked/);
   assert.match(onIntervention.headline, /only you can make/);
+});
+
+/*
+ * The two things the status bar got wrong about S6-08.5: a station that ended
+ * without posting a status was called "blocked", and a station parked because
+ * its `retry` rule ran out of attempts was told its rule was "wait". Both read
+ * as statements of fact about the operator's own configuration.
+ */
+test("a station that never posted a status is not called blocked", () => {
+  const view = status({
+    run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null },
+    stationState: "UNREPORTED",
+  });
+  assert.match(view.headline, /without reporting a status/);
+  assert.doesNotMatch(view.headline, /reported blocked/);
+});
+
+test("retries running out is not reported as the wait rule", () => {
+  const view = status({
+    run: { state: "WAITING_HUMAN", stopReason: null, waitReason: "retry_exhausted" },
+    stationState: "UNREPORTED",
+  });
+  assert.equal(view.rowId, "waiting-human-retry-exhausted");
+  assert.doesNotMatch(view.headline, /rule is "wait"/);
+  assert.match(view.headline, /out of retries/);
+  assert.match(view.because, /"retry"/);
+});
+
+test("a helper agent still running is not presented as needing you", () => {
+  for (const waitReason of ["audit_running", "handoff_running"] as const) {
+    const view = status({
+      run: { state: "WAITING_HUMAN", stopReason: null, waitReason },
+      stationState: "UNREPORTED",
+    });
+    assert.notEqual(view.label, "Needs you", `${waitReason} still reads as needing the operator`);
+    assert.doesNotMatch(view.headline, /rule is "wait"/);
+  }
 });
 
 test("a known stopReason is translated into a sentence", () => {

@@ -7,6 +7,7 @@ import {
   isHandoffTrigger,
   isOnBlockedAction,
   isOnDoneAction,
+  isReconfigureKind,
   type PipelinePolicy,
   type HandoffRequirement,
   type PauseMode,
@@ -251,6 +252,42 @@ const FIELDS: FieldDef[] = [
     description:
       "How many times one station may be handed off before the pipeline refuses another. Guards against a "
       + "station that hands off to itself forever without progressing.",
+  },
+  {
+    key: "pipeline.maxRemediationAttempts",
+    label: "Max reviewer remediation runs per work item",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_REMEDIATION_ATTEMPTS",
+    fallback: 2,
+    description:
+      "How many times a reviewer may start a developer run to finish the work it found missing, for one work "
+      + "item. A remediation run can itself end unfinished and be reviewed again, so this is what stops that "
+      + "being a loop. 0 disables remediation entirely.",
+  },
+  {
+    key: "pipeline.reviewerReconfigure",
+    label: "Pipeline changes a reviewer may make",
+    group: "Pipeline policy",
+    type: "string",
+    envVar: "PIPELINE_REVIEWER_RECONFIGURE",
+    fallback: "raiseBudget,decompose,switchProvider",
+    description:
+      "Comma-separated allowlist of changes a reviewer may apply by itself before remediating: raiseBudget, "
+      + "decompose, switchProvider. Empty means it may finish work but never reconfigure anything. Every "
+      + "applied change is recorded on the work item.",
+    isDangerous: (value) => String(value).trim() !== "",
+  },
+  {
+    key: "pipeline.maxReviewerBudgetMultiplier",
+    label: "Max budget multiple a reviewer may grant",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_REVIEWER_BUDGET_MULTIPLIER",
+    fallback: 4,
+    description:
+      "Ceiling on raiseBudget: the largest multiple of a work item's normal run budget a reviewer may give it. "
+      + "1 disables budget raises while leaving the rest of the allowlist alone.",
   },
   {
     key: "pipeline.defaultOnBlocked",
@@ -968,6 +1005,16 @@ export const settings = {
       dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
       maxHandoffGenerations:
         generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
+      // 0 is meaningful here — it switches remediation off — so this deliberately
+      // does not use the `> 0 ? value : fallback` shape the other counters use.
+      // The descriptor's own fallback seeds `defaults`, so an unset key already
+      // reads as 2 rather than as 0.
+      maxRemediationAttempts: Math.max(0, count("pipeline.maxRemediationAttempts")),
+      reviewerReconfigure: text("pipeline.reviewerReconfigure")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(isReconfigureKind),
+      maxReviewerBudgetMultiplier: Math.max(1, count("pipeline.maxReviewerBudgetMultiplier") || DEFAULT_PIPELINE_POLICY.maxReviewerBudgetMultiplier),
       defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,
       defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
     };

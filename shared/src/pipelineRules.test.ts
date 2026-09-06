@@ -52,12 +52,33 @@ const STATION_STATES: Array<PromptOperationalState | null> = [
   null,
   "WORKING",
   "BLOCKED",
+  // The other three statuses the scheduler routes down the same "did not
+  // finish" path as BLOCKED. Leaving them out is what let the parked rows
+  // claim every station "reported blocked" without a test noticing.
+  "UNREPORTED",
+  "NEEDS_REVIEW",
   "RECOVERY_NEEDED",
   "FAILED",
   "READY",
   "WAITING_DEPENDENCY",
   "DONE",
   "SKIPPED",
+];
+
+/**
+ * Every reason `park()` is called with, plus `null` for the plain "wait" rule.
+ * These are part of the condition now, so a row keyed on one has to be
+ * reachable from here — otherwise "every row is reachable" passes while a
+ * park-reason row sits dead behind the catch-all.
+ */
+const WAIT_REASONS: Array<string | null> = [
+  null,
+  "handoff_running",
+  "audit_running",
+  "audit_incomplete",
+  "audit_unverifiable",
+  "dod_unmet",
+  "retry_exhausted",
 ];
 
 function everyContext(): RuleContext[] {
@@ -67,17 +88,20 @@ function everyContext(): RuleContext[] {
     for (const stationState of STATION_STATES) {
       for (const awaitingHuman of [false, true]) {
         for (const agentActive of [false, true]) {
-          // Policy is part of the condition, so a row a setting unlocks has to
-          // be reachable here too — otherwise "every row is reachable" would
-          // pass while a policy-gated row was quietly dead.
-          for (const onRestart of RESTART_POLICIES) {
-            out.push(context({
-              runState,
-              stationState,
-              awaitingHuman,
-              agentActive,
-              policy: { ...DEFAULT_PIPELINE_POLICY, onRestart },
-            }));
+          for (const waitReason of WAIT_REASONS) {
+            // Policy is part of the condition, so a row a setting unlocks has to
+            // be reachable here too — otherwise "every row is reachable" would
+            // pass while a policy-gated row was quietly dead.
+            for (const onRestart of RESTART_POLICIES) {
+              out.push(context({
+                runState,
+                stationState,
+                awaitingHuman,
+                agentActive,
+                waitReason,
+                policy: { ...DEFAULT_PIPELINE_POLICY, onRestart },
+              }));
+            }
           }
         }
       }
@@ -299,7 +323,76 @@ test("a parked run explains what parked it", () => {
   const plain = matchTransition(context({ runState: "WAITING_HUMAN" }));
   const exhausted = context({ runState: "WAITING_HUMAN", waitReason: "retry_exhausted" });
   assert.match(plain.because(context({ runState: "WAITING_HUMAN" })), /rule is "wait"/);
-  assert.match(matchTransition(exhausted).because(exhausted), /ran out of retries/);
+  assert.match(matchTransition(exhausted).because(exhausted), /every attempt that rule allows/);
+});
+
+/*
+ * The bug this table shipped with: every park reason fell through to the
+ * "wait" row, whose headline states the rule as a fact. A station whose rule
+ * was `retry` and whose retries were spent was told its rule was `wait` — the
+ * operator's own configuration, misreported, with no way to tell from the UI.
+ */
+test('only the "wait" rule is described as the "wait" rule', () => {
+  for (const ctx of everyContext()) {
+    if (ctx.runState !== "WAITING_HUMAN" || ctx.waitReason === null) continue;
+    const row = matchTransition(ctx);
+    for (const [name, text] of [
+      ["headline", row.headline(ctx)],
+      ["because", row.because(ctx)],
+    ] as const) {
+      assert.doesNotMatch(
+        text,
+        /rule is "wait"/,
+        `${row.id} ${name} claims the rule is "wait" while parked on ${ctx.waitReason}`,
+      );
+    }
+  }
+});
+
+test("every park reason the scheduler writes reaches a row that names it", () => {
+  // `null` is the plain "wait" rule and is covered by the catch-all.
+  for (const waitReason of WAIT_REASONS.filter((reason) => reason !== null)) {
+    const ctx = context({ runState: "WAITING_HUMAN", waitReason, stationState: "UNREPORTED" });
+    const row = matchTransition(ctx);
+    assert.notEqual(
+      row.id,
+      "waiting-human-rule",
+      `${waitReason} still falls through to the catch-all, which will describe it as "wait"`,
+    );
+  }
+});
+
+/*
+ * BLOCKED, UNREPORTED, FAILED and NEEDS_REVIEW all reach these rows through
+ * the scheduler's one `applyOnBlocked` path. Only the first of them actually
+ * reported anything, and the stored status exists precisely so "the agent
+ * asked a question" and "the run said nothing" can be told apart.
+ */
+test("a station that never posted a status is not said to have reported blocked", () => {
+  for (const ctx of everyContext()) {
+    if (ctx.runState !== "WAITING_HUMAN") continue;
+    if (ctx.stationState === "BLOCKED") continue;
+    const row = matchTransition(ctx);
+    for (const [name, text] of [
+      ["headline", row.headline(ctx)],
+      ["because", row.because(ctx)],
+    ] as const) {
+      assert.doesNotMatch(
+        text,
+        /reported blocked|posted BLOCKED/,
+        `${row.id} ${name} says a ${String(ctx.stationState)} station reported blocked`,
+      );
+    }
+  }
+});
+
+test("an unfinished station is described by how its run actually ended", () => {
+  const parked = (stationState: PromptOperationalState) =>
+    matchTransition(context({ runState: "WAITING_HUMAN", stationState }))
+      .headline(context({ runState: "WAITING_HUMAN", stationState }));
+  assert.match(parked("BLOCKED"), /reported blocked/);
+  assert.match(parked("UNREPORTED"), /without reporting a status/);
+  assert.match(parked("FAILED"), /failed/);
 });
 
 test("stop reasons: known translated, unknown passed through, null omitted", () => {

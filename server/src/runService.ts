@@ -179,6 +179,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     role: "execute",
     permissionOverride: "inherit",
     budgetDepth: savedPrompt === null ? 0 : workspaces.decomposeDepth(savedPrompt.id),
+    budgetMultiplier: savedPrompt === null ? 1 : workspaces.promptBudgetMultiplier(savedPrompt.id),
     onEvent: (event) => {
       if (event.type === "assistant_text" && event.payload.kind === "message") {
         if (clarificationId !== null) clarificationAnswer += event.payload.text;

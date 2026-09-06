@@ -23,6 +23,7 @@ import {
   PROVIDER_IDS,
   REVIEW_ACTIONS,
   REVIEW_ACTION_LABEL,
+  REVIEW_ACTION_CONSEQUENCE,
   REVIEW_TRIGGERS,
   REVIEW_TRIGGER_LABEL,
 } from "@agent-console/shared";
@@ -199,7 +200,14 @@ function Verdict({
     <label className="text-[11px] text-fg-dim">
       {label}
       <Select value={value} onChange={(event) => onChange(event.target.value as ReviewAction)}>
-        {REVIEW_ACTIONS.map((action) => <option key={action} value={action}>{REVIEW_ACTION_LABEL[action]}</option>)}
+        {REVIEW_ACTIONS.map((action) => (
+          // The consequence, not just the name: "finish the work" and "write a
+          // brief about the work" are one word apart in the label and a whole
+          // agent run apart in what they cost.
+          <option key={action} value={action} title={REVIEW_ACTION_CONSEQUENCE[action]}>
+            {REVIEW_ACTION_LABEL[action]}
+          </option>
+        ))}
       </Select>
     </label>
   );
