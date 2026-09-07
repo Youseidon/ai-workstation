@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -359,7 +360,15 @@ export class CopilotAdapter extends SpawnAdapter {
     const mode = consult ? "plan" : effectiveCopilotPermissionMode();
     // Headless runs have nowhere to show an approval prompt, so tool approval is
     // always pre-granted; `mode` decides how far outside the workspace that reaches.
+    // Copilot reports its `sessionId` only on the final result object, which a
+    // budget stop never reaches. `--session-id <uuid>` names a *new* session up
+    // front instead, so the wrap-up turn always has something to resume;
+    // `--resume=<id>` continues it. Verified against GitHub Copilot CLI 1.0.82.
+    const resumeSessionId = opts.resumeSessionId ?? null;
+    const sessionId = resumeSessionId ?? randomUUID();
     const args = ["--allow-all-tools", "--output-format", "json", "--no-color", "--no-auto-update"];
+    // An optional-value flag, so the id has to be attached with `=`.
+    args.push(resumeSessionId === null ? `--session-id=${sessionId}` : `--resume=${resumeSessionId}`);
     if (mode === "yolo") args.push("--allow-all");
     if (mode === "allow-all-paths") args.push("--allow-all-paths");
     if (mode === "plan") {
@@ -387,7 +396,7 @@ export class CopilotAdapter extends SpawnAdapter {
     if (settings.copilot.githubToken !== null) {
       env.COPILOT_GITHUB_TOKEN = settings.copilot.githubToken;
     }
-    return { args, env: Object.keys(env).length > 0 ? env : undefined };
+    return { args, env: Object.keys(env).length > 0 ? env : undefined, sessionId };
   }
 
   protected createMapper(): StreamMapper {

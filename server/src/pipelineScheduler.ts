@@ -1,7 +1,9 @@
-import { autoHandoffAllowed, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type ReconfigureDirective, type ReconfigureKind, type ReviewAction, type SuitePipelineRun } from "@agent-console/shared";
-import { getAdapter } from "./adapters/registry.ts";
+import { classifyFailure, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
+import { currentLockMode } from "./lib/instanceLock.ts";
+import { cooling, isCooling, markCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
 import { settings } from "./settings.ts";
 import type { StartExecuteArgs } from "./runService.ts";
@@ -31,23 +33,6 @@ function enqueue<T>(workspaceId: number, work: () => Promise<T>): Promise<T> {
   return current;
 }
 
-/**
- * Whether retries were exhausted against something no further retry can fix.
- *
- * A station that keeps failing to *run* will keep failing to run, so the
- * pipeline stops rather than parking for an operator who has nothing to answer.
- * A station that keeps ending without reporting is a different matter: the work
- * may well be getting done, so that parks and waits for a reviewer.
- *
- * This used to sniff the prompt's result text for the prefixes "Agent process
- * ended" and "No active agent run", which meant rewording an operator-facing
- * sentence silently changed the scheduler's behaviour. The status now carries
- * the fact, so it is read instead of guessed at.
- */
-function processFailureBlocked(status: PromptStatus): boolean {
-  return status === "FAILED";
-}
-
 function optionalPlayProvider(input: Record<string, unknown>, field: "provider" | "model", present: boolean): ProviderId | string | null | undefined {
   if (!present) return undefined;
   const value = input[field];
@@ -72,7 +57,6 @@ function optionalNamedPipelineRunId(input: Record<string, unknown>): string | nu
 }
 
 export function resolveExecuteTarget(args: {
-  recovering: boolean;
   preferPlayTarget?: boolean;
   rule: PromptPipelineRule;
   playProvider: ProviderId | null;
@@ -80,13 +64,6 @@ export function resolveExecuteTarget(args: {
   defaultProvider: ProviderId | null;
   defaultModel: string | null;
 }): { provider: ProviderId; model: string | null } | null {
-  if (args.recovering) {
-    if (args.rule.recoverProvider === null) return null;
-    return {
-      provider: args.rule.recoverProvider,
-      model: args.rule.recoverModel ?? getAdapter(args.rule.recoverProvider).model,
-    };
-  }
   if (args.preferPlayTarget && args.playProvider !== null) {
     return {
       provider: args.playProvider,
@@ -97,6 +74,36 @@ export function resolveExecuteTarget(args: {
   if (provider === null) return null;
   const model = args.rule.model ?? args.playModel ?? args.defaultModel ?? getAdapter(provider).model;
   return { provider, model };
+}
+
+/**
+ * Fallback list resolution: station → suite default → house default.
+ * Empty at a level means "ask the next level"; the house default is never empty.
+ */
+export function resolveFallbackProviders(args: {
+  rule: PromptPipelineRule;
+  suiteFallbackProviders: ProviderId[];
+  houseFallbackProviders?: ProviderId[];
+}): ProviderId[] {
+  if (args.rule.fallbackProviders.length > 0) return args.rule.fallbackProviders;
+  if (args.suiteFallbackProviders.length > 0) return args.suiteFallbackProviders;
+  const house = args.houseFallbackProviders ?? settings.pipelinePolicy.fallbackProviders;
+  return house;
+}
+
+async function pickFallbackProvider(args: {
+  list: ProviderId[];
+  exclude: ReadonlySet<ProviderId>;
+}): Promise<ProviderId | null> {
+  const providers = await detectProviders();
+  const available = new Set(providers.filter((item) => item.available).map((item) => item.id));
+  for (const candidate of args.list) {
+    if (args.exclude.has(candidate)) continue;
+    if (isCooling(candidate)) continue;
+    if (!available.has(candidate)) continue;
+    return candidate;
+  }
+  return null;
 }
 
 async function terminate(pipeline: SuitePipelineRun, state: "COMPLETE" | "STOPPED", stopReason: string | null): Promise<SuitePipelineRun> {
@@ -143,29 +150,90 @@ async function syncNamedFromSuite(suiteRun: SuitePipelineRun): Promise<void> {
   }
 }
 
+/**
+ * Whether a restart-interrupted run is picked back up rather than replaced.
+ *
+ * `autoResume` does it without being asked and `resumeSameRun` does it when the
+ * operator presses Play; what they share is that the *same* run continues, so
+ * the decision of which run to act on is one function rather than two policies
+ * spelled out at each call site.
+ */
+function adoptsInterruptedRun(): boolean {
+  const policy = settings.pipelinePolicy.onRestart;
+  return policy === "autoResume" || policy === "resumeSameRun";
+}
+
 function namedPipelineIdFor(live: SuitePipelineRun): number | undefined {
   if (live.pipelineRunId === null) return undefined;
   return workspaces.namedPipelineRunById(live.pipelineRunId)?.pipelineId;
 }
 
-async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number, preferPlayTarget = false): Promise<SuitePipelineRun> {
+type StartStationOpts = {
+  preferPlayTarget?: boolean;
+  /** Force a specific provider (fallback path). Model null → that provider's default. */
+  override?: { provider: ProviderId; model: string | null };
+  /** Providers already tried this start chain — never retry them. */
+  tried?: ReadonlySet<ProviderId>;
+  /**
+   * What to do when every fallback is exhausted. Defaults to park —
+   * providers may recover, and Resume is the right button. Pass `terminate`
+   * only when a cold Play must fail hard (unused today).
+   */
+  onExhausted?: "park" | "terminate";
+};
+
+async function startCurrentStation(
+  pipeline: SuitePipelineRun,
+  promptId: number,
+  preferPlayTargetOrOpts: boolean | StartStationOpts = false,
+): Promise<SuitePipelineRun> {
+  const opts: StartStationOpts = typeof preferPlayTargetOrOpts === "boolean"
+    ? { preferPlayTarget: preferPlayTargetOrOpts }
+    : preferPlayTargetOrOpts;
+  const preferPlayTarget = opts.preferPlayTarget === true;
+  const onExhausted = opts.onExhausted ?? "park";
+  const tried = new Set(opts.tried ?? []);
+
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
   const pipelineId = namedPipelineIdFor(live);
   const rule = workspaces.pipelineRule(promptId, pipelineId);
   const defaults = workspaces.suitePipelineDefaults(live.suiteId);
-  const target = resolveExecuteTarget({
-    recovering: live.recovering,
-    preferPlayTarget,
-    rule,
-    playProvider: live.playProvider,
-    playModel: live.playModel,
-    defaultProvider: defaults.defaultProvider,
-    defaultModel: defaults.defaultModel,
-  });
-  if (target === null) {
+  const resolved = opts.override !== undefined
+    ? { provider: opts.override.provider, model: opts.override.model ?? getAdapter(opts.override.provider).model }
+    : resolveExecuteTarget({
+      preferPlayTarget,
+      rule,
+      playProvider: live.playProvider,
+      playModel: live.playModel,
+      defaultProvider: defaults.defaultProvider,
+      defaultModel: defaults.defaultModel,
+    });
+  if (resolved === null) {
     await terminate(live, "STOPPED", "no_provider");
     throw new WorkspaceError(422, "provider_required", "Play needs a provider on the station, the play request, or the suite default.");
   }
+  // Skip a primary that is already cooling — go straight to a fallback.
+  let target = resolved;
+  if (opts.override === undefined && isCooling(target.provider)) {
+    tried.add(target.provider);
+    const list = resolveFallbackProviders({
+      rule,
+      suiteFallbackProviders: defaults.defaultFallbackProviders,
+    });
+    const next = await pickFallbackProvider({ list, exclude: tried });
+    if (next === null) {
+      return exhaustProviders(live, promptId, onExhausted, `Primary ${target.provider} is cooling and no fallback is available.`);
+    }
+    workspaces.queueProviderFallback(promptId, {
+      from: target.provider,
+      to: next,
+      failure: "start_failed",
+      because: `Primary ${target.provider} is cooling; starting ${next} instead.`,
+      previousRunId: null,
+    });
+    target = { provider: next, model: getAdapter(next).model };
+  }
+  tried.add(target.provider);
   workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: null });
   try {
     const { runId } = await startStationFn({
@@ -180,9 +248,48 @@ async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number,
     await syncNamedFromSuite(updated);
     return updated;
   } catch (error) {
-    await terminate(live, "STOPPED", "start_failed");
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = classifyFailure({ errorText: message, toolCalls: 0, startFailed: true });
+    markCooling(target.provider, failure.id ?? "start_failed", undefined, failure.because);
+    const list = resolveFallbackProviders({
+      rule,
+      suiteFallbackProviders: defaults.defaultFallbackProviders,
+    });
+    const next = await pickFallbackProvider({ list, exclude: tried });
+    if (next !== null) {
+      log.info(`provider-fallback start suite=${live.suiteId} prompt=${promptId} ${target.provider}→${next} because=${failure.id}`);
+      workspaces.queueProviderFallback(promptId, {
+        from: target.provider,
+        to: next,
+        failure: failure.id,
+        because: failure.because,
+        previousRunId: null,
+      });
+      return startCurrentStation(live, promptId, {
+        override: { provider: next, model: null },
+        tried,
+        onExhausted,
+      });
+    }
+    return exhaustProviders(live, promptId, onExhausted, message);
   }
+}
+
+async function exhaustProviders(
+  pipeline: SuitePipelineRun,
+  promptId: number,
+  onExhausted: "park" | "terminate",
+  detail: string,
+): Promise<SuitePipelineRun> {
+  if (onExhausted === "park") {
+    const coolingNow = cooling();
+    log.info(
+      `park no_provider_available suite=${pipeline.suiteId} prompt=${promptId} cooling=${coolingNow.map((c) => c.provider).join(",") || "none"} detail=${detail.slice(0, 120)}`,
+    );
+    return park(pipeline, promptId, "no_provider_available");
+  }
+  await terminate(pipeline, "STOPPED", "start_failed");
+  throw new WorkspaceError(500, "start_failed", detail || "The agent process failed to start.");
 }
 
 async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Promise<SuitePipelineRun> {
@@ -193,8 +300,6 @@ async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Pr
   if (next !== undefined) {
     log.info(`advance suite=${live.suiteId} prompt=${next.id}`);
     const updated = workspaces.updatePipelineRun(live.id, {
-      attempt: 0,
-      recovering: false,
       currentPromptId: next.id,
       currentRunId: null,
     });
@@ -213,8 +318,6 @@ async function advance(pipeline: SuitePipelineRun, preferPlayTarget = false): Pr
     if (child !== null) {
       log.info(`advance suite=${live.suiteId} prompt=${blockingPromptId} sub-step=${child.id}`);
       const updated = workspaces.updatePipelineRun(live.id, {
-        attempt: 0,
-        recovering: false,
         currentPromptId: child.id,
         currentRunId: null,
       });
@@ -255,196 +358,210 @@ async function park(pipeline: SuitePipelineRun, promptId: number, waitReason: st
 }
 
 /**
- * Summon a read-only handoff agent for a station that blocked, instead of just
- * parking. The run still parks — the handoff decides what happens next: on
- * CONTINUE it resets the station to TODO and plays this pipeline again, and on
- * anything else the run simply stays parked for a human.
+ * Pure decision table for a finished execute run.
  *
- * Returns false when no handoff could start, so the caller parks normally
- * rather than claiming one is running.
+ * Kept free of I/O so a test can enumerate every (status × trigger) row —
+ * including the `unexpected_status` tripwire — without standing up a database.
+ * `applyExecuteEnded` is the only caller that turns a decision into work.
  */
-async function tryAutoHandoff(pipeline: SuitePipelineRun, promptId: number, sourceRunId: string): Promise<boolean> {
-  try {
-    const source = workspaces.runSummary(sourceRunId);
-    const { scheduleHandoff } = await import("./handoffCoordinator.ts");
-    const namedPipelineId = namedPipelineIdFor(pipeline);
-    const result = await scheduleHandoff({
-      workspaceId: pipeline.workspaceId,
-      promptId,
-      sourceRunId,
-      sourceProvider: source.provider,
-      sourceModel: source.model,
-      processState: "done",
-      ...(namedPipelineId === undefined ? {} : { namedPipelineId }),
-    });
-    return result.started;
-  } catch (error) {
-    log.warn(`auto-handoff failed suite=${pipeline.suiteId} prompt=${promptId}`, error);
-    return false;
+export type ExecuteEndedDecision =
+  | { action: "applyOnDone" }
+  | { action: "advance" }
+  | { action: "park"; waitReason: "human_question" }
+  | { action: "continuation"; causeKind: "agent_continue" | "unfinished" }
+  | { action: "terminate"; stopReason: string };
+
+export function decideExecuteEnded(status: PromptStatus, trigger: string | null): ExecuteEndedDecision {
+  if (status === "DONE") return { action: "applyOnDone" };
+  if (status === "SKIPPED") return { action: "advance" };
+  if (status === "BLOCKED" && trigger === "agent_post") return { action: "park", waitReason: "human_question" };
+  if (status === "TODO" && trigger === "agent_decompose") return { action: "advance" };
+  if (status === "TODO" && trigger === "agent_continue") return { action: "continuation", causeKind: "agent_continue" };
+  if (status === "UNREPORTED") return { action: "continuation", causeKind: "unfinished" };
+  if (status === "FAILED" && (trigger === "run_crashed" || trigger === "run_start_failed")) {
+    return { action: "continuation", causeKind: "unfinished" };
   }
+  if (status === "NEEDS_REVIEW") return { action: "continuation", causeKind: "unfinished" };
+  return { action: "terminate", stopReason: `unexpected_status:${status}` };
+}
+
+/** Brief the next run is handed when the previous one left none of its own. */
+function unfinishedCause(promptId: number, result: string): string {
+  // Newest last. A refused `done` banks a VERIFICATION remark with the failing
+  // command's output; that has to lead the brief, or the next run rediscovers
+  // the failure from scratch.
+  const remarks = workspaces.recentProgressRemarks(promptId, 5);
+  const verifications = remarks.filter((row) => row.kind === "VERIFICATION").map((row) => row.content.trim()).filter((text) => text !== "");
+  const progress = remarks.filter((row) => row.kind === "PROGRESS").map((row) => row.content.trim()).filter((text) => text !== "");
+  const stop = result.trim() !== "" ? result.trim() : "The run ended without posting a final status.";
+  const parts = [stop];
+  if (verifications.length > 0) {
+    parts.push(`Last refused verification:\n${verifications[verifications.length - 1]}`);
+  }
+  if (progress.length > 0) {
+    parts.push(`Last progress:\n${progress.map((text) => `- ${text}`).join("\n")}`);
+  }
+  return parts.join("\n\n");
 }
 
 /**
- * Summon a read-only auditor for a station that blocked without any agent ever
- * posting a status. The distinction is the whole point: that block means "the
- * process ended and we do not know what happened", which is the one case where
- * the work may already be finished and only the status post was lost.
+ * Re-queue the same station, or park once its allowance is spent.
  *
- * `scheduleCompletionAudit` re-checks that itself and declines otherwise, so a
- * station that blocked with a real question for a human is never audited past.
+ * Counted by ledger rows with `rule_id = "continuation"` since the most recent
+ * USER row — an operator Resume grants a fresh allowance. The station rule's
+ * `onUnfinished` can still short-circuit to skip or wait before any of that.
  */
-async function tryCompletionAudit(pipeline: SuitePipelineRun, promptId: number, sourceRunId: string): Promise<boolean> {
-  if (settings.pipelinePolicy.auditOnBlocked === "off") return false;
-  try {
-    const source = workspaces.runSummary(sourceRunId);
-    const { scheduleCompletionAudit } = await import("./completionAudit.ts");
-    const result = await scheduleCompletionAudit({
-      workspaceId: pipeline.workspaceId,
-      promptId,
-      sourceRunId,
-      sourceProvider: source.provider,
-      automatic: true,
+async function continuation(
+  pipeline: SuitePipelineRun,
+  rule: PromptPipelineRule,
+  promptId: number,
+  previousRunId: string,
+  cause: string,
+): Promise<SuitePipelineRun> {
+  if (rule.onUnfinished === "skip") {
+    workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it did not finish.");
+    return advance(pipeline);
+  }
+  if (rule.onUnfinished === "wait") {
+    return park(pipeline, promptId, "station_rule_wait");
+  }
+
+  const n = workspaces.continuationCount(promptId);
+  const N = settings.pipelinePolicy.maxContinuations;
+  if (n < N) {
+    workspaces.queueContinuation(promptId, {
+      attempt: n + 1,
+      of: N,
+      cause,
+      previousRunId,
+      // The agent already wrote its own CONTINUATION on `agent_continue`; a
+      // second SYSTEM one would bury it. For every other unfinished ending the
+      // agent left none, so the cause sentence becomes the brief.
+      writeSystemRemark: !workspaces.runHasContinuationRemark(promptId, previousRunId),
     });
-    return result.started;
-  } catch (error) {
-    log.warn(`audit failed to start suite=${pipeline.suiteId} prompt=${promptId}`, error);
-    return false;
-  }
-}
-
-interface BlockedOptions {
-  /** Set once an audit has already had its say, so the gate cannot loop. */
-  audited?: boolean;
-  /** Wait reason to park under, when the audit explained why we are here. */
-  parkReason?: string | null;
-}
-
-async function applyOnBlocked(pipeline: SuitePipelineRun, rule: PromptPipelineRule, promptId: number, result: string, sourceRunId?: string, options: BlockedOptions = {}): Promise<SuitePipelineRun> {
-  // A paused run must not spend an attempt. Retry and recover both mutate the
-  // prompt and the counter before starting anything, so the hold is checked
-  // here rather than after those writes — otherwise pausing on a blocked
-  // station silently burned a retry the operator never saw run.
-  const held = workspaces.pipelineById(pipeline.id)?.state === "PAUSED";
-
-  // Before any rule runs, find out whether there is anything left to do. Every
-  // rule is the wrong move when the work is already finished: "wait" strands
-  // the rail for hours, and "retry" and "recover" pay another full developer
-  // run to redo work that is sitting in the tree. This gate applies to all of
-  // them — except "skip", where the operator has already said the station's
-  // outcome does not matter.
-  if (!held && !options.audited && sourceRunId !== undefined && rule.onBlocked !== "skip") {
-    if (await tryCompletionAudit(pipeline, promptId, sourceRunId)) {
-      return park(pipeline, promptId, "audit_running");
-    }
+    log.info(`continuation ${n + 1}/${N} suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`);
+    const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
+    // Pause means the operator asked the rail to stop; a continuation is still
+    // the rail moving, so it waits for Play like every other start.
+    if (updated.state === "PAUSED") return updated;
+    // A continuation that cannot start either parks rather than stopping the
+    // whole suite — the provider may recover, and Resume is the right button.
+    return startCurrentStation(updated, promptId, { onExhausted: "park" });
   }
 
-  if (rule.onBlocked === "wait") {
-    // Whether a handoff is worth an agent run. The status is what makes this
-    // decidable: before it was stored, "the agent asked a question" and "the run
-    // said nothing" were both spelled BLOCKED, so this could not tell them
-    // apart and summarised questions nobody needed summarised.
-    const allowed = sourceRunId !== undefined && !held && autoHandoffAllowed({
-      trigger: settings.pipelinePolicy.handoffTrigger,
-      status: workspaces.promptOutcome(promptId).status,
-      producedWork: workspaces.promptProducedWork(promptId),
-      reviewed: options.audited === true || options.parkReason === "audit_incomplete",
-    });
-    if (allowed && sourceRunId !== undefined) {
-      if (await tryAutoHandoff(pipeline, promptId, sourceRunId)) {
-        return park(pipeline, promptId, "handoff_running");
-      }
-    }
-    return park(pipeline, promptId, options.parkReason ?? null);
-  }
-  if (rule.onBlocked === "retry") {
-    if (pipeline.attempt < rule.retryLimit) {
-      if (held) return workspaces.pipelineById(pipeline.id) ?? pipeline;
-      const attempt = pipeline.attempt + 1;
-      log.info(`retry ${attempt}/${rule.retryLimit} suite=${pipeline.suiteId} prompt=${promptId}`);
-      workspaces.resetPromptToTodo(promptId, `pipeline retry ${attempt}/${rule.retryLimit}`);
-      const updated = workspaces.updatePipelineRun(pipeline.id, { attempt, recovering: false, currentPromptId: promptId, currentRunId: null });
-      return startCurrentStation(updated, promptId);
-    }
-    if (processFailureBlocked(workspaces.promptOutcome(promptId).status)) return terminate(pipeline, "STOPPED", "retry_exhausted");
-    return park(pipeline, promptId, "retry_exhausted");
-  }
-  if (rule.onBlocked === "recover") {
-    if (!pipeline.recovering) {
-      if (held) return workspaces.pipelineById(pipeline.id) ?? pipeline;
-      log.info(`recover suite=${pipeline.suiteId} prompt=${promptId}`);
-      workspaces.resetPromptToTodo(promptId, "pipeline recover");
-      const updated = workspaces.updatePipelineRun(pipeline.id, {
-        recovering: true,
-        attempt: pipeline.attempt + 1,
-        currentPromptId: promptId,
-        currentRunId: null,
+  if (settings.pipelinePolicy.reviewAfterContinuations) {
+    try {
+      const source = workspaces.runSummary(previousRunId);
+      const { scheduleCompletionAudit } = await import("./completionAudit.ts");
+      const result = await scheduleCompletionAudit({
+        workspaceId: pipeline.workspaceId,
+        promptId,
+        sourceRunId: previousRunId,
+        sourceProvider: source.provider,
+        automatic: true,
       });
-      return startCurrentStation(updated, promptId);
+      if (result.started) return park(pipeline, promptId, "review_running");
+      log.warn(`post-continuation audit declined suite=${pipeline.suiteId} prompt=${promptId} block=${result.block}`);
+    } catch (error) {
+      log.warn(`post-continuation audit failed to start suite=${pipeline.suiteId} prompt=${promptId}`, error);
     }
-    log.info(`recover_exhausted suite=${pipeline.suiteId} prompt=${promptId}`);
-    return terminate(pipeline, "STOPPED", "recover_exhausted");
   }
-  workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it blocked.");
-  return advance(pipeline);
+  return park(pipeline, promptId, "continuations_exhausted");
 }
-
-/**
- * Statuses that hand the station to `applyOnBlocked` — the path for "this run
- * did not finish the work, decide what to do about it".
- *
- * All three are the same situation from the scheduler's point of view: the run
- * is over and the item is not closed. They differ in *why*, which is what the
- * status now records and what the reviewer keys off, but not in what the
- * pipeline must do next. Listing them here rather than testing `!== "DONE"`
- * keeps `unexpected_status` meaning something: a status the scheduler genuinely
- * does not know how to handle should still stop the run rather than be guessed at.
- */
-const UNFINISHED_STATUSES = new Set<PromptStatus>(["BLOCKED", "UNREPORTED", "FAILED", "NEEDS_REVIEW"]);
 
 async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, promptId: number): Promise<void> {
   const live = workspaces.pipelineById(pipeline.id);
   if (live === null || (live.state !== "PLAYING" && live.state !== "PAUSED")) return;
+  // Replay / late onEnd: only the run the rail is currently pointing at may move it.
   if (live.currentRunId !== runId) return;
   workspaces.updatePipelineRun(live.id, { currentRunId: null });
   const posted = workspaces.promptOutcome(promptId);
   const pipelineId = namedPipelineIdFor(live);
   const rule = ruleByRun.get(runId) ?? workspaces.pipelineRule(promptId, pipelineId);
   ruleByRun.delete(runId);
-  if (posted.status === "TODO") {
-    // The run decomposed this prompt into sub-steps instead of finishing it;
-    // hand off to the first one.
+  const trigger = workspaces.latestStatusTrigger(promptId);
+
+  // Sub-step DONE/SKIPPED never applies the parent's onDone (stop / skip_rest);
+  // that policy is reserved for the station itself finishing.
+  const parentId = workspaces.parentPromptId(promptId);
+  if (parentId !== null && (posted.status === "DONE" || posted.status === "SKIPPED")) {
     await advance(live);
     return;
   }
-  const parentId = workspaces.parentPromptId(promptId);
-  if (parentId !== null) {
-    // This run belonged to a sub-step. Its own on_done/on_blocked outcome
-    // never stops or skip-rests the station's own rule — that policy is
-    // reserved for the station (the parent) actually finishing.
-    if (posted.status === "DONE" || posted.status === "SKIPPED") {
-      await advance(live);
-      return;
+
+  // Provider fallback sits in front of the FAILED → continuation row: a
+  // capacity / quota / start failure says nothing about the work, so swap
+  // providers immediately without spending a continuation.
+  if (
+    posted.status === "FAILED"
+    && (trigger === "run_crashed" || trigger === "run_start_failed")
+  ) {
+    const facts = workspaces.runFailureFacts(runId);
+    const failure = classifyFailure({
+      errorText: facts.errorText || posted.result,
+      toolCalls: facts.toolCalls,
+      startFailed: trigger === "run_start_failed",
+    });
+    if (failure.class === "transient_provider") {
+      markCooling(facts.provider, failure.id ?? "died_before_work", undefined, failure.because);
+      const defaults = workspaces.suitePipelineDefaults(live.suiteId);
+      const list = resolveFallbackProviders({
+        rule,
+        suiteFallbackProviders: defaults.defaultFallbackProviders,
+      });
+      const next = await pickFallbackProvider({
+        list,
+        exclude: new Set([facts.provider]),
+      });
+      if (next !== null) {
+        log.info(`provider-fallback ended suite=${live.suiteId} prompt=${promptId} ${facts.provider}→${next} id=${failure.id}`);
+        workspaces.queueProviderFallback(promptId, {
+          from: facts.provider,
+          to: next,
+          failure: failure.id,
+          because: failure.because,
+          previousRunId: runId,
+        });
+        if (live.state === "PAUSED") return;
+        await startCurrentStation(live, promptId, {
+          override: { provider: next, model: null },
+          tried: new Set([facts.provider]),
+          onExhausted: "park",
+        });
+        return;
+      }
+      // No fallback free: fall through to continuation with the failure class
+      // in the cause, so the same provider may recover on the next attempt.
+      const decision = decideExecuteEnded(posted.status, trigger);
+      if (decision.action === "continuation") {
+        const cause = `${failure.because} ${unfinishedCause(promptId, posted.result)}`.trim();
+        await continuation(live, rule, promptId, runId, cause);
+        return;
+      }
     }
-    if (UNFINISHED_STATUSES.has(posted.status)) {
-      await applyOnBlocked(live, rule, promptId, posted.result, runId);
-      return;
-    }
-    await terminate(live, "STOPPED", `unexpected_status:${posted.status}`);
-    return;
   }
-  if (posted.status === "DONE") {
+
+  const decision = decideExecuteEnded(posted.status, trigger);
+  if (decision.action === "applyOnDone") {
     await applyOnDone(live, rule);
     return;
   }
-  if (UNFINISHED_STATUSES.has(posted.status)) {
-    await applyOnBlocked(live, rule, promptId, posted.result, runId);
-    return;
-  }
-  if (posted.status === "SKIPPED") {
+  if (decision.action === "advance") {
     await advance(live);
     return;
   }
-  await terminate(live, "STOPPED", `unexpected_status:${posted.status}`);
+  if (decision.action === "park") {
+    await park(live, promptId, decision.waitReason);
+    return;
+  }
+  if (decision.action === "continuation") {
+    const cause = decision.causeKind === "agent_continue"
+      ? (workspaces.latestContinuationRemark(promptId) ?? "The agent asked to be resumed on the same working tree.")
+      : unfinishedCause(promptId, posted.result);
+    await continuation(live, rule, promptId, runId, cause);
+    return;
+  }
+  await terminate(live, "STOPPED", decision.stopReason);
 }
 
 async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined, preferPlayTarget = false): Promise<SuitePipelineRun> {
@@ -474,16 +591,33 @@ async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | nul
  * ready" on its own sends the operator hunting: the blocker is usually one
  * sub-step several levels below a station, invisible from the flowchart.
  */
-function notReadyReason(workspaceId: number, blockingPromptId: number | null, descendantId: number | null): string {
+function notReadyReason(
+  workspaceId: number,
+  blockingPromptId: number | null,
+  descendantId: number | null,
+  waitReason: string | null = null,
+): string {
   if (blockingPromptId === null) return "Every station on this pipeline is already finished.";
   const target = descendantId ?? blockingPromptId;
   const prompt = workspaces.resolvePrompt(workspaceId, target);
   const label = prompt.externalKey ?? prompt.title;
+  if (waitReason === "human_question" || prompt.status === "BLOCKED") {
+    return `${label} asked a question only you can answer. Answer or skip it, then Resume.`;
+  }
+  if (waitReason === "continuations_exhausted") {
+    return `${label} was continued until its allowance ran out and is still not finished. Read the last brief, fix what is in the way, then Resume.`;
+  }
+  if (waitReason === "review_running") {
+    return `${label} is waiting on a read-only reviewer checking the station after its continuations ran out.`;
+  }
+  if (waitReason === "station_rule_wait") {
+    return `${label} is parked by its station rule (on unfinished = wait). Resume or change the rule, then play again.`;
+  }
+  if (waitReason === "no_provider_available") {
+    return `${label} could not start: every configured provider is unavailable or cooling. Wait for one to recover, or assign another, then Resume.`;
+  }
   if (prompt.recoverable) {
     return `${label} needs recovery before this pipeline can continue — its last run stopped without posting a status. Retry or skip it, then play again.`;
-  }
-  if (prompt.status === "BLOCKED") {
-    return `${label} is blocked and needs a human response. Answer or skip it, then play again.`;
   }
   if (prompt.blockedBy.length > 0) {
     return `${label} is waiting on ${prompt.blockedBy.join(", ")}.`;
@@ -536,7 +670,7 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
           workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId)
           || workspaces.resolvePrompt(suite.workspaceId, currentId).ready
         );
-        if (!ready) throw new WorkspaceError(422, "prompt_not_ready", currentId === null ? "This run has no station to resume." : notReadyReason(suite.workspaceId, currentId, null));
+        if (!ready) throw new WorkspaceError(422, "prompt_not_ready", currentId === null ? "This run has no station to resume." : notReadyReason(suite.workspaceId, currentId, null, active.waitReason));
       }
       log.info(`resume suite=${suiteId} from=${active.state}`);
       return resume(active, playProvider, playModel, preferPlayTarget);
@@ -558,10 +692,11 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
       throw new WorkspaceError(422, "nothing_ready", notReadyReason(suite.workspaceId, blocking, descendant?.id ?? null));
     }
   }
-  // `resumeSameRun`: an interrupted run is not "active", so it would otherwise be
-  // abandoned in favour of a fresh one. Adopting it keeps the attempt counter and
-  // the station it was holding, which is the whole point of the policy.
-  if (settings.pipelinePolicy.onRestart === "resumeSameRun") {
+  // An interrupted run is not "active", so it would otherwise be abandoned in
+  // favour of a fresh one. Adopting it keeps the attempt counter and the station
+  // it was holding, which is the whole point of both policies that continue a
+  // run rather than replace it.
+  if (adoptsInterruptedRun()) {
     const latest = workspaces.latestPipeline(suiteId);
     if (latest !== null && latest.state === "INTERRUPTED" && (namedRunId === null || latest.pipelineRunId === namedRunId)) {
       log.info(`adopt interrupted suite=${suiteId} pipeline=${latest.id}`);
@@ -597,8 +732,34 @@ async function pauseSuiteUnlocked(suiteId: number): Promise<{ paused: SuitePipel
   return { paused: updated, interruptId: immediate ? active.currentRunId : null };
 }
 
-async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipelineRun; interruptId: string | null }> {
+/**
+ * The run Stop acts on.
+ *
+ * Under `autoResume` a run interrupted by a restart is not "active" and yet is
+ * about to relaunch itself, so Stop has to be able to reach it — the transition
+ * row offers Stop for exactly that reason. Stopping it writes `operator_stop`,
+ * which is also what takes it out of `resumeInterrupted`'s query: the operator
+ * saying stop always beats the timer.
+ */
+function stoppableSuiteRun(suiteId: number): SuitePipelineRun | null {
   const active = workspaces.activePipeline(suiteId);
+  if (active !== null) return active;
+  if (settings.pipelinePolicy.onRestart !== "autoResume") return null;
+  const latest = workspaces.latestPipeline(suiteId);
+  return latest !== null && latest.state === "INTERRUPTED" && latest.stopReason === "server_restart" ? latest : null;
+}
+
+/** The named-run half of `stoppableSuiteRun`; same reasoning. */
+function stoppableNamedRun(pipelineId: number): PipelineRun | null {
+  const active = workspaces.activeNamedPipelineRun(pipelineId);
+  if (active !== null) return active;
+  if (settings.pipelinePolicy.onRestart !== "autoResume") return null;
+  const latest = workspaces.latestNamedPipelineRun(pipelineId);
+  return latest !== null && latest.state === "INTERRUPTED" && latest.stopReason === "server_restart" ? latest : null;
+}
+
+async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipelineRun; interruptId: string | null }> {
+  const active = stoppableSuiteRun(suiteId);
   if (active === null) throw new WorkspaceError(409, "pipeline_not_active", "No active pipeline to stop");
   // With `stopInterruptsAgent` off, Stop only ends auto-advance: the agent
   // already working keeps its station and finishes on its own.
@@ -666,7 +827,12 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   const playProvider = optionalPlayProvider(body, "provider", "provider" in body) as ProviderId | null | undefined;
   const playModel = optionalPlayProvider(body, "model", "model" in body) as string | null | undefined;
   const preferPlayTarget = body.preferPlayTarget === true;
-  const active = workspaces.activeNamedPipelineRun(pipelineId);
+  // Same adoption as `playSuiteUnlocked`, one level up: a named run interrupted
+  // by a restart owns the suite run under it, so continuing it here is what lets
+  // that suite run be continued rather than superseded.
+  const interrupted = adoptsInterruptedRun() ? workspaces.latestNamedPipelineRun(pipelineId) : null;
+  const active = workspaces.activeNamedPipelineRun(pipelineId)
+    ?? (interrupted !== null && interrupted.state === "INTERRUPTED" && interrupted.stopReason === "server_restart" ? interrupted : null);
   if (active !== null) {
     if (active.state === "PLAYING") {
       throw new WorkspaceError(409, "pipeline_active", "This pipeline is already playing");
@@ -732,58 +898,37 @@ async function resumeAfterHumanResolution(promptId: number): Promise<void> {
  * about who decided: nobody reading this record later should have to work out
  * that the agent which did the work never confirmed it.
  */
-const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work item against its acceptance criteria after the run that did the work ended without posting a status.";
+const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work item against its acceptance criteria after the station's continuations ran out.";
 
 /**
- * Act on a finished audit. Runs inside the workspace queue, so it must never
- * call back into anything that enqueues — the tail it would wait on is the one
- * it is already holding.
- *
- * Returns whether the verdict actually closed the station, which is what the
- * audit record stores as `applied`.
+ * Act on the post-continuation audit. COMPLETE → close (DoD gate) → advance;
+ * anything else → park `continuations_exhausted` with the report already on the
+ * prompt's audit record. Runs inside the workspace queue.
  */
-async function settleAudit(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
+async function settleAudit(args: {
+  promptId: number;
+  sourceRunId: string;
+  verdict: CompletionVerdict | null;
+  verificationSummary?: string;
+  report?: CompletionAuditReport | null;
+  auditId?: string | null;
+}): Promise<boolean> {
   const home = workspaces.promptHome(args.promptId);
   const active = workspaces.activePipeline(home.suiteId);
-  // Only a run parked on this exact station by this audit may be moved by it.
+  // Only a run parked on this exact station for the post-N review may be moved.
   const parked = active !== null
     && active.state === "WAITING_HUMAN"
     && active.currentPromptId === args.promptId
-    && active.waitReason === "audit_running";
+    && active.waitReason === "review_running";
 
-  // What the operator has said this verdict should do, for this situation, at
-  // the narrowest scope that says anything. This used to be one global
-  // three-way switch, so "close a run that went quiet" and "close one whose
-  // process crashed" could not be answered differently.
-  const trigger = workspaces.reviewSituation(args.promptId) ?? "unreported";
-  const reviewer = workspaces.reviewerConfig(trigger, args.promptId);
-  const action = args.verdict === "COMPLETE" ? reviewer.onComplete
-    : args.verdict === "INCOMPLETE" ? reviewer.onIncomplete
-    : reviewer.onUnverifiable;
-
-  // Set when the definition of done refused a close the reviewer wanted to make.
-  // It changes what the station parks under, so the operator reads "a criterion
-  // did not pass" rather than "an audit could not confirm it".
-  let refusedByDod = false;
-  if (args.verdict === "COMPLETE" && action === "close") {
+  if (args.verdict === "COMPLETE") {
     try {
-      // A reviewer's COMPLETE is an opinion; the definition-of-done commands are
-      // not. Run them here so the gate inside `completePrompt` is reading fresh
-      // evidence rather than whatever was last recorded — this is the one path
-      // where a machine closes a station unattended, so it is the one that most
-      // needs the checks to have actually happened.
       const { runDefinitionOfDoneCommands } = await import("./definitionOfDone.ts");
       await runDefinitionOfDoneCommands(args.promptId, args.sourceRunId);
       const written = workspaces.completePrompt(args.promptId, "SYSTEM", {
         reason: AUDIT_COMPLETE_REASON,
         verificationSummary: args.verificationSummary ?? "",
       });
-      // The gate refused: the item is on NEEDS_REVIEW with the failing criteria
-      // recorded, not on DONE. Reporting this as applied would tell the audit
-      // record it closed a station it did not close. It falls through to the
-      // station rule below rather than returning, because a pipeline parked on
-      // `audit_running` is only ever unparked down there — returning here would
-      // leave the rail waiting on an audit that has already finished.
       if (written === "DONE") {
         log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
         if (parked) {
@@ -794,295 +939,124 @@ async function settleAudit(args: { promptId: number; sourceRunId: string; verdic
         }
         return true;
       }
-      refusedByDod = true;
       log.info(`audit COMPLETE refused by the definition of done suite=${home.suiteId} prompt=${args.promptId}`);
     } catch (error) {
-      // The station moved under us, or the verdict carried no evidence to
-      // record. Either way it is not complete, so fall through to the rule.
       log.warn(`audit COMPLETE could not be applied prompt=${args.promptId}`, error);
     }
   }
 
   if (!parked) return false;
-  const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
-  await syncNamedFromSuite(playing);
-  const live = workspaces.pipelineById(playing.id) ?? playing;
-  const rule = workspaces.pipelineRule(args.promptId, namedPipelineIdFor(live));
-  const outcome = workspaces.promptOutcome(args.promptId);
-  const parkReason = refusedByDod ? "dod_unmet"
-    : args.verdict === "INCOMPLETE" ? "audit_incomplete"
-    : args.verdict === "UNVERIFIABLE" ? "audit_unverifiable"
-    : null;
-
-  /*
-   * What the reviewer's verdict actually does.
-   *
-   * `action` used to be computed here and then read exactly once, for
-   * COMPLETE + close. Every other combination the reviewer matrix offers —
-   * `handoff`, `retry`, `park`, `markReview` — was stored, rendered in the
-   * settings screen, editable, and inert: the run fell through to the station
-   * rule as if the reviewer had said nothing. That is most of why a reviewer
-   * whose verdicts were correct never changed an outcome.
-   *
-   * A refused close is deliberately not routed here. The definition of done
-   * has already spoken, and `dod_unmet` is the reason the operator needs to
-   * see — not a second opinion from the reviewer's own configuration.
-   *
-   * A null verdict is not routed here either. It means the auditor's own run
-   * died without producing one, and acting on `onUnverifiable` would attribute
-   * an opinion to an agent that never gave it. The station falls back to its
-   * rule, having lost nothing but the cost of the read-only run.
-   */
-  if (!refusedByDod && args.verdict !== null) {
-    const handled = await applyReviewAction({
-      pipeline: live,
-      action,
-      promptId: args.promptId,
-      verdict: args.verdict,
-      report: args.report ?? null,
-      auditId: args.auditId ?? null,
-      sourceRunId: args.sourceRunId,
-      parkReason,
-    });
-    if (handled) return false;
-  }
-
-  await applyOnBlocked(live, rule, args.promptId, outcome.result, args.sourceRunId, { audited: true, parkReason });
+  // Report stays on the completion_audit row; the wait reason is what the rail shows.
+  await park(active, args.promptId, "continuations_exhausted");
   return false;
 }
 
 /**
- * Apply the pipeline changes the reviewer asked for, as far as the operator
- * allows. Every directive is recorded either way — an applied one so the change
- * is attributable and reversible, a refused one because a reviewer that keeps
- * asking for a capped change is evidence the cap is wrong.
+ * How far back an auto-resume reaches.
  *
- * `decompose` is recorded but never applied here: splitting a work item is an
- * agent-only command (it needs an active execute run, so the split is always
- * attributable to one). The remediation brief carries it as an instruction
- * instead, which is why this returns what it accepted.
+ * A restart that happened minutes ago is the case this exists for. A machine
+ * that has been off for a week is not: relaunching an agent into a working tree
+ * whose state nobody remembers is a worse outcome than a pipeline that waits.
  */
-function applyReconfigure(pipeline: SuitePipelineRun, promptId: number, auditId: string | null, directives: readonly ReconfigureDirective[]): ReconfigureKind[] {
-  const policy = settings.pipelinePolicy;
-  const accepted: ReconfigureKind[] = [];
-  for (const directive of directives) {
-    const record = (applied: boolean, refusedReason: string | null, multiplier: number | null = null) => {
-      workspaces.recordReviewerReconfigure({
-        promptId, auditId, kind: directive.kind, multiplier,
-        provider: directive.provider, why: directive.why, applied, refusedReason,
-      });
-    };
-    if (!policy.reviewerReconfigure.includes(directive.kind)) {
-      record(false, "The operator has not allowed a reviewer to make this kind of change.");
-      continue;
-    }
-    if (directive.kind === "raiseBudget") {
-      const cap = policy.maxReviewerBudgetMultiplier;
-      if (cap <= 1) {
-        record(false, "Budget raises are capped at 1x, which disables them.");
-        continue;
-      }
-      // A missing multiplier means "more than it had"; 2x is the smallest
-      // raise that is worth restarting a run for.
-      const wanted = directive.multiplier === null || directive.multiplier < 1 ? 2 : directive.multiplier;
-      const granted = Math.min(wanted, cap);
-      record(true, granted < wanted ? `Asked for ${wanted}x, capped at ${cap}x.` : null, granted);
-      log.info(`reviewer raised budget prompt=${promptId} to ${granted}x`);
-      accepted.push(directive.kind);
-      continue;
-    }
-    if (directive.kind === "switchProvider") {
-      if (!isProviderId(directive.provider)) {
-        record(false, `"${directive.provider ?? "none"}" is not a provider this install knows.`);
-        continue;
-      }
-      try {
-        // A sub-step under a named pipeline carries its rule on the pipeline
-        // step, not on the prompt, and writing the wrong one would switch an
-        // agent everywhere except where the run actually reads it.
-        const namedId = namedPipelineIdFor(pipeline);
-        if (namedId === undefined) workspaces.upsertPipelineRule(promptId, { provider: directive.provider });
-        else workspaces.upsertNamedPipelineRule(namedId, promptId, { provider: directive.provider });
-        record(true, null);
-        log.info(`reviewer switched provider prompt=${promptId} to ${directive.provider}`);
-        accepted.push(directive.kind);
-      } catch (error) {
-        record(false, error instanceof Error ? error.message : String(error));
-      }
-      continue;
-    }
-    // decompose — carried in the brief, not applied here.
-    record(true, null);
-    accepted.push(directive.kind);
-  }
-  return accepted;
+const RESUME_WINDOW_HOURS = 24;
+
+/**
+ * Put the station a restart caught mid-run back on the queue, and say which.
+ *
+ * The status write is the only thing that happens to the work item — the tree
+ * is untouched and nothing is concluded about the work. A station that cannot
+ * be re-queued (already terminal, or a run genuinely still alive) is left as it
+ * is and the pipeline is resumed anyway, which lands on the next ready station.
+ */
+function requeueStation(suiteRun: SuitePipelineRun): number | null {
+  if (suiteRun.currentPromptId === null) return null;
+  return workspaces.requeueStationAfterRestart(suiteRun.currentPromptId) ? suiteRun.currentPromptId : null;
 }
 
-/** The brief a remediation run is given: what to do, and what not to redo. */
-function remediationBrief(report: CompletionAuditReport, accepted: readonly ReconfigureKind[]): string {
-  const bullets = (items: readonly string[]) => (items.length === 0 ? "- None recorded." : items.map((item) => `- ${item}`).join("\n"));
-  const confirmed = report.checks.filter((check) => check.result === "PASSED").map((check) => check.criterion);
-  const split = accepted.includes("decompose")
-    ? "\n\n## Split this first\n\nA reviewer judged this item too large to finish in one run. Before doing any of the work above, split it with `decompose` and let the sub-steps carry it.\n"
-    : "";
-  return `# What is still missing
+async function resumeInterruptedSuite(run: SuitePipelineRun): Promise<void> {
+  // Re-read: between the query and this turn of the queue an operator may have
+  // stopped it, or a resume of the named run above may already have taken it.
+  const live = workspaces.pipelineById(run.id);
+  if (live === null || live.state !== "INTERRUPTED" || live.stopReason !== "server_restart") return;
+  const station = requeueStation(live);
+  log.info(`auto-resume pipeline=${live.id} suite=${live.suiteId} station=${station ?? "next-ready"}`);
+  await resume(live, undefined, undefined);
+}
 
-A read-only reviewer inspected the working tree after the previous run and found the work below still outstanding. **This list is your task.** Do exactly it.
-
-## Do this
-
-${bullets(report.remainingWork)}${split}
-
-## Already confirmed done — do not redo
-
-${bullets(confirmed)}
-
-## How the reviewer reached that
-
-${report.reasoning || "_Not given._"}
-`;
+async function resumeInterruptedNamed(run: PipelineRun): Promise<void> {
+  const live = workspaces.namedPipelineRunById(run.id);
+  if (live === null || live.state !== "INTERRUPTED" || live.stopReason !== "server_restart") return;
+  const suiteRun = live.currentSuiteRunId === null ? null : workspaces.pipelineById(live.currentSuiteRunId);
+  const station = suiteRun === null ? null : requeueStation(suiteRun);
+  log.info(`auto-resume pipeline=${live.id} suite=${live.currentSuiteId ?? "none"} station=${station ?? "next-ready"}`);
+  // `playNamedUnlocked` adopts the interrupted run under this policy, so the
+  // suite run beneath it is continued rather than replaced, and
+  // `syncNamedFromSuite` carries the new state back up. Resuming both would
+  // start the station twice.
+  await playNamedUnlocked(live.pipelineId);
 }
 
 /**
- * Start a developer run scoped to the work the reviewer named, and let the rail
- * carry on by itself.
+ * Pick up every pipeline the last shutdown interrupted.
  *
- * The bound that matters is `maxRemediationAttempts`: a remediation run can end
- * unfinished, be reviewed again, and be remediated again. The count comes off
- * the status ledger rather than the run or the pipeline row, both of which this
- * path resets.
+ * Called once, a few seconds after boot. 22 of the owner's first 34 pipeline
+ * runs ended `server_restart` and then sat there: the rail had no way back on
+ * its own, so an overnight suite was really a bet on nobody editing code.
+ *
+ * Each pipeline is wrapped on its own — one workspace whose directory has since
+ * been deleted must not stop the rest — and each goes through `enqueue` like
+ * every other entry point, so a resume cannot interleave with a run ending.
  */
-async function tryRemediate(args: {
-  pipeline: SuitePipelineRun;
-  promptId: number;
-  report: CompletionAuditReport | null;
-  auditId: string | null;
-}): Promise<boolean> {
-  const { pipeline, promptId, report } = args;
-  const limit = settings.pipelinePolicy.maxRemediationAttempts;
-  if (limit <= 0) return false;
-  // Nothing to instruct. A run started on an empty brief would rediscover the
-  // problem from scratch, which is the loop this replaces — so this falls back
-  // to the station rule and the operator sees the reviewer's report instead.
-  if (report === null || report.remainingWork.length === 0) {
-    log.info(`reviewer named no remaining work prompt=${promptId}; falling back to the station rule`);
-    return false;
-  }
-  const spent = workspaces.remediationCount(promptId);
-  if (spent >= limit) {
-    log.info(`remediation limit reached prompt=${promptId} (${spent}/${limit})`);
-    return false;
-  }
-
-  // Order matters: a raised budget or a switched agent has to be in force
-  // before the run starts, or the remediation dies exactly where its
-  // predecessor did.
-  const accepted = applyReconfigure(pipeline, promptId, args.auditId, report.reconfigure);
-
-  workspaces.preparePromptForRemediation(promptId, args.auditId ?? "unknown", remediationBrief(report, accepted));
-  const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
-  log.info(`remediating prompt=${promptId} attempt=${spent + 1}/${limit} items=${report.remainingWork.length}`);
-  await startCurrentStation(updated, promptId);
-  return true;
-}
-
-/**
- * Carry out the reviewer's configured action. Returns whether it took
- * responsibility for the run; `false` falls back to the station's own rule,
- * which is the right answer whenever the action cannot be carried out — a
- * `remediate` with nothing to remediate, a `handoff` that could not start.
- */
-async function applyReviewAction(args: {
-  pipeline: SuitePipelineRun;
-  action: ReviewAction;
-  promptId: number;
-  verdict: CompletionVerdict;
-  report: CompletionAuditReport | null;
-  auditId: string | null;
-  sourceRunId: string;
-  parkReason: string | null;
-}): Promise<boolean> {
-  const { pipeline, action, promptId } = args;
-
-  if (action === "close") {
-    // Reached only on a verdict that is not COMPLETE — the COMPLETE path
-    // returned long before this. An operator can select `close` against
-    // INCOMPLETE in the matrix, and honouring it would mark work done on the
-    // reviewer's own evidence that it is not. Refused, loudly, and the station
-    // falls to its rule.
-    log.warn(`reviewer action "close" refused on a ${args.verdict} verdict prompt=${promptId}`);
-    return false;
-  }
-
-  if (action === "remediate") return tryRemediate(args);
-
-  if (action === "retry") {
-    log.info(`reviewer retry prompt=${promptId}`);
-    workspaces.resetPromptToTodo(promptId, "A reviewer's verdict retried this station.");
-    const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
-    await startCurrentStation(updated, promptId);
-    return true;
-  }
-
-  if (action === "handoff") {
-    // The same gate the automatic path uses. A brief summarising a run that
-    // produced nothing is a full agent run spent describing an empty tree, and
-    // choosing `handoff` in the matrix is not a reason to pay for one — it says
-    // what to do when there *is* something to hand over. Refused, the station
-    // falls back to its rule and the operator still gets the reviewer's report.
-    const allowed = autoHandoffAllowed({
-      trigger: settings.pipelinePolicy.handoffTrigger,
-      status: workspaces.promptOutcome(promptId).status,
-      producedWork: workspaces.promptProducedWork(promptId),
-      reviewed: true,
-    });
-    if (allowed && await tryAutoHandoff(pipeline, promptId, args.sourceRunId)) {
-      await park(pipeline, promptId, "handoff_running");
-      return true;
+async function resumeInterruptedAll(): Promise<void> {
+  if (settings.pipelinePolicy.onRestart !== "autoResume") return;
+  if (runHub.isClosing()) return;
+  /*
+   * Only a `serve` process relaunches work, and this is not a formality.
+   *
+   * `dev:sandbox` copies the *database* but not the workspaces: every row still
+   * names the owner's real working directories. Without this, starting a
+   * development server picked up the live console's interrupted pipeline and
+   * launched a Cursor agent into `~/projects/materio-forge` — observed, and the
+   * reason the check exists. A copy of the state is not a copy of the world.
+   */
+  if (currentLockMode() !== "serve") {
+    const pending = workspaces.interruptedRunsToResume(RESUME_WINDOW_HOURS);
+    const count = pending.suiteRuns.length + pending.namedRuns.length;
+    // Said out loud rather than skipped silently: an operator who expected the
+    // rail to come back has to learn why it did not.
+    if (count > 0) {
+      log.info(
+        `auto-resume standing down: ${count} interrupted pipeline(s) left alone because this is not `
+        + "a `serve` process. Run `npm run serve` to have them picked back up.",
+      );
     }
-    return false;
+    return;
   }
-
-  if (action === "markReview") {
-    workspaces.markPromptNeedsReview(promptId, "A reviewer could not settle this work item, so it is flagged for you.");
-    await park(pipeline, promptId, args.parkReason);
-    return true;
+  const { suiteRuns, namedRuns } = workspaces.interruptedRunsToResume(RESUME_WINDOW_HOURS);
+  for (const named of namedRuns) {
+    try {
+      await enqueue(named.workspaceId, () => resumeInterruptedNamed(named));
+    } catch (error) {
+      log.warn(`auto-resume failed pipeline=${named.id}`, error);
+    }
   }
-
-  // "park" — hold here with the reviewer's reason, whatever the station rule
-  // would otherwise have done.
-  await park(pipeline, promptId, args.parkReason);
-  return true;
+  for (const suiteRun of suiteRuns) {
+    // A named run owns the suite runs it started. If it was resumable it has
+    // just been resumed with this one underneath it; if it was not — stopped,
+    // or outside the window — then neither is this.
+    if (suiteRun.pipelineRunId !== null) continue;
+    try {
+      await enqueue(suiteRun.workspaceId, () => resumeInterruptedSuite(suiteRun));
+    } catch (error) {
+      log.warn(`auto-resume failed pipeline=${suiteRun.id}`, error);
+    }
+  }
 }
 
 export const pipelineScheduler = {
-  async play(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
-    const suite = workspaces.suiteHeader(suiteId);
-    return enqueue(suite.workspaceId, () => playSuiteUnlocked(suiteId, body));
-  },
-
-  async pause(suiteId: number): Promise<SuitePipelineRun> {
-    const suite = workspaces.suiteHeader(suiteId);
-    let interruptId: string | null = null;
-    const paused = await enqueue(suite.workspaceId, async () => {
-      const result = await pauseSuiteUnlocked(suiteId);
-      interruptId = result.interruptId;
-      return result.paused;
-    });
-    if (interruptId !== null) await runHub.stop(interruptId);
-    return paused;
-  },
-
-  async stop(suiteId: number): Promise<SuitePipelineRun> {
-    const suite = workspaces.suiteHeader(suiteId);
-    let interruptId: string | null = null;
-    const stopped = await enqueue(suite.workspaceId, async () => {
-      const result = await stopSuiteUnlocked(suiteId);
-      interruptId = result.interruptId;
-      return result.stopped;
-    });
-    if (interruptId !== null) await runHub.stop(interruptId);
-    return stopped;
+  /** Boot-time auto-resume. `index.ts` calls it once the server is listening. */
+  resumeInterrupted(): Promise<void> {
+    return resumeInterruptedAll();
   },
 
   async playNamed(pipelineId: number, body: Record<string, unknown> = {}): Promise<PipelineRun> {
@@ -1111,7 +1085,7 @@ export const pipelineScheduler = {
     const pipeline = workspaces.getPipeline(pipelineId);
     let interruptId: string | null = null;
     const stopped = await enqueue(pipeline.workspaceId, async () => {
-      const active = workspaces.activeNamedPipelineRun(pipelineId);
+      const active = stoppableNamedRun(pipelineId);
       if (active === null) throw new WorkspaceError(409, "pipeline_not_active", "No active pipeline to stop");
       if (active.currentSuiteId !== null) {
         try {
@@ -1148,9 +1122,9 @@ export const pipelineScheduler = {
   },
 
   /**
-   * A completion audit finished. `verdict` is null when the auditor itself
-   * failed, which is treated exactly like UNVERIFIABLE: the station falls back
-   * to its own rule, having lost nothing but the cost of the read-only run.
+   * The post-continuation audit finished. COMPLETE closes and advances; any
+   * other verdict (including a null one from a failed auditor) parks
+   * `continuations_exhausted`.
    */
   async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
     const home = workspaces.promptHome(args.promptId);

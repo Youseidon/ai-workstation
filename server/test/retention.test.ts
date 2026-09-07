@@ -46,11 +46,15 @@ function beginExecute(promptId: number, workspaceId: number): string {
   return runId;
 }
 
-function event(n: number): NormalizedEvent {
+function event(n: number, runId: string): NormalizedEvent {
   return {
+    id: `evt-${n}`,
+    runId,
+    provider: "claude",
+    model: null,
     type: "assistant_text",
     timestamp: new Date(1_700_000_000_000 + n).toISOString(),
-    payload: { kind: "response", text: `event-${n}` },
+    payload: { blockId: `b-${n}`, delta: false, text: `event-${n}`, kind: "message" },
   };
 }
 
@@ -70,7 +74,7 @@ test("a run with 10 000 events keeps eventsPerRun with the last keepFinalEvents 
   try {
     const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
     const total = 10_000;
-    for (let i = 0; i < total; i += 1) workspaces.recordAgentEvent(runId, event(i));
+    for (let i = 0; i < total; i += 1) workspaces.recordAgentEvent(runId, event(i, runId));
     workspaces.finishAgentRun(runId, "done");
 
     const before = workspaces.runEventIdsOldestFirst(runId);
@@ -94,7 +98,7 @@ test("an aged run is thinned to keepFinalEvents only", async () => {
   const ctx = fixture();
   try {
     const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
-    for (let i = 0; i < 500; i += 1) workspaces.recordAgentEvent(runId, event(i));
+    for (let i = 0; i < 500; i += 1) workspaces.recordAgentEvent(runId, event(i, runId));
     workspaces.finishAgentRun(runId, "done");
     const before = workspaces.runEventIdsOldestFirst(runId);
     backdateEndedAt(runId, new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString());

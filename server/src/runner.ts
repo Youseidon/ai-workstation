@@ -66,6 +66,12 @@ export interface RunMetrics {
   toolOutputBytes: number;
   /** Set when the runner stopped the run itself. */
   stopReason: string | null;
+  /**
+   * The provider's own id for the conversation this run had, when it announced
+   * one. Null for a provider that never did — the wrap-up turn then falls back
+   * to a fresh session with a written brief instead of resuming.
+   */
+  sessionId: string | null;
 }
 
 /** Live budget state, surfaced to the agent through the Progress API. */
@@ -88,6 +94,8 @@ export interface RunHandle {
   model: string | null;
   role: RunRole;
   permissionMode: string | null;
+  /** The provider session this run is having, once it has named one. */
+  sessionId(): string | null;
   interrupt(): Promise<void>;
   /** Stop the provider after it has posted its authoritative terminal status. */
   complete?(): Promise<void>;
@@ -105,14 +113,9 @@ export interface StartRunArgs {
   model?: string | null;
   role?: RunRole;
   permissionOverride?: PermissionOverride;
-  /** Decomposition depth of the work item; sub-steps get a smaller allowance. */
-  budgetDepth?: number;
-  /**
-   * Multiple of the normal allowance for this run, from a reviewer that judged
-   * the ceiling itself to be the blocker. 1 (or omitted) is the normal budget.
-   */
-  budgetMultiplier?: number;
-  /** Omitted budgets fall back to the settings defaults for this run's depth. */
+  /** Continue this provider session instead of opening a new one. */
+  resumeSessionId?: string | null;
+  /** Omitted budgets fall back to the settings defaults. */
   budget?: Partial<RunBudget>;
   onEvent(event: NormalizedEvent): void;
   onEnd(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">, metrics: RunMetrics): void;
@@ -146,36 +149,22 @@ export function startRun(args: StartRunArgs): RunHandle {
   const startedAt = Date.now();
   const abortController = new AbortController();
   let usage: TokenUsage | null = null;
+  let sessionId: string | null = args.resumeSessionId ?? null;
   let finished = false;
   let interruptRequested = false;
   let completionRequested = false;
 
-  // Consults and handoffs are single-shot reads; the budgets exist to bound the
-  // open-ended execute loop, so only that role is metered.
-  const base = settings.budgetFor(role === "execute" ? (args.budgetDepth ?? 0) : 0);
-  // A reviewer may have judged this item's ceiling to be what stopped it. The
-  // scale is applied here rather than inside `budgetFor` so the settings stay
-  // the house rules and this stays a per-run exception with a record behind it.
-  //
-  // `noProgressToolCalls` and `maxToolResultBytes` are deliberately not scaled:
-  // a thrash loop is a thrash loop at any allowance, and per-result truncation
-  // bounds context rather than spend.
-  const scale = role === "execute" ? Math.max(1, args.budgetMultiplier ?? 1) : 1;
-  const grow = (value: number | null): number | null => (value === null || scale === 1 ? value : Math.round(value * scale));
-  const defaults = {
-    ...base,
-    maxToolCalls: grow(base.maxToolCalls),
-    maxWallClockMs: grow(base.maxWallClockMs),
-    maxInputTokens: grow(base.maxInputTokens),
-    maxToolOutputBytes: grow(base.maxToolOutputBytes),
-  };
+  // One allowance for every run, whatever the work item's depth: see
+  // `settings.budgetFor`. A sub-step used to get half of it, which is what
+  // killed runs three minutes in while they were still reading.
+  const base = settings.budgetFor();
   const budget: RunBudget = {
-    maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : defaults.maxToolCalls,
-    maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : defaults.maxWallClockMs,
-    maxInputTokens: args.budget?.maxInputTokens !== undefined ? args.budget.maxInputTokens : defaults.maxInputTokens,
-    maxToolOutputBytes: args.budget?.maxToolOutputBytes !== undefined ? args.budget.maxToolOutputBytes : defaults.maxToolOutputBytes,
-    noProgressToolCalls: args.budget?.noProgressToolCalls !== undefined ? args.budget.noProgressToolCalls : defaults.noProgressToolCalls,
-    maxToolResultBytes: args.budget?.maxToolResultBytes ?? defaults.maxToolResultBytes,
+    maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : base.maxToolCalls,
+    maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : base.maxWallClockMs,
+    maxInputTokens: args.budget?.maxInputTokens !== undefined ? args.budget.maxInputTokens : base.maxInputTokens,
+    maxToolOutputBytes: args.budget?.maxToolOutputBytes !== undefined ? args.budget.maxToolOutputBytes : base.maxToolOutputBytes,
+    noProgressToolCalls: args.budget?.noProgressToolCalls !== undefined ? args.budget.noProgressToolCalls : base.noProgressToolCalls,
+    maxToolResultBytes: args.budget?.maxToolResultBytes ?? base.maxToolResultBytes,
   };
   let toolCalls = 0;
   let toolOutputBytes = 0;
@@ -235,6 +224,10 @@ export function startRun(args: StartRunArgs): RunHandle {
           elapsedMs: event.payload.elapsedMs ?? elapsed(),
           usage: stampUsage(event.payload.usage),
           detail: event.payload.detail ?? null,
+          // Carried through rather than defaulted: this payload is rebuilt
+          // field by field, so anything not named here is dropped, and a
+          // dropped session id is a wrap-up turn that cannot resume.
+          ...(event.payload.sessionId === undefined ? {} : { sessionId: event.payload.sessionId }),
         };
         return { ...base, type: "status", payload };
       }
@@ -274,6 +267,12 @@ export function startRun(args: StartRunArgs): RunHandle {
     const normalized = stamp(event);
     if (normalized.type === "status" || normalized.type === "result") {
       usage = mergeUsage(usage, normalized.payload.usage);
+    }
+    // First one wins: a provider that renames its session mid-run would leave
+    // the wrap-up turn resuming something the source run did not have.
+    if (normalized.type === "status" && sessionId === null) {
+      const announced = normalized.payload.sessionId;
+      if (typeof announced === "string" && announced !== "") sessionId = announced;
     }
     if (normalized.type === "tool_use") {
       toolCalls += 1;
@@ -339,6 +338,7 @@ export function startRun(args: StartRunArgs): RunHandle {
         signal: abortController.signal,
         log,
         permissionOverride,
+        resumeSessionId: args.resumeSessionId ?? null,
       })) {
         const event = completionRequested && incoming.type === "result"
           ? { ...incoming, payload: { ...incoming.payload, state: "done" as const } }
@@ -377,7 +377,7 @@ export function startRun(args: StartRunArgs): RunHandle {
 
     emit({ type: "status", payload: { state: finalState } });
     log.info(`run ${finalState} in ${elapsed()}ms · ${toolCalls} tool calls · ${toolOutputBytes} bytes of tool output`);
-    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason });
+    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason, sessionId });
     return finalState;
   })();
 
@@ -388,6 +388,7 @@ export function startRun(args: StartRunArgs): RunHandle {
     role,
     permissionMode,
     budget: budgetSnapshot,
+    sessionId: () => sessionId,
     async interrupt() {
       if (finished) return;
       interruptRequested = true;

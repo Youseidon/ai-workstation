@@ -6,7 +6,7 @@ import { cn } from "@/lib/cn";
 import type { RunStatus } from "@/lib/agentConsole";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
-import { onBlockedChip, overrideChip, stationOccupancy, TONE, LABEL } from "./status";
+import { onUnfinishedChip, overrideChip, stationOccupancy, TONE, LABEL } from "./status";
 
 export interface SubStepRuleView {
   rule: PromptPipelineRule;
@@ -121,7 +121,7 @@ export function SubPipeline({
         <div className="mt-3 border-t border-line pt-2 text-[11px] text-fg-dim">
           Inherited from this step: <span className="text-fg-muted">{overrideChip(parentRule) ?? "no agent yet"}</span>
           {" · on blocked "}
-          <span className="text-fg-muted">{onBlockedChip(parentRule)}</span>
+          <span className="text-fg-muted">{onUnfinishedChip(parentRule)}</span>
         </div>
       </div>
 

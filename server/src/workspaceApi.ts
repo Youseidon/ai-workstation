@@ -4,28 +4,10 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
-import { isProviderId, promptNeedsHandoff } from "@agent-console/shared";
-import { resumeReadyHandoff, scheduleHandoff, type HandoffBlock } from "./handoffCoordinator.ts";
+import { isProviderId } from "@agent-console/shared";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
-
-// One message per reason: "something is in the way" left operators guessing
-// which of three unrelated conditions they had hit, and what to do about it.
-const HANDOFF_BLOCK_CODE: Record<HandoffBlock, string> = {
-  already_complete: "station_already_complete",
-  handoff_running: "handoff_in_progress",
-  reusable: "handoff_reusable",
-  attempt_limit: "handoff_limit_reached",
-  provider_unavailable: "handoff_provider_unavailable",
-};
-const HANDOFF_BLOCK_MESSAGE: Record<HandoffBlock, string> = {
-  already_complete: "This station is already complete; resume the pipeline to start the next ready station",
-  handoff_running: "A handoff agent is already preparing a brief for this run; wait for it to finish",
-  reusable: "A handoff brief for this run is ready; continue with it instead of preparing another",
-  attempt_limit: "This station reached the handoff attempt limit; raise it in Pipeline policy or retry the station directly",
-  provider_unavailable: "The selected handoff provider is unavailable; choose another read-only agent",
-};
 
 const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
   already_complete: "station_already_complete",
@@ -72,13 +54,13 @@ function id(value: string): number {
 }
 
 function failure(res: ServerResponse, error: unknown): void {
-  if (error instanceof WorkspaceError) { json(res, error.status, { error: { code: error.code, message: error.message, ...(error.fields ? { fields: error.fields } : {}) } }); return; }
+  if (error instanceof WorkspaceError) { json(res, error.status, { error: { code: error.code, message: error.message, ...(error.fields ? { fields: error.fields } : {}), ...(error.details ?? {}) } }); return; }
   console.error("workspace API failed", error);
   json(res, 500, { error: { code: "internal_error", message: "Workspace operation failed" } });
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/reviewers" && !url.pathname.startsWith("/api/reviewers/") && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/definition-of-done/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/definition-of-done/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -110,31 +92,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if(match){
         if(method==="PATCH"){const input=await body(req);json(res,200,{triggers:workspaces.updateTriggerSentence(match[1]!,input.sentence)});}
         else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-        return true;
-      }
-    }
-    // What a reviewer does in each situation the app has no first-hand account
-    // of. `?prompt=` resolves through that work item's scopes; without it the
-    // global answer is returned.
-    if(url.pathname==="/api/reviewers"){
-      if(method==="GET"){
-        const value=url.searchParams.get("prompt");
-        json(res,200,{reviewers:workspaces.reviewerConfigs(value===null?null:id(value))});
-      } else if(method==="PATCH"){
-        const input=await body(req);
-        const scope=typeof input.scope==="string"?input.scope:"global";
-        const scopeId=typeof input.scopeId==="number"?input.scopeId:null;
-        const trigger=typeof input.trigger==="string"?input.trigger:"";
-        const patch=typeof input.patch==="object"&&input.patch!==null?input.patch as Record<string,unknown>:{};
-        json(res,200,{reviewer:workspaces.setReviewerConfig({scope,scopeId,trigger,patch})});
-      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      return true;
-    }
-    {
-      const match=url.pathname.match(/^\/api\/reviewers\/([a-zA-Z]+)$/);
-      if(match&&method==="DELETE"){
-        const value=url.searchParams.get("scopeId");
-        json(res,200,{reviewer:workspaces.clearReviewerConfig(url.searchParams.get("scope")??"global",value===null?null:id(value),match[1]!)});
         return true;
       }
     }
@@ -261,64 +218,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       } else if(method==="PATCH"){
         json(res,200,{rule:workspaces.upsertNamedPipelineRule(pipelineId,promptId,await body(req))});
       } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      return true;
-    }
-    const suitePipelineMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pipeline$/);
-    if(suitePipelineMatch){
-      const suiteId=id(suitePipelineMatch[1]!);
-      if(method==="GET")json(res,200,workspaces.pipeline(suiteId));
-      else if(method==="PATCH"){workspaces.updateSuitePipelineDefaults(suiteId,await body(req));json(res,200,workspaces.pipeline(suiteId));}
-      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      return true;
-    }
-    const suitePipelineStepsMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pipeline\/steps$/);
-    if(suitePipelineStepsMatch){
-      const suiteId=id(suitePipelineStepsMatch[1]!);
-      if(method==="POST"){
-        const input=await body(req);
-        const promptId=typeof input.promptId==="number"?input.promptId:0;
-        const home=workspaces.promptHome(promptId);
-        if(home.suiteId!==suiteId)throw new WorkspaceError(422,"validation_error","Prompt is not in this suite");
-        json(res,200,{rule:workspaces.addPipelineStep(promptId,input),pipeline:workspaces.pipeline(suiteId)});
-      } else if(method==="PUT"){
-        const input=await body(req);
-        const promptIds=Array.isArray(input.promptIds)?input.promptIds.filter((value):value is number=>typeof value==="number"):[];
-        json(res,200,{steps:workspaces.reorderPipelineSteps(suiteId,promptIds),pipeline:workspaces.pipeline(suiteId)});
-      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      return true;
-    }
-    const pipelineStepMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/pipeline-step$/);
-    if(pipelineStepMatch){
-      if(method!=="DELETE")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else {
-        const promptId=id(pipelineStepMatch[1]!);
-        workspaces.removePipelineStep(promptId);
-        json(res,200,{pipeline:workspaces.pipeline(workspaces.promptHome(promptId).suiteId)});
-      }
-      return true;
-    }
-    const suitePlayMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/play$/);
-    if(suitePlayMatch){
-      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{pipeline:await pipelineScheduler.play(id(suitePlayMatch[1]!),await body(req))});
-      return true;
-    }
-    const suitePauseMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/pause$/);
-    if(suitePauseMatch){
-      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{pipeline:await pipelineScheduler.pause(id(suitePauseMatch[1]!))});
-      return true;
-    }
-    const suiteStopMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/stop$/);
-    if(suiteStopMatch){
-      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{pipeline:await pipelineScheduler.stop(id(suiteStopMatch[1]!))});
-      return true;
-    }
-    const pipelineRuleMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/pipeline-rule$/);
-    if(pipelineRuleMatch){
-      if(method!=="PATCH")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{rule:workspaces.upsertPipelineRule(id(pipelineRuleMatch[1]!),await body(req))});
       return true;
     }
     const skipMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/skip$/);
@@ -478,19 +377,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
-    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/retry-launch$/);
-    if(match&&method==="POST"){
-      const promptId=id(match[1]!);const input=await body(req);const provider=input.provider;
-      if(!isProviderId(provider))throw new WorkspaceError(422,"validation_error","Choose a valid successor provider");
-      const pipelineId=typeof input.pipelineId==="number"&&Number.isSafeInteger(input.pipelineId)&&input.pipelineId>0?input.pipelineId:null;
-      if(pipelineId===null)throw new WorkspaceError(422,"validation_error","pipelineId is required");
-      const runId=workspaces.latestExecuteRunId(promptId);
-      if(!workspaces.canDirectRetry(promptId))throw new WorkspaceError(409,"handoff_required","This run produced work; prepare a handoff before continuing");
-      workspaces.recoverPrompt(promptId,runId);
-      const {pipelineScheduler}=await import("./pipelineScheduler.ts");
-      const run=await pipelineScheduler.playNamed(pipelineId,{provider,model:typeof input.model==="string"?input.model:null,preferPlayTarget:true});
-      json(res,202,{started:true,run});return true;
-    }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audit$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);const input=await body(req);
@@ -508,23 +394,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audits$/);
     if(match&&method==="GET"){json(res,200,{audits:workspaces.completionAuditsForPrompt(id(match[1]!))});return true;}
-    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
-    if(match&&method==="POST"){
-      const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;
-      const outcome=workspaces.promptOutcome(promptId);
-      if(!promptNeedsHandoff(outcome.status))throw new WorkspaceError(409,"station_already_complete","This station is already complete; resume the pipeline to start the next ready station");
-      if(!isProviderId(successorProvider))throw new WorkspaceError(422,"validation_error","Choose a valid successor provider");
-      const sourceRunId=workspaces.latestExecuteRunId(promptId);const source=workspaces.runSummary(sourceRunId);
-      const namedPipelineId=typeof input.pipelineId==="number"&&Number.isSafeInteger(input.pipelineId)&&input.pipelineId>0?input.pipelineId:undefined;
-      if(typeof input.reuseHandoffId==="string"&&input.reuseHandoffId!==""){
-        const runId=await resumeReadyHandoff({handoffId:input.reuseHandoffId,promptId,failedSuccessorRunId:sourceRunId,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});json(res,202,{started:true,reused:true,runId});return true;
-      }
-      if(!isProviderId(handoffProvider))throw new WorkspaceError(422,"validation_error","Choose a valid handoff provider");
-      if(handoffProvider==="cursor")throw new WorkspaceError(422,"handoff_not_supported","Cursor cannot guarantee a read-only handoff");
-      const result=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
-      if(!result.started)throw new WorkspaceError(409,HANDOFF_BLOCK_CODE[result.block],HANDOFF_BLOCK_MESSAGE[result.block]);
-      json(res,202,{started:true});return true;
-    }
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;
   } catch (error) { failure(res, error); return true; }
 }

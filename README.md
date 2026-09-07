@@ -198,10 +198,11 @@ code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 
 Everything in `.env` that is safe to change while the server is running is also
 editable from the **Agents** page — per-provider default model, permission/sandbox
-mode, binary name, extra CLI arguments, API keys, and host access. (Day-to-day
-model switching happens in the header, not here; the `Model` field only supplies
-the fallback.) Changes are saved to `.agent-console/settings.json` (mode `0600`,
-gitignored) and survive restarts.
+mode, binary name, extra CLI arguments, API keys, host access, run budgets,
+pipeline policy, and transcript retention. (Day-to-day model switching happens in
+the header, not here; the `Model` field only supplies the fallback.) Changes are
+saved to `.agent-console/settings.json` (mode `0600`, gitignored) and survive
+restarts.
 
 - **Layering** — `.env` supplies the default for every field; saved overrides sit
   on top. A field edited back to its `.env` value drops the override entirely.

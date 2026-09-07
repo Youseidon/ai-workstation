@@ -369,6 +369,12 @@ export interface ProviderInfo {
   permissionMode: string;
   /** Effective model for this provider, when configured. */
   model: string | null;
+  /**
+   * Set when the scheduler recently saw a transient failure from this provider
+   * (capacity, quota, …). The header pill shows a small badge; the tooltip
+   * carries `because`. Null when the provider is not cooling.
+   */
+  cooling: { until: string; because: string } | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -712,6 +718,15 @@ export interface StatusPayload {
   /** Null when the provider does not report usage (never a fabricated number). */
   usage: TokenUsage | null;
   detail: string | null;
+  /**
+   * The provider's own id for the conversation this run is having, the moment
+   * the provider reveals it (or the id we assigned it up front). It rides a
+   * status event rather than the result because the run that most needs it is
+   * the one that never reaches a result: a budget stop interrupts the provider,
+   * and the wrap-up turn can only resume the same session if the id was already
+   * banked. Undefined on every status event that is not announcing one.
+   */
+  sessionId?: string | null;
 }
 
 export interface ResultPayload {
@@ -900,11 +915,6 @@ export interface PromptRecord {
  */
 export type PromptStatus = StepStatus;
 
-/** Terminal stations have no remaining work to summarize for a successor. */
-export function promptNeedsHandoff(status: PromptStatus): boolean {
-  return status !== "DONE" && status !== "SKIPPED";
-}
-
 export interface SuiteRecord {
   id: number;
   programId: number;
@@ -1006,7 +1016,12 @@ export interface ProgramGate {
   sortOrder: number;
 }
 
-export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
+/**
+ * `CONTINUATION` is written by the server, not posted by an agent: it is the
+ * brief a run left for the run that resumes the same work item on the same
+ * working tree, recorded from an `agent-step continue`.
+ */
+export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "CONTINUATION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
 /**
  * Who caused a change. Named rather than repeated inline: it is the field that
  * separates "the agent said so" from "the system concluded it" from "you did
@@ -1058,10 +1073,18 @@ export function isOnDoneAction(value: unknown): value is OnDoneAction {
   return typeof value === "string" && (ON_DONE_ACTIONS as readonly string[]).includes(value);
 }
 
-export const ON_BLOCKED_ACTIONS = ["wait", "retry", "recover", "skip"] as const;
-export type OnBlockedAction = (typeof ON_BLOCKED_ACTIONS)[number];
-export function isOnBlockedAction(value: unknown): value is OnBlockedAction {
-  return typeof value === "string" && (ON_BLOCKED_ACTIONS as readonly string[]).includes(value);
+/**
+ * What a station rule does when a run ends without settling the work item —
+ * every case the continuation loop can act on: `TODO`/`UNREPORTED`/`FAILED`/
+ * `NEEDS_REVIEW`. `wait` parks immediately, `skip` marks the station SKIPPED
+ * and carries on, and `continue` (the default) is the continuation loop
+ * itself: re-run the same station, up to `pipelinePolicy.maxContinuations`
+ * times, before a reviewer is sent and the rail parks.
+ */
+export const ON_UNFINISHED_ACTIONS = ["continue", "skip", "wait"] as const;
+export type OnUnfinishedAction = (typeof ON_UNFINISHED_ACTIONS)[number];
+export function isOnUnfinishedAction(value: unknown): value is OnUnfinishedAction {
+  return typeof value === "string" && (ON_UNFINISHED_ACTIONS as readonly string[]).includes(value);
 }
 
 export const PIPELINE_STATES = ["PLAYING", "WAITING_HUMAN", "PAUSED", "COMPLETE", "STOPPED", "INTERRUPTED"] as const;
@@ -1075,13 +1098,14 @@ export interface PromptPipelineRule {
   /** Execute provider for this step. Null until the step is configured. */
   provider: ProviderId | null;
   model: string | null;
+  /**
+   * Ordered providers to try when the station's own provider cannot start or
+   * dies before doing any work. Empty means "use the suite / house default".
+   * Never includes the station's own provider.
+   */
+  fallbackProviders: ProviderId[];
   onDone: OnDoneAction;
-  onBlocked: OnBlockedAction;
-  /** Used only when onBlocked === "retry". Inclusive, 1..5, default 1. */
-  retryLimit: number;
-  /** Required when onBlocked === "recover". */
-  recoverProvider: ProviderId | null;
-  recoverModel: string | null;
+  onUnfinished: OnUnfinishedAction;
   /** False until the prompt is added to the suite flowchart. */
   enabled: boolean;
   /** Sequence on the flowchart. Ignored when enabled is false. */
@@ -1095,17 +1119,15 @@ export interface PromptPipelineRule {
  */
 export function defaultPromptPipelineRule(
   promptId: number,
-  policy?: Pick<PipelinePolicy, "defaultOnDone" | "defaultOnBlocked">,
+  policy?: Pick<PipelinePolicy, "defaultOnDone" | "defaultOnUnfinished">,
 ): PromptPipelineRule {
   return {
     promptId,
     provider: null,
     model: null,
+    fallbackProviders: [],
     onDone: policy?.defaultOnDone ?? "continue",
-    onBlocked: policy?.defaultOnBlocked ?? "wait",
-    retryLimit: 1,
-    recoverProvider: null,
-    recoverModel: null,
+    onUnfinished: policy?.defaultOnUnfinished ?? "continue",
     enabled: false,
     stepOrder: 0,
   };
@@ -1122,6 +1144,8 @@ export interface SuitePipelineDefaults {
   suiteId: number;
   defaultProvider: ProviderId | null;
   defaultModel: string | null;
+  /** Ordered fallbacks when a station leaves its own list empty. */
+  defaultFallbackProviders: ProviderId[];
 }
 
 export interface SuitePipelineRun {
@@ -1131,10 +1155,6 @@ export interface SuitePipelineRun {
   state: PipelineState;
   currentPromptId: number | null;
   currentRunId: string | null;
-  /** 0 before the first try of the current station; increments on retry/recover. */
-  attempt: number;
-  /** Whether the current attempt is the recover pass (one-shot). */
-  recovering: boolean;
   playProvider: ProviderId | null;
   playModel: string | null;
   startedAt: string;
@@ -1149,21 +1169,10 @@ export interface SuitePipelineRun {
   pipelineRunId: string | null;
 }
 
-export interface SuitePipelineView {
-  defaults: SuitePipelineDefaults;
-  /** Enabled flowchart steps, ordered by stepOrder. */
-  steps: PromptPipelineRule[];
-  /** Suite prompts that are not on the flowchart. */
-  available: PipelineAvailablePrompt[];
-  rules: PromptPipelineRule[];
-  active: SuitePipelineRun | null;
-  latest: SuitePipelineRun | null;
-}
-
 /**
  * A saved pipeline: an ordered set of suites in one workspace, played in
- * sequence. Distinct from a suite flowchart (`SuitePipelineView`) and from a
- * single execution (`PipelineRun`).
+ * sequence. Distinct from a suite-stage run (`SuitePipelineRun`) and from a
+ * single named execution (`PipelineRun`).
  */
 export interface PipelineStage {
   suiteId: number;
@@ -1315,9 +1324,13 @@ export interface OperationsPrompt {
   humanIntervention: HumanInterventionStep | null;
   lastActivityAt: string;
   sessionCount: number;
-  latestHandoff: HandoffRecord | null;
   /** Newest completion audit for this station, when one has ever run. */
   latestAudit: CompletionAuditRecord | null;
+  /**
+   * Latest continuation attempt for this station since the operator last
+   * intervened, from the ledger's `continuation` evidence. Null when none.
+   */
+  continuation: { attempt: number; of: number } | null;
   /** Always present; missing DB rows are filled with defaults. */
   pipelineRule: PromptPipelineRule;
   /**
@@ -1483,51 +1496,10 @@ export interface PromptActivity {
   events: PromptStatusEvent[];
   clarifications: ClarificationExchange[];
   sessions: AgentSession[];
-  handoffs: HandoffRecord[];
   /** Newest first. Read-only adjudications of a run that ended without a status. */
   audits: CompletionAuditRecord[];
-  /** True when the latest execute run failed before meaningful work; pipeline resume can skip handoff. */
-  directRetry: boolean;
   /** True when the latest developer run made at least one tool call. */
   producedWork: boolean;
-}
-
-export const HANDOFF_STATES = ["QUEUED", "RUNNING", "READY", "FAILED", "SUPERSEDED"] as const;
-export type HandoffState = (typeof HANDOFF_STATES)[number];
-export const HANDOFF_RECOMMENDATIONS = ["CONTINUE", "WAIT_FOR_HUMAN", "RETRY_LATER", "DO_NOT_CONTINUE"] as const;
-export type HandoffRecommendation = (typeof HANDOFF_RECOMMENDATIONS)[number];
-
-export interface HandoffBrief {
-  version: 1;
-  originalObjective: string;
-  terminationReason: string;
-  completedWork: string[];
-  pendingWork: string[];
-  verificationPassed: string[];
-  verificationFailed: string[];
-  blockers: Array<{ description: string; requiresHuman: boolean; requiredAction: string | null }>;
-  importantFiles: string[];
-  decisionsAndAssumptions: string[];
-  recommendation: HandoffRecommendation;
-  successorInstructions: string;
-}
-
-export interface HandoffRecord {
-  id: string;
-  workspaceId: number;
-  promptId: number;
-  sourceRunId: string;
-  handoffRunId: string | null;
-  successorRunId: string | null;
-  provider: ProviderId;
-  model: string | null;
-  state: HandoffState;
-  recommendation: HandoffRecommendation | null;
-  brief: HandoffBrief | null;
-  briefMarkdown: string;
-  error: string | null;
-  createdAt: string;
-  completedAt: string | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1570,43 +1542,6 @@ export interface CompletionAuditCheck {
   command: string | null;
 }
 
-/**
- * A change to the pipeline itself that the reviewer believes is needed before
- * this work item can reach DONE.
- *
- * The reviewer is read-only and stays that way: it *names* the change, and the
- * scheduler decides whether that kind of change is permitted and applies it.
- * The kinds are a closed set for the same reason the transport table is data —
- * an open-ended "run this command" field would make the reviewer's power
- * unbounded and unreviewable.
- */
-export const RECONFIGURE_KINDS = ["raiseBudget", "decompose", "switchProvider"] as const;
-export type ReconfigureKind = (typeof RECONFIGURE_KINDS)[number];
-
-export function isReconfigureKind(value: unknown): value is ReconfigureKind {
-  return typeof value === "string" && (RECONFIGURE_KINDS as readonly string[]).includes(value);
-}
-
-export const RECONFIGURE_KIND_LABEL: Record<ReconfigureKind, string> = {
-  raiseBudget: "Raise this item's run budget",
-  decompose: "Split this item into sub-steps",
-  switchProvider: "Run it with a different agent",
-};
-
-export interface ReconfigureDirective {
-  kind: ReconfigureKind;
-  /**
-   * Multiplier on the item's own run budget, for `raiseBudget`. Capped by
-   * `pipeline.maxReviewerBudgetMultiplier`, so a reviewer can loosen a ceiling
-   * that is genuinely too tight without being able to remove it.
-   */
-  multiplier: number | null;
-  /** Provider to switch to, for `switchProvider`. Validated against the registry. */
-  provider: string | null;
-  /** Why the reviewer believes this is needed. Shown to the operator verbatim. */
-  why: string;
-}
-
 export interface CompletionAuditReport {
   version: 1;
   verdict: CompletionVerdict;
@@ -1614,12 +1549,6 @@ export interface CompletionAuditReport {
   checks: CompletionAuditCheck[];
   /** Concrete work the auditor found still missing. Empty when COMPLETE. */
   remainingWork: string[];
-  /**
-   * Pipeline changes the reviewer says are needed before the remaining work can
-   * succeed. Empty when the work simply needs doing — which is the common case,
-   * and the one `remediate` handles with no reconfiguration at all.
-   */
-  reconfigure: ReconfigureDirective[];
   /** Evidence sentence recorded on the work item when a COMPLETE is applied. */
   verificationSummary: string;
   reasoning: string;
@@ -1745,7 +1674,7 @@ export type RunSource =
   | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
   | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
   | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
-  | { type: "handoff"; handoffId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string }
+  | { type: "wrapup"; promptId: number; promptKey: string | null; title: string; sourceRunId: string; stopReason: string | null }
   | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string };
 
 export interface ServerRunStartedMessage {
@@ -1877,25 +1806,26 @@ export function oneLine(value: string, max = 160): string {
  * declared here on purpose.
  */
 export {
-  AUDIT_ON_BLOCKED_MODES,
   CONTROL_LABEL,
   DEFAULT_PIPELINE_POLICY,
-  HANDOFF_REQUIREMENTS,
   PAUSE_MODES,
   PIPELINE_CONTROLS,
   STOP_REASON,
   TRANSITIONS,
   describeStopReason,
-  handoffRequired,
-  isAuditOnBlockedMode,
-  isHandoffTrigger,
-  autoHandoffAllowed,
-  HANDOFF_TRIGGERS,
   matchTransition,
-  onBlockedConsequence,
+  onUnfinishedConsequence,
   onDoneConsequence,
+  isRestartPolicy,
   RESTART_POLICIES,
 } from "./pipelineRules";
+export {
+  COOLING_MINUTES,
+  TRANSIENT_PATTERNS,
+  classifyFailure,
+  coolingMinutesFor,
+} from "./providerFailure";
+export type { FailureClass } from "./providerFailure";
 /*
  * Re-exported by name rather than with `export *`.
  *
@@ -1906,7 +1836,6 @@ export {
  * explicit for the same reason; keep it that way.
  */
 export {
-  DEFAULT_REVIEWER_CONFIG,
   DEFAULT_STATUS_CATALOG,
   DEFAULT_TRIGGER_SENTENCES,
   DOD_COMMAND_MAX_LENGTH,
@@ -1932,14 +1861,6 @@ export {
   isDodResultSource,
   isDodScope,
   unmetCriteria,
-  REVIEW_ACTIONS,
-  REVIEW_ACTION_LABEL,
-  REVIEW_ACTION_CONSEQUENCE,
-  REVIEW_TRIGGERS,
-  REVIEW_TRIGGER_LABEL,
-  isReviewAction,
-  isReviewTrigger,
-  reviewTriggerFor,
   OVERLAY_STATUSES,
   STATUS_ICONS,
   STATUS_ON_ENTER,
@@ -1977,9 +1898,6 @@ export type {
   DodResult,
   DodResultSource,
   DodScope,
-  ReviewAction,
-  ReviewTrigger,
-  ReviewerConfig,
   StatusDefinition,
   StatusEditableKey,
   StatusIcon,
@@ -1994,12 +1912,11 @@ export type {
   StepStatus,
   StepTransitionRow,
 } from "./statusModel";
+export { parseVerifyBlock } from "./verifyBlock";
+export type { VerifyBlockParse, VerifyCommand } from "./verifyBlock";
 import type { StatusDefinition, StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
 
 export type {
-  AuditOnBlockedMode,
-  HandoffRequirement,
-  HandoffTrigger,
   PauseMode,
   PipelineControl,
   PipelinePolicy,

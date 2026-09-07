@@ -1,8 +1,8 @@
 import Database from "better-sqlite3";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -1050,6 +1050,122 @@ if (afterTwentySeven < 28) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(28,?)").run(new Date().toISOString());
 }
 
+const afterTwentyEight = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyEight < 29) {
+  // Prompt 08 §2: archive then drop tables nothing reads. Leaf drops — no
+  // rebuild, no foreign_keys pragma.
+  const stamp = new Date().toISOString().replaceAll(":", "-");
+  const archiveDir = join(dirname(databasePath), "archive");
+  mkdirSync(archiveDir, { recursive: true });
+  for (const table of ["handoff", "reviewer_config", "reviewer_reconfigure"] as const) {
+    writeFileSync(join(archiveDir, `${table}-${stamp}.json`), JSON.stringify(db.prepare(`SELECT * FROM ${table}`).all(), null, 2));
+  }
+  db.exec(`
+    DROP TABLE reviewer_config;
+    DROP TABLE reviewer_reconfigure;
+    DROP TABLE handoff;
+  `);
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(29,?)").run(new Date().toISOString());
+}
+
+const afterTwentyNine = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyNine < 30) {
+  // Prompt 08 §3: drop columns nothing reads. SQLite ≥ 3.35 DROP COLUMN.
+  db.exec(`
+    ALTER TABLE pipeline_step DROP COLUMN on_blocked;
+    ALTER TABLE pipeline_step DROP COLUMN retry_limit;
+    ALTER TABLE pipeline_step DROP COLUMN recover_provider;
+    ALTER TABLE pipeline_step DROP COLUMN recover_model;
+    ALTER TABLE suite_pipeline_run DROP COLUMN attempt;
+    ALTER TABLE suite_pipeline_run DROP COLUMN recovering;
+  `);
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(30,?)").run(new Date().toISOString());
+}
+
+const afterThirty = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirty < 31) {
+  // Prompt 08 §4: one pipeline system. Enabled legacy rules without a named
+  // twin get a one-stage pipeline for their suite (create-or-open), then we
+  // re-check and refuse only if something is still missing. Archive + drop.
+  const orphaned = db.prepare(`
+    SELECT r.prompt_id AS promptId, r.provider, r.model, r.on_done AS onDone,
+           r.on_unfinished AS onUnfinished, r.fallback_providers AS fallbackProviders,
+           r.step_order AS stepOrder, r.updated_at AS updatedAt,
+           p.suite_id AS suiteId, s.name AS suiteName, s.external_key AS suiteKey,
+           g.workspace_id AS workspaceId
+    FROM prompt_pipeline_rule r
+    JOIN prompt p ON p.id = r.prompt_id
+    JOIN suite s ON s.id = p.suite_id
+    JOIN program g ON g.id = s.program_id
+    WHERE r.enabled = 1 AND NOT EXISTS (
+      SELECT 1 FROM pipeline_step ps
+      JOIN pipeline_stage st ON st.pipeline_id = ps.pipeline_id AND st.suite_id = p.suite_id
+      WHERE ps.prompt_id = r.prompt_id
+    )
+  `).all() as Array<{
+    promptId: number; provider: string | null; model: string | null; onDone: string;
+    onUnfinished: string; fallbackProviders: string; stepOrder: number; updatedAt: string;
+    suiteId: number; suiteName: string; suiteKey: string | null; workspaceId: number;
+  }>;
+  const pipelineForSuite = new Map<number, number>();
+  const now = new Date().toISOString();
+  for (const row of orphaned) {
+    let pipelineId = pipelineForSuite.get(row.suiteId);
+    if (pipelineId === undefined) {
+      const existing = db.prepare(`
+        SELECT p.id FROM pipeline p
+        JOIN pipeline_stage st ON st.pipeline_id = p.id
+        WHERE p.workspace_id = ? AND st.suite_id = ?
+        ORDER BY p.id LIMIT 1
+      `).get(row.workspaceId, row.suiteId) as { id: number } | undefined;
+      if (existing !== undefined) {
+        pipelineId = existing.id;
+      } else {
+        const name = `${row.suiteName} (migrated)`.slice(0, 120);
+        const description = `Created by migration 31 from enabled prompt_pipeline_rule rows for suite ${row.suiteKey ?? row.suiteId}.`;
+        const inserted = db.prepare("INSERT INTO pipeline(workspace_id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)")
+          .run(row.workspaceId, name, description, now, now);
+        pipelineId = Number(inserted.lastInsertRowid);
+        db.prepare("INSERT INTO pipeline_stage(pipeline_id,suite_id,sort_order) VALUES(?,?,0)").run(pipelineId, row.suiteId);
+      }
+      pipelineForSuite.set(row.suiteId, pipelineId);
+    }
+    db.prepare(`
+      INSERT INTO pipeline_step(pipeline_id,prompt_id,provider,model,on_done,on_unfinished,fallback_providers,step_order,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(pipeline_id,prompt_id) DO UPDATE SET
+        provider=excluded.provider, model=excluded.model, on_done=excluded.on_done,
+        on_unfinished=excluded.on_unfinished, fallback_providers=excluded.fallback_providers,
+        step_order=excluded.step_order, updated_at=excluded.updated_at
+    `).run(
+      pipelineId, row.promptId, row.provider, row.model, row.onDone,
+      row.onUnfinished ?? "continue", row.fallbackProviders ?? "[]", row.stepOrder, row.updatedAt,
+    );
+  }
+  const missing = db.prepare(`
+    SELECT r.prompt_id AS promptId, p.external_key AS promptKey FROM prompt_pipeline_rule r
+    JOIN prompt p ON p.id = r.prompt_id
+    WHERE r.enabled = 1 AND NOT EXISTS (
+      SELECT 1 FROM pipeline_step ps
+      JOIN pipeline_stage st ON st.pipeline_id = ps.pipeline_id AND st.suite_id = p.suite_id
+      WHERE ps.prompt_id = r.prompt_id
+    )
+  `).all() as Array<{ promptId: number; promptKey: string | null }>;
+  if (missing.length > 0) {
+    throw new Error(
+      `migration 31 refused: enabled prompt_pipeline_rule rows lack pipeline_step twins: ${
+        missing.map((row) => row.promptKey ?? String(row.promptId)).join(", ")
+      }`,
+    );
+  }
+  const stamp = new Date().toISOString().replaceAll(":", "-");
+  const archiveDir = join(dirname(databasePath), "archive");
+  mkdirSync(archiveDir, { recursive: true });
+  writeFileSync(join(archiveDir, `prompt_pipeline_rule-${stamp}.json`), JSON.stringify(db.prepare("SELECT * FROM prompt_pipeline_rule").all(), null, 2));
+  db.exec("DROP TABLE prompt_pipeline_rule;");
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(31,?)").run(new Date().toISOString());
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1120,9 +1236,8 @@ type WorkspaceRow = { id: number; name: string; description: string; work_direct
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
 type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; default_provider?: string | null; default_model?: string | null };
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number; parent_prompt_id: number | null; child_order: number };
-type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; on_unfinished?: string; fallback_providers?: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
-type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; on_unfinished?: string; fallback_providers?: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; step_order: number; updated_at: string };
-type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null; pipeline_run_id: string | null };
+type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_unfinished?: string; fallback_providers?: string; step_order: number; updated_at: string };
+type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null; pipeline_run_id: string | null };
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null };
 
@@ -1143,22 +1258,6 @@ function parseFallbackProvidersJson(raw: string | null | undefined): ProviderId[
   } catch {
     return [];
   }
-}
-
-function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): PromptPipelineRule {
-  if (row === undefined) return defaultPromptPipelineRule(promptId, settings.pipelinePolicy);
-  const onDone = isOnDoneAction(row.on_done) ? row.on_done : "continue";
-  const onUnfinished = isOnUnfinishedAction(row.on_unfinished) ? row.on_unfinished : "continue";
-  return {
-    promptId,
-    provider: asProviderId(row.provider),
-    model: row.model,
-    fallbackProviders: parseFallbackProvidersJson(row.fallback_providers),
-    onDone,
-    onUnfinished,
-    enabled: row.enabled === 1,
-    stepOrder: row.step_order ?? 0,
-  };
 }
 
 function pipelineStepDto(promptId: number, row: PipelineStepRow): PromptPipelineRule {
@@ -1184,8 +1283,6 @@ function pipelineRunDto(row: PipelineRunRow): SuitePipelineRun {
     state: row.state as PipelineState,
     currentPromptId: row.current_prompt_id,
     currentRunId: row.current_run_id,
-    attempt: row.attempt,
-    recovering: row.recovering === 1,
     playProvider: asProviderId(row.play_provider),
     playModel: row.play_model,
     startedAt: row.started_at,
@@ -1255,20 +1352,6 @@ function validateFallbackProviders(value: unknown, stationProvider: ProviderId |
 
 const workspaceDto = (row: WorkspaceRow): WorkspaceRecord => ({ id: row.id, name: row.name, description: row.description, workDirectory: row.work_directory, workDirectoryExists: existsSync(row.work_directory), createdAt: row.created_at, updatedAt: row.updated_at, claudeMd: row.claude_md ?? "", agentsMd: row.agents_md ?? "" });
 const promptDto = (row: PromptRow): PromptRecord => ({ id: row.id, suiteId: row.suite_id, title: row.title, content: row.content, sortOrder: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at, externalKey: row.external_key, status: row.status, completedAt: row.completed_at, result: row.result, isGate: row.is_gate === 1, parentPromptId: row.parent_prompt_id, childOrder: row.child_order });
-
-function handoffDto(row:Record<string,unknown>):HandoffRecord {
-  let brief:HandoffBrief|null=null;
-  try { brief=row.brief_json?JSON.parse(row.brief_json as string) as HandoffBrief:null; } catch { brief=null; }
-  return {
-    id:row.id as string, workspaceId:row.workspace_id as number, promptId:row.prompt_id as number,
-    sourceRunId:row.source_run_id as string, handoffRunId:row.handoff_run_id as string|null,
-    successorRunId:row.successor_run_id as string|null, provider:row.provider as ProviderId,
-    model:row.model as string|null, state:row.state as HandoffRecord["state"],
-    recommendation:row.recommendation as HandoffRecommendation|null, brief,
-    briefMarkdown:row.brief_markdown as string, error:row.error as string|null,
-    createdAt:row.created_at as string, completedAt:row.completed_at as string|null,
-  };
-}
 
 function completionAuditDto(row:Record<string,unknown>):CompletionAuditRecord {
   let report:CompletionAuditReport|null=null;
@@ -1943,17 +2026,6 @@ const forgetOrphanedScopedRows = db.transaction(() => {
       (scope='program'   AND scope_id NOT IN (SELECT id FROM program))   OR
       (scope='suite'     AND scope_id NOT IN (SELECT id FROM suite))     OR
       (scope='prompt'    AND scope_id NOT IN (SELECT id FROM prompt))
-  `).run();
-  // `reviewer_config` is scoped the same way and carries the same hazard: a
-  // prompt-scoped row that outlives its work item does not merely linger, it
-  // attaches itself to whichever work item is next given that id, and then
-  // quietly decides how that one is reviewed. The global scope is excluded
-  // because its scope_id is NULL by design and points at nothing.
-  db.prepare(`
-    DELETE FROM reviewer_config WHERE
-      (scope='pipeline' AND scope_id NOT IN (SELECT id FROM pipeline)) OR
-      (scope='suite'    AND scope_id NOT IN (SELECT id FROM suite))    OR
-      (scope='prompt'   AND scope_id NOT IN (SELECT id FROM prompt))
   `).run();
 });
 
@@ -2919,17 +2991,15 @@ export const workspaces = {
       WHERE e.prompt_id=? AND e.new_status='BLOCKED' AND e.actor_type='AGENT' AND e.verification_summary<>''
       ORDER BY e.id DESC LIMIT 1
     `);
-    const latestHandoff=db.prepare("SELECT * FROM handoff WHERE prompt_id=? ORDER BY created_at DESC LIMIT 1");
     const latestAudit=db.prepare("SELECT * FROM completion_audit WHERE prompt_id=? ORDER BY created_at DESC LIMIT 1");
     const sessionCount=db.prepare("SELECT count(*) count FROM agent_run WHERE prompt_id=?");
     const sessionsBySuite=db.prepare("SELECT r.id,r.workspace_id workspaceId,r.prompt_id promptId,p.external_key promptKey,p.title promptTitle,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? ORDER BY r.started_at DESC");
     const latestVerification=db.prepare("SELECT id,kind,state,verdict,started_at startedAt,ended_at endedAt FROM suite_verification WHERE suite_id=? ORDER BY started_at DESC,id DESC LIMIT 1");
-    const ruleRow=db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?");
     const suiteDefaults=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM suite WHERE id=?");
     const activePipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1");
     const latestPipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? ORDER BY started_at DESC LIMIT 1");
     const suites:OperationsSuite[]=[];
-    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const handoffRow=latestHandoff.get(prompt.id) as Record<string,unknown>|undefined;const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:statusDefinition(this.statusCatalog(),state).needsAttention,latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestHandoff:handoffRow?handoffDto(handoffRow):null,latestAudit:auditRow?completionAuditDto(auditRow):null,continuation:this.latestContinuation(prompt.id),pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined),children:[],childAttention:null,childAttentionCount:0};});
+    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:statusDefinition(this.statusCatalog(),state).needsAttention,latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestAudit:auditRow?completionAuditDto(auditRow):null,continuation:this.latestContinuation(prompt.id),pipelineRule:defaultPromptPipelineRule(prompt.id,settings.pipelinePolicy),children:[],childAttention:null,childAttentionCount:0};});
       // Sub-steps are real OperationsPrompt items, but they nest under the
       // parent's `children` rather than appearing as flowchart entries.
       const byId=new Map(allPrompts.map(item=>[item.prompt.id,item]));
@@ -3106,7 +3176,7 @@ export const workspaces = {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
     const prompts=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts??[];
     const item=findOperationsPrompt(prompts,promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),audits:this.completionAuditsForPrompt(promptId),producedWork:this.promptProducedWork(promptId)};
+    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),audits:this.completionAuditsForPrompt(promptId),producedWork:this.promptProducedWork(promptId)};
   },
   /**
    * The per-second "running" heartbeat is a live-UI signal, not a record: it
@@ -3285,15 +3355,15 @@ export const workspaces = {
   pipelineRule(promptId:number,pipelineId?:number):PromptPipelineRule {
     this.promptHome(promptId);
     // A sub-step is never a flowchart entry. By default it runs under whatever
-    // policy (provider, on_blocked, retry) its parent station carries; a named
-    // pipeline may pin its own agent on one without disturbing the station.
+    // policy its parent station carries; a named pipeline may pin its own agent
+    // on one without disturbing the station.
     const parentId=this.parentPromptId(promptId);
     if(parentId!==null){
       const inherited={...this.pipelineRule(parentId,pipelineId),promptId};
       if(pipelineId===undefined) return inherited;
-      // A named pipeline may pin a different agent (or blocked policy) on one
-      // sub-step. The row is seeded from the parent, so it is complete on its
-      // own; deleting it drops the sub-step back to inheriting.
+      // A named pipeline may pin a different agent on one sub-step. The row is
+      // seeded from the parent, so it is complete on its own; deleting it drops
+      // the sub-step back to inheriting.
       const override=db.prepare("SELECT * FROM pipeline_step WHERE pipeline_id=? AND prompt_id=?").get(pipelineId,promptId) as PipelineStepRow|undefined;
       if(override===undefined) return inherited;
       return {...pipelineStepDto(promptId,override),onDone:inherited.onDone,enabled:inherited.enabled,stepOrder:inherited.stepOrder};
@@ -3303,7 +3373,9 @@ export const workspaces = {
       if(row!==undefined) return pipelineStepDto(promptId,row);
       return {...defaultPromptPipelineRule(promptId, settings.pipelinePolicy),enabled:false};
     }
-    return pipelineRuleDto(promptId,db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?").get(promptId) as PipelineRuleRow|undefined);
+    // Suite-level prompt_pipeline_rule is gone; without a named pipeline the
+    // operations board shows settings defaults (Play is named-only).
+    return defaultPromptPipelineRule(promptId, settings.pipelinePolicy);
   },
 
   assertPipelineSuite(pipelineId:number,suiteId:number):void {
@@ -3349,17 +3421,13 @@ export const workspaces = {
       next.stepOrder=value;
     }
     const now=new Date().toISOString();
-    // Keep legacy on_blocked/retry/recover columns populated so pre-03 readers
-    // and prompt 08's drop still see coherent rows; on_unfinished is authoritative.
-    const legacyBlocked = next.onUnfinished === "wait" || next.onUnfinished === "skip" ? next.onUnfinished : "retry";
-    db.prepare(`INSERT INTO pipeline_step(pipeline_id,prompt_id,provider,model,on_done,on_blocked,on_unfinished,fallback_providers,retry_limit,recover_provider,recover_model,step_order,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    db.prepare(`INSERT INTO pipeline_step(pipeline_id,prompt_id,provider,model,on_done,on_unfinished,fallback_providers,step_order,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)
       ON CONFLICT(pipeline_id,prompt_id) DO UPDATE SET
-        provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
+        provider=excluded.provider, model=excluded.model, on_done=excluded.on_done,
         on_unfinished=excluded.on_unfinished, fallback_providers=excluded.fallback_providers,
-        retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model,
         step_order=excluded.step_order, updated_at=excluded.updated_at`)
-      .run(pipelineId,promptId,next.provider,next.model,next.onDone,legacyBlocked,next.onUnfinished,JSON.stringify(next.fallbackProviders),1,null,null,next.stepOrder,now);
+      .run(pipelineId,promptId,next.provider,next.model,next.onDone,next.onUnfinished,JSON.stringify(next.fallbackProviders),next.stepOrder,now);
     return this.pipelineRule(promptId,pipelineId);
   },
 
@@ -3531,99 +3599,6 @@ export const workspaces = {
     };
   },
 
-  upsertPipelineRule(promptId:number,input:Record<string,unknown>):PromptPipelineRule {
-    this.promptHome(promptId);
-    const current=this.pipelineRule(promptId);
-    const next:PromptPipelineRule={
-      promptId,
-      provider:"provider" in input ? optionalProviderField(input.provider,"provider") : current.provider,
-      model:"model" in input ? optionalModelField(input.model,"model") : current.model,
-      fallbackProviders:current.fallbackProviders,
-      onDone:current.onDone,
-      onUnfinished:current.onUnfinished,
-      enabled:current.enabled,
-      stepOrder:current.stepOrder,
-    };
-    if("onDone" in input){
-      if(!isOnDoneAction(input.onDone)) throw new WorkspaceError(422,"validation_error","onDone must be continue, stop, or skip_rest",{onDone:"Unknown action"});
-      next.onDone=input.onDone;
-    }
-    if("onUnfinished" in input){
-      if(!isOnUnfinishedAction(input.onUnfinished)) throw new WorkspaceError(422,"validation_error","onUnfinished must be continue, skip, or wait",{onUnfinished:"Unknown action"});
-      next.onUnfinished=input.onUnfinished;
-    }
-    if("fallbackProviders" in input){
-      next.fallbackProviders=validateFallbackProviders(input.fallbackProviders,next.provider);
-    }
-    if("enabled" in input) next.enabled=input.enabled===true||input.enabled===1;
-    if("stepOrder" in input){
-      const value=input.stepOrder;
-      if(typeof value!=="number"||!Number.isInteger(value)||value<0) throw new WorkspaceError(422,"validation_error","stepOrder must be a non-negative integer",{stepOrder:"Must be >= 0"});
-      next.stepOrder=value;
-    }
-    const now=new Date().toISOString();
-    const legacyBlocked = next.onUnfinished === "wait" || next.onUnfinished === "skip" ? next.onUnfinished : "retry";
-    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,on_unfinished,fallback_providers,retry_limit,recover_provider,recover_model,updated_at,enabled,step_order)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(prompt_id) DO UPDATE SET
-        provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
-        on_unfinished=excluded.on_unfinished, fallback_providers=excluded.fallback_providers,
-        retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model, updated_at=excluded.updated_at,
-        enabled=excluded.enabled, step_order=excluded.step_order`)
-      .run(promptId,next.provider,next.model,next.onDone,legacyBlocked,next.onUnfinished,JSON.stringify(next.fallbackProviders),1,null,null,now,next.enabled?1:0,next.stepOrder);
-    return this.pipelineRule(promptId);
-  },
-
-  enabledPipelineSteps(suiteId:number,pipelineId?:number):PromptPipelineRule[] {
-    if(pipelineId!==undefined) return this.enabledNamedPipelineSteps(pipelineId,suiteId);
-    this.suiteHeader(suiteId);
-    const rows=db.prepare(`SELECT r.* FROM prompt_pipeline_rule r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? AND r.enabled=1 ORDER BY r.step_order,p.sort_order,p.id`).all(suiteId) as PipelineRuleRow[];
-    return rows.map(row=>pipelineRuleDto(row.prompt_id,row));
-  },
-
-  addPipelineStep(promptId:number,input:Record<string,unknown>={}):PromptPipelineRule {
-    const home=this.promptHome(promptId);
-    const current=this.pipelineRule(promptId);
-    if(current.enabled) return this.upsertPipelineRule(promptId,input);
-    const max=(db.prepare(`SELECT COALESCE(MAX(r.step_order), -1) AS value FROM prompt_pipeline_rule r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? AND r.enabled=1`).get(home.suiteId) as {value:number}).value;
-    const provider="provider" in input ? optionalProviderField(input.provider,"provider") : current.provider;
-    const model="model" in input ? optionalModelField(input.model,"model") : current.model;
-    return this.upsertPipelineRule(promptId,{...input,provider,model,enabled:true,stepOrder:max+1});
-  },
-
-  removePipelineStep(promptId:number):PromptPipelineRule {
-    this.promptHome(promptId);
-    return this.upsertPipelineRule(promptId,{enabled:false,stepOrder:0});
-  },
-
-  reorderPipelineSteps(suiteId:number,promptIds:number[]):PromptPipelineRule[] {
-    this.suiteHeader(suiteId);
-    const current=this.enabledPipelineSteps(suiteId);
-    if(promptIds.length!==current.length || new Set(promptIds).size!==promptIds.length){
-      throw new WorkspaceError(422,"validation_error","promptIds must list every enabled step once");
-    }
-    const allowed=new Set(current.map(step=>step.promptId));
-    for(const promptId of promptIds){
-      if(!allowed.has(promptId)) throw new WorkspaceError(422,"validation_error","promptIds must be the enabled steps of this suite");
-    }
-    sqliteGuard(()=>db.transaction(()=>{
-      promptIds.forEach((promptId,index)=>{
-        db.prepare("UPDATE prompt_pipeline_rule SET step_order=?,updated_at=? WHERE prompt_id=?").run(index,new Date().toISOString(),promptId);
-      });
-    })());
-    return this.enabledPipelineSteps(suiteId);
-  },
-
-  pipeline(suiteId:number):SuitePipelineView {
-    const defaults=this.suitePipelineDefaults(suiteId);
-    const prompts=(db.prepare("SELECT id,title,external_key externalKey,status FROM prompt WHERE suite_id=? AND parent_prompt_id IS NULL ORDER BY sort_order,id").all(suiteId) as Array<{id:number;title:string;externalKey:string|null;status:PromptRecord["status"]}>);
-    const rules=prompts.map(row=>this.pipelineRule(row.id));
-    const steps=this.enabledPipelineSteps(suiteId);
-    const enabled=new Set(steps.map(step=>step.promptId));
-    const available:PipelineAvailablePrompt[]=prompts.filter(row=>!enabled.has(row.id)).map(row=>({id:row.id,title:row.title,externalKey:row.externalKey,status:row.status}));
-    return {defaults,steps,available,rules,active:this.activePipeline(suiteId),latest:this.latestPipeline(suiteId)};
-  },
-
   pipelineById(id:string):SuitePipelineRun|null {
     const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE id=?").get(id) as PipelineRunRow|undefined;
     return row?pipelineRunDto(row):null;
@@ -3652,7 +3627,7 @@ export const workspaces = {
   createPipelineRun(args:{id:string;suiteId:number;workspaceId:number;playProvider:ProviderId|null;playModel:string|null;pipelineRunId?:string|null}):SuitePipelineRun {
     return sqliteGuard(()=>{
       const now=new Date().toISOString();
-      db.prepare("INSERT INTO suite_pipeline_run(id,suite_id,workspace_id,state,current_prompt_id,current_run_id,attempt,recovering,play_provider,play_model,started_at,pipeline_run_id) VALUES(?,?,?,'PLAYING',NULL,NULL,0,0,?,?,?,?)")
+      db.prepare("INSERT INTO suite_pipeline_run(id,suite_id,workspace_id,state,current_prompt_id,current_run_id,play_provider,play_model,started_at,pipeline_run_id) VALUES(?,?,?,'PLAYING',NULL,NULL,?,?,?,?)")
         .run(args.id,args.suiteId,args.workspaceId,args.playProvider,args.playModel,now,args.pipelineRunId??null);
       return this.pipelineById(args.id)!;
     });
@@ -3662,8 +3637,6 @@ export const workspaces = {
     state?:PipelineState;
     currentPromptId?:number|null;
     currentRunId?:string|null;
-    attempt?:number;
-    recovering?:boolean;
     playProvider?:ProviderId|null;
     playModel?:string|null;
     endedAt?:string|null;
@@ -3676,17 +3649,20 @@ export const workspaces = {
       state:patch.state??current.state,
       currentPromptId:patch.currentPromptId===undefined?current.currentPromptId:patch.currentPromptId,
       currentRunId:patch.currentRunId===undefined?current.currentRunId:patch.currentRunId,
-      attempt:patch.attempt??current.attempt,
-      recovering:patch.recovering===undefined?current.recovering:patch.recovering,
       playProvider:patch.playProvider===undefined?current.playProvider:patch.playProvider,
       playModel:patch.playModel===undefined?current.playModel:patch.playModel,
       endedAt:patch.endedAt===undefined?current.endedAt:patch.endedAt,
       stopReason:patch.stopReason===undefined?current.stopReason:patch.stopReason,
       waitReason:patch.waitReason===undefined?current.waitReason:patch.waitReason,
     };
-    db.prepare("UPDATE suite_pipeline_run SET state=?,current_prompt_id=?,current_run_id=?,attempt=?,recovering=?,play_provider=?,play_model=?,ended_at=?,stop_reason=?,wait_reason=? WHERE id=?")
-      .run(next.state,next.currentPromptId,next.currentRunId,next.attempt,next.recovering?1:0,next.playProvider,next.playModel,next.endedAt,next.stopReason,next.waitReason,id);
+    db.prepare("UPDATE suite_pipeline_run SET state=?,current_prompt_id=?,current_run_id=?,play_provider=?,play_model=?,ended_at=?,stop_reason=?,wait_reason=? WHERE id=?")
+      .run(next.state,next.currentPromptId,next.currentRunId,next.playProvider,next.playModel,next.endedAt,next.stopReason,next.waitReason,id);
     return this.pipelineById(id)!;
+  },
+
+  enabledPipelineSteps(suiteId:number,pipelineId?:number):PromptPipelineRule[] {
+    if(pipelineId===undefined) return [];
+    return this.enabledNamedPipelineSteps(pipelineId,suiteId);
   },
 
   readyPromptsInSuite(workspaceId:number,suiteId:number,pipelineId?:number):PromptOption[] {
@@ -4052,22 +4028,6 @@ export const workspaces = {
     };
   },
 
-  createHandoff(args:{id:string;workspaceId:number;promptId:number;sourceRunId:string;provider:ProviderId;model:string|null}):HandoffRecord {
-    const now=new Date().toISOString();
-    db.prepare("INSERT INTO handoff(id,workspace_id,prompt_id,source_run_id,provider,model,state,created_at) VALUES(?,?,?,?,?,?,'QUEUED',?)")
-      .run(args.id,args.workspaceId,args.promptId,args.sourceRunId,args.provider,args.model,now);
-    return this.handoffById(args.id)!;
-  },
-  handoffById(id:string):HandoffRecord|null { const row=db.prepare("SELECT * FROM handoff WHERE id=?").get(id) as Record<string,unknown>|undefined;return row?handoffDto(row):null; },
-  handoffsForPrompt(promptId:number):HandoffRecord[] { return (db.prepare("SELECT * FROM handoff WHERE prompt_id=? ORDER BY created_at DESC").all(promptId) as Record<string,unknown>[]).map(handoffDto); },
-  latestReadyHandoffMarkdown(promptId:number):string { return (db.prepare("SELECT brief_markdown text FROM handoff WHERE prompt_id=? AND state='READY' ORDER BY created_at DESC LIMIT 1").get(promptId) as {text:string}|undefined)?.text??""; },
-  updateHandoff(id:string,patch:{handoffRunId?:string|null;successorRunId?:string|null;state?:HandoffRecord["state"];recommendation?:HandoffRecommendation|null;brief?:HandoffBrief|null;briefMarkdown?:string;error?:string|null;completedAt?:string|null}):HandoffRecord {
-    const current=this.handoffById(id);if(!current)throw new WorkspaceError(404,"not_found","Handoff not found");
-    const next={handoffRunId:patch.handoffRunId===undefined?current.handoffRunId:patch.handoffRunId,successorRunId:patch.successorRunId===undefined?current.successorRunId:patch.successorRunId,state:patch.state??current.state,recommendation:patch.recommendation===undefined?current.recommendation:patch.recommendation,brief:patch.brief===undefined?current.brief:patch.brief,briefMarkdown:patch.briefMarkdown===undefined?current.briefMarkdown:patch.briefMarkdown,error:patch.error===undefined?current.error:patch.error,completedAt:patch.completedAt===undefined?current.completedAt:patch.completedAt};
-    db.prepare("UPDATE handoff SET handoff_run_id=?,successor_run_id=?,state=?,recommendation=?,brief_json=?,brief_markdown=?,error=?,completed_at=? WHERE id=?")
-      .run(next.handoffRunId,next.successorRunId,next.state,next.recommendation,next.brief===null?null:JSON.stringify(next.brief),next.briefMarkdown,next.error,next.completedAt,id);
-    return this.handoffById(id)!;
-  },
   /* ---------------------------------------------------------------- */
   /* Completion audits                                                  */
   /* ---------------------------------------------------------------- */

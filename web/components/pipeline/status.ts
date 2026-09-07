@@ -81,14 +81,14 @@ export function onDoneChip(action: OnDoneAction): string {
   return "↛ skip rest";
 }
 
-export function onBlockedChip(rule: PromptPipelineRule): string {
-  if (rule.onBlocked === "wait") return "wait";
-  if (rule.onBlocked === "retry") return `retry · ${rule.retryLimit}`;
-  if (rule.onBlocked === "skip") return "skip";
-  const who = rule.recoverProvider ?? "recover";
-  const model = rule.recoverProvider === null ? null : modelLabel(rule.recoverProvider, rule.recoverModel);
-  return model === null ? `recover · ${who}` : `recover · ${who} · ${model}`;
+export function onUnfinishedChip(rule: PromptPipelineRule): string {
+  if (rule.onUnfinished === "wait") return "wait";
+  if (rule.onUnfinished === "skip") return "skip";
+  return "continue";
 }
+
+/** @deprecated Use onUnfinishedChip — kept as an alias during the cutover. */
+export const onBlockedChip = onUnfinishedChip;
 
 export function overrideChip(rule: PromptPipelineRule): string | null {
   if (rule.provider === null) return null;
@@ -135,8 +135,11 @@ export function stationOccupancy(
     const live = runs.find((run) => run.runId === pipeline.currentRunId);
     if (live !== undefined) return live;
   }
+  // A wrap-up turn counts as this station being occupied: it is a live run on
+  // the same work item, and the card that showed nothing would read as idle
+  // while an agent was still writing its notes.
   return (
-    runs.find((run) => run.source.type === "saved" && run.source.promptId === item.prompt.id) ?? null
+    runs.find((run) => (run.source.type === "saved" || run.source.type === "wrapup") && run.source.promptId === item.prompt.id) ?? null
   );
 }
 

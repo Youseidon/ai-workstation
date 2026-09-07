@@ -12,12 +12,12 @@
  */
 
 import type {
-  OnBlockedAction,
   OnDoneAction,
+  OnUnfinishedAction,
   PipelineState,
   PromptOperationalState,
   PromptPipelineRule,
-  ReconfigureKind,
+  ProviderId,
 } from "./index";
 import type { DodEnforcement, PolicyKey, RulePolicy, StatusTone } from "./statusModel";
 
@@ -52,66 +52,20 @@ export const CONTROL_LABEL: Record<PipelineControl, string> = {
 export const PAUSE_MODES = ["graceful", "immediate"] as const;
 export type PauseMode = (typeof PAUSE_MODES)[number];
 
-export const HANDOFF_REQUIREMENTS = ["whenWorkProduced", "always", "never"] as const;
-export type HandoffRequirement = (typeof HANDOFF_REQUIREMENTS)[number];
-
-export const RESTART_POLICIES = ["newRun", "resumeSameRun"] as const;
+/**
+ * What happens to a run the server restart interrupted.
+ *
+ * `autoResume` is first because it is the default and the reason this policy
+ * exists at all: 22 of the first 34 pipeline runs died to a restart of the
+ * console itself and then sat interrupted until somebody came back and pressed
+ * a button. The other two options still only *offer* something; they relaunch
+ * nothing on their own.
+ */
+export const RESTART_POLICIES = ["autoResume", "newRun", "resumeSameRun"] as const;
 export type RestartPolicy = (typeof RESTART_POLICIES)[number];
 
-/**
- * When the pipeline may summon a handoff agent without being asked.
- *
- * A handoff exists to stop a successor redoing work a previous run already did.
- * That makes it worth a run in exactly one situation: the work is unfinished
- * *and* something was produced. It replaces the old `autoHandoffOnBlocked`
- * boolean, which fired on any station whose rule was "wait" — including one an
- * agent had deliberately blocked to ask a question. Summarising a question
- * costs a full agent run to report that somebody needs to answer it.
- */
-export const HANDOFF_TRIGGERS = ["reviewerIncomplete", "anyUnfinished", "manualOnly"] as const;
-export type HandoffTrigger = (typeof HANDOFF_TRIGGERS)[number];
-
-export function isHandoffTrigger(value: unknown): value is HandoffTrigger {
-  return typeof value === "string" && (HANDOFF_TRIGGERS as readonly string[]).includes(value);
-}
-
-/**
- * Whether a station that just ended should have a handoff prepared for it.
- *
- * `status` is the work item's stored status, which is what makes this decidable
- * at all: before it was stored, "the agent asked a question" and "the run said
- * nothing" were both spelled BLOCKED and could not be told apart here.
- */
-export function autoHandoffAllowed(args: {
-  trigger: HandoffTrigger;
-  status: string;
-  /** The run made at least one tool call, so there is something to summarise. */
-  producedWork: boolean;
-  /** A reviewer has already judged the work genuinely unfinished. */
-  reviewed: boolean;
-}): boolean {
-  if (args.trigger === "manualOnly") return false;
-  // An agent that stopped to ask a human a question has not left unfinished
-  // work; it has left a question. Never summarise that.
-  if (args.status === "BLOCKED") return false;
-  if (!args.producedWork) return false;
-  if (args.trigger === "anyUnfinished") return true;
-  return args.reviewed;
-}
-
-/**
- * What happens when a station blocks because its run ended without ever
- * posting DONE or BLOCKED — a dropped status post, not an agent asking a
- * question. "off" keeps the old behaviour. "report" sends a read-only auditor
- * to say whether the work was actually finished, and still parks for you.
- * "autocomplete" additionally lets a COMPLETE verdict close the station so an
- * unattended pipeline keeps moving.
- */
-export const AUDIT_ON_BLOCKED_MODES = ["off", "report", "autocomplete"] as const;
-export type AuditOnBlockedMode = (typeof AUDIT_ON_BLOCKED_MODES)[number];
-
-export function isAuditOnBlockedMode(value: unknown): value is AuditOnBlockedMode {
-  return typeof value === "string" && (AUDIT_ON_BLOCKED_MODES as readonly string[]).includes(value);
+export function isRestartPolicy(value: unknown): value is RestartPolicy {
+  return typeof value === "string" && (RESTART_POLICIES as readonly string[]).includes(value);
 }
 
 /**
@@ -130,86 +84,49 @@ export interface PipelinePolicy {
   stopInterruptsAgent: boolean;
   /** What a run interrupted by a server restart offers when you come back. */
   onRestart: RestartPolicy;
-  /** When resuming a station should first prepare a continuation brief. */
-  handoffRequirement: HandoffRequirement;
-  /** When a station that did not finish summons a handoff agent by itself. */
-  handoffTrigger: HandoffTrigger;
-  /** Whether a station blocked by a missing status post is audited before anything else. */
-  auditOnBlocked: AuditOnBlockedMode;
+  /**
+   * How many times one station may be continued — re-run on the same working
+   * tree, carrying the previous run's own notes — before a reviewer is sent
+   * and the rail parks. An operator Resume grants a fresh allowance: see
+   * `continuationCount` in `workspaces.ts`.
+   */
+  maxContinuations: number;
+  /**
+   * Whether a station that used up its continuations gets one read-only
+   * completion audit before the rail parks. Off skips straight to parking
+   * `continuations_exhausted`.
+   */
+  reviewAfterContinuations: boolean;
   /**
    * What an unmet definition of done does to a close. The scope-level setting
    * overrides this per workspace/program/suite/item; this is the house default
    * the `dod-unmet` rule row points at.
    */
   dodEnforcement: DodEnforcement;
-  /** Hard cap on handoff generations for one station. */
-  maxHandoffGenerations: number;
-  /**
-   * Hard cap on remediation runs a reviewer may start for one station.
-   *
-   * A remediation run can itself end unfinished, which produces another review,
-   * which could remediate again. This is what stops that being a loop: the
-   * counter is per work item, not per run, so it survives the station being
-   * reset between attempts.
-   */
-  maxRemediationAttempts: number;
-  /**
-   * Which pipeline changes a reviewer may apply on its own, as an allowlist.
-   * An empty list means it may only finish work, never reconfigure anything.
-   */
-  reviewerReconfigure: readonly ReconfigureKind[];
-  /**
-   * Ceiling on `raiseBudget`: the largest multiple of an item's normal run
-   * budget a reviewer may grant it. 1 disables budget raises outright.
-   *
-   * A cap rather than a switch because the failure it addresses is real — an
-   * item whose reading genuinely does not fit — while an uncapped raise would
-   * let a thrashing run buy itself unlimited spend.
-   */
-  maxReviewerBudgetMultiplier: number;
   /** The rule a station gets before anyone configures it. */
-  defaultOnBlocked: OnBlockedAction;
+  defaultOnUnfinished: OnUnfinishedAction;
   defaultOnDone: OnDoneAction;
+  /**
+   * House default ordered fallbacks when a station and its suite leave the
+   * list empty. Comma-separated in settings as `pipeline.fallbackProviders`.
+   */
+  fallbackProviders: ProviderId[];
 }
 
 export const DEFAULT_PIPELINE_POLICY: PipelinePolicy = {
   pauseMode: "graceful",
   stopInterruptsAgent: true,
-  onRestart: "newRun",
-  handoffRequirement: "whenWorkProduced",
-  handoffTrigger: "reviewerIncomplete",
-  auditOnBlocked: "autocomplete",
+  onRestart: "autoResume",
+  maxContinuations: 4,
+  reviewAfterContinuations: true,
   // Blocking by default is safe on an existing install: with no criteria
   // defined anywhere, a definition of done is satisfied vacuously and nothing
   // changes until someone writes one.
   dodEnforcement: "block",
-  maxHandoffGenerations: 3,
-  maxRemediationAttempts: 2,
-  reviewerReconfigure: ["raiseBudget", "decompose", "switchProvider"],
-  maxReviewerBudgetMultiplier: 4,
-  defaultOnBlocked: "wait",
+  defaultOnUnfinished: "continue",
   defaultOnDone: "continue",
+  fallbackProviders: ["codex", "claude", "cursor"],
 };
-
-/**
- * Whether resuming this station should offer to prepare a handoff first.
- *
- * The question is not "is the station unfinished" — a station reset to TODO by
- * a retry is unfinished and has nothing to summarise. It is "did a previous run
- * leave work that a successor must not redo".
- */
-export function handoffRequired(args: {
-  policy: PipelinePolicy;
-  /** A developer run has been recorded against this station before. */
-  hasPriorRun: boolean;
-  /** That run made at least one tool call. */
-  producedWork: boolean;
-}): boolean {
-  if (!args.hasPriorRun) return false;
-  if (args.policy.handoffRequirement === "never") return false;
-  if (args.policy.handoffRequirement === "always") return true;
-  return args.producedWork;
-}
 
 /** Everything a row is allowed to look at, both to match and to explain itself. */
 export interface RuleContext {
@@ -250,7 +167,7 @@ export interface TransitionRow {
     /**
      * Matched against the reason the scheduler parked the run. Every park
      * reason is its own row, because they are not variations on one situation:
-     * "a reviewer is still reading it" and "it ran out of retries" want
+     * "a reviewer is still reading it" and "it ran out of continuations" want
      * different sentences, and the row that catches all of them at once can
      * only describe them by lying about the ones it did not expect.
      */
@@ -292,15 +209,15 @@ export const STOP_REASON: Record<string, string> = {
   blocked_on_dependencies: "Every remaining station is waiting on another one.",
   on_done_stop: "A station's rule said stop when done.",
   skip_rest: "A station's rule skipped the rest of the stage.",
-  retry_exhausted: "A station ran out of retries.",
-  recover_exhausted: "Recovery did not clear the block.",
   no_provider: "A station had no agent assigned.",
-  handoff_running: "A handoff agent is summarising what the run left behind.",
-  audit_running: "A read-only agent is checking whether the run actually finished the work.",
-  audit_incomplete: "An audit found the work genuinely unfinished.",
-  audit_unverifiable: "An audit could not confirm the work either way.",
-  dod_unmet: "The definition of done was not satisfied, so the work item was not closed.",
   start_failed: "The agent process failed to start.",
+  no_provider_available:
+    "Every configured provider is unavailable or cooling. Wait for one to recover, or assign another, then Resume.",
+  human_question: "The agent asked a question only you can answer.",
+  station_rule_wait: "This station's rule is to wait for you when it does not finish.",
+  review_running: "A read-only reviewer is checking the station after its continuations ran out.",
+  continuations_exhausted:
+    "The station was continued and is still not finished. Read the last brief, fix what is in the way, then Resume.",
 };
 
 /**
@@ -320,11 +237,11 @@ function where(ctx: RuleContext): string {
 /**
  * How the station's run ended, from its stored status.
  *
- * The scheduler sends BLOCKED, UNREPORTED, FAILED and NEEDS_REVIEW down the
- * same `applyOnBlocked` path (`UNFINISHED_STATUSES`), so every parked row below
- * is reachable by a station that never posted BLOCKED at all. Writing
- * "reported blocked" regardless is how a dropped status post gets read as a
- * deliberate question — the exact distinction the stored status exists to make.
+ * The scheduler sends UNREPORTED, FAILED and NEEDS_REVIEW down the same
+ * continuation path, so every parked row below is reachable by a station that
+ * never posted BLOCKED at all. Writing "reported blocked" regardless is how a
+ * dropped status post gets read as a deliberate question — the exact
+ * distinction the stored status exists to make.
  */
 function endedAs(ctx: RuleContext): string {
   switch (ctx.stationState) {
@@ -458,37 +375,33 @@ export const TRANSITIONS: readonly TransitionRow[] = [
   /*
    * The park reasons, one row each.
    *
-   * These all used to fall through to the "its rule is wait" row below, which
-   * states the rule as a fact in its headline. Only one of them is that rule:
-   * `retry_exhausted` means the rule was `retry` and the retries are spent,
-   * and the four audit/handoff reasons mean a helper agent had its say. An
-   * operator reading "its rule is wait" on any of those is being told the
-   * wrong thing about their own configuration.
+   * `human_question` is the only human stop the redesign keeps: an agent that
+   * posted BLOCKED itself. `review_running` and `continuations_exhausted` are
+   * what the continuation loop lands on once a station's allowance is spent —
+   * a read-only reviewer's say, and then the operator's. `station_rule_wait`
+   * falls through to the catch-all row below, since its sentence is exactly
+   * what that row already says for a station whose rule is "wait".
    */
   {
-    id: "waiting-human-handoff",
-    when: { runState: "WAITING_HUMAN", waitReason: "handoff_running" },
-    condition: "Parked · an agent is summarising what the run left behind",
-    label: "Summarising",
-    tone: "info",
+    id: "waiting-human-question",
+    when: { runState: "WAITING_HUMAN", waitReason: "human_question" },
+    condition: "Blocked · the agent asked a question",
+    label: "Needs you",
+    tone: "warning",
     pulse: true,
     primary: "resume",
     secondary: ["stop"],
-    headline: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}. An agent is writing up what it left behind.`,
-    hint: () =>
-      "Nothing is needed yet — the rail picks itself back up when that agent reports. Resume overrides it.",
-    because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)} with work in the tree, so a handoff agent was sent to summarise it for whoever continues.`,
+    headline: (ctx) => `${where(ctx)} asked a question only you can answer.`,
+    hint: () => "Answer it — post a response, then Resume.",
+    because: (ctx) => `${where(ctx)} stopped and reported BLOCKED with a specific question for you.`,
     policy: {
-      kind: "setting",
-      key: "pipeline.handoffTrigger",
-      reason: "Your handoff trigger decides when an unfinished station is worth summarising.",
+      kind: "locked",
+      reason: "An agent's question is never continued automatically — it is the one thing that always parks for a human.",
     },
   },
   {
-    id: "waiting-human-audit",
-    when: { runState: "WAITING_HUMAN", waitReason: "audit_running" },
+    id: "waiting-human-review-running",
+    when: { runState: "WAITING_HUMAN", waitReason: "review_running" },
     condition: "Parked · a reviewer is checking whether the work is finished",
     label: "Checking",
     tone: "info",
@@ -496,92 +409,52 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     primary: "resume",
     secondary: ["stop"],
     headline: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}. A read-only agent is checking whether the work is actually finished.`,
-    hint: () =>
-      "Nothing is needed yet — the rail acts on the verdict by itself. Resume overrides it.",
+      `${where(ctx)} ${endedAs(ctx)} after using up its continuations. A read-only agent is checking whether the work is actually finished.`,
+    hint: () => "Nothing is needed yet — the rail acts on the verdict by itself. Resume overrides it.",
     because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}, and the audit runs before any rule does, so a rule never retries work that is already done.`,
+      `${where(ctx)} was continued the full number of times its allowance permits, so a reviewer is checking it before the run parks.`,
     policy: {
       kind: "setting",
-      key: "pipeline.auditOnBlocked",
-      reason: "Your audit policy decides whether a station that did not report is reviewed first.",
+      key: "pipeline.maxContinuations",
+      reason: "Whether a reviewer is sent once a station's continuations run out is a house rule.",
     },
   },
   {
-    id: "waiting-human-audit-incomplete",
-    when: { runState: "WAITING_HUMAN", waitReason: "audit_incomplete" },
-    condition: "Blocked · a reviewer found the work unfinished",
+    id: "waiting-human-continuations-exhausted",
+    when: { runState: "WAITING_HUMAN", waitReason: "continuations_exhausted" },
+    condition: "Blocked · continued repeatedly and still not finished",
     label: "Needs you",
     tone: "warning",
     pulse: true,
     primary: "resume",
     secondary: ["stop"],
-    headline: (ctx) => `${where(ctx)} ${endedAs(ctx)}, and a reviewer confirmed the work is unfinished.`,
-    hint: () => "Read the reviewer's findings, then Resume to continue from this station.",
+    headline: (ctx) => `${where(ctx)} was continued repeatedly and is still not finished.`,
+    hint: () => "Read the last brief, fix what is in the way, then Resume — that grants a fresh set of continuations.",
     because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}, so a read-only agent checked it and found real work still outstanding.`,
+      `${where(ctx)} ${endedAs(ctx)} every time it was continued, and used up the continuations this station is allowed.`,
     policy: {
       kind: "setting",
-      key: "pipeline.auditOnBlocked",
-      reason: "The audit reported rather than closed the station, which is what parks the run here.",
+      key: "pipeline.maxContinuations",
+      reason: "How many times a station is re-run on its own before it parks here is a house rule.",
     },
   },
   {
-    id: "waiting-human-audit-unverifiable",
-    when: { runState: "WAITING_HUMAN", waitReason: "audit_unverifiable" },
-    condition: "Blocked · a reviewer could not tell either way",
+    id: "waiting-human-no-provider-available",
+    when: { runState: "WAITING_HUMAN", waitReason: "no_provider_available" },
+    condition: "Blocked · every provider is unavailable or cooling",
     label: "Needs you",
     tone: "warning",
     pulse: true,
     primary: "resume",
     secondary: ["stop"],
-    headline: (ctx) => `${where(ctx)} ${endedAs(ctx)}, and a reviewer could not confirm it either way.`,
-    hint: () => "Only you can settle this one. Check the work, then Resume or close the station yourself.",
-    because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}, and the audit sent to judge it could not reach a verdict from the tree alone.`,
+    headline: (ctx) =>
+      `${where(ctx)} could not start: every configured provider is unavailable or cooling.`,
+    hint: () => "Wait for a provider to recover, or assign another, then Resume.",
+    because: () =>
+      "The station's provider and every fallback on its list are cooling or unavailable, so nothing could be started.",
     policy: {
-      kind: "setting",
-      key: "pipeline.auditOnBlocked",
-      reason: "An unverifiable verdict is never allowed to close a station on its own.",
-    },
-  },
-  {
-    id: "waiting-human-dod",
-    when: { runState: "WAITING_HUMAN", waitReason: "dod_unmet" },
-    condition: "Blocked · the definition of done was not satisfied",
-    label: "Needs you",
-    tone: "warning",
-    pulse: true,
-    primary: "resume",
-    secondary: ["stop"],
-    headline: (ctx) => `${where(ctx)} was refused a close: its definition of done is not satisfied.`,
-    hint: () => "Satisfy the unmet criteria, then Resume. The station stays open until they pass.",
-    because: (ctx) =>
-      `${where(ctx)} tried to close, but the criteria its definition of done checks did not pass.`,
-    policy: {
-      kind: "setting",
-      key: "pipeline.dodEnforcement",
-      reason: "Your enforcement setting is what turns an unmet criterion into a refusal rather than a warning.",
-    },
-  },
-  {
-    id: "waiting-human-retry-exhausted",
-    when: { runState: "WAITING_HUMAN", waitReason: "retry_exhausted" },
-    condition: "Blocked · the station ran out of retries",
-    label: "Needs you",
-    tone: "warning",
-    pulse: true,
-    primary: "resume",
-    secondary: ["stop"],
-    headline: (ctx) => `${where(ctx)} ${endedAs(ctx)} again, and its rule is out of retries.`,
-    hint: () =>
-      "Raise the retry limit or clear what is stopping it, then Resume to retry from this station.",
-    because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)}, its "on blocked" rule is "retry", and every attempt that rule allows has been spent.`,
-    policy: {
-      kind: "stationRule",
-      field: "onBlocked",
-      reason: "This station's rule is “retry”. Its retry limit decides how many attempts you get before the run parks here.",
+      kind: "locked",
+      reason: "With no agent that can run, the rail has nowhere to go until a provider recovers or you change the list.",
     },
   },
   {
@@ -597,6 +470,10 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     // rule. A reason with no row of its own is still described rather than
     // mislabelled, so a new park reason in the scheduler degrades to a vague
     // sentence instead of a confident wrong one.
+    //
+    // `dod_unmet` is no longer a park reason: an agent `done` that fails Verify
+    // is refused in place (409) while the run keeps going, and an operator or
+    // post-N reviewer close that fails lands on NEEDS_REVIEW → continuation.
     headline: (ctx) => {
       const parked = describeStopReason(ctx.waitReason);
       return parked === null
@@ -607,13 +484,13 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     because: (ctx) => {
       const parked = describeStopReason(ctx.waitReason);
       return parked === null
-        ? `${where(ctx)} ${endedAs(ctx)}, and its "on blocked" rule is "wait".`
+        ? `${where(ctx)} ${endedAs(ctx)}, and its "on unfinished" rule is "wait".`
         : `${where(ctx)} ${endedAs(ctx)}. ${parked}`;
     },
     policy: {
       kind: "stationRule",
-      field: "onBlocked",
-      reason: "This station's rule chose to wait. Retry, recover or skip would have done something else first.",
+      field: "onUnfinished",
+      reason: "This station's rule chose to wait. Continue or skip would have done something else first.",
     },
   },
   {
@@ -631,6 +508,25 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     policy: {
       kind: "locked",
       reason: "A new run cannot start a station that is still marked as running from a dead process.",
+    },
+  },
+  {
+    id: "interrupted-auto-resume",
+    when: { runState: "INTERRUPTED", onRestart: "autoResume" },
+    condition: "Interrupted · resuming by itself",
+    label: "Resuming",
+    tone: "info",
+    pulse: true,
+    primary: "stop",
+    secondary: [],
+    headline: () => "The server restarted; this run is being picked back up automatically.",
+    hint: () => "Stop cancels the automatic resume and leaves the station exactly where it is.",
+    because: () =>
+      "The server restarted while this run was holding a station, and your restart policy is to resume by itself.",
+    policy: {
+      kind: "setting",
+      key: "pipeline.onRestart",
+      reason: "Your restart policy resumes an interrupted run without waiting for you.",
     },
   },
   {
@@ -805,24 +701,22 @@ export function onDoneConsequence(action: OnDoneAction, policy: PipelinePolicy):
   return "The rail moves on to the next ready station.";
 }
 
-/** The same, for "on blocked". */
-export function onBlockedConsequence(
-  rule: Pick<PromptPipelineRule, "onBlocked" | "retryLimit" | "recoverProvider">,
+/** The same, for "on unfinished". */
+export function onUnfinishedConsequence(
+  rule: Pick<PromptPipelineRule, "onUnfinished">,
   policy: PipelinePolicy,
 ): string {
-  if (rule.onBlocked === "wait") return landsIn(policy, "WAITING_HUMAN", "Parks the run and waits for you");
-  if (rule.onBlocked === "retry") {
-    const times = rule.retryLimit === 1 ? "once" : `up to ${rule.retryLimit} times`;
-    return landsIn(policy, "WAITING_HUMAN", `Restarts this station ${times}, then parks for you`, {
-      waitReason: "retry_exhausted",
-    });
+  if (rule.onUnfinished === "wait") {
+    return landsIn(policy, "WAITING_HUMAN", "Parks the run and waits for you", { waitReason: "station_rule_wait" });
   }
-  if (rule.onBlocked === "recover") {
-    const who = rule.recoverProvider ?? "the recovery agent";
-    return landsIn(policy, "STOPPED", `Hands the station to ${who} for one attempt`, {
-      stopReason: "recover_exhausted",
-    });
+  if (rule.onUnfinished === "skip") {
+    return "Marks this station SKIPPED and carries on. Anything depending on it stays blocked.";
   }
-  return "Marks this station SKIPPED and carries on. Anything depending on it stays blocked.";
+  const times = policy.maxContinuations === 1 ? "once" : `up to ${policy.maxContinuations} times`;
+  const after = policy.reviewAfterContinuations
+    ? "then a read-only reviewer checks it before the run parks for you"
+    : "then parks for you";
+  return landsIn(policy, "WAITING_HUMAN", `Re-runs this station on the same working tree ${times}, ${after}`, {
+    waitReason: "continuations_exhausted",
+  });
 }
-

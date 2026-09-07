@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
-import { LABEL, onBlockedChip, onDoneChip, overrideChip, TONE, type stationOccupancy } from "./status";
+import { LABEL, onUnfinishedChip, onDoneChip, overrideChip, TONE, type stationOccupancy } from "./status";
 
 export interface SubStepSummary {
   done: number;
@@ -100,12 +100,18 @@ export function StationCard({
             )}
           </div>
           <div className="mt-1 text-[10px] text-fg-dim">
-            {onDoneChip(rule.onDone)} · {onBlockedChip(rule)}
+            {onDoneChip(rule.onDone)} · {onUnfinishedChip(rule)}
+            {item.continuation !== null && (
+              <> · continuation {item.continuation.attempt}/{item.continuation.of}</>
+            )}
           </div>
           {occupancy !== null && (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
               <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
-              running
+              {/* A wrap-up turn is not the work restarting. Saying "running"
+                  for it would have an operator waiting on progress from a run
+                  whose only job is to write down what the last one learned. */}
+              {occupancy.source.type === "wrapup" ? "wrap-up" : "running"}
             </div>
           )}
         </div>

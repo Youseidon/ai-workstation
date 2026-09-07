@@ -1,5 +1,5 @@
 import type {
-  StatusDefinition, DefinitionOfDone, DodEvaluation, ReviewerConfig, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+  StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -30,10 +30,6 @@ export const workspaceApi = {
   statuses(serverUrl:string){return request<{statuses:StatusDefinition[];triggers:Record<string,string>}>(serverUrl,"/api/statuses");},
   patchStatus(serverUrl:string,id:string,value:unknown){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"PATCH",...json(value)}).then(r=>r.status);},
   resetStatus(serverUrl:string,id:string){return request<{status:StatusDefinition}>(serverUrl,`/api/statuses/${id}`,{method:"DELETE"}).then(r=>r.status);},
-  /** What a reviewer does in each situation. `prompt` resolves through its scopes. */
-  reviewers(serverUrl:string,promptId?:number){return request<{reviewers:ReviewerConfig[]}>(serverUrl,`/api/reviewers${promptId===undefined?"":`?prompt=${promptId}`}`).then(r=>r.reviewers);},
-  patchReviewer(serverUrl:string,trigger:string,patch:Record<string,unknown>,scope="global",scopeId:number|null=null){return request<{reviewer:ReviewerConfig}>(serverUrl,"/api/reviewers",{method:"PATCH",...json({scope,scopeId,trigger,patch})}).then(r=>r.reviewer);},
-  resetReviewer(serverUrl:string,trigger:string,scope="global",scopeId:number|null=null){return request<{reviewer:ReviewerConfig}>(serverUrl,`/api/reviewers/${trigger}?scope=${scope}${scopeId===null?"":`&scopeId=${scopeId}`}`,{method:"DELETE"}).then(r=>r.reviewer);},
   /** What a work item is judged against, and how each criterion stands. */
   definitionOfDone(serverUrl:string,promptId:number){return request<{definitionOfDone:DefinitionOfDone;evaluation:DodEvaluation}>(serverUrl,`/api/prompts/${promptId}/definition-of-done`);},
   /** Runs the command criteria now. The same execution a close is decided on. */
@@ -68,18 +64,8 @@ export const workspaceApi = {
   completePrompt(serverUrl:string,id:number,verificationSummary:string,reason?:string){return request<{completed:boolean}>(serverUrl,`/api/prompts/${id}/complete`,{method:"POST",...json(reason===undefined?{verificationSummary}:{verificationSummary,reason})});},
   skipPrompt(serverUrl:string,id:number,reason?:string){return request<{skipped:boolean}>(serverUrl,`/api/prompts/${id}/skip`,{method:"POST",...json(reason===undefined?{}:{reason})});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
-  retryLaunch(serverUrl:string,id:number,value:{provider:ProviderId;model?:string|null;pipelineId:number}){return request<{started:boolean}>(serverUrl,`/api/prompts/${id}/retry-launch`,{method:"POST",...json(value)});},
   startAudit(serverUrl:string,id:number,value:{provider?:ProviderId;model?:string|null}={}){return request<{started:boolean;auditId:string}>(serverUrl,`/api/prompts/${id}/audit`,{method:"POST",...json(value)});},
-  startHandoff(serverUrl:string,id:number,value:{handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number;reuseHandoffId?:string}){return request<{started:boolean;reused?:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},
-  pipeline(serverUrl:string,suiteId:number){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`);},
-  updatePipelineDefaults(serverUrl:string,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null}){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`,{method:"PATCH",...json(value)});},
-  addPipelineStep(serverUrl:string,suiteId:number,value:{promptId:number;provider?:ProviderId|null;model?:string|null}){return request<{rule:PromptPipelineRule;pipeline:SuitePipelineView}>(serverUrl,`/api/suites/${suiteId}/pipeline/steps`,{method:"POST",...json(value)});},
-  reorderPipelineSteps(serverUrl:string,suiteId:number,promptIds:number[]){return request<{steps:PromptPipelineRule[];pipeline:SuitePipelineView}>(serverUrl,`/api/suites/${suiteId}/pipeline/steps`,{method:"PUT",...json({promptIds})});},
-  removePipelineStep(serverUrl:string,promptId:number){return request<{pipeline:SuitePipelineView}>(serverUrl,`/api/prompts/${promptId}/pipeline-step`,{method:"DELETE"});},
-  playSuite(serverUrl:string,suiteId:number,value:{provider?:ProviderId|null;model?:string|null}={}){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/play`,{method:"POST",...json(value)}).then(r=>r.pipeline);},
-  pauseSuite(serverUrl:string,suiteId:number){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/pause`,{method:"POST",...json({})}).then(r=>r.pipeline);},
-  stopSuite(serverUrl:string,suiteId:number){return request<{pipeline:SuitePipelineRun}>(serverUrl,`/api/suites/${suiteId}/stop`,{method:"POST",...json({})}).then(r=>r.pipeline);},
-  patchPipelineRule(serverUrl:string,promptId:number,value:Partial<Omit<PromptPipelineRule,"promptId">>){return request<{rule:PromptPipelineRule}>(serverUrl,`/api/prompts/${promptId}/pipeline-rule`,{method:"PATCH",...json(value)}).then(r=>r.rule);},
+  updatePipelineDefaults(serverUrl:string,pipelineId:number,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null;defaultFallbackProviders?:ProviderId[]}){return request<PipelineFlowchartView>(serverUrl,`/api/pipelines/${pipelineId}/flowchart?suiteId=${suiteId}`,{method:"PATCH",...json(value)});},
   listPipelines(serverUrl:string,workspaceId?:number){return request<{pipelines:PipelineRecord[]}>(serverUrl,`/api/pipelines${workspaceId===undefined?"":`?workspace=${workspaceId}`}`).then(r=>r.pipelines);},
   pipelineDashboard(serverUrl:string,workspaceId:number){return request<PipelineDashboard>(serverUrl,`/api/pipelines?workspace=${workspaceId}&dashboard=1`);},
   pipelineFlowchart(serverUrl:string,pipelineId:number,suiteId:number,incompleteOnly=false){return request<PipelineFlowchartView>(serverUrl,`/api/pipelines/${pipelineId}/flowchart?suiteId=${suiteId}${incompleteOnly?"&incompleteOnly=1":""}`);},

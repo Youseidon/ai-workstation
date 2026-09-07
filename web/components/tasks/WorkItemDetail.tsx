@@ -221,25 +221,6 @@ export function WorkItemDetail({
         {tab === "overview" && (
           <div className="space-y-4">
             {item.latestAudit !== null && <CompletionAuditCard audit={item.latestAudit} />}
-            {item.latestHandoff !== null && (
-              <div className="rounded-panel border border-info/30 bg-info/5 p-4">
-                <div className="text-[10px] uppercase tracking-wider text-info">
-                  Handoff · {item.latestHandoff.state.toLowerCase().replaceAll("_", " ")}
-                </div>
-                {item.latestHandoff.recommendation !== null && (
-                  <div className="mt-1 text-xs text-fg-muted">
-                    Recommendation: {item.latestHandoff.recommendation.toLowerCase().replaceAll("_", " ")}
-                  </div>
-                )}
-                {item.latestHandoff.brief !== null && (
-                  <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-                    <div><div className="mb-1 text-fg-dim">Completed</div>{item.latestHandoff.brief.completedWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
-                    <div><div className="mb-1 text-fg-dim">Pending</div>{item.latestHandoff.brief.pendingWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
-                  </div>
-                )}
-                {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
-              </div>
-            )}
             {/* The answer to "why is it showing this", from the ledger rather
                 than reconstructed at render time. First thing in the overview
                 because it is the first thing an operator asks of a status they

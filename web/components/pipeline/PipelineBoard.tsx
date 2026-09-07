@@ -7,7 +7,6 @@ import type {
   OperationsPrompt,
   HumanInterventionStep,
   OperationsSnapshot,
-  HandoffRecord,
   PipelineFlowchartView,
   PipelineBlockedStation,
   PipelineRecord,
@@ -19,7 +18,7 @@ import type {
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, handoffRequired, modelLabel, onBlockedConsequence, onDoneConsequence, PROVIDER_IDS } from "@agent-console/shared";
+import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, modelLabel, onUnfinishedConsequence, onDoneConsequence, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -100,13 +99,8 @@ export function PipelineBoard({
   const [archiveOpen, setArchiveOpen] = useState(true);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
-  const [handoffOpen, setHandoffOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
-  const [handoffProvider, setHandoffProvider] = useState<ProviderId>("claude");
-  const [successorProvider, setSuccessorProvider] = useState<ProviderId>("claude");
-  const [reusableHandoff, setReusableHandoff] = useState<HandoffRecord | null>(null);
-  const [directRetry, setDirectRetry] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
   /** Drill-down into the sub-steps a station spawned: station id first, deepest last. */
@@ -553,49 +547,8 @@ export function PipelineBoard({
       }, "Pipeline stopped");
       return;
     }
-    // Resolve the same leaf the scheduler will launch before deciding whether
-    // that leaf has prior work worth handing off.
-    const continuationItem = pendingPrompt ?? resumeItem;
-    const continuing = control === "resume" || control === "newRun" || control === "recover";
-    if (continuing && continuationItem !== null) {
-      const available = console_.providers.find((provider) => provider.available)?.id ?? firstAvailable;
-      const readOnly = console_.providers.find((provider) => provider.available && provider.id !== "cursor")?.id ?? available;
-      setHandoffProvider(readOnly);
-      setSuccessorProvider(available);
-      setReusableHandoff(null);
-      setDirectRetry(false);
-      void act(async () => {
-        const activity = await workspaceApi.activity(SERVER_URL, continuationItem.prompt.id);
-        const latestExecute = activity.sessions.find((session) => session.role === "execute");
-        // The question is not "is this station unfinished" — a station a retry
-        // reset to TODO is unfinished with nothing to summarise. It is whether a
-        // previous run left work a successor must not redo, under the operator's
-        // chosen policy.
-        const needed = handoffRequired({
-          policy,
-          hasPriorRun: latestExecute !== undefined,
-          producedWork: activity.producedWork,
-        });
-        if (!needed || latestExecute === undefined) {
-          await workspaceApi.playPipeline(SERVER_URL, pipelineId);
-          toast.success(control === "newRun" ? "New run started" : "Pipeline is running");
-          return;
-        }
-        // Either the brief launched a successor that then failed, or it never
-        // launched one (its recommendation parked the station for a human).
-        // Both leave a written brief, and preparing a second one would pay a
-        // read-only agent to summarise the same run twice.
-        const reusable = activity.handoffs.find((handoff) => handoff.state === "READY"
-          && (handoff.successorRunId === null
-            ? handoff.sourceRunId === latestExecute.id
-            : handoff.recommendation === "CONTINUE" && handoff.successorRunId === latestExecute.id)) ?? null;
-        setSuccessorProvider((latestExecute.provider as ProviderId | undefined) ?? available);
-        setDirectRetry(activity.directRetry);
-        setReusableHandoff(reusable);
-        setHandoffOpen(true);
-      });
-      return;
-    }
+    // Resume resumes: the continuation loop carries prior-run notes itself, so
+    // there is no handoff dialog between the operator and the next station start.
     void act(async () => {
       await workspaceApi.playPipeline(SERVER_URL, pipelineId);
     }, control === "newRun" ? "New run started" : "Pipeline is running");
@@ -880,7 +833,7 @@ export function PipelineBoard({
                   size="sm"
                   variant="ghost"
                   onClick={() => setPolicyOpen(true)}
-                  title="What Pause and Stop do, when a handoff is offered, and the rule a station starts with"
+                  title="What Pause and Stop do, how many times a station may continue, and the rule a station starts with"
                 >
                   Pipeline policy
                 </Button>
@@ -979,6 +932,18 @@ export function PipelineBoard({
               // snapshot, so a rename has to be re-read before it shows here.
               onStatusesChanged={() => void refreshCatalog()}
               suiteId={activeSuiteId}
+              pipelineId={pipelineId}
+              suiteFallbackProviders={
+                activeSuiteId === null
+                  ? []
+                  : (view?.defaults.defaultFallbackProviders
+                    ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
+                    ?? [])
+              }
+              onSuiteFallbacksChanged={() => {
+                if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
+                void refreshCatalog();
+              }}
             />
 
             {policyOpen && (
@@ -1310,28 +1275,6 @@ export function PipelineBoard({
         </Modal>
       )}
 
-      {handoffOpen && (pendingPrompt ?? resumeItem) !== null && pipelineId !== null && (() => {
-        const continuationItem = (pendingPrompt ?? resumeItem)!;
-        // The read-only agent advises the automatic path; an operator resuming
-        // by hand overrides it, and should see what they are overriding.
-        const advice = reusableHandoff === null || reusableHandoff.recommendation === null || reusableHandoff.recommendation === "CONTINUE" ? "" : ` It recommended ${reusableHandoff.recommendation.toLowerCase().replace(/_/g, " ")} rather than continuing, so nothing started automatically.`;
-        return (
-        <Modal
-          open
-          onClose={() => setHandoffOpen(false)}
-          title={`Continue ${continuationItem.prompt.externalKey ?? continuationItem.prompt.title}`}
-          description={directRetry?"The previous agent failed before producing any work. Choose a developer agent and retry this station directly; no handoff is needed.":reusableHandoff===null?"A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline.":`The existing ${reusableHandoff.provider} handoff is ready. Resuming will reuse it and start only the selected developer agent.`}
-          size="md"
-          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{if(directRetry)await workspaceApi.retryLaunch(SERVER_URL,continuationItem.prompt.id,{provider:successorProvider,model:null,pipelineId});else await workspaceApi.startHandoff(SERVER_URL,continuationItem.prompt.id,{...(reusableHandoff===null?{handoffProvider,handoffModel:models.resolve(handoffProvider)}:{reuseHandoffId:reusableHandoff.id}),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},directRetry?"Station restarted":reusableHandoff===null?"Handoff started":"Existing handoff reused")}>{directRetry?"Retry without handoff":reusableHandoff===null?"Prepare handoff and continue":"Continue with existing handoff"}</Button></>}
-        >
-          <div className={`grid gap-4 ${reusableHandoff===null&&!directRetry?"sm:grid-cols-2":""}`}>
-            {reusableHandoff===null&&!directRetry&&<label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>}
-            <label className="space-y-1.5 text-xs text-fg-muted"><span>Successor developer agent</span><select value={successorProvider} onChange={(event)=>setSuccessorProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available).map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {directRetry?"default":modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
-          </div>
-          <p className="mt-4 text-xs leading-5 text-fg-dim">{directRetry?"Launch failures retry with the provider default, so the invalid per-station model is not reused.":reusableHandoff===null?"Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.":`Prepared by ${reusableHandoff.provider}${reusableHandoff.completedAt===null?"":` on ${new Date(reusableHandoff.completedAt).toLocaleString()}`}.${advice} No handoff agent will run again.`}</p>
-        </Modal>
-        );
-      })()}
     </main>
   );
 }
@@ -1528,29 +1471,66 @@ function StepConfig({
           <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onDoneConsequence(rule.onDone, policy)}</p>
         </section>
         <section>
-          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On BLOCKED</div>
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On unfinished</div>
           <div className="flex flex-wrap gap-1">
-            {(["wait", "retry", "recover", "skip"] as const).map((action) => (
+            {(["continue", "skip", "wait"] as const).map((action) => (
               <button
                 key={action}
                 type="button"
-                onClick={() =>
-                  onChange(
-                    action === "recover"
-                      ? { onBlocked: "recover", recoverProvider: rule.recoverProvider ?? rule.provider ?? "claude" }
-                      : { onBlocked: action },
-                  )
-                }
+                onClick={() => onChange({ onUnfinished: action })}
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
-                  rule.onBlocked === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
+                  rule.onUnfinished === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
                 )}
               >
                 {action}
               </button>
             ))}
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onBlockedConsequence(rule, policy)}</p>
+          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onUnfinishedConsequence(rule, policy)}</p>
+        </section>
+        <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
+            Fallback providers
+          </div>
+          <p className="mb-2 text-[11px] leading-4 text-fg-dim">
+            Ordered list tried when this station&apos;s agent cannot start or dies before doing any
+            work. Empty means the suite / house default (
+            {policy.fallbackProviders.join(" → ") || "none"}).
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {PROVIDER_IDS.filter((id) => id !== rule.provider).map((id) => {
+              const theme = providerTheme[id];
+              const index = rule.fallbackProviders.indexOf(id);
+              const active = index >= 0;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  title={active ? `Fallback #${index + 1} — click to remove` : "Add as fallback"}
+                  onClick={() => {
+                    const next = active
+                      ? rule.fallbackProviders.filter((entry) => entry !== id)
+                      : [...rule.fallbackProviders, id];
+                    onChange({ fallbackProviders: next });
+                  }}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
+                    active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
+                  )}
+                >
+                  <AgentAvatar provider={id} size={16} activity={active ? "idle" : "offline"} />
+                  {id}
+                  {active && <span className="ml-0.5 opacity-70">#{index + 1}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {rule.fallbackProviders.length > 1 && (
+            <p className="mt-2 text-[11px] leading-4 text-fg-dim">
+              Order: {rule.fallbackProviders.join(" → ")}. Click again to remove; re-add to move to the end.
+            </p>
+          )}
         </section>
       </div>
     </Modal>
