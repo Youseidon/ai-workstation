@@ -2,8 +2,10 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DEFAULT_REVIEWER_CONFIG, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, REVIEW_TRIGGERS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, reviewTriggerFor, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, isReviewAction, isReviewTrigger, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type ReviewTrigger, type ReviewerConfig, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type ReconfigureKind, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
+import { currentLockMode } from "./lib/instanceLock.ts";
+import { createLogger } from "./lib/logger.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { settings } from "./settings.ts";
@@ -39,6 +41,35 @@ function defaultDatabasePath(): string {
 const databasePath = process.env.AGENT_CONSOLE_DB !== undefined && process.env.AGENT_CONSOLE_DB !== ""
   ? resolve(process.env.AGENT_CONSOLE_DB)
   : defaultDatabasePath();
+
+/*
+ * The watch server is a deployment, and that is the bug.
+ *
+ * `npm run dev` runs under `tsx watch`: saving a file restarts the process,
+ * which kills every agent in flight and runs any new migration against whatever
+ * database it is pointed at. 22 of the owner's first 34 pipeline runs died that
+ * way. `npm run serve` is the way to run a live pipeline; `npm run dev:sandbox`
+ * is the way to develop.
+ *
+ * This sits here, above `new Database`, rather than beside the instance lock in
+ * `index.ts`, because opening the file is already the damage: migrations run on
+ * import, so a guard in the listen callback would fire after the live schema had
+ * been rewritten. Narrow on purpose — only an unlabelled (watch) process, only
+ * the default state-dir path, and only when nothing said otherwise.
+ */
+if (
+  currentLockMode() !== "serve"
+  && process.env.AGENT_CONSOLE_ALLOW_DEV_ON_LIVE !== "1"
+  && (process.env.AGENT_CONSOLE_DB === undefined || process.env.AGENT_CONSOLE_DB.trim() === "")
+) {
+  createLogger("server").error(
+    `Refusing to run the watch server against the live database (${databasePath}). `
+    + "Use `npm run serve` for a live pipeline, or `npm run dev:sandbox` to develop against a copy. "
+    + "Set AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.",
+  );
+  process.exit(1);
+}
+
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
 
 /*
@@ -942,6 +973,82 @@ if (afterTwentyFour < 25) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(25,?)").run(new Date().toISOString());
 }
 
+const afterTwentyFive = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentyFive < 26) {
+  // Two facts a run has always had and never recorded: which provider session
+  // it was having, and whether it exists only to write down what an earlier run
+  // learned.
+  //
+  // `session_id` is what a wrap-up turn resumes. Without it a run stopped by a
+  // budget was simply interrupted — the agent that had just read forty files
+  // was killed with nothing written down, and the station landed UNREPORTED
+  // with the stop reason as its only record.
+  //
+  // `wrapup_of` points a wrap-up run at the run it is speaking for. It is the
+  // only way to tell the two apart afterwards: same role, same work item, same
+  // provider — and the ledger has to attribute the *source* run's stop reason,
+  // not the wrap-up's.
+  //
+  // Two ALTER TABLE ADD COLUMNs. No rebuild, so no `PRAGMA foreign_keys`
+  // question to get wrong (migration 22 deleted 135 025 transcript events that
+  // way) and no risk to the 160 k rows in `agent_run_event` that reference
+  // these runs. Nullable with no default: every existing row keeps meaning
+  // exactly what it meant.
+  const migrate26 = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE agent_run ADD COLUMN session_id TEXT;
+      ALTER TABLE agent_run ADD COLUMN wrapup_of TEXT;
+    `);
+  });
+  migrate26();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(26,?)").run(new Date().toISOString());
+}
+
+const afterTwentySix = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentySix < 27) {
+  // Continuation loop (prompt 03): station rules gain `on_unfinished` —
+  // continue / skip / wait — replacing the behavioural role of `on_blocked`
+  // without dropping the old columns (prompt 08).
+  //
+  // Backfill: wait→wait, skip→skip, everything else (retry/recover)→continue.
+  // Two ALTER TABLE ADD COLUMNs. No rebuild.
+  const migrate27 = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE pipeline_step ADD COLUMN on_unfinished TEXT NOT NULL DEFAULT 'continue'
+        CHECK(on_unfinished IN ('continue','skip','wait'));
+      ALTER TABLE prompt_pipeline_rule ADD COLUMN on_unfinished TEXT NOT NULL DEFAULT 'continue'
+        CHECK(on_unfinished IN ('continue','skip','wait'));
+      UPDATE pipeline_step SET on_unfinished = CASE on_blocked
+        WHEN 'wait' THEN 'wait'
+        WHEN 'skip' THEN 'skip'
+        ELSE 'continue'
+      END;
+      UPDATE prompt_pipeline_rule SET on_unfinished = CASE on_blocked
+        WHEN 'wait' THEN 'wait'
+        WHEN 'skip' THEN 'skip'
+        ELSE 'continue'
+      END;
+    `);
+  });
+  migrate27();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(27,?)").run(new Date().toISOString());
+}
+
+const afterTwentySeven = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterTwentySeven < 28) {
+  // Provider fallback (prompt 05): ordered fallback lists on the station and
+  // the suite. JSON arrays, default empty — house default lives in settings.
+  // Three ALTER TABLE ADD COLUMNs. No rebuild.
+  const migrate28 = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE pipeline_step ADD COLUMN fallback_providers TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE prompt_pipeline_rule ADD COLUMN fallback_providers TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE suite ADD COLUMN default_fallback_providers TEXT NOT NULL DEFAULT '[]';
+    `);
+  });
+  migrate28();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(28,?)").run(new Date().toISOString());
+}
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -1007,14 +1114,14 @@ const recoverAbandonedRuns=db.transaction(()=>{
 });
 
 /** What a finished run spent, as recorded by the runner. */
-export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null }
+export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null; sessionId?: string | null }
 
 type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string; claude_md: string; agents_md: string };
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
 type SuiteRow = { id: number; program_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; default_provider?: string | null; default_model?: string | null };
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number; parent_prompt_id: number | null; child_order: number };
-type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
-type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; step_order: number; updated_at: string };
+type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; on_unfinished?: string; fallback_providers?: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
+type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; on_unfinished?: string; fallback_providers?: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; step_order: number; updated_at: string };
 type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null; pipeline_run_id: string | null };
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null };
@@ -1023,19 +1130,32 @@ function asProviderId(value: string | null | undefined): ProviderId | null {
   return value !== null && value !== undefined && isProviderId(value) ? value : null;
 }
 
+function parseFallbackProvidersJson(raw: string | null | undefined): ProviderId[] {
+  if (raw === null || raw === undefined || raw === "") return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: ProviderId[] = [];
+    for (const item of parsed) {
+      if (typeof item === "string" && isProviderId(item) && !out.includes(item)) out.push(item);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): PromptPipelineRule {
   if (row === undefined) return defaultPromptPipelineRule(promptId, settings.pipelinePolicy);
   const onDone = isOnDoneAction(row.on_done) ? row.on_done : "continue";
-  const onBlocked = isOnBlockedAction(row.on_blocked) ? row.on_blocked : "wait";
+  const onUnfinished = isOnUnfinishedAction(row.on_unfinished) ? row.on_unfinished : "continue";
   return {
     promptId,
     provider: asProviderId(row.provider),
     model: row.model,
+    fallbackProviders: parseFallbackProvidersJson(row.fallback_providers),
     onDone,
-    onBlocked,
-    retryLimit: row.retry_limit,
-    recoverProvider: asProviderId(row.recover_provider),
-    recoverModel: row.recover_model,
+    onUnfinished,
     enabled: row.enabled === 1,
     stepOrder: row.step_order ?? 0,
   };
@@ -1043,16 +1163,14 @@ function pipelineRuleDto(promptId: number, row: PipelineRuleRow | undefined): Pr
 
 function pipelineStepDto(promptId: number, row: PipelineStepRow): PromptPipelineRule {
   const onDone = isOnDoneAction(row.on_done) ? row.on_done : "continue";
-  const onBlocked = isOnBlockedAction(row.on_blocked) ? row.on_blocked : "wait";
+  const onUnfinished = isOnUnfinishedAction(row.on_unfinished) ? row.on_unfinished : "continue";
   return {
     promptId,
     provider: asProviderId(row.provider),
     model: row.model,
+    fallbackProviders: parseFallbackProvidersJson(row.fallback_providers),
     onDone,
-    onBlocked,
-    retryLimit: row.retry_limit,
-    recoverProvider: asProviderId(row.recover_provider),
-    recoverModel: row.recover_model,
+    onUnfinished,
     enabled: true,
     stepOrder: row.step_order,
   };
@@ -1110,6 +1228,31 @@ function optionalModelField(value: unknown, field: string): string | null {
   return text === "" ? null : requireText(text, field, 200);
 }
 
+/**
+ * Known provider ids, no duplicates, and not equal to the station's own
+ * provider. An empty list is valid — it means "use the suite / house default".
+ */
+function validateFallbackProviders(value: unknown, stationProvider: ProviderId | null, field = "fallbackProviders"): ProviderId[] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new WorkspaceError(422, "validation_error", `${field} must be an array of provider ids`, { [field]: "Must be an array" });
+  }
+  const out: ProviderId[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !isProviderId(item)) {
+      throw new WorkspaceError(422, "validation_error", `${field} must list known providers`, { [field]: "Unknown provider" });
+    }
+    if (stationProvider !== null && item === stationProvider) {
+      throw new WorkspaceError(422, "validation_error", `${field} must not include the station's own provider`, { [field]: "Cannot equal the station provider" });
+    }
+    if (out.includes(item)) {
+      throw new WorkspaceError(422, "validation_error", `${field} must not contain duplicates`, { [field]: "Duplicate provider" });
+    }
+    out.push(item);
+  }
+  return out;
+}
+
 const workspaceDto = (row: WorkspaceRow): WorkspaceRecord => ({ id: row.id, name: row.name, description: row.description, workDirectory: row.work_directory, workDirectoryExists: existsSync(row.work_directory), createdAt: row.created_at, updatedAt: row.updated_at, claudeMd: row.claude_md ?? "", agentsMd: row.agents_md ?? "" });
 const promptDto = (row: PromptRow): PromptRecord => ({ id: row.id, suiteId: row.suite_id, title: row.title, content: row.content, sortOrder: row.sort_order, createdAt: row.created_at, updatedAt: row.updated_at, externalKey: row.external_key, status: row.status, completedAt: row.completed_at, result: row.result, isGate: row.is_gate === 1, parentPromptId: row.parent_prompt_id, childOrder: row.child_order });
 
@@ -1161,14 +1304,51 @@ function nextOrder(table: "program" | "suite" | "prompt", parentColumn: "workspa
 }
 
 export class WorkspaceError extends Error {
-  constructor(public status: number, public code: string, message: string, public fields?: Record<string, string>) { super(message); }
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public fields?: Record<string, string>,
+    /** Extra JSON fields merged into the error body (e.g. decompose conflicts). */
+    public details?: Record<string, unknown>,
+  ) { super(message); }
+}
+
+export interface AgentPromptParentContext {
+  externalKey:string|null;
+  title:string;
+  content:string;
+  /** Latest CONTINUATION remark, or the resumeBrief filed with the parent's decompose. */
+  resumeBrief:string;
+  siblings:Array<{externalKey:string|null;title:string;status:PromptRecord["status"]}>;
+}
+
+/** One direct child of a decompose parent, for the integration checklist. */
+export interface AgentPromptChildSummary {
+  externalKey:string|null;
+  title:string;
+  status:PromptRecord["status"];
+  /** DONE verification summary, or the skip reason from the ledger for SKIPPED. */
+  result:string;
 }
 
 export interface AgentPromptContext {
-  workspace:{id:number;name:string;workDirectory:string;description:string};
+  workspace:{id:number;name:string;workDirectory:string;description:string;agentsMd:string;claudeMd:string};
   program:{id:number;externalKey:string|null;name:string;overview:string};
   suite:{id:number;externalKey:string|null;name:string;overview:string};
   prompt:PromptRecord;
+  /** Non-null only for a decompose sub-step. */
+  parent:AgentPromptParentContext|null;
+  /** Direct sub-steps; empty when this item was never decomposed. */
+  children:AgentPromptChildSummary[];
+  /** Resolved DoD COMMAND lines the server will run when the agent posts `done`. */
+  verificationCommands:string[];
+  /**
+   * Curated remarks for the execute "Where the last run stopped" section —
+   * CONTINUATION, latest BLOCKER (+ HUMAN_RESPONSE when still pending), and the
+   * last few PROGRESS/VERIFICATION notes. Never includes AGENT_RESPONSE.
+   */
+  stoppedRemarks:PromptRemark[];
   dependencies:Array<{externalKey:string|null;title:string;status:PromptRecord["status"];result:string}>;
   gate:{code:string;name:string;description:string}|null;
   history:{remarks:PromptRemark[];events:PromptStatusEvent[]};
@@ -1244,6 +1424,52 @@ const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;
   }
 });
 
+/**
+ * What the end of an execute run means for its work item.
+ *
+ * The decision itself is in statusTransition.ts so it can be tested without a
+ * database, and so the one rule that matters is stated once: a run that ends
+ * without posting is UNREPORTED, never BLOCKED and never FAILED.
+ *
+ * This used to write BLOCKED unconditionally, which is what made an agent that
+ * finished the work but dropped its final HTTP call look identical to one that
+ * stopped to ask a question — and BLOCKED is what the pipeline parks on, so
+ * finished work waited on a human with nothing to answer.
+ *
+ * `wrapupOf` is set when the run that just ended was a wrap-up turn speaking
+ * for an earlier one. The item is then concluded on the *source* run's stop
+ * reason, because that is what actually stopped the work; the wrap-up merely
+ * had a chance to write it down and did not take it. The ledger records both
+ * ids so "why is this UNREPORTED" leads back to the run that ran out of budget
+ * rather than to the four-minute turn that followed it.
+ */
+function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,state:string,stopReason:string|null,toolCalls:number|null):void {
+  const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]};
+  const source=wrapupOf===null?null:db.prepare("SELECT stop_reason stopReason FROM agent_run WHERE id=?").get(wrapupOf) as {stopReason:string|null}|undefined??null;
+  // `state` arrives as a loose string from the runner. Anything that is not a
+  // recognised ending is treated as an error rather than silently as a clean
+  // exit: guessing "fine" about an unrecognised ending is the same mistake in
+  // a smaller place.
+  const outcome:RunOutcome=state==="done"?"done":state==="interrupted"?"interrupted":"error";
+  const facts={status:prompt.status,outcome,stopReason:source===null?stopReason:source.stopReason};
+  const signal=endOfRunSignal(facts);
+  if(signal===null)return;
+  const decision=decide(signal);
+  const reason=endOfRunReason(facts);
+  writeStatus({
+    promptId,
+    to:decision.to??"UNREPORTED",
+    trigger:decision.row.trigger,
+    ruleId:decision.row.id,
+    actor:"SYSTEM",
+    runId,
+    reason,
+    result:reason,
+    evidence:{processState:state,stopReason,toolCalls,...(wrapupOf===null?{}:{wrapupOf,wrapupStopReason:source?.stopReason??null})},
+    remark:{kind:"BLOCKER",content:reason},
+  });
+}
+
 function requireActiveExecuteRun(runId:string):{prompt_id:number;role:RunRole} {
   const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;
   if(!run)throw new WorkspaceError(409,"run_not_active","Run is not active");
@@ -1272,7 +1498,30 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   const run=requireActiveExecuteRun(runId);
   const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};const expected=input.expectedStatus;const target=input.status;
   if(expected!==prompt.status)throw new WorkspaceError(409,"stale_status",`Prompt status is ${prompt.status}, not ${String(expected)}`);
-  if(prompt.status!=="IN_PROGRESS"||(target!=="DONE"&&target!=="BLOCKED"))throw new WorkspaceError(422,"invalid_transition","Agents may only change IN_PROGRESS to DONE or BLOCKED");
+  if(prompt.status!=="IN_PROGRESS")throw new WorkspaceError(422,"invalid_transition","Agents may only change IN_PROGRESS to DONE, BLOCKED or CONTINUE");
+  // CONTINUE is not a stored status and never will be: it is the agent saying
+  // "here is what remains, resume me on this same tree". The item goes back to
+  // TODO the way a decompose sends it back, and the brief it leaves behind is
+  // the whole point — it is written while the agent still has the context, and
+  // it replaces a reviewer run that would have to rediscover it from the
+  // transcript at ~30 M input tokens across this install's history.
+  if(target==="CONTINUE"){
+    const remaining=requireText(input.reason,"remaining",20000);
+    if(remaining==="")throw new WorkspaceError(422,"validation_error","CONTINUE requires the remaining work as concrete instructions for the run that resumes this item");
+    // Optional: an agent that was stopped before it verified anything still has
+    // a brief worth writing, and refusing the post for a missing evidence field
+    // would lose the one thing this turn exists to capture.
+    const verified=requireText(input.verificationSummary??"","verified",20000,true);
+    const now=new Date().toISOString();
+    const decision=decide("agent_posted_continue");
+    const written=writeStatus({promptId:run.prompt_id,to:decision.to??"TODO",expect:"IN_PROGRESS",trigger:decision.row.trigger,ruleId:decision.row.id,actor:"AGENT",runId,reason:remaining,verificationSummary:verified,result:"",evidence:{remaining,verified}});
+    const eventId=Number((db.prepare("SELECT id FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1").get(run.prompt_id) as {id:number}).id);
+    // The brief the next run receives, as its own remark kind so it can be
+    // found without parsing a ledger row's evidence.
+    db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'CONTINUATION',?,'AGENT',?)").run(run.prompt_id,runId,remaining,now);
+    return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:written.to,requestedStatus:target,result:remaining,createdAt:now};
+  }
+  if(target!=="DONE"&&target!=="BLOCKED")throw new WorkspaceError(422,"invalid_transition","Agents may only change IN_PROGRESS to DONE, BLOCKED or CONTINUE");
   const reason=requireText(input.reason,"reason",10000,target==="DONE");const verification=requireText(input.verificationSummary??"","verificationSummary",20000,false);
   if(target==="DONE"&&verification==="")throw new WorkspaceError(422,"validation_error","DONE requires a verification summary");
   if(target==="BLOCKED"&&reason==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires an evidence-based reason");
@@ -1303,17 +1552,101 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
  * every prior attempt.
  */
 const CONTEXT_REMARK_LIMIT=8;
+
+/** Parent brief + siblings for a decompose sub-step; null for a station. */
+function buildParentContext(parentPromptId:number|null):AgentPromptParentContext|null {
+  if(parentPromptId===null)return null;
+  const parent=db.prepare("SELECT external_key externalKey,title,content FROM prompt WHERE id=?").get(parentPromptId) as {externalKey:string|null;title:string;content:string}|undefined;
+  if(parent===undefined)return null;
+  const siblings=db.prepare(
+    "SELECT external_key externalKey,title,status FROM prompt WHERE parent_prompt_id=? ORDER BY child_order,id",
+  ).all(parentPromptId) as AgentPromptParentContext["siblings"];
+  // Prefer the newest CONTINUATION (agent or system brief). Fall back to the
+  // resumeBrief filed alongside the parent's decompose — stored as the
+  // verification_summary of the "Decomposed into N sub-steps" ledger row (the
+  // writeStatus row for trigger agent_decompose has an empty summary).
+  const continuation=db.prepare(
+    "SELECT content FROM prompt_remark WHERE prompt_id=? AND kind='CONTINUATION' ORDER BY id DESC LIMIT 1",
+  ).get(parentPromptId) as {content:string}|undefined;
+  const decomposeBrief=db.prepare(
+    `SELECT verification_summary resumeBrief FROM prompt_status_event
+     WHERE prompt_id=? AND verification_summary<>'' AND reason LIKE 'Decomposed into %'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(parentPromptId) as {resumeBrief:string}|undefined;
+  return {
+    externalKey:parent.externalKey,
+    title:parent.title,
+    content:parent.content,
+    resumeBrief:(continuation?.content??decomposeBrief?.resumeBrief??"").trim(),
+    siblings,
+  };
+}
+
+/**
+ * Direct children for a resumed parent's integration checklist. SKIPPED rows
+ * carry the ledger reason so the parent does not assume their work exists.
+ */
+function buildChildrenContext(promptId:number):AgentPromptChildSummary[] {
+  const rows=db.prepare(
+    "SELECT id,external_key externalKey,title,status,result FROM prompt WHERE parent_prompt_id=? ORDER BY child_order,id",
+  ).all(promptId) as Array<{id:number;externalKey:string|null;title:string;status:PromptRecord["status"];result:string}>;
+  if(rows.length===0)return[];
+  const skipReason=db.prepare(
+    "SELECT reason FROM prompt_status_event WHERE prompt_id=? AND new_status='SKIPPED' ORDER BY id DESC LIMIT 1",
+  );
+  return rows.map((row)=>{
+    if(row.status==="SKIPPED"){
+      const skip=skipReason.get(row.id) as {reason:string}|undefined;
+      return{externalKey:row.externalKey,title:row.title,status:row.status,result:(skip?.reason??row.result).trim()};
+    }
+    return{externalKey:row.externalKey,title:row.title,status:row.status,result:row.result};
+  });
+}
+
+/**
+ * The execute context's "Where the last run stopped" selection: one query per
+ * kind, never AGENT_RESPONSE. Oldest-first so the agent reads chronologically.
+ */
+function buildStoppedRemarks(promptId:number):PromptRemark[] {
+  const select=(kinds:string[],limit:number)=>db.prepare(
+    `SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt
+     FROM prompt_remark WHERE prompt_id=? AND kind IN (${kinds.map(()=>"?").join(",")})
+     ORDER BY id DESC LIMIT ?`,
+  ).all(promptId,...kinds,limit) as PromptRemark[];
+  const byId=new Map<number,PromptRemark>();
+  for(const remark of select(["CONTINUATION"],1))byId.set(remark.id,remark);
+  for(const remark of select(["BLOCKER"],1))byId.set(remark.id,remark);
+  const lastStatus=db.prepare(
+    "SELECT created_at createdAt FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1",
+  ).get(promptId) as {createdAt:string}|undefined;
+  const human=select(["HUMAN_RESPONSE"],1)[0];
+  // A human answer that landed after the last status change is still pending
+  // action — include it next to the blocker so the agent does not re-ask.
+  if(human!==undefined&&(lastStatus===undefined||human.createdAt>lastStatus.createdAt)){
+    byId.set(human.id,human);
+  }
+  for(const remark of select(["PROGRESS","VERIFICATION"],3))byId.set(remark.id,remark);
+  return [...byId.values()].sort((a,b)=>a.id-b.id);
+}
+
+/**
+ * Clarifications answered after the item last moved to DONE or TODO. Older
+ * exchanges belong to a previous attempt and just bloat the prompt.
+ */
+function clarificationsSinceLastSettled(promptId:number):ClarificationExchange[] {
+  const floor=db.prepare(
+    "SELECT created_at createdAt FROM prompt_status_event WHERE prompt_id=? AND new_status IN ('DONE','TODO') ORDER BY id DESC LIMIT 1",
+  ).get(promptId) as {createdAt:string}|undefined;
+  const rows=db.prepare(
+    "SELECT id,prompt_id promptId,question,answer,provider,model,state,created_at createdAt,answered_at answeredAt FROM clarification_exchange WHERE prompt_id=? AND state='DONE' AND answer IS NOT NULL ORDER BY id",
+  ).all(promptId) as ClarificationExchange[];
+  if(floor===undefined)return rows;
+  return rows.filter((row)=>row.answeredAt!==null&&row.answeredAt>=floor.createdAt);
+}
 /** Evidence budget for a handoff dossier, in bytes. */
 const HANDOFF_EVENT_BUDGET_BYTES=16000;
 
 export const DECOMPOSE_MAX_DEPTH=2;
-/**
- * Marks a status event as "a reviewer started a run to finish this". Counting
- * these is what bounds remediation, so it is a constant rather than a literal
- * repeated at the write and the read.
- */
-const REMEDIATION_RULE_ID="reviewer-remediation";
-
 const DECOMPOSE_MIN_CHILDREN=2;
 const DECOMPOSE_MAX_CHILDREN=12;
 
@@ -1323,25 +1656,57 @@ const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string
   if(prompt.status!=="IN_PROGRESS")throw new WorkspaceError(422,"invalid_transition","Agents may only decompose an IN_PROGRESS work item");
   let depth=0;let ancestor=prompt.parentPromptId;
   while(ancestor!==null){depth++;ancestor=(db.prepare("SELECT parent_prompt_id parentPromptId FROM prompt WHERE id=?").get(ancestor) as {parentPromptId:number|null}).parentPromptId;}
-  if(depth>=DECOMPOSE_MAX_DEPTH)throw new WorkspaceError(422,"decompose_depth_exceeded",`This work item is already a sub-step ${depth} level(s) deep; sub-steps cannot be split further. Finish it or report BLOCKED.`);
+  if(depth>=DECOMPOSE_MAX_DEPTH)throw new WorkspaceError(422,"decompose_depth_exceeded",`This work item is already a sub-step ${depth} level(s) deep; sub-steps cannot be split further. Finish it, or post \`continue\` with what remains; it will be resumed on this working tree.`);
   const resumeBrief=requireText(input.resumeBrief,"resumeBrief",20000);
   const rawChildren=Array.isArray(input.children)?input.children:[];
   if(rawChildren.length<DECOMPOSE_MIN_CHILDREN||rawChildren.length>DECOMPOSE_MAX_CHILDREN)throw new WorkspaceError(422,"validation_error",`children must list between ${DECOMPOSE_MIN_CHILDREN} and ${DECOMPOSE_MAX_CHILDREN} sub-steps`);
-  const now=new Date().toISOString();
-  const children=rawChildren.map((raw,index)=>{
+  // Parse first, then refuse title collisions before any insert — a resumed
+  // parent appending more slices must not half-write a conflicting batch.
+  const parsed=rawChildren.map((raw,index)=>{
     if(raw===null||typeof raw!=="object")throw new WorkspaceError(422,"validation_error",`children[${index}] must be an object`);
     const item=raw as Record<string,unknown>;
-    const title=requireText(item.title,`children[${index}].title`,200);
-    const content=requireText(item.content,`children[${index}].content`,20000);
-    const externalKey=prompt.externalKey===null?null:`${prompt.externalKey}.${index+1}`;
+    return{
+      index,
+      title:requireText(item.title,`children[${index}].title`,200),
+      content:requireText(item.content,`children[${index}].content`,20000),
+    };
+  });
+  const conflicts:Array<{index:number;title:string;existing:string}>=[];
+  const seenInRequest=new Map<string,number>();
+  for(const child of parsed){
+    const prior=seenInRequest.get(child.title);
+    if(prior!==undefined){
+      conflicts.push({index:child.index,title:child.title,existing:`(this request's children[${prior}]) — ${child.title}`});
+      continue;
+    }
+    seenInRequest.set(child.title,child.index);
+    const existing=db.prepare("SELECT external_key externalKey,title,status FROM prompt WHERE suite_id=? AND title=?").get(prompt.suiteId,child.title) as {externalKey:string|null;title:string;status:PromptRecord["status"]}|undefined;
+    if(existing!==undefined){
+      conflicts.push({
+        index:child.index,
+        title:child.title,
+        existing:`${existing.externalKey??"(no key)"} — ${existing.title} (${existing.status})`,
+      });
+    }
+  }
+  if(conflicts.length>0){
+    throw new WorkspaceError(422,"decompose_title_conflict","Rename these sub-steps and post again; existing sub-steps are kept.",undefined,{conflicts});
+  }
+  // Re-decompose appends: keep every existing child and continue numbering.
+  const existingChildren=(db.prepare("SELECT COUNT(*) count FROM prompt WHERE parent_prompt_id=?").get(run.prompt_id) as {count:number}).count;
+  const now=new Date().toISOString();
+  const children=parsed.map((child,index)=>{
+    const externalKey=prompt.externalKey===null?null:`${prompt.externalKey}.${existingChildren+index+1}`;
+    const childOrder=existingChildren+index;
     const sortOrder=nextOrder("prompt","suite_id",prompt.suiteId);
     // No prompt_dependency row: a decompose parent's readiness is gated
     // directly on its open children (see promptOptions' openChildren), not
     // through the dependency table, so a skipped child still lets it resume -
     // unlike a real dependency, which a skip must never silently satisfy.
     const id=Number(db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at,external_key,status,completed_at,result,is_gate,parent_prompt_id,child_order) VALUES(?,?,?,?,?,?,?, 'TODO', NULL, '',0,?,?)")
-      .run(prompt.suiteId,title,content,sortOrder,now,now,externalKey,run.prompt_id,index).lastInsertRowid);
-    return{id,externalKey,title};
+      .run(prompt.suiteId,child.title,child.content,sortOrder,now,now,externalKey,run.prompt_id,childOrder).lastInsertRowid);
+    syncPromptVerifyCriteria(id, child.content);
+    return{id,externalKey,title:child.title};
   });
   writeStatus({promptId:run.prompt_id,to:"TODO",trigger:"agent_decompose",ruleId:"agent-decomposed",actor:"AGENT",runId,reason:"The agent split this work item into sub-steps; they carry the work now."});
   db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','TODO',?,?, 'AGENT',?)")
@@ -1362,6 +1727,7 @@ const importProgramTransaction = db.transaction((workspaceId: number, pack: Impo
     const suiteId=Number(db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)").run(programId,suite.name,"",suiteOrder,now,now,suite.key).lastInsertRowid);
     suite.prompts.forEach((prompt,promptOrder)=>{
       const promptId=Number(db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at,external_key,status,completed_at,result,is_gate) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(suiteId,prompt.title,prompt.content,promptOrder,now,now,prompt.key,prompt.status,prompt.completedAt,prompt.result,prompt.isGate?1:0).lastInsertRowid);
+      syncPromptVerifyCriteria(promptId, prompt.content);
       promptIds.set(prompt.key,promptId);
     });
   });
@@ -1739,6 +2105,54 @@ function childrenClosed(promptId: number): { result: DodResult; evidence: string
  * UNVERIFIED, which does not close anything — the same rule as a run that ended
  * without reporting. Absence of evidence is not evidence.
  */
+/**
+ * Rewrite prompt-scope COMMAND criteria from a work item's `## Verify` block.
+ *
+ * Called after every write of `prompt.content`. Unchanged command lines keep
+ * their criterion id (and therefore their `dod_result` history); removed lines
+ * drop their criteria; PROSE / CHILDREN_CLOSED rows at this scope are left
+ * alone. An overlong line is a 422 naming it — better than a criterion that
+ * can never be stored.
+ */
+function syncPromptVerifyCriteria(promptId: number, content: string): void {
+  const parsed = parseVerifyBlock(content);
+  if (parsed.tooLong.length > 0) {
+    const line = parsed.tooLong[0]!;
+    throw new WorkspaceError(
+      422,
+      "validation_error",
+      `Verify command exceeds ${DOD_COMMAND_MAX_LENGTH} characters`,
+      { command: line.length > 200 ? `${line.slice(0, 200)}…` : line },
+    );
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO definition_of_done(scope,scope_id,updated_at) VALUES('prompt',?,?) ON CONFLICT(scope,scope_id) DO UPDATE SET updated_at=excluded.updated_at",
+  ).run(promptId, now);
+  const dodId = (db.prepare("SELECT id FROM definition_of_done WHERE scope='prompt' AND scope_id=?").get(promptId) as { id: number }).id;
+  const existing = db.prepare(
+    "SELECT id,text,command,timeout_ms FROM dod_criterion WHERE dod_id=? AND kind='COMMAND'",
+  ).all(dodId) as Array<{ id: number; text: string; command: string | null; timeout_ms: number }>;
+  const byText = new Map(existing.map((row) => [row.text, row]));
+  const keep = new Set<number>();
+  parsed.commands.forEach((command, index) => {
+    const found = byText.get(command.text);
+    if (found !== undefined) {
+      keep.add(found.id);
+      db.prepare(
+        "UPDATE dod_criterion SET command=?,cwd=NULL,expect_exit_code=0,timeout_ms=?,required=1,sort_order=? WHERE id=?",
+      ).run(command.text, command.timeoutMs, index, found.id);
+      return;
+    }
+    db.prepare(
+      "INSERT INTO dod_criterion(dod_id,kind,text,command,cwd,expect_exit_code,timeout_ms,required,sort_order) VALUES(?,'COMMAND',?,?,NULL,0,?,1,?)",
+    ).run(dodId, command.text, command.text, command.timeoutMs, index);
+  });
+  for (const row of existing) {
+    if (!keep.has(row.id)) db.prepare("DELETE FROM dod_criterion WHERE id=?").run(row.id);
+  }
+}
+
 function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
   const definition = resolveDefinitionOfDone(promptId);
   if (definition.enforcement === "off" || definition.criteria.length === 0) {
@@ -1774,57 +2188,6 @@ function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
   return { enforcement: definition.enforcement, satisfied, blocking: definition.enforcement === "block", criteria };
 }
 
-/*
- * The reviewer's instructions for one situation, resolved from the narrowest
- * scope that has anything to say about it.
- *
- * prompt → suite → pipeline → global → what ships. Each *field* resolves
- * independently, so setting a provider on one suite does not silently freeze
- * everything else about how that suite is reviewed.
- */
-function resolveReviewerConfig(trigger: ReviewTrigger, promptId: number | null): ReviewerConfig {
-  const scopes: Array<[string, number | null]> = [["global", null]];
-  if (promptId !== null) {
-    const row = db.prepare(`
-      SELECT p.id promptId, s.id suiteId,
-             (SELECT ps.pipeline_id FROM pipeline_stage ps WHERE ps.suite_id = s.id LIMIT 1) pipelineId
-      FROM prompt p JOIN suite s ON s.id = p.suite_id WHERE p.id = ?
-    `).get(promptId) as { promptId: number; suiteId: number; pipelineId: number | null } | undefined;
-    if (row !== undefined) {
-      if (row.pipelineId !== null) scopes.push(["pipeline", row.pipelineId]);
-      scopes.push(["suite", row.suiteId]);
-      scopes.push(["prompt", row.promptId]);
-    }
-  }
-  let resolved: ReviewerConfig = { ...DEFAULT_REVIEWER_CONFIG[trigger] };
-  const select = db.prepare("SELECT * FROM reviewer_config WHERE scope=? AND scope_id IS ? AND trigger_id=?");
-  for (const [scope, scopeId] of scopes) {
-    const row = select.get(scope, scopeId, trigger) as Record<string, unknown> | undefined;
-    if (row === undefined) continue;
-    if (row.enabled !== null && row.enabled !== undefined) resolved.enabled = row.enabled === 1;
-    if (typeof row.provider === "string") resolved.provider = row.provider;
-    if (typeof row.model === "string") resolved.model = row.model;
-    if (typeof row.max_attempts === "number") resolved.maxAttempts = row.max_attempts;
-    if (row.must_differ_from_source !== null && row.must_differ_from_source !== undefined) {
-      resolved.mustDifferFromSource = row.must_differ_from_source === 1;
-    }
-    if (isReviewAction(row.on_complete)) resolved.onComplete = row.on_complete;
-    if (isReviewAction(row.on_incomplete)) resolved.onIncomplete = row.on_incomplete;
-    if (isReviewAction(row.on_unverifiable)) resolved.onUnverifiable = row.on_unverifiable;
-  }
-  // The old global switch still has the final say on the two questions it was
-  // able to express, so an operator who set it keeps the behaviour they chose
-  // until they say something more specific here.
-  const legacy = settings.pipelinePolicy.auditOnBlocked;
-  const touched = select.get("global", null, trigger) !== undefined;
-  if (!touched) {
-    if (legacy === "off") resolved.enabled = false;
-    else if (legacy === "report") resolved.onComplete = "park";
-  }
-  return resolved;
-}
-
-
 export const workspaces = {
   databasePath,
   /**
@@ -1856,66 +2219,6 @@ export const workspaces = {
         );
       }
     }
-  },
-  /** How a reviewer should behave for one situation on one work item. */
-  reviewerConfig(trigger: ReviewTrigger, promptId: number | null = null): ReviewerConfig {
-    return resolveReviewerConfig(trigger, promptId);
-  },
-  /** Every situation's resolved instructions, for the rules screen. */
-  reviewerConfigs(promptId: number | null = null): ReviewerConfig[] {
-    return REVIEW_TRIGGERS.map((trigger) => resolveReviewerConfig(trigger, promptId));
-  },
-  /** Say something about one situation at one scope. Null clears a field. */
-  setReviewerConfig(args: { scope: string; scopeId: number | null; trigger: string; patch: Record<string, unknown> }): ReviewerConfig {
-    if (!["global", "pipeline", "suite", "prompt"].includes(args.scope)) {
-      throw new WorkspaceError(422, "validation_error", "Unknown scope", { scope: "Must be global, pipeline, suite or prompt" });
-    }
-    if (!isReviewTrigger(args.trigger)) throw new WorkspaceError(404, "not_found", `No reviewer situation called ${args.trigger}`);
-    const columns: Array<[string, string, "flag" | "text" | "count" | "action"]> = [
-      ["enabled", "enabled", "flag"], ["provider", "provider", "text"], ["model", "model", "text"],
-      ["maxAttempts", "max_attempts", "count"], ["mustDifferFromSource", "must_differ_from_source", "flag"],
-      ["onComplete", "on_complete", "action"], ["onIncomplete", "on_incomplete", "action"],
-      ["onUnverifiable", "on_unverifiable", "action"],
-    ];
-    const fields: string[] = [];
-    const values: unknown[] = [];
-    const errors: Record<string, string> = {};
-    for (const [key, column, kind] of columns) {
-      if (!(key in args.patch)) continue;
-      const value = args.patch[key];
-      if (value === null) { fields.push(`${column}=?`); values.push(null); continue; }
-      if (kind === "flag") {
-        if (typeof value !== "boolean") { errors[key] = "Must be true or false"; continue; }
-        fields.push(`${column}=?`); values.push(value ? 1 : 0);
-      } else if (kind === "count") {
-        if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 5) { errors[key] = "Must be between 1 and 5"; continue; }
-        fields.push(`${column}=?`); values.push(value);
-      } else if (kind === "action") {
-        if (!isReviewAction(value)) { errors[key] = "Not a known action"; continue; }
-        fields.push(`${column}=?`); values.push(value);
-      } else {
-        if (typeof value !== "string" || value.trim() === "") { errors[key] = "Must be some text"; continue; }
-        if (key === "provider" && !isProviderId(value)) { errors[key] = "Not a known agent"; continue; }
-        fields.push(`${column}=?`); values.push(value.trim());
-      }
-    }
-    if (Object.keys(errors).length > 0) throw new WorkspaceError(422, "validation_error", "Some changes were refused", errors);
-    const now = new Date().toISOString();
-    sqliteGuard(() => db.transaction(() => {
-      db.prepare("INSERT INTO reviewer_config(scope,scope_id,trigger_id,updated_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING")
-        .run(args.scope, args.scopeId, args.trigger, now);
-      if (fields.length > 0) {
-        db.prepare(`UPDATE reviewer_config SET ${fields.join(",")},updated_at=? WHERE scope=? AND scope_id IS ? AND trigger_id=?`)
-          .run(...values, now, args.scope, args.scopeId, args.trigger);
-      }
-    })());
-    return resolveReviewerConfig(args.trigger, args.scope === "prompt" ? args.scopeId : null);
-  },
-  /** Drop what one scope said about one situation. */
-  clearReviewerConfig(scope: string, scopeId: number | null, trigger: string): ReviewerConfig {
-    if (!isReviewTrigger(trigger)) throw new WorkspaceError(404, "not_found", `No reviewer situation called ${trigger}`);
-    db.prepare("DELETE FROM reviewer_config WHERE scope=? AND scope_id IS ? AND trigger_id=?").run(scope, scopeId, trigger);
-    return resolveReviewerConfig(trigger, scope === "prompt" ? scopeId : null);
   },
   /* ---------------------------------------------------------------- */
   /* Definition of done                                                */
@@ -2036,6 +2339,52 @@ export const workspaces = {
           (args.evidence ?? "").slice(0, 4000), (args.output ?? "").slice(0, DOD_COMMAND_OUTPUT_MAX_BYTES),
           args.exitCode ?? null, new Date().toISOString(),
         );
+    });
+  },
+
+  /**
+   * What a blocked agent `done` must show: each unmet required criterion with
+   * the command's own exit code and output. `null` when the close may proceed
+   * (satisfied, warn, or off).
+   */
+  agentDoneVerificationFailures(promptId: number): Array<{
+    command: string; exitCode: number | null; output: string; result: string; evidence: string;
+  }> | null {
+    const evaluation = evaluateDefinitionOfDone(promptId);
+    if (evaluation.satisfied || !evaluation.blocking) return null;
+    return unmetCriteria(evaluation).map((entry) => ({
+      command: entry.text,
+      exitCode: entry.exitCode,
+      output: entry.output,
+      result: entry.result,
+      evidence: entry.evidence,
+    }));
+  },
+
+  /**
+   * Bank a refused `done` as a SYSTEM VERIFICATION remark so the next run's
+   * continuation brief starts from the compiler's words rather than the top.
+   */
+  recordVerificationFailureRemark(promptId: number, runId: string, failures: Array<{
+    command: string; exitCode: number | null; output: string;
+  }>): void {
+    const blocks = failures.map((failure) => {
+      const exit = failure.exitCode === null ? "killed" : String(failure.exitCode);
+      const output = failure.output.trim() === "" ? "(no output)" : failure.output.trim();
+      return `$ ${failure.command}\nexit ${exit}\n${output}`;
+    });
+    const content = [
+      "Verification failed.",
+      "",
+      ...blocks,
+      "",
+      "Fix this and post `done` again. If it cannot be fixed in this run, post `continue` with what remains.",
+    ].join("\n").slice(0, 20000);
+    const now = new Date().toISOString();
+    sqliteGuard(() => {
+      db.prepare(
+        "INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'VERIFICATION',?,'SYSTEM',?)",
+      ).run(promptId, runId, content, now);
     });
   },
 
@@ -2182,19 +2531,70 @@ export const workspaces = {
     const row = this.promptOptions(workspaceId).find(prompt => prompt.id === promptId);
     if (!row) throw new WorkspaceError(404, "not_found", "Prompt was not found in this workspace"); return row;
   },
-  agentContext(workspaceId:number,promptId:number):AgentPromptContext {
-    const row=db.prepare(`SELECT p.*,s.id context_suite_id,s.external_key suite_external_key,s.name suite_name,s.overview suite_overview,g.id context_program_id,g.external_key program_external_key,g.name program_name,g.overview program_overview,w.id context_workspace_id,w.name workspace_name,w.work_directory,w.description workspace_description FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id JOIN workspace w ON w.id=g.workspace_id WHERE p.id=? AND w.id=?`).get(promptId,workspaceId) as (PromptRow&Record<string,unknown>)|undefined;
+  /**
+   * Remarks of the given kinds, newest first. A query rather than a filter over
+   * `promptHistory`, so the execute context can pick CONTINUATION / BLOCKER /
+   * PROGRESS without pulling every AGENT_RESPONSE into memory first.
+   */
+  recentRemarks(promptId:number,opts:{kinds:string[];limit:number}):PromptRemark[] {
+    if(!db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId))throw new WorkspaceError(404,"not_found","Prompt not found");
+    const kinds=opts.kinds.filter((kind)=>kind.trim()!=="");
+    if(kinds.length===0||opts.limit<=0)return[];
+    const placeholders=kinds.map(()=>"?").join(",");
+    return db.prepare(
+      `SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt
+       FROM prompt_remark WHERE prompt_id=? AND kind IN (${placeholders})
+       ORDER BY id DESC LIMIT ?`,
+    ).all(promptId,...kinds,opts.limit) as PromptRemark[];
+  },
+  agentContext(workspaceId:number,promptId:number,opts?:{full?:boolean}):AgentPromptContext {
+    const full=opts?.full===true;
+    const row=db.prepare(`SELECT p.*,s.id context_suite_id,s.external_key suite_external_key,s.name suite_name,s.overview suite_overview,g.id context_program_id,g.external_key program_external_key,g.name program_name,g.overview program_overview,w.id context_workspace_id,w.name workspace_name,w.work_directory,w.description workspace_description,w.agents_md workspace_agents_md,w.claude_md workspace_claude_md FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id JOIN workspace w ON w.id=g.workspace_id WHERE p.id=? AND w.id=?`).get(promptId,workspaceId) as (PromptRow&Record<string,unknown>)|undefined;
     if(!row) throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
     const dependencies=db.prepare(`SELECT p.external_key externalKey,p.title,p.status,p.result FROM prompt_dependency d JOIN prompt p ON p.id=d.depends_on_prompt_id WHERE d.prompt_id=? ORDER BY p.external_key`).all(promptId) as AgentPromptContext["dependencies"];
     const gate=db.prepare("SELECT code,name,description FROM program_gate WHERE prompt_id=?").get(promptId) as AgentPromptContext["gate"]|undefined;
-    const history=this.promptHistory(promptId,CONTEXT_REMARK_LIMIT);
-    return {workspace:{id:Number(row.context_workspace_id),name:String(row.workspace_name),workDirectory:String(row.work_directory),description:String(row.workspace_description)},program:{id:Number(row.context_program_id),externalKey:row.program_external_key as string|null,name:String(row.program_name),overview:String(row.program_overview)},suite:{id:Number(row.context_suite_id),externalKey:row.suite_external_key as string|null,name:String(row.suite_name),overview:String(row.suite_overview)},prompt:promptDto(row),dependencies,gate:gate??null,history:{remarks:[...history.remarks].reverse() as PromptRemark[],events:[...history.events].reverse() as PromptStatusEvent[]},clarifications:this.clarifications(promptId)};
+    const history=this.promptHistory(promptId,full?undefined:CONTEXT_REMARK_LIMIT);
+    const prompt=promptDto(row);
+    const parent=buildParentContext(prompt.parentPromptId);
+    const children=buildChildrenContext(promptId);
+    const verificationCommands=resolveDefinitionOfDone(promptId).criteria
+      .filter((criterion)=>criterion.kind==="COMMAND")
+      .map((criterion)=>(criterion.command??criterion.text).trim())
+      .filter((command)=>command!=="");
+    const stoppedRemarks=full?[]:buildStoppedRemarks(promptId);
+    const clarifications=full?this.clarifications(promptId):clarificationsSinceLastSettled(promptId);
+    return {
+      workspace:{
+        id:Number(row.context_workspace_id),
+        name:String(row.workspace_name),
+        workDirectory:String(row.work_directory),
+        description:String(row.workspace_description),
+        agentsMd:String(row.workspace_agents_md??""),
+        claudeMd:String(row.workspace_claude_md??""),
+      },
+      program:{id:Number(row.context_program_id),externalKey:row.program_external_key as string|null,name:String(row.program_name),overview:String(row.program_overview)},
+      suite:{id:Number(row.context_suite_id),externalKey:row.suite_external_key as string|null,name:String(row.suite_name),overview:String(row.suite_overview)},
+      prompt,
+      parent,
+      children,
+      verificationCommands,
+      stoppedRemarks,
+      dependencies,
+      gate:gate??null,
+      history:{remarks:[...history.remarks].reverse() as PromptRemark[],events:[...history.events].reverse() as PromptStatusEvent[]},
+      clarifications,
+    };
   },
   createChild(kind: "program"|"suite"|"prompt", parentId: number, input: Record<string, unknown>): unknown { return sqliteGuard(() => {
     const now = new Date().toISOString();
     if (kind === "program") { this.get(parentId); const r=db.prepare("INSERT INTO program(workspace_id,name,overview,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.name,"name",120),requireText(input.overview??"","overview",10000,true),nextOrder("program","workspace_id",parentId),now,now); return this.tree(parentId).programs.find(x=>x.id===Number(r.lastInsertRowid)); }
     if (kind === "suite") { const parent=db.prepare("SELECT workspace_id FROM program WHERE id=?").get(parentId) as {workspace_id:number}|undefined; if(!parent) throw new WorkspaceError(404,"not_found","Program not found"); const r=db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.name,"name",120),requireText(input.overview??"","overview",10000,true),nextOrder("suite","program_id",parentId),now,now); return this.tree(parent.workspace_id).programs.flatMap(x=>x.suites).find(x=>x.id===Number(r.lastInsertRowid)); }
-    const parent=db.prepare("SELECT g.workspace_id FROM suite s JOIN program g ON g.id=s.program_id WHERE s.id=?").get(parentId) as {workspace_id:number}|undefined; if(!parent) throw new WorkspaceError(404,"not_found","Suite not found"); const r=db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.title,"title",160),requireText(input.content,"content",64000),nextOrder("prompt","suite_id",parentId),now,now); return this.tree(parent.workspace_id).programs.flatMap(x=>x.suites).flatMap(x=>x.prompts).find(x=>x.id===Number(r.lastInsertRowid));
+    const parent=db.prepare("SELECT g.workspace_id FROM suite s JOIN program g ON g.id=s.program_id WHERE s.id=?").get(parentId) as {workspace_id:number}|undefined; if(!parent) throw new WorkspaceError(404,"not_found","Suite not found");
+    const content=requireText(input.content,"content",64000);
+    const r=db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(parentId,requireText(input.title,"title",160),content,nextOrder("prompt","suite_id",parentId),now,now);
+    const promptId=Number(r.lastInsertRowid);
+    syncPromptVerifyCriteria(promptId, content);
+    return this.tree(parent.workspace_id).programs.flatMap(x=>x.suites).flatMap(x=>x.prompts).find(x=>x.id===promptId);
   }); },
   updateChild(kind: "program"|"suite"|"prompt", id:number, input:Record<string,unknown>): unknown { return sqliteGuard(() => db.transaction(() => {
     const table=kind; const row=db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) as Record<string,unknown>|undefined; if(!row) throw new WorkspaceError(404,"not_found",`${kind} not found`); const now=new Date().toISOString();
@@ -2209,6 +2609,7 @@ export const workspaces = {
         db.prepare("INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) VALUES(?,?,?,?,?,?)").run(id,row.title,row.content,actor,reason,now);
       }
       db.prepare("UPDATE prompt SET title=?,content=?,updated_at=? WHERE id=?").run(title,content,now,id);
+      if(content!==row.content) syncPromptVerifyCriteria(id, content);
     }
     else { db.prepare(`UPDATE ${table} SET name=?,overview=?,updated_at=? WHERE id=?`).run(input.name===undefined?row.name:requireText(input.name,"name",120),input.overview===undefined?row.overview:requireText(input.overview,"overview",10000,true),now,id); }
     return db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
@@ -2239,46 +2640,195 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt);
   }); },
   markAgentRunRunning(runId:string):void { db.prepare("UPDATE agent_run SET state='RUNNING' WHERE id=? AND state='STARTING'").run(runId); },
-  finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics):void { sqliteGuard(()=>db.transaction(()=>{
-    const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;if(!run)return;
+  /**
+   * Opens the short run that speaks for a run the budget stopped.
+   *
+   * Deliberately *not* `beginAgentRun`: that one refuses a second active run on
+   * the same prompt (right, for two agents racing on one working tree) and moves
+   * TODO → IN_PROGRESS (wrong here — the item never left IN_PROGRESS, because
+   * the source run's status transition was deferred for exactly this). The
+   * wrap-up is the same work item, the same tree and the same session; it is the
+   * tail of the run before it, not a new attempt at the work.
+   */
+  beginWrapUpRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;sourceRunId:string;sessionId:string|null}):void { sqliteGuard(()=>{
     const now=new Date().toISOString();
-    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=? WHERE id=?")
-      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,runId);
+    db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,wrapup_of,session_id) VALUES(?,?,?,?,?,'STARTING',?,?,?,'execute',?,?)")
+      .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.sourceRunId,args.sessionId);
+  }); },
+  /** The provider session a run had, for a wrap-up turn to resume. */
+  runSessionId(runId:string):string|null { const row=db.prepare("SELECT session_id sessionId FROM agent_run WHERE id=?").get(runId) as {sessionId:string|null}|undefined;return row?.sessionId??null; },
+  /** The run a wrap-up turn is speaking for, or null for an ordinary run. */
+  wrapupSourceRunId(runId:string):string|null { const row=db.prepare("SELECT wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {wrapupOf:string|null}|undefined;return row?.wrapupOf??null; },
+  /**
+   * The cause recorded by the newest status change on a work item.
+   *
+   * Read by the scheduler to tell one TODO from another: a decompose and a
+   * continuation both land on TODO, and they need opposite things done about
+   * them (hand off to the first child, versus re-run this same station). The
+   * status alone cannot say which, and inferring it from the shape of the item
+   * is how the two got confused in the first place.
+   */
+  latestStatusTrigger(promptId:number):string|null {
+    // `trigger_id IS NOT NULL` because not every ledger row is a status change
+    // with a recorded cause: `agentDecomposeTransaction` files a second,
+    // causeless row for the sub-step count, and it is newer than the transition
+    // it annotates. Reading the newest row outright would report "no cause" for
+    // the one case this function exists to tell apart.
+    const row=db.prepare("SELECT trigger_id triggerId FROM prompt_status_event WHERE prompt_id=? AND trigger_id IS NOT NULL ORDER BY id DESC LIMIT 1").get(promptId) as {triggerId:string|null}|undefined;
+    return row?.triggerId??null;
+  },
+  /**
+   * Continuations since the most recent operator (USER) ledger row.
+   *
+   * An operator Resume / override grants a fresh allowance: that is what a
+   * human intervening means. Counted by `rule_id = "continuation"` rows only.
+   */
+  continuationCount(promptId:number):number {
+    const since=(db.prepare("SELECT COALESCE(MAX(id),0) id FROM prompt_status_event WHERE prompt_id=? AND actor_type='USER'").get(promptId) as {id:number}).id;
+    const row=db.prepare("SELECT count(*) count FROM prompt_status_event WHERE prompt_id=? AND rule_id='continuation' AND id>?").get(promptId,since) as {count:number};
+    return row.count;
+  },
+  /** Latest continuation evidence for the station card's "n/N" chip. */
+  latestContinuation(promptId:number):{attempt:number;of:number}|null {
+    const row=db.prepare("SELECT evidence_json evidenceJson FROM prompt_status_event WHERE prompt_id=? AND rule_id='continuation' ORDER BY id DESC LIMIT 1").get(promptId) as {evidenceJson:string|null}|undefined;
+    if(row===undefined||row.evidenceJson===null||row.evidenceJson==="") return null;
+    try{
+      const evidence=JSON.parse(row.evidenceJson) as {attempt?:unknown;of?:unknown};
+      if(typeof evidence.attempt!=="number"||typeof evidence.of!=="number") return null;
+      return {attempt:evidence.attempt,of:evidence.of};
+    }catch{return null;}
+  },
+  /** Newest CONTINUATION remark on the item, when the agent (or a prior SYSTEM brief) left one. */
+  latestContinuationRemark(promptId:number):string|null {
+    const row=db.prepare("SELECT content FROM prompt_remark WHERE prompt_id=? AND kind='CONTINUATION' ORDER BY id DESC LIMIT 1").get(promptId) as {content:string}|undefined;
+    return row?.content??null;
+  },
+  /** Whether this run already filed a CONTINUATION remark (so the scheduler must not invent another). */
+  runHasContinuationRemark(promptId:number,runId:string):boolean {
+    return db.prepare("SELECT 1 FROM prompt_remark WHERE prompt_id=? AND run_id=? AND kind='CONTINUATION' LIMIT 1").get(promptId,runId)!==undefined;
+  },
+  /**
+   * Re-queue a station for another run on the same working tree.
+   *
+   * Writes `trigger=continuation` / `rule_id=continuation` so `continuationCount`
+   * can bound the loop, and only invents a SYSTEM CONTINUATION remark when the
+   * agent left none — the agent's own brief must stay the one the next run reads.
+   */
+  queueContinuation(promptId:number,args:{attempt:number;of:number;cause:string;previousRunId:string;writeSystemRemark:boolean}):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+      const reason=`Continuation ${args.attempt}/${args.of}: ${args.cause}`.slice(0,2000);
+      writeStatus({
+        promptId,
+        to:"TODO",
+        trigger:"continuation",
+        ruleId:"continuation",
+        actor:"SYSTEM",
+        runId:args.previousRunId,
+        reason,
+        result:"",
+        evidence:{attempt:args.attempt,of:args.of,cause:args.cause,previousRunId:args.previousRunId},
+        remark:args.writeSystemRemark
+          ?{kind:"CONTINUATION",content:`${args.cause}\n\nInspect the working tree before changing anything; do not redo verified work.`}
+          :null,
+      });
+    })());
+  },
+  /**
+   * Re-queue the station on a different provider after a transient failure.
+   * Does not consume a continuation — the ledger row is `provider_fallback`.
+   */
+  queueProviderFallback(promptId:number,args:{from:ProviderId;to:ProviderId;failure:string|null;because:string;previousRunId:string|null}):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+      writeStatus({
+        promptId,
+        to:"TODO",
+        trigger:"provider_fallback",
+        ruleId:"provider-fallback",
+        actor:"SYSTEM",
+        runId:args.previousRunId,
+        reason:`Provider fallback ${args.from} → ${args.to}: ${args.because}`.slice(0,2000),
+        result:"",
+        evidence:{from:args.from,to:args.to,failure:args.failure,because:args.because},
+      });
+    })());
+  },
+  /**
+   * Error text + tool-call count for classifyFailure. Prefers the last fatal
+   * error event; falls back to the run's stop_reason / result.
+   */
+  runFailureFacts(runId:string):{errorText:string;toolCalls:number;provider:ProviderId;startFailed:boolean} {
+    const run=db.prepare("SELECT provider,tool_calls toolCalls,stop_reason stopReason,state FROM agent_run WHERE id=?").get(runId) as {provider:string;toolCalls:number|null;stopReason:string|null;state:string}|undefined;
+    if(!run||!isProviderId(run.provider)) throw new WorkspaceError(404,"not_found","Run not found");
+    const rows=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id DESC").all(runId) as Array<{event_json:string}>;
+    let errorText="";
+    for(const row of rows){
+      try{
+        const event=JSON.parse(row.event_json) as {type?:string;payload?:{message?:string;fatal?:boolean}};
+        if(event.type==="error"&&typeof event.payload?.message==="string"&&event.payload.message.trim()!==""){
+          errorText=event.payload.message;
+          break;
+        }
+      }catch{/* ignore malformed */ }
+    }
+    if(errorText===""&&run.stopReason) errorText=run.stopReason;
+    return {
+      errorText,
+      toolCalls:run.toolCalls??0,
+      provider:run.provider,
+      startFailed:false,
+    };
+  },
+  /**
+   * The last few things an agent banked on this item, newest last.
+   *
+   * The brief a fresh-session wrap-up is handed when its provider could not
+   * resume: PROGRESS and VERIFICATION only, because those are the kinds that
+   * record what was actually established rather than what was being attempted.
+   */
+  recentProgressRemarks(promptId:number,limit=5):Array<{kind:string;content:string;createdAt:string}> {
+    const rows=db.prepare("SELECT kind,content,created_at createdAt FROM prompt_remark WHERE prompt_id=? AND kind IN ('PROGRESS','VERIFICATION') ORDER BY id DESC LIMIT ?").all(promptId,limit) as Array<{kind:string;content:string;createdAt:string}>;
+    return rows.reverse();
+  },
+  /**
+   * Records how a run ended, and — unless a wrap-up turn is about to follow —
+   * what that means for the work item.
+   *
+   * `deferStatus` is the whole trap of the wrap-up turn in one option. The
+   * status transition below fires the instant the source run's process ends,
+   * which would move the item out of IN_PROGRESS and make the wrap-up's own
+   * `done`/`continue` post fail with `invalid_transition` — the run given a turn
+   * to speak would be refused the moment it spoke. With `deferStatus` the run
+   * row is closed (state, ended_at, metrics, stop reason) and the item is left
+   * IN_PROGRESS for the wrap-up run to post against; the wrap-up's own end then
+   * applies the transition, attributing the *source* run's stop reason.
+   */
+  finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics,options?:{deferStatus?:boolean}):void { sqliteGuard(()=>db.transaction(()=>{
+    const run=db.prepare("SELECT prompt_id,role,wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole;wrapupOf:string|null}|undefined;if(!run)return;
+    const now=new Date().toISOString();
+    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,session_id=COALESCE(?,session_id) WHERE id=?")
+      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,metrics?.sessionId??null,runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};
-    // What the end of a run means for the work item. The decision is in
-    // statusTransition.ts so it can be tested without a database, and so the
-    // one rule that matters is stated once: a run that ends without posting is
-    // UNREPORTED, never BLOCKED and never FAILED.
-    //
-    // This used to write BLOCKED unconditionally, which is what made an agent
-    // that finished the work but dropped its final HTTP call look identical to
-    // one that stopped to ask a question — and BLOCKED is what the pipeline
-    // parks on, so finished work waited on a human with nothing to answer.
-    // `state` arrives as a loose string from the runner. Anything that is not a
-    // recognised ending is treated as an error rather than silently as a clean
-    // exit: guessing "fine" about an unrecognised ending is the same mistake in
-    // a smaller place.
-    const outcome:RunOutcome=state==="done"?"done":state==="interrupted"?"interrupted":"error";
-    const facts={status:prompt.status,outcome,stopReason:metrics?.stopReason??null};
-    const signal=endOfRunSignal(facts);
-    if(signal!==null){
-      const decision=decide(signal);
-      const reason=endOfRunReason(facts);
-      writeStatus({
-        promptId:run.prompt_id,
-        to:decision.to??"UNREPORTED",
-        trigger:decision.row.trigger,
-        ruleId:decision.row.id,
-        actor:"SYSTEM",
-        runId,
-        reason,
-        result:reason,
-        evidence:{processState:state,stopReason:metrics?.stopReason??null,toolCalls:metrics?.toolCalls??null},
-        remark:{kind:"BLOCKER",content:reason},
-      });
-    }
+    if(options?.deferStatus===true)return;
+    applyEndOfRunStatus(runId,run.prompt_id,run.wrapupOf,state,metrics?.stopReason??null,metrics?.toolCalls??null);
+  })()); },
+  /**
+   * Applies the transition a `deferStatus: true` finish held back, for the one
+   * case that needs it: the wrap-up run could not be started at all, so nothing
+   * is coming and the item must land exactly where it would have without this
+   * feature. Idempotent by construction — `endOfRunSignal` returns null unless
+   * the item is still IN_PROGRESS.
+   */
+  applyDeferredRunEnd(runId:string):void { sqliteGuard(()=>db.transaction(()=>{
+    const run=db.prepare("SELECT prompt_id,role,wrapup_of wrapupOf,state,stop_reason stopReason,tool_calls toolCalls FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole;wrapupOf:string|null;state:string;stopReason:string|null;toolCalls:number|null}|undefined;
+    if(!run||run.role!=="execute"||run.prompt_id===null)return;
+    applyEndOfRunStatus(runId,run.prompt_id,run.wrapupOf,run.state.toLowerCase(),run.stopReason,run.toolCalls);
   })()); },
   authorizeAgentRun(runId:string,tokenHash:string):{workspaceId:number;promptId:number|null;state:string;role:RunRole} { const row=db.prepare("SELECT workspace_id workspaceId,prompt_id promptId,state,role FROM agent_run WHERE id=? AND context_token_hash=? AND token_expires_at>?").get(runId,tokenHash,new Date().toISOString()) as {workspaceId:number;promptId:number|null;state:string;role:RunRole}|undefined;if(!row)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");return row; },
   addAgentRemark(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentRemarkTransaction(runId,input)); },
@@ -2375,11 +2925,11 @@ export const workspaces = {
     const sessionsBySuite=db.prepare("SELECT r.id,r.workspace_id workspaceId,r.prompt_id promptId,p.external_key promptKey,p.title promptTitle,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN prompt p ON p.id=r.prompt_id WHERE p.suite_id=? ORDER BY r.started_at DESC");
     const latestVerification=db.prepare("SELECT id,kind,state,verdict,started_at startedAt,ended_at endedAt FROM suite_verification WHERE suite_id=? ORDER BY started_at DESC,id DESC LIMIT 1");
     const ruleRow=db.prepare("SELECT * FROM prompt_pipeline_rule WHERE prompt_id=?");
-    const suiteDefaults=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel FROM suite WHERE id=?");
+    const suiteDefaults=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM suite WHERE id=?");
     const activePipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED') ORDER BY started_at DESC LIMIT 1");
     const latestPipeline=db.prepare("SELECT * FROM suite_pipeline_run WHERE suite_id=? ORDER BY started_at DESC LIMIT 1");
     const suites:OperationsSuite[]=[];
-    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const handoffRow=latestHandoff.get(prompt.id) as Record<string,unknown>|undefined;const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:statusDefinition(this.statusCatalog(),state).needsAttention,latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestHandoff:handoffRow?handoffDto(handoffRow):null,latestAudit:auditRow?completionAuditDto(auditRow):null,pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined),children:[],childAttention:null,childAttentionCount:0};});
+    for(const workspace of workspaceRows){const options=new Map(this.promptOptions(workspace.id).map(item=>[item.id,item]));for(const program of this.tree(workspace.id).programs)for(const suite of program.suites){const counts=Object.fromEntries(OPERATIONAL_STATES.map(state=>[state,0])) as Record<PromptOperationalState,number>;const allPrompts:OperationsPrompt[]=suite.prompts.map(record=>{const prompt=options.get(record.id)!;const state=operationalState(prompt);counts[state]++;const latest=(intervention.get(prompt.id) as {content:string}|undefined)?.content??null;const human=(humanIntervention.get(prompt.id) as {id:number;requiredAction:string;requestedAt:string;response:string|null;completedAt:string|null}|undefined);const handoffRow=latestHandoff.get(prompt.id) as Record<string,unknown>|undefined;const auditRow=latestAudit.get(prompt.id) as Record<string,unknown>|undefined;const count=(sessionCount.get(prompt.id) as {count:number}).count;const lastActivityAt=prompt.currentRun?.endedAt??prompt.currentRun?.startedAt??record.updatedAt;return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},programKey:program.externalKey,suiteKey:suite.externalKey,operationalState:state,attention:statusDefinition(this.statusCatalog(),state).needsAttention,latestIntervention:latest,humanIntervention:human?{id:`human-${human.id}`,promptId:prompt.id,requiredAction:human.requiredAction,status:human.completedAt===null?"PENDING":"COMPLETE",requestedAt:human.requestedAt,response:human.response,completedAt:human.completedAt}:null,lastActivityAt,sessionCount:count,latestHandoff:handoffRow?handoffDto(handoffRow):null,latestAudit:auditRow?completionAuditDto(auditRow):null,continuation:this.latestContinuation(prompt.id),pipelineRule:pipelineRuleDto(prompt.id,ruleRow.get(prompt.id) as PipelineRuleRow|undefined),children:[],childAttention:null,childAttentionCount:0};});
       // Sub-steps are real OperationsPrompt items, but they nest under the
       // parent's `children` rather than appearing as flowchart entries.
       const byId=new Map(allPrompts.map(item=>[item.prompt.id,item]));
@@ -2414,7 +2964,7 @@ export const workspaces = {
         item.childAttentionCount=countIn(item);
       };
       for(const item of prompts) rollUp(item);
-      const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];const defaultsRow=suiteDefaults.get(suite.id) as {defaultProvider:string|null;defaultModel:string|null};suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:allPrompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null,pipeline:{defaults:{suiteId:suite.id,defaultProvider:asProviderId(defaultsRow.defaultProvider),defaultModel:defaultsRow.defaultModel},active:(()=>{const row=activePipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})(),latest:(()=>{const row=latestPipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})()}});}}
+      const sessions=sessionsBySuite.all(suite.id) as OperationsSession[];const defaultsRow=suiteDefaults.get(suite.id) as {defaultProvider:string|null;defaultModel:string|null;defaultFallbackProviders?:string|null};suites.push({id:suite.id,key:suite.externalKey,name:suite.name,programId:program.id,programKey:program.externalKey,programName:program.name,workspaceId:workspace.id,workspaceName:workspace.name,counts,attentionCount:allPrompts.filter(item=>item.attention).length,prompts,sessions,latestVerification:(latestVerification.get(suite.id) as SuiteVerificationBadge|undefined)??null,pipeline:{defaults:{suiteId:suite.id,defaultProvider:asProviderId(defaultsRow.defaultProvider),defaultModel:defaultsRow.defaultModel,defaultFallbackProviders:parseFallbackProvidersJson(defaultsRow.defaultFallbackProviders)},active:(()=>{const row=activePipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})(),latest:(()=>{const row=latestPipeline.get(suite.id) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null;})()}});}}
     return{generatedAt:new Date().toISOString(),suites,policy:settings.pipelinePolicy,statusCatalog:resolvedStatusCatalog(),triggerSentences:resolvedTriggerSentences()};
   },
   /* ---------------------------------------------------------------- */
@@ -2556,7 +3106,7 @@ export const workspaces = {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
     const prompts=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts??[];
     const item=findOperationsPrompt(prompts,promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),audits:this.completionAuditsForPrompt(promptId),directRetry:this.canDirectRetry(promptId),producedWork:this.promptProducedWork(promptId)};
+    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId),audits:this.completionAuditsForPrompt(promptId),producedWork:this.promptProducedWork(promptId)};
   },
   /**
    * The per-second "running" heartbeat is a live-UI signal, not a record: it
@@ -2569,6 +3119,50 @@ export const workspaces = {
   recordAgentEvent(runId:string,event:NormalizedEvent):void {
     if(event.type==="status"&&event.payload.state==="running")return;
     db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp);
+  },
+  /**
+   * Per-run event counts for retention. Only `agent_run_event` is ever swept —
+   * the run row itself is the record and stays.
+   */
+  runEventRetentionStats(): Array<{ runId: string; endedAt: string | null; eventCount: number }> {
+    return db.prepare(`
+      SELECT r.id AS runId, r.ended_at AS endedAt, COUNT(e.id) AS eventCount
+      FROM agent_run r
+      JOIN agent_run_event e ON e.run_id = r.id
+      GROUP BY r.id
+      HAVING eventCount > 0
+    `).all() as Array<{ runId: string; endedAt: string | null; eventCount: number }>;
+  },
+  /** Event ids for a run, oldest first. Retention deletes from the front. */
+  runEventIdsOldestFirst(runId: string): number[] {
+    return (db.prepare("SELECT id FROM agent_run_event WHERE run_id=? ORDER BY id ASC").all(runId) as Array<{ id: number }>)
+      .map((row) => row.id);
+  },
+  /**
+   * Delete by primary key, in small batches the caller sizes. Not wrapped in a
+   * long transaction — a sweep that holds one across tens of thousands of rows
+   * is how a restart mid-prune used to leave the WAL fat and the lock held.
+   */
+  deleteAgentRunEventsByIds(ids: number[]): number {
+    if (ids.length === 0) return 0;
+    const stmt = db.prepare("DELETE FROM agent_run_event WHERE id=?");
+    let deleted = 0;
+    for (const id of ids) deleted += stmt.run(id).changes;
+    return deleted;
+  },
+  /** `PRAGMA incremental_vacuum` when auto_vacuum is incremental; else null. */
+  tryIncrementalVacuum(): { autoVacuum: string; ran: boolean } {
+    const autoVacuum = String(db.pragma("auto_vacuum", { simple: true }));
+    // 0=none, 1=full, 2=incremental — better-sqlite3 may return the number or name.
+    const incremental = autoVacuum === "2" || autoVacuum.toLowerCase() === "incremental";
+    if (incremental) {
+      db.pragma("incremental_vacuum");
+      return { autoVacuum: "incremental", ran: true };
+    }
+    return { autoVacuum: autoVacuum === "1" || autoVacuum.toLowerCase() === "full" ? "full" : "none", ran: false };
+  },
+  databaseByteSize(): number {
+    try { return statSync(databasePath).size; } catch { return 0; }
   },
   clarifications(promptId:number):ClarificationExchange[] { return db.prepare("SELECT id,prompt_id promptId,question,answer,provider,model,state,created_at createdAt,answered_at answeredAt FROM clarification_exchange WHERE prompt_id=? ORDER BY id").all(promptId) as ClarificationExchange[]; },
   beginClarification(promptId:number,questionValue:unknown,provider:string,model:string|null):number { const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:string}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");if(prompt.status!=="BLOCKED")throw new WorkspaceError(409,"prompt_not_blocked","Clarification is only available while a prompt is blocked");const question=requireText(questionValue,"question",10000);return Number(db.prepare("INSERT INTO clarification_exchange(prompt_id,question,provider,model,state,created_at) VALUES(?,?,?,?, 'RUNNING',?)").run(promptId,question,provider,model,new Date().toISOString()).lastInsertRowid); },
@@ -2597,17 +3191,6 @@ export const workspaces = {
     let runId:string;
     try { runId=this.latestExecuteRunId(promptId); } catch { return false; }
     return this.runProducedWork(runId);
-  },
-  canDirectRetry(promptId:number):boolean {
-    let runId:string;
-    try { runId=this.latestExecuteRunId(promptId); } catch { return false; }
-    if(this.runProducedWork(runId))return false;
-    const run=db.prepare("SELECT state FROM agent_run WHERE id=?").get(runId) as {state:string}|undefined;
-    if(run===undefined)return false;
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
-    if(prompt===undefined)return false;
-    const abandoned=prompt.status==="IN_PROGRESS"&&(run.state==="STARTING"||run.state==="RUNNING")&&!activeRuns.has(runId);
-    return abandoned||endedWithoutAgentStatus(prompt.status);
   },
   recoverPrompt(promptId:number,expectedRunId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
@@ -2677,8 +3260,13 @@ export const workspaces = {
 
   suitePipelineDefaults(suiteId:number):SuitePipelineDefaults {
     this.suiteHeader(suiteId);
-    const row=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel FROM suite WHERE id=?").get(suiteId) as {defaultProvider:string|null;defaultModel:string|null};
-    return {suiteId,defaultProvider:asProviderId(row.defaultProvider),defaultModel:row.defaultModel};
+    const row=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM suite WHERE id=?").get(suiteId) as {defaultProvider:string|null;defaultModel:string|null;defaultFallbackProviders?:string|null};
+    return {
+      suiteId,
+      defaultProvider:asProviderId(row.defaultProvider),
+      defaultModel:row.defaultModel,
+      defaultFallbackProviders:parseFallbackProvidersJson(row.defaultFallbackProviders),
+    };
   },
 
   updateSuitePipelineDefaults(suiteId:number,input:Record<string,unknown>):SuitePipelineDefaults {
@@ -2686,7 +3274,11 @@ export const workspaces = {
     const current=this.suitePipelineDefaults(suiteId);
     const defaultProvider="defaultProvider" in input ? optionalProviderField(input.defaultProvider,"defaultProvider") : current.defaultProvider;
     const defaultModel="defaultModel" in input ? optionalModelField(input.defaultModel,"defaultModel") : current.defaultModel;
-    db.prepare("UPDATE suite SET default_provider=?,default_model=?,updated_at=? WHERE id=?").run(defaultProvider,defaultModel,new Date().toISOString(),suiteId);
+    const defaultFallbackProviders="defaultFallbackProviders" in input
+      ? validateFallbackProviders(input.defaultFallbackProviders,defaultProvider,"defaultFallbackProviders")
+      : current.defaultFallbackProviders;
+    db.prepare("UPDATE suite SET default_provider=?,default_model=?,default_fallback_providers=?,updated_at=? WHERE id=?")
+      .run(defaultProvider,defaultModel,JSON.stringify(defaultFallbackProviders),new Date().toISOString(),suiteId);
     return this.suitePipelineDefaults(suiteId);
   },
 
@@ -2734,11 +3326,9 @@ export const workspaces = {
       promptId,
       provider:"provider" in input ? optionalProviderField(input.provider,"provider") : current.provider,
       model:"model" in input ? optionalModelField(input.model,"model") : current.model,
+      fallbackProviders:current.fallbackProviders,
       onDone:current.onDone,
-      onBlocked:current.onBlocked,
-      retryLimit:current.retryLimit,
-      recoverProvider:"recoverProvider" in input ? optionalProviderField(input.recoverProvider,"recoverProvider") : current.recoverProvider,
-      recoverModel:"recoverModel" in input ? optionalModelField(input.recoverModel,"recoverModel") : current.recoverModel,
+      onUnfinished:current.onUnfinished,
       enabled:true,
       stepOrder:current.stepOrder,
     };
@@ -2746,31 +3336,30 @@ export const workspaces = {
       if(!isOnDoneAction(input.onDone)) throw new WorkspaceError(422,"validation_error","onDone must be continue, stop, or skip_rest",{onDone:"Unknown action"});
       next.onDone=input.onDone;
     }
-    if("onBlocked" in input){
-      if(!isOnBlockedAction(input.onBlocked)) throw new WorkspaceError(422,"validation_error","onBlocked must be wait, retry, recover, or skip",{onBlocked:"Unknown action"});
-      next.onBlocked=input.onBlocked;
+    if("onUnfinished" in input){
+      if(!isOnUnfinishedAction(input.onUnfinished)) throw new WorkspaceError(422,"validation_error","onUnfinished must be continue, skip, or wait",{onUnfinished:"Unknown action"});
+      next.onUnfinished=input.onUnfinished;
     }
-    if("retryLimit" in input){
-      const value=input.retryLimit;
-      if(typeof value!=="number"||!Number.isInteger(value)||value<1||value>5) throw new WorkspaceError(422,"validation_error","retryLimit must be an integer between 1 and 5",{retryLimit:"Must be 1-5"});
-      next.retryLimit=value;
+    if("fallbackProviders" in input){
+      next.fallbackProviders=validateFallbackProviders(input.fallbackProviders,next.provider);
     }
     if("stepOrder" in input){
       const value=input.stepOrder;
       if(typeof value!=="number"||!Number.isInteger(value)||value<0) throw new WorkspaceError(422,"validation_error","stepOrder must be a non-negative integer",{stepOrder:"Must be >= 0"});
       next.stepOrder=value;
     }
-    if(next.onBlocked==="recover" && next.recoverProvider===null){
-      throw new WorkspaceError(422,"validation_error","recoverProvider is required when onBlocked is recover",{recoverProvider:"Required"});
-    }
     const now=new Date().toISOString();
-    db.prepare(`INSERT INTO pipeline_step(pipeline_id,prompt_id,provider,model,on_done,on_blocked,retry_limit,recover_provider,recover_model,step_order,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    // Keep legacy on_blocked/retry/recover columns populated so pre-03 readers
+    // and prompt 08's drop still see coherent rows; on_unfinished is authoritative.
+    const legacyBlocked = next.onUnfinished === "wait" || next.onUnfinished === "skip" ? next.onUnfinished : "retry";
+    db.prepare(`INSERT INTO pipeline_step(pipeline_id,prompt_id,provider,model,on_done,on_blocked,on_unfinished,fallback_providers,retry_limit,recover_provider,recover_model,step_order,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(pipeline_id,prompt_id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
+        on_unfinished=excluded.on_unfinished, fallback_providers=excluded.fallback_providers,
         retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model,
         step_order=excluded.step_order, updated_at=excluded.updated_at`)
-      .run(pipelineId,promptId,next.provider,next.model,next.onDone,next.onBlocked,next.retryLimit,next.recoverProvider,next.recoverModel,next.stepOrder,now);
+      .run(pipelineId,promptId,next.provider,next.model,next.onDone,legacyBlocked,next.onUnfinished,JSON.stringify(next.fallbackProviders),1,null,null,next.stepOrder,now);
     return this.pipelineRule(promptId,pipelineId);
   },
 
@@ -2949,11 +3538,9 @@ export const workspaces = {
       promptId,
       provider:"provider" in input ? optionalProviderField(input.provider,"provider") : current.provider,
       model:"model" in input ? optionalModelField(input.model,"model") : current.model,
+      fallbackProviders:current.fallbackProviders,
       onDone:current.onDone,
-      onBlocked:current.onBlocked,
-      retryLimit:current.retryLimit,
-      recoverProvider:"recoverProvider" in input ? optionalProviderField(input.recoverProvider,"recoverProvider") : current.recoverProvider,
-      recoverModel:"recoverModel" in input ? optionalModelField(input.recoverModel,"recoverModel") : current.recoverModel,
+      onUnfinished:current.onUnfinished,
       enabled:current.enabled,
       stepOrder:current.stepOrder,
     };
@@ -2961,14 +3548,12 @@ export const workspaces = {
       if(!isOnDoneAction(input.onDone)) throw new WorkspaceError(422,"validation_error","onDone must be continue, stop, or skip_rest",{onDone:"Unknown action"});
       next.onDone=input.onDone;
     }
-    if("onBlocked" in input){
-      if(!isOnBlockedAction(input.onBlocked)) throw new WorkspaceError(422,"validation_error","onBlocked must be wait, retry, recover, or skip",{onBlocked:"Unknown action"});
-      next.onBlocked=input.onBlocked;
+    if("onUnfinished" in input){
+      if(!isOnUnfinishedAction(input.onUnfinished)) throw new WorkspaceError(422,"validation_error","onUnfinished must be continue, skip, or wait",{onUnfinished:"Unknown action"});
+      next.onUnfinished=input.onUnfinished;
     }
-    if("retryLimit" in input){
-      const value=input.retryLimit;
-      if(typeof value!=="number"||!Number.isInteger(value)||value<1||value>5) throw new WorkspaceError(422,"validation_error","retryLimit must be an integer between 1 and 5",{retryLimit:"Must be 1-5"});
-      next.retryLimit=value;
+    if("fallbackProviders" in input){
+      next.fallbackProviders=validateFallbackProviders(input.fallbackProviders,next.provider);
     }
     if("enabled" in input) next.enabled=input.enabled===true||input.enabled===1;
     if("stepOrder" in input){
@@ -2976,17 +3561,16 @@ export const workspaces = {
       if(typeof value!=="number"||!Number.isInteger(value)||value<0) throw new WorkspaceError(422,"validation_error","stepOrder must be a non-negative integer",{stepOrder:"Must be >= 0"});
       next.stepOrder=value;
     }
-    if(next.onBlocked==="recover" && next.recoverProvider===null){
-      throw new WorkspaceError(422,"validation_error","recoverProvider is required when onBlocked is recover",{recoverProvider:"Required"});
-    }
     const now=new Date().toISOString();
-    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,retry_limit,recover_provider,recover_model,updated_at,enabled,step_order)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    const legacyBlocked = next.onUnfinished === "wait" || next.onUnfinished === "skip" ? next.onUnfinished : "retry";
+    db.prepare(`INSERT INTO prompt_pipeline_rule(prompt_id,provider,model,on_done,on_blocked,on_unfinished,fallback_providers,retry_limit,recover_provider,recover_model,updated_at,enabled,step_order)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(prompt_id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, on_done=excluded.on_done, on_blocked=excluded.on_blocked,
+        on_unfinished=excluded.on_unfinished, fallback_providers=excluded.fallback_providers,
         retry_limit=excluded.retry_limit, recover_provider=excluded.recover_provider, recover_model=excluded.recover_model, updated_at=excluded.updated_at,
         enabled=excluded.enabled, step_order=excluded.step_order`)
-      .run(promptId,next.provider,next.model,next.onDone,next.onBlocked,next.retryLimit,next.recoverProvider,next.recoverModel,now,next.enabled?1:0,next.stepOrder);
+      .run(promptId,next.provider,next.model,next.onDone,legacyBlocked,next.onUnfinished,JSON.stringify(next.fallbackProviders),1,null,null,now,next.enabled?1:0,next.stepOrder);
     return this.pipelineRule(promptId);
   },
 
@@ -3195,7 +3779,7 @@ export const workspaces = {
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
     if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    writeStatus({promptId,to:"NEEDS_REVIEW",trigger:"review_unverifiable",ruleId:"reviewer-mark-review",actor:"SYSTEM",reason});
+    writeStatus({promptId,to:"NEEDS_REVIEW",trigger:"review_not_complete",ruleId:"review-not-complete",actor:"SYSTEM",reason});
   })()); },
 
   resetPromptToTodo(promptId:number,reason:string):void {
@@ -3217,6 +3801,58 @@ export const workspaces = {
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'SYSTEM',?)")
         .run(promptId,"Pipeline is retrying / recovering this station. Inspect the working tree and prior evidence; do not repeat resolved work.",now);
     })());
+  },
+
+  /**
+   * Put a station the restart caught mid-run back on the queue.
+   *
+   * Deliberately not `resetPromptToTodo`: that one is the operator pressing
+   * Retry, and says so in the ledger and in a remark addressed to the next
+   * agent. This is the rail picking itself up, so it records `restart_resume`
+   * and claims nothing about the work — the tree is untouched and no outcome is
+   * inferred, exactly as when the run was interrupted.
+   *
+   * Returns false when the station is not one of the two shapes a restart
+   * leaves behind, so the caller can resume the pipeline without re-queueing.
+   */
+  requeueStationAfterRestart(promptId:number):boolean {
+    return sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)return false;
+      if(prompt.status!=="UNREPORTED"&&prompt.status!=="IN_PROGRESS")return false;
+      if(prompt.status==="IN_PROGRESS"){
+        // Still genuinely running — a run that outlived the restart, or one
+        // this boot already started. Re-queueing under it would hand the same
+        // station to a second agent in the same tree.
+        const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' AND state IN ('STARTING','RUNNING') ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;
+        if(run&&activeRuns.has(run.id))return false;
+      }
+      const reason="The server restarted mid-run, so this station was re-queued on the same working tree. Nothing was concluded about the work itself.";
+      writeStatus({promptId,to:"TODO",trigger:"restart_resume",actor:"SYSTEM",reason,result:"",evidence:{cause:"server_restart"}});
+      return true;
+    })());
+  },
+
+  /**
+   * The pipeline runs an auto-resume should pick back up.
+   *
+   * `ended_at` bounds it: a machine that has been off for a week should not
+   * wake up and relaunch agents against a tree whose state nobody remembers.
+   * The "no newer run" clause is what keeps a resume from resurrecting an
+   * archived run the operator has already moved past — only the most recent run
+   * of a suite or a named pipeline is ever adopted.
+   */
+  interruptedRunsToResume(withinHours:number):{suiteRuns:SuitePipelineRun[];namedRuns:PipelineRun[]} {
+    const cutoff=new Date(Date.now()-withinHours*3600_000).toISOString();
+    const suiteRows=db.prepare(`SELECT * FROM suite_pipeline_run r
+      WHERE r.state='INTERRUPTED' AND r.stop_reason='server_restart' AND r.ended_at>=?
+        AND NOT EXISTS(SELECT 1 FROM suite_pipeline_run newer WHERE newer.suite_id=r.suite_id AND newer.started_at>r.started_at)
+      ORDER BY r.started_at`).all(cutoff) as PipelineRunRow[];
+    const namedRows=db.prepare(`SELECT * FROM pipeline_run r
+      WHERE r.state='INTERRUPTED' AND r.stop_reason='server_restart' AND r.ended_at>=?
+        AND NOT EXISTS(SELECT 1 FROM pipeline_run newer WHERE newer.pipeline_id=r.pipeline_id AND newer.started_at>r.started_at)
+      ORDER BY r.started_at`).all(cutoff) as NamedPipelineRunRow[];
+    return {suiteRuns:suiteRows.map(pipelineRunDto),namedRuns:namedRows.map(namedPipelineRunDto)};
   },
 
   /** Boot-time reconciliation. See `recoverAbandonedRuns` for who may call it. */
@@ -3467,23 +4103,6 @@ export const workspaces = {
    * question, and reviewing past it would be a machine overruling a request for
    * a human decision.
    */
-  /**
-   * Which situation a reviewer would be sent into for this work item, or null
-   * when none applies.
-   *
-   * The status alone is not enough: NEEDS_REVIEW is where an unmet definition
-   * of done, a reviewer that could not tell either way, and a sub-step in
-   * trouble all land, and they are three different questions. The cause was
-   * recorded on the ledger row at the time precisely so it would not have to be
-   * guessed at afterwards, so this reads it.
-   */
-  reviewSituation(promptId:number):ReviewTrigger|null {
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
-    if(!prompt)return null;
-    const latest=db.prepare("SELECT trigger_id FROM prompt_status_event WHERE prompt_id=? ORDER BY created_at DESC, id DESC LIMIT 1").get(promptId) as {trigger_id:string|null}|undefined;
-    const trigger=isStatusTrigger(latest?.trigger_id)?latest.trigger_id:null;
-    return reviewTriggerFor(prompt.status,trigger);
-  },
   endedWithoutAgentStatus(promptId:number):boolean {
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)return false;
@@ -3506,7 +4125,7 @@ export const workspaces = {
    * the operator wrote is the best available answer.
    */
   completionAuditDossier(workspaceId:number,promptId:number,sourceRunId:string):string {
-    const content=this.agentContext(workspaceId,promptId).prompt.content;
+    const content=this.agentContext(workspaceId,promptId,{full:true}).prompt.content;
     const evaluation=evaluateDefinitionOfDone(promptId);
     return JSON.stringify({
       definitionOfDone:{
@@ -3522,8 +4141,10 @@ export const workspaces = {
     },null,2);
   },
   handoffDossier(workspaceId:number,promptId:number,sourceRunId:string):string {
-    const context=this.agentContext(workspaceId,promptId);
-    const source=(this.promptHistory(promptId,CONTEXT_REMARK_LIMIT).runs as Array<Record<string,unknown>>).find(run=>run.id===sourceRunId);
+    // Audit/handoff need the uncapped remark set; the execute diet would hide
+    // AGENT_RESPONSE text the reviewer is meant to read.
+    const context=this.agentContext(workspaceId,promptId,{full:true});
+    const source=(this.promptHistory(promptId).runs as Array<Record<string,unknown>>).find(run=>run.id===sourceRunId);
     if(!source)throw new WorkspaceError(404,"not_found","Source run not found");
     const events=(db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id").all(sourceRunId) as Array<{event_json:string}>).map(row=>JSON.parse(row.event_json) as NormalizedEvent);
     const candidates=events.filter(event=>event.type!=="status"&&event.type!=="assistant_text"||event.type==="assistant_text"&&event.payload.kind==="message").slice(-120).map(handoffEvent);
@@ -3537,63 +4158,6 @@ export const workspaces = {
     for(let index=candidates.length-1;index>=0;index--){const event=candidates[index]!;const bytes=Buffer.byteLength(JSON.stringify(event));if(eventBytes+bytes>HANDOFF_EVENT_BUDGET_BYTES)break;compact.unshift(event);eventBytes+=bytes;}
     return JSON.stringify({context,sourceRun:source,sourceEvents:compact},null,2);
   },
-  preparePromptForSuccessor(promptId:number,handoffId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
-    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    writeStatus({promptId,to:"TODO",trigger:"review_incomplete",ruleId:"review-incomplete-with-work",actor:"SYSTEM",reason:"A handoff prepared a continuation brief, so a successor can pick this up without redoing the work.",result:"",evidence:{handoffId},remark:{kind:"PROGRESS",content:`${briefMarkdown}\n\nHandoff: ${handoffId}`}});
-  })()); },
-  /**
-   * File the reviewer's continuation brief on the work item and put it back to
-   * TODO so a developer run can pick it up.
-   *
-   * The handoff equivalent writes a summary of what happened; this writes what
-   * to do. That difference is the point of the whole path: the remark becomes
-   * the next run's brief, so the reviewer's `remainingWork` reaches the agent
-   * that has to act on it instead of a human who has to relay it.
-   */
-  preparePromptForRemediation(promptId:number,auditId:string,briefMarkdown:string):void { sqliteGuard(()=>db.transaction(()=>{
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
-    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    writeStatus({promptId,to:"TODO",trigger:"review_incomplete",ruleId:REMEDIATION_RULE_ID,actor:"SYSTEM",reason:"A reviewer found specific work still missing and scoped a run to finish it.",result:"",evidence:{auditId},remark:{kind:"PROGRESS",content:`${briefMarkdown}\n\nCompletion audit: ${auditId}`}});
-  })()); },
-
-  /**
-   * How many remediation runs this work item has already been given.
-   *
-   * Counted from the status ledger rather than a column, so it survives the
-   * resets that remediation itself performs — a counter on the run or on the
-   * pipeline row would be cleared by the very transition it is meant to bound.
-   */
-  remediationCount(promptId:number):number {
-    const row=db.prepare("SELECT COUNT(*) n FROM prompt_status_event WHERE prompt_id=? AND rule_id=?").get(promptId,REMEDIATION_RULE_ID) as {n:number};
-    return row.n;
-  },
-
-  recordReviewerReconfigure(input:{promptId:number;auditId:string|null;kind:ReconfigureKind;multiplier:number|null;provider:string|null;why:string;applied:boolean;refusedReason:string|null}):void {
-    sqliteGuard(()=>{db.prepare("INSERT INTO reviewer_reconfigure(prompt_id,audit_id,kind,multiplier,provider,why,applied,refused_reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
-      .run(input.promptId,input.auditId,input.kind,input.multiplier,input.provider,input.why.slice(0,1000),input.applied?1:0,input.refusedReason,new Date().toISOString());});
-  },
-
-  reviewerReconfiguresForPrompt(promptId:number):Array<{id:number;kind:ReconfigureKind;multiplier:number|null;provider:string|null;why:string;applied:boolean;refusedReason:string|null;createdAt:string}> {
-    return (db.prepare("SELECT id,kind,multiplier,provider,why,applied,refused_reason refusedReason,created_at createdAt FROM reviewer_reconfigure WHERE prompt_id=? ORDER BY id").all(promptId) as Array<Record<string,unknown>>)
-      .map(row=>({id:row.id as number,kind:row.kind as ReconfigureKind,multiplier:row.multiplier as number|null,provider:row.provider as string|null,why:String(row.why??""),applied:row.applied===1,refusedReason:row.refusedReason as string|null,createdAt:String(row.createdAt)}));
-  },
-
-  /**
-   * The run-budget multiple in force for this work item, from applied
-   * `raiseBudget` rows. 1 when a reviewer has never raised it, which is every
-   * item until one does.
-   */
-  promptBudgetMultiplier(promptId:number):number {
-    const row=db.prepare("SELECT MAX(multiplier) m FROM reviewer_reconfigure WHERE prompt_id=? AND kind='raiseBudget' AND applied=1").get(promptId) as {m:number|null};
-    return row.m===null||!Number.isFinite(row.m)||row.m<1?1:row.m;
-  },
-
-  preparePromptForHandoffRetry(promptId:number,handoffId:string):void { sqliteGuard(()=>db.transaction(()=>{
-    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
-    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-    writeStatus({promptId,to:"TODO",trigger:"operator_retry",actor:"SYSTEM",reason:`Retrying a successor from the brief handoff ${handoffId} already produced.`,result:"",evidence:{handoffId}});
-  })()); },
   suitePipelineForRun(runId:string):SuitePipelineRun|null { const row=db.prepare("SELECT * FROM suite_pipeline_run WHERE current_run_id=? ORDER BY started_at DESC LIMIT 1").get(runId) as PipelineRunRow|undefined;return row?pipelineRunDto(row):null; },
   close(): void { db.close(); },
 };

@@ -20,6 +20,9 @@ import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentCon
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { pipelineScheduler } from "./pipelineScheduler.ts";
+import { scheduleRetentionSweep } from "./retention.ts";
+import { settings } from "./settings.ts";
 
 const log = createLogger("server");
 
@@ -153,14 +156,15 @@ const httpServer = createServer((req, res) => {
           return;
         }
         if(memory.promptId===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
-        const context=workspaces.agentContext(memory.workspaceId,memory.promptId);
+        const full=url.searchParams.get("full")==="1";
+        const context=workspaces.agentContext(memory.workspaceId,memory.promptId,{full});
         const depth=workspaces.decomposeDepth(memory.promptId);
         const budget=runHub.get(runId)?.handle.budget()??null;
-        if(req.headers.accept?.includes("application/json"))sendJson(res,200,{...context,budget});
+        if(req.headers.accept?.includes("application/json"))sendJson(res,200,{...context,budget,full});
         else{
           const api=progressApiMarkdown({runId,token,port:config.port,canDecompose:depth<DECOMPOSE_MAX_DEPTH});
           res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
-          res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH})}\n\n${api}${budgetMarkdown(budget)}`);
+          res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH,full})}\n\n${api}${budgetMarkdown(budget)}`);
         }
         recordDbAccess(runId,describeRead({operation:"context",summary:`read work item ${context.prompt.externalKey??context.prompt.title}`,durationMs:Date.now()-startedAt}));
         return;
@@ -181,8 +185,27 @@ const httpServer = createServer((req, res) => {
           // database read, so the evidence has to exist before it looks. Awaited
           // here rather than inside the write because a test suite must not be
           // run with a SQLite transaction held open.
+          // A CONTINUE post is not a claim of completion, so the definition of
+          // done has nothing to check: running a test suite for a run that just
+          // said "here is what still remains" would charge the item for the
+          // evidence it is explicitly not offering.
           if(operation==="status"&&(body as Record<string,unknown>).status==="DONE"&&memory.promptId!==null){
             await runDefinitionOfDoneCommands(memory.promptId,runId);
+            // Under `block`, a failing criterion is not a status change — it is
+            // a refusal the agent can still act on. Writing NEEDS_REVIEW here
+            // would end the run and park the rail; handing the compiler output
+            // back while the provider session is live is the cheaper fix.
+            const failures=workspaces.agentDoneVerificationFailures(memory.promptId);
+            if(failures!==null){
+              workspaces.recordVerificationFailureRemark(memory.promptId,runId,failures);
+              const message="Fix this and post `done` again. If it cannot be fixed in this run, post `continue` with what remains.";
+              sendJson(res,409,{error:{code:"verification_failed",message,failures}});
+              recordDbAccess(runId,describeRejectedWrite({
+                operation:"status",httpStatus:409,errorCode:"verification_failed",
+                message,requestId,durationMs:Date.now()-startedAt,
+              }));
+              return;
+            }
           }
           const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):operation==="status"?workspaces.updateAgentStatus(runId,body):workspaces.decomposePrompt(runId,body);
           // The agent cannot see the runner's counters. Riding the reply it is
@@ -201,15 +224,17 @@ const httpServer = createServer((req, res) => {
             durationMs:Date.now()-startedAt,
           }));
           runHub.operationsChanged();
-          // A terminal status or a decompose is the agent's authoritative
-          // signal that this run is done with the work item. End the provider
-          // after the HTTP response is flushed so a CLI that waits after its
-          // final tool call cannot leave DONE shown as WORKING.
+          // A status post or a decompose is the agent's authoritative signal
+          // that this run is done with the work item — DONE and BLOCKED because
+          // the item is settled, CONTINUE because the agent has handed over to
+          // the run that resumes it. End the provider after the HTTP response is
+          // flushed so a CLI that waits after its final tool call cannot leave
+          // DONE shown as WORKING.
           if(operation==="status"||operation==="decompose")void runHub.complete(runId);
         }).catch(error=>{
           const status=error instanceof WorkspaceError?error.status:400;
           const code=error instanceof WorkspaceError?error.code:"invalid_request";
-          sendJson(res,status,{error:{code,message:error instanceof Error?error.message:String(error)}});
+          sendJson(res,status,{error:{code,message:error instanceof Error?error.message:String(error),...(error instanceof WorkspaceError&&error.fields?{fields:error.fields}:{}),...(error instanceof WorkspaceError&&error.details?error.details:{})}});
           // A refusal is the most important line in this log. Without it, an
           // agent whose status post was rejected — a stale expectedStatus, a
           // missing verification summary — looks exactly like one that never
@@ -226,7 +251,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/statuses" || url.pathname === "/api/reviewers" || url.pathname.startsWith("/api/reviewers/") || url.pathname === "/api/triggers" || url.pathname.startsWith("/api/statuses/") || url.pathname.startsWith("/api/triggers/") || url.pathname.startsWith("/api/definition-of-done/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/statuses" || url.pathname === "/api/triggers" || url.pathname.startsWith("/api/statuses/") || url.pathname.startsWith("/api/triggers/") || url.pathname.startsWith("/api/definition-of-done/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }
@@ -239,7 +264,15 @@ const httpServer = createServer((req, res) => {
   if (url.pathname === "/api/providers") {
     const force = url.searchParams.get("refresh") === "1";
     detectProviders(force)
-      .then((providers) => sendJson(res, 200, { providers }))
+      .then(async (providers) => {
+        const { coolingFor } = await import("./providerHealth.ts");
+        sendJson(res, 200, {
+          providers: providers.map((provider) => ({
+            ...provider,
+            cooling: coolingFor(provider.id),
+          })),
+        });
+      })
       .catch((error: unknown) => {
         log.error("provider detection failed", error);
         sendJson(res, 500, { error: "provider detection failed" });
@@ -556,9 +589,12 @@ httpServer.listen(config.port, config.host, () => {
   } catch (error) {
     if (error instanceof InstanceLockedError) {
       log.error(
-        `another console (pid ${error.heldByPid}) is already using ${workspaces.databasePath} — ` +
-          `two servers on one database corrupt each other's runs. Stop it, or point ` +
-          `AGENT_CONSOLE_DB at a different file.`,
+        error.holder?.mode === "serve"
+          ? `a live console (pid ${error.heldByPid}) is running against ${workspaces.databasePath} — ` +
+              `develop with \`npm run dev:sandbox\`, which copies the database and uses another port.`
+          : `another console (pid ${error.heldByPid}) is already using ${workspaces.databasePath} — ` +
+              `two servers on one database corrupt each other's runs. Stop it, or point ` +
+              `AGENT_CONSOLE_DB at a different file.`,
       );
       process.exit(1);
     }
@@ -583,6 +619,9 @@ httpServer.listen(config.port, config.host, () => {
   log.info(`http  http://${config.host}:${config.port}`);
   log.info(`ws    ws://${config.host}:${config.port}/ws`);
   log.info(`workspaces ${workspaces.list().length}`);
+  // Transcript events accumulate forever without this. First pass is delayed
+  // so boot (and auto-resume) are not competing with a multi-second DELETE.
+  scheduleRetentionSweep();
   void detectProviders(true).then((providers) => {
     for (const provider of providers) {
       const status = provider.available
@@ -590,8 +629,37 @@ httpServer.listen(config.port, config.host, () => {
         : `unavailable — ${provider.reason ?? "unknown"}`;
       log.info(`provider ${provider.id.padEnd(7)} ${status}`);
     }
+    scheduleAutoResume();
+  }, (error: unknown) => {
+    // Detection failing is not a reason to leave a pipeline stranded; the
+    // adapters report their own unavailability when a run actually starts.
+    log.warn("provider detection failed at boot", error);
+    scheduleAutoResume();
   });
 });
+
+/**
+ * The delay is not a guess about how long anything takes; it is a courtesy.
+ * `recoverAbandonedRuns` has already run, so the state is consistent from the
+ * first millisecond. The wait lets provider detection settle and a browser tab
+ * reconnect, so the operator sees the resume happen rather than finding a run
+ * already in progress with no visible cause.
+ */
+const AUTO_RESUME_DELAY_MS = 10_000;
+
+let autoResumeScheduled = false;
+
+function scheduleAutoResume(): void {
+  if (autoResumeScheduled) return;
+  autoResumeScheduled = true;
+  if (settings.pipelinePolicy.onRestart !== "autoResume") return;
+  setTimeout(() => {
+    if (shuttingDown) return;
+    void pipelineScheduler.resumeInterrupted().catch((error: unknown) => {
+      log.error("auto-resume failed", error);
+    });
+  }, AUTO_RESUME_DELAY_MS).unref();
+}
 
 /**
  * Long enough for every provider to take its interrupt (the runner allows a run

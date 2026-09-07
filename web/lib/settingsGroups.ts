@@ -19,7 +19,9 @@ export const GROUP_TITLE: Record<string, string> = { General: "Runtime" };
 export const GROUP_BLURB: Record<string, string> = {
   General: "Shared with every provider. Host access is required for docker compose and other host sockets.",
   "Run budgets":
-    "Ceilings a single run cannot exceed. A decomposed sub-step gets a slice of its parent's allowance rather than a fresh one.",
+    "Ceilings a single run cannot exceed. Reaching one earns a wrap-up turn and a continuation, not a lost run.",
   "Pipeline policy":
-    "House rules for the pipeline: what Pause and Stop do to a running agent, when resuming offers a handoff, and the rule a station starts with before you configure it.",
+    "House rules for the pipeline: what Pause and Stop do to a running agent, how many times a station may continue on its own, and the rule a station starts with before you configure it.",
+  Retention:
+    "How long transcript events stick around. Only the event log is swept; runs, remarks and status history stay.",
 };

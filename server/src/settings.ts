@@ -2,18 +2,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_PIPELINE_POLICY,
-  isAuditOnBlockedMode,
   isDodEnforcement,
-  isHandoffTrigger,
-  isOnBlockedAction,
   isOnDoneAction,
-  isReconfigureKind,
+  isOnUnfinishedAction,
+  isProviderId,
+  isRestartPolicy,
   type PipelinePolicy,
-  type HandoffRequirement,
   type PauseMode,
+  type ProviderId,
 } from "@agent-console/shared";
 import type {
-  ProviderId,
   SettingField,
   SettingOption,
   SettingType,
@@ -54,7 +52,7 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Run budgets", "Pipeline policy", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
+export const GROUPS = ["General", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
 
 const FIELDS: FieldDef[] = [
   {
@@ -73,9 +71,9 @@ const FIELDS: FieldDef[] = [
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_MAX_TOOL_CALLS",
-    fallback: 250,
+    fallback: 1000,
     description:
-      "Stops a run that keeps working past the point of usefulness. Sub-steps get a smaller share automatically. 0 disables.",
+      "A safety ceiling, not a working limit. When it is reached the run gets a wrap-up turn to record its progress, then continues in a fresh run. 0 disables.",
   },
   {
     key: "budget.maxWallClockMinutes",
@@ -83,8 +81,8 @@ const FIELDS: FieldDef[] = [
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_MAX_WALL_CLOCK_MINUTES",
-    fallback: 45,
-    description: "Hard time limit for one run. Sub-steps get a smaller share automatically. 0 disables.",
+    fallback: 90,
+    description: "Hard time limit for one run. Reaching it earns a wrap-up turn, not a lost run. 0 disables.",
   },
   {
     key: "budget.maxInputTokens",
@@ -102,8 +100,8 @@ const FIELDS: FieldDef[] = [
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_MAX_TOOL_OUTPUT_BYTES",
-    fallback: 1048576,
-    description: "Cumulative size of every tool result in one run. 0 disables.",
+    fallback: 8388608,
+    description: "Cumulative size of every tool result in one run. A ceiling on context flooding, not a working limit. 0 disables.",
   },
   {
     key: "budget.noProgressToolCalls",
@@ -114,16 +112,6 @@ const FIELDS: FieldDef[] = [
     fallback: 25,
     description:
       "Stops a run repeating the same tool call with the same input this many times in a row — the signature of a thrash loop. 0 disables.",
-  },
-  {
-    key: "budget.subStepFraction",
-    label: "Sub-step budget share (%)",
-    group: "Run budgets",
-    type: "number",
-    envVar: "BUDGET_SUB_STEP_FRACTION",
-    fallback: 50,
-    description:
-      "Share of each budget a decomposed sub-step receives. A sub-step is a slice of its parent, so it should not be allowed to spend a whole station's allowance.",
   },
   {
     key: "pipeline.pauseMode",
@@ -157,70 +145,60 @@ const FIELDS: FieldDef[] = [
     group: "Pipeline policy",
     type: "select",
     envVar: "PIPELINE_ON_RESTART",
-    fallback: "newRun",
+    fallback: "autoResume",
     description:
-      "A run holding a station when the server restarts is marked interrupted. This decides what the "
-      + "pipeline offers when you come back. Neither option relaunches anything on its own — nothing "
-      + "starts until you press the button.",
+      "A run holding a station when the server restarts is marked interrupted. This decides what happens "
+      + "next. Only the first option relaunches anything by itself; under the other two nothing starts "
+      + "until you press the button.",
     options: [
+      option(
+        "autoResume",
+        "Resume it automatically",
+        "Resume every interrupted pipeline by itself a few seconds after boot. The station whose agent "
+          + "died is re-run on the same working tree; nothing is marked done or failed.",
+      ),
       option("newRun", "Offer a fresh run", "Starts again from the first unfinished station"),
       option("resumeSameRun", "Offer to continue the same run", "Picks the interrupted run back up where it stopped"),
     ],
   },
   {
-    key: "pipeline.handoffRequirement",
-    label: "When to require a handoff",
+    key: "pipeline.maxContinuations",
+    label: "Max continuations per station",
     group: "Pipeline policy",
-    type: "select",
-    envVar: "PIPELINE_HANDOFF_REQUIREMENT",
-    fallback: "whenWorkProduced",
+    type: "number",
+    envVar: "PIPELINE_MAX_CONTINUATIONS",
+    fallback: 4,
     description:
-      "A handoff runs a read-only agent that summarises what the previous run finished and what it left, "
-      + "so the next agent does not redo the work. This decides when resuming offers to prepare one.",
-    options: [
-      option("whenWorkProduced", "When the previous run produced work", "Checks for tool calls; skips the offer for a station that only failed to start"),
-      option("always", "Before every resume", "Offers a handoff whenever the station is unfinished"),
-      option("never", "Never offer one", "Resume restarts the station directly, and prior work may be redone", true),
-    ],
-    isDangerous: (value) => value === "never",
+      "How many times one station is re-run on its own before a reviewer is sent and the rail parks. "
+      + "An operator Resume grants a fresh allowance.",
   },
   {
-    key: "pipeline.handoffTrigger",
-    label: "When a handoff is prepared without you",
+    key: "pipeline.reviewAfterContinuations",
+    label: "Review after continuations run out",
     group: "Pipeline policy",
-    type: "select",
-    envVar: "PIPELINE_HANDOFF_TRIGGER",
-    fallback: "reviewerIncomplete",
+    type: "boolean",
+    envVar: "PIPELINE_REVIEW_AFTER_CONTINUATIONS",
+    fallback: true,
     description:
-      "A handoff exists so a successor does not redo work a previous run already did. That is worth an "
-      + "agent run when the work is unfinished and something was produced — and never when an agent "
-      + "deliberately stopped to ask you a question, which is not unfinished work but a question. "
-      + "This is the one setting here that can start an agent without you pressing anything.",
-    options: [
-      option("reviewerIncomplete", "Only when a reviewer says the work is genuinely unfinished", "The narrowest trigger, and the default"),
-      option("anyUnfinished", "Whenever a run ends unfinished having produced something", "Prepares more briefs, some of which will not be needed", true),
-      option("manualOnly", "Never — only when you press the button", "Resuming may redo work a previous run already did", true),
-    ],
-    isDangerous: (value) => value === "anyUnfinished" || value === "manualOnly",
+      "When a station uses up its continuations, send one read-only completion audit before parking. "
+      + "Off parks as continuations_exhausted immediately.",
   },
   {
-    key: "pipeline.auditOnBlocked",
-    label: "Audit a station that blocked without posting a status",
+    key: "pipeline.defaultOnUnfinished",
+    label: "Default rule when a station does not finish",
     group: "Pipeline policy",
     type: "select",
-    envVar: "PIPELINE_AUDIT_ON_BLOCKED",
-    fallback: "autocomplete",
+    envVar: "PIPELINE_DEFAULT_ON_UNFINISHED",
+    fallback: "continue",
     description:
-      "Some agents finish the work and then never post DONE, and the station blocks with 'Agent process "
-      + "ended ... without posting the required DONE or BLOCKED status'. This sends a different, read-only "
-      + "agent to check the working tree against the item's acceptance criteria before anything else "
-      + "happens. It never runs for a station that blocked with a real question for you.",
+      "The 'on unfinished' rule a station starts with, before anyone configures it on the flowchart. "
+      + "Existing stations keep whatever they were given.",
     options: [
-      option("autocomplete", "Audit, and close the station if the work is really done", "Keeps an unattended pipeline moving; a COMPLETE verdict marks the station DONE with the auditor's evidence", true),
-      option("report", "Audit and record the verdict, but still wait for me", "You get the answer when you come back; nothing is completed automatically"),
-      option("off", "Do not audit", "The station parks or follows its rule exactly as before"),
+      option("continue", "Continue the station", "Re-run it up to the continuation limit, then review or park"),
+      option("wait", "Wait for a human", "The run parks immediately"),
+      option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
     ],
-    isDangerous: (value) => value === "autocomplete",
+    isDangerous: (value) => value === "skip",
   },
   {
     key: "pipeline.dodEnforcement",
@@ -243,71 +221,6 @@ const FIELDS: FieldDef[] = [
     isDangerous: (value) => value !== "block",
   },
   {
-    key: "pipeline.maxHandoffGenerations",
-    label: "Max handoff generations per station",
-    group: "Pipeline policy",
-    type: "number",
-    envVar: "PIPELINE_MAX_HANDOFF_GENERATIONS",
-    fallback: 3,
-    description:
-      "How many times one station may be handed off before the pipeline refuses another. Guards against a "
-      + "station that hands off to itself forever without progressing.",
-  },
-  {
-    key: "pipeline.maxRemediationAttempts",
-    label: "Max reviewer remediation runs per work item",
-    group: "Pipeline policy",
-    type: "number",
-    envVar: "PIPELINE_MAX_REMEDIATION_ATTEMPTS",
-    fallback: 2,
-    description:
-      "How many times a reviewer may start a developer run to finish the work it found missing, for one work "
-      + "item. A remediation run can itself end unfinished and be reviewed again, so this is what stops that "
-      + "being a loop. 0 disables remediation entirely.",
-  },
-  {
-    key: "pipeline.reviewerReconfigure",
-    label: "Pipeline changes a reviewer may make",
-    group: "Pipeline policy",
-    type: "string",
-    envVar: "PIPELINE_REVIEWER_RECONFIGURE",
-    fallback: "raiseBudget,decompose,switchProvider",
-    description:
-      "Comma-separated allowlist of changes a reviewer may apply by itself before remediating: raiseBudget, "
-      + "decompose, switchProvider. Empty means it may finish work but never reconfigure anything. Every "
-      + "applied change is recorded on the work item.",
-    isDangerous: (value) => String(value).trim() !== "",
-  },
-  {
-    key: "pipeline.maxReviewerBudgetMultiplier",
-    label: "Max budget multiple a reviewer may grant",
-    group: "Pipeline policy",
-    type: "number",
-    envVar: "PIPELINE_MAX_REVIEWER_BUDGET_MULTIPLIER",
-    fallback: 4,
-    description:
-      "Ceiling on raiseBudget: the largest multiple of a work item's normal run budget a reviewer may give it. "
-      + "1 disables budget raises while leaving the rest of the allowlist alone.",
-  },
-  {
-    key: "pipeline.defaultOnBlocked",
-    label: "Default rule when a station blocks",
-    group: "Pipeline policy",
-    type: "select",
-    envVar: "PIPELINE_DEFAULT_ON_BLOCKED",
-    fallback: "wait",
-    description:
-      "The 'on blocked' rule a station starts with, before anyone configures it on the flowchart. "
-      + "Existing stations keep whatever they were given.",
-    options: [
-      option("wait", "Wait for a human", "The run parks and asks you"),
-      option("retry", "Retry the station", "Restarts it up to its retry limit, then parks"),
-      option("recover", "Hand to the recovery agent", "One attempt with the station's recover agent"),
-      option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
-    ],
-    isDangerous: (value) => value === "skip",
-  },
-  {
     key: "pipeline.defaultOnDone",
     label: "Default rule when a station finishes",
     group: "Pipeline policy",
@@ -322,6 +235,19 @@ const FIELDS: FieldDef[] = [
       option("skip_rest", "Skip the rest of the stage", "Marks every later station SKIPPED", true),
     ],
     isDangerous: (value) => value === "skip_rest",
+  },
+  {
+    key: "pipeline.fallbackProviders",
+    label: "Default provider fallbacks",
+    group: "Pipeline policy",
+    type: "string",
+    envVar: "PIPELINE_FALLBACK_PROVIDERS",
+    fallback: "codex,claude,cursor",
+    placeholder: "codex,claude,cursor",
+    description:
+      "Ordered comma-separated providers to try when a station's own agent cannot start or dies "
+      + "before doing any work (capacity, quota, auth, network). A station or suite can override "
+      + "this list. The failing provider is marked cooling and skipped until it recovers.",
   },
 
   {
@@ -344,6 +270,37 @@ const FIELDS: FieldDef[] = [
     description:
       "Lets every provider reach Docker and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, Grok's OS sandbox is turned off, and Copilot runs yolo. Needed for docker compose, local stacks, and /var/run/docker.sock. The per-provider sandbox settings below are ignored while this is on.",
     isDangerous: (value) => value === true,
+  },
+
+  {
+    key: "retention.eventsPerRun",
+    label: "Events kept per run",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENTS_PER_RUN",
+    fallback: 4000,
+    description:
+      "Ceiling on how many transcript events one run may keep. Older events are deleted first; the most recent ones stay so a station's \"what happened\" remains readable. Applies to runs that have not aged out.",
+  },
+  {
+    key: "retention.eventAgeDays",
+    label: "Event age before thin keep (days)",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENT_AGE_DAYS",
+    fallback: 30,
+    description:
+      "After a run has been ended this many days, only the last \"final events\" count is kept. Live and recent runs still use the per-run ceiling. 0 disables age thinning.",
+  },
+  {
+    key: "retention.keepFinalEvents",
+    label: "Final events always kept",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_KEEP_FINAL_EVENTS",
+    fallback: 200,
+    description:
+      "The last N events of every run are always kept, even after age thinning, so the end of a station's transcript stays readable.",
   },
 
   {
@@ -941,12 +898,17 @@ export const settings = {
     return count("statusIntervalMs") || 1000;
   },
   /**
-   * Run budgets, already scaled for the work item's depth. A decomposed
-   * sub-step is a slice of its parent's work, so it gets a slice of the
-   * allowance rather than a fresh full one — otherwise decomposing a station
-   * into eight children multiplies the ceiling by eight.
+   * Run budgets. One allowance, whatever the work item's depth.
+   *
+   * These used to be halved for a decomposed sub-step, on the theory that a
+   * slice of the parent's work deserves a slice of its allowance. In practice
+   * it is what killed 23 execute runs: a sub-step got 125 tool calls, Cursor
+   * spends about 30 a minute, and a run died three minutes in while it was
+   * still reading. A sub-step *is* the unit of work — the ceilings below are
+   * safety ceilings, and a run that reaches one now gets a wrap-up turn and a
+   * continuation rather than a silent kill.
    */
-  budgetFor(depth: number): {
+  budgetFor(): {
     maxToolCalls: number | null;
     maxWallClockMs: number | null;
     maxInputTokens: number | null;
@@ -954,69 +916,50 @@ export const settings = {
     noProgressToolCalls: number | null;
     maxToolResultBytes: number;
   } {
-    const share = depth > 0 ? Math.min(100, Math.max(1, count("budget.subStepFraction") || 50)) / 100 : 1;
-    const scaled = (key: string, fallback: number): number | null => {
+    const limit = (key: string, fallback: number): number | null => {
       const base = count(key) || fallback;
-      if (base <= 0) return null;
-      return Math.max(1, Math.round(base * share));
+      return base <= 0 ? null : base;
     };
     return {
-      maxToolCalls: scaled("budget.maxToolCalls", 250),
+      maxToolCalls: limit("budget.maxToolCalls", 1000),
       maxWallClockMs: (() => {
-        const minutes = scaled("budget.maxWallClockMinutes", 45);
+        const minutes = limit("budget.maxWallClockMinutes", 90);
         return minutes === null ? null : minutes * 60_000;
       })(),
-      maxInputTokens: scaled("budget.maxInputTokens", 8_000_000),
-      maxToolOutputBytes: scaled("budget.maxToolOutputBytes", 1_048_576),
-      // Not scaled: a thrash loop is a thrash loop at any depth.
+      // The money. Unchanged, and the one budget a wrap-up turn does not get.
+      maxInputTokens: limit("budget.maxInputTokens", 8_000_000),
+      maxToolOutputBytes: limit("budget.maxToolOutputBytes", 8_388_608),
+      // The thrash detector, not a ceiling on work.
       noProgressToolCalls: (count("budget.noProgressToolCalls") || 25) > 0 ? count("budget.noProgressToolCalls") || 25 : null,
       maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes") || 8192),
     };
   },
   /**
-   * House rules for the pipeline transport, resolved once so the scheduler, the
-   * handoff coordinator and the browser all read the same values. Anything
+   * House rules for the pipeline transport, resolved once so the scheduler and
+   * the browser all read the same values. Anything
    * unrecognised in the store falls back to the built-in default rather than
    * reaching the rule table as a bad value.
    */
   get pipelinePolicy(): PipelinePolicy {
     const pauseMode = text("pipeline.pauseMode");
-    const requirement = text("pipeline.handoffRequirement");
-    const handoffTrigger = text("pipeline.handoffTrigger");
-    const onBlocked = text("pipeline.defaultOnBlocked");
     const onDone = text("pipeline.defaultOnDone");
-    const generations = count("pipeline.maxHandoffGenerations");
-    const audit = text("pipeline.auditOnBlocked");
+    const onUnfinished = text("pipeline.defaultOnUnfinished");
+    const restart = text("pipeline.onRestart");
     const enforcement = text("pipeline.dodEnforcement");
+    const maxContinuations = count("pipeline.maxContinuations");
+    const fallbackProviders = commaList("pipeline.fallbackProviders")
+      .filter(isProviderId)
+      .filter((id, index, all) => all.indexOf(id) === index);
     return {
       pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
       stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
-      onRestart: text("pipeline.onRestart") === "resumeSameRun" ? "resumeSameRun" : "newRun",
-      handoffRequirement:
-        requirement === "always" || requirement === "never"
-          ? (requirement satisfies HandoffRequirement)
-          : "whenWorkProduced",
-      // The old boolean is honoured for one release: an operator who had turned
-      // it on meant "prepare briefs by yourself", which is the broader trigger.
-      handoffTrigger: isHandoffTrigger(handoffTrigger)
-        ? handoffTrigger
-        : flag("pipeline.autoHandoffOnBlocked") ? "anyUnfinished" : DEFAULT_PIPELINE_POLICY.handoffTrigger,
-      auditOnBlocked: isAuditOnBlockedMode(audit) ? audit : DEFAULT_PIPELINE_POLICY.auditOnBlocked,
+      onRestart: isRestartPolicy(restart) ? restart : DEFAULT_PIPELINE_POLICY.onRestart,
+      maxContinuations: maxContinuations > 0 ? maxContinuations : DEFAULT_PIPELINE_POLICY.maxContinuations,
+      reviewAfterContinuations: flag("pipeline.reviewAfterContinuations"),
       dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
-      maxHandoffGenerations:
-        generations > 0 ? generations : DEFAULT_PIPELINE_POLICY.maxHandoffGenerations,
-      // 0 is meaningful here — it switches remediation off — so this deliberately
-      // does not use the `> 0 ? value : fallback` shape the other counters use.
-      // The descriptor's own fallback seeds `defaults`, so an unset key already
-      // reads as 2 rather than as 0.
-      maxRemediationAttempts: Math.max(0, count("pipeline.maxRemediationAttempts")),
-      reviewerReconfigure: text("pipeline.reviewerReconfigure")
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter(isReconfigureKind),
-      maxReviewerBudgetMultiplier: Math.max(1, count("pipeline.maxReviewerBudgetMultiplier") || DEFAULT_PIPELINE_POLICY.maxReviewerBudgetMultiplier),
-      defaultOnBlocked: isOnBlockedAction(onBlocked) ? onBlocked : DEFAULT_PIPELINE_POLICY.defaultOnBlocked,
+      defaultOnUnfinished: isOnUnfinishedAction(onUnfinished) ? onUnfinished : DEFAULT_PIPELINE_POLICY.defaultOnUnfinished,
       defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
+      fallbackProviders: fallbackProviders.length > 0 ? fallbackProviders : DEFAULT_PIPELINE_POLICY.fallbackProviders,
     };
   },
 
@@ -1027,6 +970,19 @@ export const settings = {
    */
   get hostAccess(): boolean {
     return flag("hostAccess");
+  },
+
+  /**
+   * How long transcript events stick around. Only `agent_run_event` is swept —
+   * runs, remarks, status events and commands are the record and stay.
+   */
+  get retention(): { eventsPerRun: number; eventAgeDays: number; keepFinalEvents: number } {
+    const eventsPerRun = Math.max(0, count("retention.eventsPerRun") || 4000);
+    const eventAgeDays = Math.max(0, count("retention.eventAgeDays") || 0);
+    // A zero keep would leave an aged run with no readable tail; floor at 1 when
+    // the field is somehow cleared rather than honouring a silent wipe.
+    const keepFinalEvents = Math.max(1, count("retention.keepFinalEvents") || 200);
+    return { eventsPerRun, eventAgeDays, keepFinalEvents };
   },
 
   claude: {
