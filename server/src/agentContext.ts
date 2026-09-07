@@ -77,14 +77,15 @@ function executeProtocol(canDecompose: boolean): string {
   // Two sentences on when to / when not to split; depth refusal points at
   // continue instead of BLOCKED — remaining work is never a human question.
   const decompose = canDecompose
-    ? `\`decompose\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Do not split because the work is large or the run is long — \`continue\` handles that at no cost.`
+    ? `\`decompose\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Do not split because the work is large or the run is long — \`continue\` re-queues this station until the work is done.`
     : `\`decompose\` is refused at this depth — sub-steps cannot be split further. Finish it, or post \`continue\` with what remains; it will be resumed on this working tree.`;
   return `## How this run ends
 
 Post exactly one of \`done\`, \`continue\`, \`blocked\`, or \`decompose\` through \`agent-step\` (below).
 \`done\` is checked by the server: the Verification commands above run in the workspace and \`done\`
 is refused with their output if any fails. \`continue\` records what remains and re-queues this
-item on this working tree — use it when the work will not fit this run; it costs nothing.
+item on this working tree — keep posting it until \`done\` passes, or until a real human question
+needs \`blocked\`. The rail does not stop for \`continue\`.
 \`blocked\` is only for a concrete action that a human must take (a credential, a decision that was
 not delegated to you, an external system); remaining work is never a blocker. ${decompose}
 Bank progress with \`remark --kind PROGRESS\` after each verified piece; if this run is stopped by

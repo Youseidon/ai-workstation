@@ -44,12 +44,22 @@ export function ContextPicker({
   activeWorkspace,
   onRecover,
 }: Props) {
+  const promptsById = new Map(prompts.map((prompt) => [prompt.id, prompt]));
   const promptItems: ComboboxItem<number>[] = prompts.map((prompt) => {
     const state = promptState(prompt);
+    const parent =
+      prompt.parentPromptId === null ? null : (promptsById.get(prompt.parentPromptId) ?? null);
+    const parentKey = parent?.externalKey ?? parent?.title ?? null;
+    const ownKey = prompt.externalKey;
     return {
       value: prompt.id,
       label: prompt.title,
-      prefix: prompt.externalKey ?? undefined,
+      prefix:
+        parentKey !== null
+          ? ownKey !== null
+            ? `↳ ${parentKey} / ${ownKey}`
+            : `↳ ${parentKey}`
+          : (ownKey ?? undefined),
       description: `${prompt.programName} / ${prompt.suiteName}`,
       badge: { text: state.text, tone: state.tone },
       note: prompt.blockedBy.length > 0 ? `waiting on ${prompt.blockedBy.join(", ")}` : undefined,

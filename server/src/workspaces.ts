@@ -2750,15 +2750,45 @@ export const workspaces = {
     return row?.triggerId??null;
   },
   /**
-   * Continuations since the most recent operator (USER) ledger row.
+   * Unfinished continuations since the most recent operator (USER) ledger row.
    *
-   * An operator Resume / override grants a fresh allowance: that is what a
-   * human intervening means. Counted by `rule_id = "continuation"` rows only.
+   * An operator Resume / override / recover grants a fresh allowance: that is
+   * what a human intervening means. Counted by `rule_id = "continuation"` rows
+   * only — an agent's own `agent-step continue` uses a different rule id and
+   * does not spend this allowance.
    */
   continuationCount(promptId:number):number {
     const since=(db.prepare("SELECT COALESCE(MAX(id),0) id FROM prompt_status_event WHERE prompt_id=? AND actor_type='USER'").get(promptId) as {id:number}).id;
     const row=db.prepare("SELECT count(*) count FROM prompt_status_event WHERE prompt_id=? AND rule_id='continuation' AND id>?").get(promptId,since) as {count:number};
     return row.count;
+  },
+  /**
+   * Operator Resume after the rail parked on this station: write a USER ledger
+   * row so `continuationCount` resets, and ensure the item is TODO so Play can
+   * start it. Idempotent when already TODO — the USER row is the point.
+   */
+  grantFreshContinuations(promptId:number,reason:string):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status==="DONE"||prompt.status==="SKIPPED"){
+        throw new WorkspaceError(409,"already_terminal","Work item is already complete");
+      }
+      if(prompt.status==="IN_PROGRESS"){
+        const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' AND state IN ('STARTING','RUNNING') ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;
+        if(run&&activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active");
+      }
+      writeStatus({
+        promptId,
+        to:"TODO",
+        trigger:"operator_resume",
+        ruleId:"operator-resume",
+        actor:"USER",
+        reason,
+        result:"",
+        evidence:{grant:"fresh_continuations"},
+      });
+    })());
   },
   /** Latest continuation evidence for the station card's "n/N" chip. */
   latestContinuation(promptId:number):{attempt:number;of:number}|null {
@@ -2782,26 +2812,44 @@ export const workspaces = {
   /**
    * Re-queue a station for another run on the same working tree.
    *
-   * Writes `trigger=continuation` / `rule_id=continuation` so `continuationCount`
-   * can bound the loop, and only invents a SYSTEM CONTINUATION remark when the
-   * agent left none — the agent's own brief must stay the one the next run reads.
+   * When `countsTowardAllowance` is true (default), writes
+   * `rule_id=continuation` so `continuationCount` can bound unfinished loops.
+   * An agent's own `continue` passes false — those re-queues must not park the
+   * rail. Only invents a SYSTEM CONTINUATION remark when the agent left none.
    */
-  queueContinuation(promptId:number,args:{attempt:number;of:number;cause:string;previousRunId:string;writeSystemRemark:boolean}):void {
+  queueContinuation(promptId:number,args:{
+    attempt:number;
+    of:number;
+    cause:string;
+    previousRunId:string;
+    writeSystemRemark:boolean;
+    /** Default true. False for agent_continue — does not spend the unfinished allowance. */
+    countsTowardAllowance?:boolean;
+  }):void {
     sqliteGuard(()=>db.transaction(()=>{
       const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
       if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
       if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","Work item is already complete");
-      const reason=`Continuation ${args.attempt}/${args.of}: ${args.cause}`.slice(0,2000);
+      const counts=args.countsTowardAllowance!==false;
+      const reason=(counts
+        ?`Continuation ${args.attempt}/${args.of}: ${args.cause}`
+        :`Agent continue: ${args.cause}`).slice(0,2000);
       writeStatus({
         promptId,
         to:"TODO",
         trigger:"continuation",
-        ruleId:"continuation",
+        ruleId:counts?"continuation":"agent-continue-loop",
         actor:"SYSTEM",
         runId:args.previousRunId,
         reason,
         result:"",
-        evidence:{attempt:args.attempt,of:args.of,cause:args.cause,previousRunId:args.previousRunId},
+        evidence:{
+          attempt:args.attempt,
+          of:args.of,
+          cause:args.cause,
+          previousRunId:args.previousRunId,
+          countsTowardAllowance:counts,
+        },
         remark:args.writeSystemRemark
           ?{kind:"CONTINUATION",content:`${args.cause}\n\nInspect the working tree before changing anything; do not redo verified work.`}
           :null,

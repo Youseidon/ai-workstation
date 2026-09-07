@@ -405,11 +405,13 @@ function unfinishedCause(promptId: number, result: string): string {
 }
 
 /**
- * Re-queue the same station, or park once its allowance is spent.
+ * Re-queue the same station, or park once the *unfinished* allowance is spent.
  *
- * Counted by ledger rows with `rule_id = "continuation"` since the most recent
- * USER row — an operator Resume grants a fresh allowance. The station rule's
- * `onUnfinished` can still short-circuit to skip or wait before any of that.
+ * An agent's own `agent-step continue` always re-queues and never parks — that
+ * is the rail keeping moving. Crash / unreported / verification-failed endings
+ * spend `rule_id=continuation` rows counted since the most recent USER row;
+ * an operator Resume writes that USER row and grants a fresh allowance. The
+ * station rule's `onUnfinished` can still short-circuit to skip or wait.
  */
 async function continuation(
   pipeline: SuitePipelineRun,
@@ -417,6 +419,7 @@ async function continuation(
   promptId: number,
   previousRunId: string,
   cause: string,
+  causeKind: "agent_continue" | "unfinished" = "unfinished",
 ): Promise<SuitePipelineRun> {
   if (rule.onUnfinished === "skip") {
     workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it did not finish.");
@@ -426,9 +429,12 @@ async function continuation(
     return park(pipeline, promptId, "station_rule_wait");
   }
 
-  const n = workspaces.continuationCount(promptId);
   const N = settings.pipelinePolicy.maxContinuations;
-  if (n < N) {
+  const productive = causeKind === "agent_continue";
+  const n = workspaces.continuationCount(promptId);
+
+  // Productive agent continues never exhaust. Unfinished endings still cap at N.
+  if (productive || n < N) {
     workspaces.queueContinuation(promptId, {
       attempt: n + 1,
       of: N,
@@ -438,8 +444,13 @@ async function continuation(
       // second SYSTEM one would bury it. For every other unfinished ending the
       // agent left none, so the cause sentence becomes the brief.
       writeSystemRemark: !workspaces.runHasContinuationRemark(promptId, previousRunId),
+      countsTowardAllowance: !productive,
     });
-    log.info(`continuation ${n + 1}/${N} suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`);
+    log.info(
+      productive
+        ? `agent-continue suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`
+        : `continuation ${n + 1}/${N} suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`,
+    );
     const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
     // Pause means the operator asked the rail to stop; a continuation is still
     // the rail moving, so it waits for Play like every other start.
@@ -535,7 +546,7 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
       const decision = decideExecuteEnded(posted.status, trigger);
       if (decision.action === "continuation") {
         const cause = `${failure.because} ${unfinishedCause(promptId, posted.result)}`.trim();
-        await continuation(live, rule, promptId, runId, cause);
+        await continuation(live, rule, promptId, runId, cause, "unfinished");
         return;
       }
     }
@@ -558,13 +569,29 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     const cause = decision.causeKind === "agent_continue"
       ? (workspaces.latestContinuationRemark(promptId) ?? "The agent asked to be resumed on the same working tree.")
       : unfinishedCause(promptId, posted.result);
-    await continuation(live, rule, promptId, runId, cause);
+    await continuation(live, rule, promptId, runId, cause, decision.causeKind);
     return;
   }
   await terminate(live, "STOPPED", decision.stopReason);
 }
 
 async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined, preferPlayTarget = false): Promise<SuitePipelineRun> {
+  // Prompt 03 AC4: Resume after an exhausted / review park must write a USER
+  // ledger row so continuationCount resets. Without this the next unfinished
+  // ending re-parks immediately and the documented button is a treadmill.
+  const priorWait = pipeline.waitReason;
+  const stationId = pipeline.currentPromptId;
+  if (
+    stationId !== null
+    && (priorWait === "continuations_exhausted" || priorWait === "review_running")
+  ) {
+    workspaces.grantFreshContinuations(
+      stationId,
+      priorWait === "review_running"
+        ? "You resumed while a post-continuation review was running; the station gets a fresh unfinished-continuation allowance."
+        : "You resumed after unfinished continuations ran out; the station gets a fresh allowance.",
+    );
+  }
   const patch: { state: "PLAYING"; playProvider?: ProviderId | null; playModel?: string | null; endedAt: null; stopReason: null; waitReason: null } = {
     state: "PLAYING",
     endedAt: null,
@@ -605,7 +632,7 @@ function notReadyReason(
     return `${label} asked a question only you can answer. Answer or skip it, then Resume.`;
   }
   if (waitReason === "continuations_exhausted") {
-    return `${label} was continued until its allowance ran out and is still not finished. Read the last brief, fix what is in the way, then Resume.`;
+    return `${label} hit unfinished endings until its allowance ran out and is still not finished. Resume grants a fresh allowance.`;
   }
   if (waitReason === "review_running") {
     return `${label} is waiting on a read-only reviewer checking the station after its continuations ran out.`;
@@ -664,13 +691,28 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
       if (active.state === "WAITING_HUMAN") {
         const currentId = active.currentPromptId;
         const pipelineId = namedPipelineId ?? namedPipelineIdFor(active);
-        // The waiting item may be a sub-step, which never appears in the
-        // station list — ask the prompt itself as well.
-        const ready = currentId !== null && (
-          workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId)
-          || workspaces.resolvePrompt(suite.workspaceId, currentId).ready
-        );
-        if (!ready) throw new WorkspaceError(422, "prompt_not_ready", currentId === null ? "This run has no station to resume." : notReadyReason(suite.workspaceId, currentId, null, active.waitReason));
+        // Exhaust / review parks are resumed by writing a USER ledger row that
+        // resets the unfinished allowance and forces TODO. That happens inside
+        // resume(); the ready gate below would 422 on UNREPORTED/FAILED first.
+        const exhaustPark = active.waitReason === "continuations_exhausted"
+          || active.waitReason === "review_running";
+        if (!exhaustPark) {
+          // The waiting item may be a sub-step, which never appears in the
+          // station list — ask the prompt itself as well.
+          const ready = currentId !== null && (
+            workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, pipelineId).some((prompt) => prompt.id === currentId)
+            || workspaces.resolvePrompt(suite.workspaceId, currentId).ready
+          );
+          if (!ready) {
+            throw new WorkspaceError(
+              422,
+              "prompt_not_ready",
+              currentId === null ? "This run has no station to resume." : notReadyReason(suite.workspaceId, currentId, null, active.waitReason),
+            );
+          }
+        } else if (currentId === null) {
+          throw new WorkspaceError(422, "prompt_not_ready", "This run has no station to resume.");
+        }
       }
       log.info(`resume suite=${suiteId} from=${active.state}`);
       return resume(active, playProvider, playModel, preferPlayTarget);
@@ -854,6 +896,9 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
       currentSuiteRunId: suiteRun.id,
       endedAt: null,
       stopReason: suiteRun.stopReason,
+      // Suite resume clears the park reason; copy it or the named run keeps a
+      // stale continuations_exhausted while already PLAYING.
+      waitReason: suiteRun.waitReason,
     });
   }
   const namedOwner = workspaces.activeNamedPipelineForWorkspace(pipeline.workspaceId);

@@ -399,7 +399,7 @@ export function ActivityView() {
           {selected === null ? (
             <p className="text-sm text-fg-dim">Select a session to inspect its metadata and log.</p>
           ) : (
-            <div className="mx-auto flex h-full max-w-5xl flex-col gap-4">
+            <div className="flex h-full w-full flex-col gap-4">
               <div className="flex flex-wrap items-start gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">

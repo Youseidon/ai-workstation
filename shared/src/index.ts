@@ -1078,8 +1078,9 @@ export function isOnDoneAction(value: unknown): value is OnDoneAction {
  * every case the continuation loop can act on: `TODO`/`UNREPORTED`/`FAILED`/
  * `NEEDS_REVIEW`. `wait` parks immediately, `skip` marks the station SKIPPED
  * and carries on, and `continue` (the default) is the continuation loop
- * itself: re-run the same station, up to `pipelinePolicy.maxContinuations`
- * times, before a reviewer is sent and the rail parks.
+ * itself. An agent's own `continue` keeps re-queueing; crash / unreported /
+ * verification-failed loops are capped at `pipelinePolicy.maxContinuations`
+ * before a reviewer is sent and the rail parks.
  */
 export const ON_UNFINISHED_ACTIONS = ["continue", "skip", "wait"] as const;
 export type OnUnfinishedAction = (typeof ON_UNFINISHED_ACTIONS)[number];

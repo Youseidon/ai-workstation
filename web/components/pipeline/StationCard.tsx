@@ -54,10 +54,14 @@ export function StationCard({
 }) {
   const theme = rule.provider === null ? null : providerTheme[rule.provider];
   const who = overrideChip(rule);
-  const stuck = stuckNote(item.operationalState);
-  const hasActions =
-    !readOnly &&
-    (onConfig !== undefined || onRemove !== undefined || onRetry !== undefined || (inherited === false && onUseStationSettings !== undefined));
+  const stuck = stuckNote(item);
+  // Configure / Retry stay available in view mode; only compose actions
+  // (remove, unpin) require the flowchart editor.
+  const canConfigure = onConfig !== undefined;
+  const canRetry = onRetry !== undefined;
+  const canRemove = !readOnly && onRemove !== undefined;
+  const canUseStationSettings = !readOnly && inherited === false && onUseStationSettings !== undefined;
+  const hasActions = canConfigure || canRetry || canRemove || canUseStationSettings;
 
   return (
     <div
@@ -103,6 +107,14 @@ export function StationCard({
             {onDoneChip(rule.onDone)} · {onUnfinishedChip(rule)}
             {item.continuation !== null && (
               <> · continuation {item.continuation.attempt}/{item.continuation.of}</>
+            )}
+            {rule.fallbackProviders.length > 0 ? (
+              <> · fallbacks {rule.fallbackProviders.join("→")}</>
+            ) : (
+              <> · suite/house fallbacks</>
+            )}
+            {item.latestAudit?.report != null && (
+              <> · audit {item.latestAudit.report.confidence.toLowerCase()}</>
             )}
           </div>
           {occupancy !== null && (
@@ -154,17 +166,17 @@ export function StationCard({
 
       {hasActions && (
         <div className="mt-3 flex flex-wrap gap-1">
-          {onRetry !== undefined && (
+          {canRetry && (
             <Button size="sm" variant="primary" aria-label="Retry this step" onClick={onRetry}>
               Retry
             </Button>
           )}
-          {onConfig !== undefined && (
+          {canConfigure && (
             <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
               Config
             </Button>
           )}
-          {!inherited && onUseStationSettings !== undefined && (
+          {canUseStationSettings && (
             <Button
               size="sm"
               variant="ghost"
@@ -175,7 +187,7 @@ export function StationCard({
               Use station settings
             </Button>
           )}
-          {onRemove !== undefined && (
+          {canRemove && (
             <Button size="sm" variant="ghost" aria-label={removeLabel} onClick={onRemove}>
               {removeLabel}
             </Button>
@@ -191,12 +203,15 @@ export function StationCard({
  * Both states hold up every later step, so they must read as actionable rather
  * than as just another status chip.
  */
-function stuckNote(state: OperationsPrompt["operationalState"]): string | null {
+function stuckNote(item: OperationsPrompt): string | null {
   // "Mark complete" is named in both: the run ending without a status says
   // nothing about whether the work got done, and re-running an agent to
   // re-report finished work is the expensive way out of that.
-  if (state === "RECOVERY_NEEDED") return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
-  if (state === "BLOCKED") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
+  if (item.operationalState === "BLOCKED") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
+  // `recoverable` is broader than the RECOVERY_NEEDED label: it also covers a
+  // run that ended UNREPORTED or FAILED, which display under their own status
+  // but hold up the pipeline the same way and take the same fix.
+  if (item.prompt.recoverable) return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
   return null;
 }
 

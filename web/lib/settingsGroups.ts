@@ -9,6 +9,9 @@
 /** The group governing pipeline transport behaviour. */
 export const PIPELINE_POLICY_GROUP = "Pipeline policy";
 
+/** Ceilings a single agent run cannot exceed. */
+export const RUN_BUDGETS_GROUP = "Run budgets";
+
 /** Display name where the group's own name is not the clearest heading. */
 export const GROUP_TITLE: Record<string, string> = { General: "Runtime" };
 

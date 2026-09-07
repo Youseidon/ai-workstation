@@ -169,7 +169,8 @@ const FIELDS: FieldDef[] = [
     envVar: "PIPELINE_MAX_CONTINUATIONS",
     fallback: 4,
     description:
-      "How many times one station is re-run on its own before a reviewer is sent and the rail parks. "
+      "How many unfinished endings (crash, unreported, verification failure) one station may take "
+      + "before a reviewer is sent and the rail parks. An agent's own continue does not spend this. "
       + "An operator Resume grants a fresh allowance.",
   },
   {
@@ -180,7 +181,7 @@ const FIELDS: FieldDef[] = [
     envVar: "PIPELINE_REVIEW_AFTER_CONTINUATIONS",
     fallback: true,
     description:
-      "When a station uses up its continuations, send one read-only completion audit before parking. "
+      "When a station uses up its unfinished-continuation allowance, send one read-only completion audit before parking. "
       + "Off parks as continuations_exhausted immediately.",
   },
   {
@@ -194,7 +195,7 @@ const FIELDS: FieldDef[] = [
       "The 'on unfinished' rule a station starts with, before anyone configures it on the flowchart. "
       + "Existing stations keep whatever they were given.",
     options: [
-      option("continue", "Continue the station", "Re-run it up to the continuation limit, then review or park"),
+      option("continue", "Continue the station", "Re-run it; unfinished endings are capped, agent continues are not"),
       option("wait", "Wait for a human", "The run parks immediately"),
       option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
     ],

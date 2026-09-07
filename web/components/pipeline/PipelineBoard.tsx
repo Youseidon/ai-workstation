@@ -18,7 +18,7 @@ import type {
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, modelLabel, onUnfinishedConsequence, onDoneConsequence, PROVIDER_IDS } from "@agent-console/shared";
+import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -35,21 +35,19 @@ import { useModelSelection } from "@/lib/useModelSelection";
 import { providerTheme } from "@/lib/providerTheme";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { useWorkspace } from "@/lib/workspaceContext";
-import { ModelMenu } from "@/components/ModelMenu";
 import { PageChrome } from "@/components/shell/chrome";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
 import { PipelineOverview } from "./PipelineOverview";
 import { PipelineStatusBar, type PipelinePosition } from "./PipelineStatusBar";
-import { RulesPanel } from "./RulesPanel";
-import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
-import { PIPELINE_POLICY_GROUP } from "@/lib/settingsGroups";
+import { NewPipelineGuide, type NewPipelineGuideStep } from "./NewPipelineGuide";
+import { PipelineInspector, type InspectorTab } from "./PipelineInspector";
+import { RunConfidenceStrip } from "./RunConfidenceStrip";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
 import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
 import { nextPipelineLeaf } from "./continuation";
 import {
-  onDoneChip,
   PIPELINE_LABEL,
   PIPELINE_TONE,
   pipelineStatus,
@@ -99,8 +97,10 @@ export function PipelineBoard({
   const [archiveOpen, setArchiveOpen] = useState(true);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const [policyOpen, setPolicyOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("policy");
+  const [guideStep, setGuideStep] = useState<NewPipelineGuideStep>("name");
+  const [guideDismissed, setGuideDismissed] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
   /** Drill-down into the sub-steps a station spawned: station id first, deepest last. */
@@ -417,12 +417,17 @@ export function PipelineBoard({
   // Mirror the scheduler's depth-first walk. The suite run may still point at
   // a parent that ran earlier even though its next unstarted child is the item
   // a fresh run will actually launch.
+  const stuckSuiteId = (resumeSuiteOps ?? suiteOps)?.id ?? null;
   const pendingPrompt = useMemo(() => {
     const suite = resumeSuiteOps ?? suiteOps;
     if (suite === null) return null;
     return nextPipelineLeaf(suite.prompts);
   }, [resumeSuiteOps, suiteOps]);
-  const stuckPrompt = pendingPrompt?.operationalState === "RECOVERY_NEEDED" || pendingPrompt?.operationalState === "BLOCKED"
+  // `recoverable` is broader than the RECOVERY_NEEDED label — it also covers a
+  // run that ended UNREPORTED or FAILED, which display under their own status
+  // but hold up the pipeline (and the scheduler's own play-blocked check) the
+  // same way a crashed run does.
+  const stuckPrompt = pendingPrompt !== null && (pendingPrompt.operationalState === "BLOCKED" || pendingPrompt.prompt.recoverable)
     ? pendingPrompt
     : null;
 
@@ -439,6 +444,13 @@ export function PipelineBoard({
     if (stuckPrompt?.operationalState === "BLOCKED") {
       const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
       return `${label} is blocked and needs a human response first`;
+    }
+    // Surfaced here too, not just as a failed Play attempt: without this the
+    // operator's only sign of trouble was a toast after Play round-tripped to
+    // the backend and back, with nothing left to click.
+    if (stuckPrompt?.prompt.recoverable === true) {
+      const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
+      return `${label} needs recovery — its last run stopped without posting a status`;
     }
     return null;
   }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live, resumeItem, stuckPrompt]);
@@ -519,6 +531,30 @@ export function PipelineBoard({
     } finally {
       setBusy(false);
     }
+  };
+
+  // A direct way to clear the blocker without hunting for it: the stuck item
+  // is often a sub-step several drill-downs below the station list.
+  const recoveryActions = stuckPrompt === null || stuckSuiteId === null ? null : {
+    onRetry:
+      stuckPrompt.prompt.recoverable
+        ? () =>
+            void act(async () => {
+              await workspaceApi.recover(SERVER_URL, stuckPrompt.prompt.id);
+            }, "Recovered — play to run it again")
+        : undefined,
+    onSkip: () =>
+      void act(async () => {
+        const confirmed = await dialogs.confirm({
+          title: "Skip this step?",
+          description: "The pipeline moves straight to the next step. Skipped work is not retried.",
+          confirmLabel: "Skip step",
+          tone: "danger",
+        });
+        if (!confirmed) return;
+        await workspaceApi.skipPrompt(SERVER_URL, stuckPrompt.prompt.id, "Operator skipped this step.");
+      }, "Step skipped"),
+    openHref: `/tasks?suite=${stuckSuiteId}&prompt=${stuckPrompt.prompt.id}`,
   };
 
   /**
@@ -657,7 +693,13 @@ export function PipelineBoard({
       <div
         className={cn(
           "grid min-h-0 flex-1",
-          showEditor ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]" : "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_280px]",
+          showEditor && inspectorOpen
+            ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_360px]"
+            : showEditor
+              ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]"
+              : inspectorOpen
+                ? "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_360px]"
+                : "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_280px]",
         )}
       >
         {showEditor && (
@@ -800,9 +842,38 @@ export function PipelineBoard({
         )}
 
         <section className="pipeline-desk min-h-0 overflow-auto p-5">
-          <div className="mx-auto max-w-6xl space-y-6">
+          <div className="w-full space-y-6">
             {workbench && pipeline !== null && !showEditor && (
               <PipelineOverview pipeline={pipeline} snapshot={snapshot} runs={runs} blockedStations={blockedStations} />
+            )}
+
+            {isNew && !guideDismissed && (
+              <NewPipelineGuide
+                step={guideStep}
+                onStepChange={(next) => {
+                  setGuideStep(next);
+                  if (next === "policy") {
+                    setInspectorTab("policy");
+                    setInspectorOpen(true);
+                  }
+                }}
+                onOpenPolicy={() => {
+                  setInspectorTab("policy");
+                  setInspectorOpen(true);
+                }}
+                onFocusStations={() => {
+                  const first = displayedSteps.find((entry) => entry.kind === "prompt");
+                  if (first !== undefined && first.kind === "prompt") {
+                    setConfigId(first.step.promptId);
+                    setInspectorTab("station");
+                    setInspectorOpen(true);
+                  } else {
+                    setInspectorTab("station");
+                    setInspectorOpen(true);
+                  }
+                }}
+                onDismiss={() => setGuideDismissed(true)}
+              />
             )}
 
             <div className="flex flex-wrap items-end justify-between gap-3">
@@ -831,11 +902,14 @@ export function PipelineBoard({
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="ghost"
-                  onClick={() => setPolicyOpen(true)}
-                  title="What Pause and Stop do, how many times a station may continue, and the rule a station starts with"
+                  variant={inspectorOpen ? "secondary" : "ghost"}
+                  onClick={() => {
+                    setInspectorTab("policy");
+                    setInspectorOpen(true);
+                  }}
+                  title="Policy, budgets, statuses, definition of done, and station rules"
                 >
-                  Pipeline policy
+                  Configure pipeline
                 </Button>
                 {workbench && pipelineId !== null && !isNew && (
                   <Button
@@ -901,60 +975,47 @@ export function PipelineBoard({
               </div>
             </div>
 
-            <PipelineStatusBar
-              status={status}
-              position={runPosition}
-              blockedReason={statusBlocked}
-              busy={busy}
-              onControl={runControl}
-              onExplain={() => setRulesOpen(true)}
-            />
-
-            <RulesPanel
-              open={rulesOpen}
-              onClose={() => setRulesOpen(false)}
-              status={status}
+            <RunConfidenceStrip
               policy={policy}
-              station={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
-              onEditPolicy={() => {
-                setRulesOpen(false);
-                setPolicyOpen(true);
-              }}
-              onEditStationRule={
-                resumeItem === null
-                  ? undefined
-                  : () => {
-                      setRulesOpen(false);
-                      setConfigId(resumeItem.prompt.id);
-                    }
-              }
-              // The board renders labels from the catalog on the operations
-              // snapshot, so a rename has to be re-read before it shows here.
-              onStatusesChanged={() => void refreshCatalog()}
-              suiteId={activeSuiteId}
-              pipelineId={pipelineId}
-              suiteFallbackProviders={
+              suiteFallbacks={
                 activeSuiteId === null
                   ? []
                   : (view?.defaults.defaultFallbackProviders
                     ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
                     ?? [])
               }
-              onSuiteFallbacksChanged={() => {
-                if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
-                void refreshCatalog();
+              stationFallbacks={
+                resumeItem === null
+                  ? null
+                  : (view?.steps.find((step) => step.promptId === resumeItem.prompt.id)?.fallbackProviders
+                    ?? resumeItem.pipelineRule?.fallbackProviders
+                    ?? null)
+              }
+              continuation={resumeItem?.continuation ?? null}
+              waitReason={live?.waitReason ?? null}
+              occupancyWrapUp={
+                resumeItem !== null &&
+                stationOccupancy(resumeItem, console_.runs, view?.active)?.source.type === "wrapup"
+              }
+              latestAudit={resumeItem?.latestAudit ?? null}
+              onOpenTab={(tab) => {
+                setInspectorTab(tab);
+                setInspectorOpen(true);
               }}
             />
 
-            {policyOpen && (
-              <SettingsGroupDialog
-                group={PIPELINE_POLICY_GROUP}
-                onClose={() => setPolicyOpen(false)}
-                // The board renders from the policy on the operations snapshot,
-                // so it has to be re-read before the change is visible here.
-                onSaved={() => void refreshCatalog()}
-              />
-            )}
+            <PipelineStatusBar
+              status={status}
+              position={runPosition}
+              blockedReason={statusBlocked}
+              recoveryActions={statusBlocked !== null ? recoveryActions : null}
+              busy={busy}
+              onControl={runControl}
+              onExplain={() => {
+                setInspectorTab("policy");
+                setInspectorOpen(true);
+              }}
+            />
 
             <PipelineConstellation
               stages={stages}
@@ -979,7 +1040,11 @@ export function PipelineBoard({
                 busy={busy}
                 onNavigate={(index) => setSubPath((current) => (index === null ? [] : current.slice(0, index + 1)))}
                 onOpen={(promptId) => setSubPath((current) => [...current, promptId])}
-                onConfig={(promptId) => setConfigId(promptId)}
+                onConfig={(promptId) => {
+                  setConfigId(promptId);
+                  setInspectorTab("station");
+                  setInspectorOpen(true);
+                }}
                 onUseStationSettings={(promptId) =>
                   void act(async () => {
                     if (pipelineId === null) return;
@@ -1088,6 +1153,7 @@ export function PipelineBoard({
                       showEditor
                         ? (node, entry) => entry.kind === "human" ? node : (
                       <div
+                        className="h-full min-w-0 w-full"
                         draggable
                         onDragStart={() => setDragId(entry.step.promptId)}
                         onDragOver={(event) => event.preventDefault()}
@@ -1148,19 +1214,34 @@ export function PipelineBoard({
                           readOnly={!showEditor}
                           subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
                           onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
-                          onConfig={() => setConfigId(step.promptId)}
-                          onRemove={() =>
-                            void act(async () => {
-                              const result = await workspaceApi.removePipelineFlowchartStep(
-                                SERVER_URL,
-                                pipelineId,
-                                suiteOps.id,
-                                step.promptId,
-                                true,
-                              );
-                              setView(result.flowchart);
-                              setViewSuiteId(suiteOps.id);
-                            })
+                          onConfig={() => {
+                            setConfigId(step.promptId);
+                            setInspectorTab("station");
+                            setInspectorOpen(true);
+                          }}
+                          onRetry={
+                            item.prompt.recoverable
+                              ? () =>
+                                  void act(async () => {
+                                    await workspaceApi.recover(SERVER_URL, step.promptId);
+                                  }, "Station recovered — play to run it again")
+                              : undefined
+                          }
+                          onRemove={
+                            showEditor
+                              ? () =>
+                                  void act(async () => {
+                                    const result = await workspaceApi.removePipelineFlowchartStep(
+                                      SERVER_URL,
+                                      pipelineId,
+                                      suiteOps.id,
+                                      step.promptId,
+                                      true,
+                                    );
+                                    setView(result.flowchart);
+                                    setViewSuiteId(suiteOps.id);
+                                  })
+                              : undefined
                           }
                         />
                       );
@@ -1174,31 +1255,102 @@ export function PipelineBoard({
           </div>
         </section>
 
-        <aside
-          className={cn(
-            "min-h-0 overflow-y-auto border-t border-line bg-surface-1 p-3 lg:border-t-0 xl:border-l",
-            archiveOpen ? "block" : "hidden xl:block",
-          )}
-        >
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Mission log</div>
-            <button
-              type="button"
-              className="text-[11px] text-fg-dim xl:hidden"
-              onClick={() => setArchiveOpen(false)}
-            >
-              Hide
-            </button>
-          </div>
-          {pipelineId === null ? (
-            <p className="text-xs leading-relaxed text-fg-dim">Save a pipeline to keep a history of every run.</p>
-          ) : (
-            <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
-          )}
-        </aside>
+        {inspectorOpen ? (
+          <PipelineInspector
+            open={inspectorOpen}
+            tab={inspectorTab}
+            onTabChange={setInspectorTab}
+            onClose={() => {
+              setInspectorOpen(false);
+              setConfigId(null);
+            }}
+            status={status}
+            policy={policy}
+            stationLabel={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
+            suiteId={activeSuiteId}
+            pipelineId={pipelineId}
+            suiteFallbackProviders={
+              activeSuiteId === null
+                ? []
+                : (view?.defaults.defaultFallbackProviders
+                  ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
+                  ?? [])
+            }
+            onSuiteFallbacksChanged={() => {
+              if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
+              void refreshCatalog();
+            }}
+            onStatusesChanged={() => void refreshCatalog()}
+            onSettingsSaved={() => void refreshCatalog()}
+            onEditStationFromSummary={
+              resumeItem === null
+                ? undefined
+                : () => {
+                    setConfigId(resumeItem.prompt.id);
+                    setInspectorTab("station");
+                  }
+            }
+            station={
+              configId !== null && configRule !== null && configNode !== null
+                ? {
+                    rule: configRule,
+                    item: configNode,
+                    subStep: configIsSubStep,
+                    inherited: configInherited,
+                    providers: console_.providers,
+                    models,
+                    onUseStationSettings:
+                      configIsSubStep && !configInherited
+                        ? () =>
+                            void act(async () => {
+                              if (pipelineId === null || activeSuiteId === null) return;
+                              await workspaceApi.removePipelineFlowchartStep(
+                                SERVER_URL,
+                                pipelineId,
+                                activeSuiteId,
+                                configId,
+                                showEditor,
+                              );
+                              await refreshFlowchart(activeSuiteId);
+                            }, "Sub-step follows its station again")
+                        : undefined,
+                    onChange: (patch) =>
+                      void act(async () => {
+                        if (pipelineId === null) return;
+                        await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, configId, patch);
+                        if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+                      }),
+                  }
+                : null
+            }
+          />
+        ) : (
+          <aside
+            className={cn(
+              "min-h-0 overflow-y-auto border-t border-line bg-surface-1 p-3 lg:border-t-0 xl:border-l",
+              archiveOpen ? "block" : "hidden xl:block",
+            )}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Mission log</div>
+              <button
+                type="button"
+                className="text-[11px] text-fg-dim xl:hidden"
+                onClick={() => setArchiveOpen(false)}
+              >
+                Hide
+              </button>
+            </div>
+            {pipelineId === null ? (
+              <p className="text-xs leading-relaxed text-fg-dim">Save a pipeline to keep a history of every run.</p>
+            ) : (
+              <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
+            )}
+          </aside>
+        )}
       </div>
 
-      {!archiveOpen && (
+      {!archiveOpen && !inspectorOpen && (
         <button
           type="button"
           onClick={() => setArchiveOpen(true)}
@@ -1206,36 +1358,6 @@ export function PipelineBoard({
         >
           Mission log
         </button>
-      )}
-
-      {configId !== null && (
-        <StepConfig
-          rule={configRule}
-          item={configNode}
-          subStep={configIsSubStep}
-          inherited={configInherited}
-          providers={console_.providers}
-          models={models}
-          policy={policy}
-          onClose={() => setConfigId(null)}
-          onUseStationSettings={
-            configIsSubStep && !configInherited
-              ? () =>
-                  void act(async () => {
-                    if (pipelineId === null || activeSuiteId === null) return;
-                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, activeSuiteId, configId, showEditor);
-                    await refreshFlowchart(activeSuiteId);
-                  }, "Sub-step follows its station again")
-              : undefined
-          }
-          onChange={(patch) =>
-            void act(async () => {
-              if (pipelineId === null) return;
-              await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, configId, patch);
-              if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
-            })
-          }
-        />
       )}
 
       {saveOpen && (
@@ -1337,202 +1459,5 @@ function HumanInterventionNode({
         </div>
       )}
     </div>
-  );
-}
-
-function StepConfig({
-  rule,
-  item,
-  subStep = false,
-  inherited = false,
-  providers,
-  models,
-  policy,
-  onClose,
-  onUseStationSettings,
-  onChange,
-}: {
-  rule: PromptPipelineRule | null;
-  item: OperationsPrompt | null;
-  /** A slice the station spawned by decomposing itself, not a flowchart step. */
-  subStep?: boolean;
-  /** Sub-step only: still following the parent station rather than pinned here. */
-  inherited?: boolean;
-  providers: Parameters<typeof useModelSelection>[0];
-  models: ReturnType<typeof useModelSelection>;
-  /** House rules, so the consequence lines match what will actually happen. */
-  policy: PipelinePolicy;
-  onClose(): void;
-  onUseStationSettings?(): void;
-  onChange(patch: Partial<Omit<PromptPipelineRule, "promptId">>): void;
-}) {
-  const [modelFor, setModelFor] = useState<ProviderId | null>(null);
-  if (rule === null || item === null) return null;
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title={`${subStep ? "Sub-step" : "Step"} · ${item.prompt.externalKey ?? item.prompt.title}`}
-      description={
-        subStep
-          ? "Sub-steps follow their station unless you pin something here. What you set applies to this slice alone; when it finishes, the station's own rule decides what happens next."
-          : "Provider and model apply only to this step. Outcome chips decide what happens after it finishes."
-      }
-      size="md"
-      footer={
-        onUseStationSettings === undefined ? undefined : (
-          <Button
-            variant="ghost"
-            title="Remove this sub-step's agent override. Execution status is unchanged."
-            onClick={onUseStationSettings}
-          >
-            Use station settings
-          </Button>
-        )
-      }
-    >
-      <div className="space-y-4">
-        {subStep && (
-          <p
-            className={cn(
-              "rounded-md px-3 py-2 text-[11px] leading-5 ring-1 ring-inset",
-              inherited ? "bg-surface-2 text-fg-dim ring-line" : "bg-violet/10 text-violet ring-violet/30",
-            )}
-          >
-            {inherited
-              ? "Currently inherited from the station. Choosing an agent below pins it to this sub-step only."
-              : "Pinned to this sub-step. Use station settings to remove this override; execution status will not change."}
-          </p>
-        )}
-        <section>
-          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">AI for this step</div>
-          <div className="flex flex-wrap gap-1">
-            {PROVIDER_IDS.map((id) => {
-              const info = providers.find((entry) => entry.id === id);
-              const theme = providerTheme[id];
-              const active = rule.provider === id;
-              return (
-                <div key={id} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onChange({ provider: id, model: models.resolve(id) });
-                      setModelFor(modelFor === id ? null : id);
-                    }}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
-                      active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
-                    )}
-                  >
-                    <AgentAvatar provider={id} size={16} activity={active ? "idle" : "offline"} />
-                    {id}
-                    {active && rule.model !== null && <span className="ml-1 opacity-70">{modelLabel(id, rule.model)}</span>}
-                  </button>
-                  {modelFor === id && info !== undefined && (
-                    <ModelMenu
-                      provider={id}
-                      selected={active ? rule.model : models.resolve(id)}
-                      configured={info.model}
-                      pinned={models.isPinned(id)}
-                      onSelect={(value) => {
-                        onChange({ provider: id, model: value });
-                        setModelFor(null);
-                      }}
-                      onClear={() => {
-                        onChange({ provider: id, model: info.model });
-                        setModelFor(null);
-                      }}
-                      onClose={() => setModelFor(null)}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </section>
-        <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
-          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On DONE</div>
-          <div className="flex flex-wrap gap-1">
-            {(["continue", "stop", "skip_rest"] as const).map((action) => (
-              <button
-                key={action}
-                type="button"
-                onClick={() => onChange({ onDone: action })}
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
-                  rule.onDone === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
-                )}
-              >
-                {onDoneChip(action)}
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onDoneConsequence(rule.onDone, policy)}</p>
-        </section>
-        <section>
-          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On unfinished</div>
-          <div className="flex flex-wrap gap-1">
-            {(["continue", "skip", "wait"] as const).map((action) => (
-              <button
-                key={action}
-                type="button"
-                onClick={() => onChange({ onUnfinished: action })}
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
-                  rule.onUnfinished === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
-                )}
-              >
-                {action}
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onUnfinishedConsequence(rule, policy)}</p>
-        </section>
-        <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
-          <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
-            Fallback providers
-          </div>
-          <p className="mb-2 text-[11px] leading-4 text-fg-dim">
-            Ordered list tried when this station&apos;s agent cannot start or dies before doing any
-            work. Empty means the suite / house default (
-            {policy.fallbackProviders.join(" → ") || "none"}).
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {PROVIDER_IDS.filter((id) => id !== rule.provider).map((id) => {
-              const theme = providerTheme[id];
-              const index = rule.fallbackProviders.indexOf(id);
-              const active = index >= 0;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  title={active ? `Fallback #${index + 1} — click to remove` : "Add as fallback"}
-                  onClick={() => {
-                    const next = active
-                      ? rule.fallbackProviders.filter((entry) => entry !== id)
-                      : [...rule.fallbackProviders, id];
-                    onChange({ fallbackProviders: next });
-                  }}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
-                    active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
-                  )}
-                >
-                  <AgentAvatar provider={id} size={16} activity={active ? "idle" : "offline"} />
-                  {id}
-                  {active && <span className="ml-0.5 opacity-70">#{index + 1}</span>}
-                </button>
-              );
-            })}
-          </div>
-          {rule.fallbackProviders.length > 1 && (
-            <p className="mt-2 text-[11px] leading-4 text-fg-dim">
-              Order: {rule.fallbackProviders.join(" → ")}. Click again to remove; re-add to move to the end.
-            </p>
-          )}
-        </section>
-      </div>
-    </Modal>
   );
 }

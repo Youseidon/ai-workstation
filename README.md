@@ -68,12 +68,13 @@ When a station's run ends, the scheduler has exactly three answers:
 |---|---|---|
 | Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
 | Agent posted **BLOCKED** with a concrete human action | **park** `human_question` | the only human stop — answer it, then Resume |
-| Anything else (budget, crash, unreported, `agent-step continue`, …) | **continuation** | re-run the **same** station on the same working tree with the previous run's notes, up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
+| Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
+| Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
 
 There is no automatic handoff, remediation, or retry/recover chain. Resume on a
-parked station grants a fresh continuation allowance. Station rules expose
-`onDone` (`continue` / `stop` / `skip_rest`) and `onUnfinished`
-(`continue` / `skip` / `wait`).
+parked station writes a USER ledger row and grants a fresh unfinished-continuation
+allowance. Station rules expose `onDone` (`continue` / `stop` / `skip_rest`) and
+`onUnfinished` (`continue` / `skip` / `wait`).
 
 A pipeline that *is* interrupted — the machine rebooted, the console was
 restarted or killed — comes back by itself: about ten seconds after boot, every

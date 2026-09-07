@@ -372,3 +372,79 @@ test("when every fallback is cooling, a continuation that cannot start parks no_
     ctx.cleanup();
   }
 });
+
+test("agent_continue keeps re-queueing without spending the unfinished allowance or parking", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  updateSettings({ "pipeline.maxContinuations": 2, "pipeline.reviewAfterContinuations": false });
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
+    // Far more agent continues than N — the rail must stay PLAYING.
+    for (let i = 0; i < 6; i++) {
+      const live = workspaces.activePipeline(ctx.suite.id)!;
+      assert.equal(live.state, "PLAYING", `loop ${i}`);
+      const runId = live.currentRunId!;
+      workspaces.updateAgentStatus(runId, {
+        requestId: randomUUID(),
+        expectedStatus: "IN_PROGRESS",
+        status: "CONTINUE",
+        reason: `slice ${i + 1} banked; more endpoints remain`,
+      });
+      workspaces.finishAgentRun(runId, "done");
+      await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+      assert.equal(workspaces.continuationCount(promptId), 0, `agent continue must not spend allowance (loop ${i})`);
+    }
+    const after = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(after.state, "PLAYING");
+    assert.equal(after.waitReason, null);
+    assert.ok(started.length >= 7); // initial + 6 continues
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("Resume after continuations_exhausted grants a fresh unfinished allowance", async () => {
+  const ctx = fixture(1);
+  stubStarts();
+  updateSettings({ "pipeline.maxContinuations": 2, "pipeline.reviewAfterContinuations": false });
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
+    // Exhaust with UNREPORTED endings (these do spend the allowance).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const live = workspaces.activePipeline(ctx.suite.id)!;
+      const runId = live.currentRunId!;
+      workspaces.finishAgentRun(runId, "done");
+      await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+    }
+    {
+      const live = workspaces.activePipeline(ctx.suite.id)!;
+      const runId = live.currentRunId!;
+      workspaces.finishAgentRun(runId, "done");
+      await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+    }
+    const parked = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(parked.state, "WAITING_HUMAN");
+    assert.equal(parked.waitReason, "continuations_exhausted");
+    assert.equal(workspaces.continuationCount(promptId), 2);
+
+    // Resume must reset the count and start the station again.
+    await pipelineScheduler.playNamed(ctx.pipeline.id, {});
+    assert.equal(workspaces.continuationCount(promptId), 0);
+    const resumed = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(resumed.waitReason, null);
+    assert.ok(resumed.currentRunId !== null);
+
+    // One unfinished ending after Resume counts as attempt 1, not an immediate re-park.
+    const runId = resumed.currentRunId!;
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+    assert.equal(workspaces.continuationCount(promptId), 1);
+    const stillGoing = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(stillGoing.state, "PLAYING");
+  } finally {
+    ctx.cleanup();
+  }
+});

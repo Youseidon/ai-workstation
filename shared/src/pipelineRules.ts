@@ -85,10 +85,10 @@ export interface PipelinePolicy {
   /** What a run interrupted by a server restart offers when you come back. */
   onRestart: RestartPolicy;
   /**
-   * How many times one station may be continued — re-run on the same working
-   * tree, carrying the previous run's own notes — before a reviewer is sent
-   * and the rail parks. An operator Resume grants a fresh allowance: see
-   * `continuationCount` in `workspaces.ts`.
+   * How many *unfinished* endings (crash, unreported, verification-failed) one
+   * station may take before a reviewer is sent and the rail parks. An agent's
+   * own `agent-step continue` does not spend this allowance. An operator Resume
+   * grants a fresh count: see `continuationCount` in `workspaces.ts`.
    */
   maxContinuations: number;
   /**
@@ -217,7 +217,7 @@ export const STOP_REASON: Record<string, string> = {
   station_rule_wait: "This station's rule is to wait for you when it does not finish.",
   review_running: "A read-only reviewer is checking the station after its continuations ran out.",
   continuations_exhausted:
-    "The station was continued and is still not finished. Read the last brief, fix what is in the way, then Resume.",
+    "The station hit unfinished endings until its allowance ran out and is still not finished. Resume grants a fresh allowance.",
 };
 
 /**
@@ -412,7 +412,7 @@ export const TRANSITIONS: readonly TransitionRow[] = [
       `${where(ctx)} ${endedAs(ctx)} after using up its continuations. A read-only agent is checking whether the work is actually finished.`,
     hint: () => "Nothing is needed yet — the rail acts on the verdict by itself. Resume overrides it.",
     because: (ctx) =>
-      `${where(ctx)} was continued the full number of times its allowance permits, so a reviewer is checking it before the run parks.`,
+      `${where(ctx)} hit unfinished continuations the full number of times its allowance permits, so a reviewer is checking it before the run parks.`,
     policy: {
       kind: "setting",
       key: "pipeline.maxContinuations",
@@ -428,10 +428,10 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     pulse: true,
     primary: "resume",
     secondary: ["stop"],
-    headline: (ctx) => `${where(ctx)} was continued repeatedly and is still not finished.`,
-    hint: () => "Read the last brief, fix what is in the way, then Resume — that grants a fresh set of continuations.",
+    headline: (ctx) => `${where(ctx)} hit unfinished endings repeatedly and is still not finished.`,
+    hint: () => "Resume re-queues the station with a fresh unfinished-continuation allowance. No separate fix is required unless a real blocker is in the last brief.",
     because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)} every time it was continued, and used up the continuations this station is allowed.`,
+      `${where(ctx)} ${endedAs(ctx)} without settling (crash, unreported, or verification failure) until its unfinished continuations allowance ran out.`,
     policy: {
       kind: "setting",
       key: "pipeline.maxContinuations",
@@ -716,7 +716,10 @@ export function onUnfinishedConsequence(
   const after = policy.reviewAfterContinuations
     ? "then a read-only reviewer checks it before the run parks for you"
     : "then parks for you";
-  return landsIn(policy, "WAITING_HUMAN", `Re-runs this station on the same working tree ${times}, ${after}`, {
-    waitReason: "continuations_exhausted",
-  });
+  return landsIn(
+    policy,
+    "WAITING_HUMAN",
+    `Re-queues on the same tree; an agent's own continue keeps going, unfinished endings (crash/unreported) are capped ${times}, ${after}`,
+    { waitReason: "continuations_exhausted" },
+  );
 }
