@@ -11,6 +11,7 @@ import {
   hostUnixSockets,
   settings,
 } from "../settings.ts";
+import { buildCanUseTool } from "../lib/claudePermissions.ts";
 import { fetchJson, parseClaudeUsage, providerUsageOk, providerUsageUnavailable, writeJsonAtomic } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
 
@@ -254,6 +255,11 @@ export class ClaudeAdapter implements AgentAdapter {
     };
     if (permission.allowDangerouslySkipPermissions) {
       options.allowDangerouslySkipPermissions = true;
+    } else {
+      // Project settings.json's permissions.allow/deny/ask are read by the interactive
+      // CLI, not by the SDK's own headless approval path — without this callback every
+      // non-trivial tool call is denied regardless of what settings.json says.
+      options.canUseTool = buildCanUseTool(opts.cwd, permission.permissionMode);
     }
     if (permission.disallowedTools !== undefined) {
       (options as Options & { disallowedTools?: string[] }).disallowedTools = permission.disallowedTools;
@@ -274,6 +280,11 @@ export class ClaudeAdapter implements AgentAdapter {
     if (settings.claude.maxTurns !== null) options.maxTurns = settings.claude.maxTurns;
     if (settings.claude.apiKey !== null) {
       options.env = { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey };
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      // Without this, a key inherited from the parent shell would still reach the
+      // spawned process even after the app-level setting is cleared to use OAuth.
+      options.env = { ...process.env };
+      delete options.env.ANTHROPIC_API_KEY;
     }
 
     // Streaming input mode: one message, then the iterable ends and the turn runs.
