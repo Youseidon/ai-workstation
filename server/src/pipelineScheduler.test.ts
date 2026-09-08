@@ -7,6 +7,8 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import type { ProgramRecord, PromptPipelineRule, PromptRecord, ProviderId, SuiteRecord } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
+import { scheduleHandoff } from "./handoffCoordinator.ts";
+import { respondAndContinue } from "./humanInput.ts";
 import { pipelineScheduler, resolveExecuteTarget, setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
@@ -729,6 +731,269 @@ test("named pipeline play advances suites, surfaces blocked, and keeps history",
   } finally {
     ctx.cleanup();
   }
+});
+
+test("restarting a named pipeline skips a completed suite and starts its unfinished stage", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const suiteB = workspaces.createChild("suite", ctx.program.id, { name: unique("suiteB"), overview: "" }) as SuiteRecord;
+    const promptB = workspaces.createChild("prompt", suiteB.id, { title: unique("b"), content: "second" }) as PromptRecord;
+    workspaces.addPipelineStep(promptB.id, { provider: "claude" });
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("restart"), suiteIds: [ctx.suite.id, suiteB.id] });
+    await pipelineScheduler.playNamed(saved.id);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    const interrupted = workspaces.activePipeline(suiteB.id)!;
+    workspaces.finishAgentRun(interrupted.currentRunId!, "interrupted");
+    workspaces.updatePipelineRun(interrupted.id, { state: "INTERRUPTED", currentRunId: null, stopReason: "server_restart", endedAt: new Date().toISOString() });
+    workspaces.updateNamedPipelineRun(interrupted.pipelineRunId!, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
+    workspaces.resetPromptToTodo(promptB.id, "Recovered after restart");
+
+    const resumed = await pipelineScheduler.playNamed(saved.id);
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(resumed.currentSuiteId, suiteB.id);
+    assert.deepEqual(started.map((args) => args.promptId), [ctx.prompts[0]!.id, promptB.id, promptB.id]);
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "DONE");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("replaying a named pipeline with only completed or skipped steps completes without starting agents", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    workspaces.skipPrompt(ctx.prompts[1]!.id, "USER", "Not needed");
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("finished"), suiteIds: [ctx.suite.id] });
+    await pipelineScheduler.playNamed(saved.id);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    const replayed = await pipelineScheduler.playNamed(saved.id);
+    assert.equal(replayed.state, "COMPLETE");
+    assert.ok(replayed.endedAt);
+    assert.equal(started.length, 1);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("restarting a named pipeline does not skip an unfinished blocked suite", async () => {
+  const ctx = fixture(1);
+  stubStarts();
+  try {
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("blocked"), suiteIds: [ctx.suite.id] });
+    await pipelineScheduler.playNamed(saved.id);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+    await pipelineScheduler.stopNamed(saved.id);
+    await assert.rejects(pipelineScheduler.playNamed(saved.id), (error: unknown) => error instanceof WorkspaceError && error.code === "nothing_ready");
+    assert.equal(workspaces.latestNamedPipelineRun(saved.id)?.state, "STOPPED");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("resume reuses a ready handoff after its successor run blocks again", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const saved = workspaces.createPipeline({
+      workspaceId: ctx.workspace.id,
+      name: unique("mission"),
+      suiteIds: [ctx.suite.id],
+    });
+    await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    const sourceRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: sourceRunId, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "human" });
+
+    const briefMarkdown = "# Handoff brief\n\nContinue from the existing context.";
+    const handoff = workspaces.createHandoff({ id: newId("handoff"), workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, sourceRunId, provider: "claude", model: null });
+    workspaces.updateHandoff(handoff.id, { state: "READY", recommendation: "CONTINUE", briefMarkdown, completedAt: new Date().toISOString() });
+    workspaces.preparePromptForSuccessor(ctx.prompts[0]!.id, handoff.id, briefMarkdown);
+    await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+    const failedSuccessorRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateHandoff(handoff.id, { successorRunId: failedSuccessorRunId });
+    await endStation({ runId: failedSuccessorRunId, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "process" });
+
+    for (let index = 0; index < 2; index++) {
+      const extraRunId = newId("run");
+      const credential = runContexts.create(extraRunId, ctx.workspace.id, ctx.prompts[0]!.id);
+      workspaces.beginAgentRun({
+        runId: extraRunId,
+        workspaceId: ctx.workspace.id,
+        promptId: ctx.prompts[0]!.id,
+        provider: "claude",
+        model: null,
+        tokenHash: credential.tokenHash,
+        expiresAt: credential.expiresAt,
+        role: "execute",
+      });
+      workspaces.finishAgentRun(extraRunId, "error");
+      const extra = workspaces.createHandoff({ id: newId("handoff"), workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, sourceRunId: extraRunId, provider: "claude", model: null });
+      workspaces.updateHandoff(extra.id, { state: "FAILED", error: "old failure", completedAt: new Date().toISOString() });
+    }
+
+    const result = await scheduleHandoff({
+      workspaceId: ctx.workspace.id,
+      promptId: ctx.prompts[0]!.id,
+      sourceRunId: failedSuccessorRunId,
+      sourceProvider: "claude",
+      sourceModel: null,
+      processState: "done",
+      handoffProvider: "claude",
+      successorProvider: "claude",
+      namedPipelineId: saved.id,
+    });
+    assert.equal(result.started, true);
+    assert.equal(result.reusedReady, true);
+    assert.equal(result.handoffId, handoff.id);
+    assert.equal(workspaces.handoffsForPrompt(ctx.prompts[0]!.id).length, 3);
+    assert.equal(started.at(-1)?.promptId, ctx.prompts[0]!.id);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+for (const successorModel of [null, undefined, "claude-test-model"]) {
+  test(`handoff switches a Codex station to the selected Claude successor (model ${successorModel})`, async () => {
+    const ctx = fixture(2);
+    const started = stubStarts();
+    try {
+      const promptId = ctx.prompts[0]!.id;
+      workspaces.upsertPipelineRule(promptId, { provider: "codex", model: "old-codex-model" });
+      workspaces.upsertPipelineRule(ctx.prompts[1]!.id, { provider: "codex", model: "other-codex-model" });
+      const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("switch"), suiteIds: [ctx.suite.id] });
+      await pipelineScheduler.playNamed(saved.id, { provider: "claude" });
+      const sourceRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+      assert.equal(started[0]!.provider, "codex");
+      await endStation({ runId: sourceRunId, promptId, workspaceId: ctx.workspace.id, outcome: "process" });
+      const handoff = workspaces.createHandoff({ id: newId("handoff"), workspaceId: ctx.workspace.id, promptId, sourceRunId, provider: "claude", model: null });
+      workspaces.updateHandoff(handoff.id, { state: "READY", recommendation: "CONTINUE", briefMarkdown: "Continue pending work.", completedAt: new Date().toISOString() });
+
+      const result = await scheduleHandoff({ workspaceId: ctx.workspace.id, promptId, sourceRunId, sourceProvider: "codex", sourceModel: "old-codex-model", processState: "error", successorProvider: "claude", successorModel, namedPipelineId: saved.id });
+      assert.equal(result.started, true);
+      assert.equal(started.at(-1)!.provider, "claude");
+      assert.equal(started.at(-1)!.model, successorModel ?? null);
+      assert.equal(workspaces.pipelineRule(promptId).provider, "claude");
+      assert.equal(workspaces.pipelineRule(ctx.prompts[1]!.id).provider, "codex");
+
+      const successorRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+      await endStation({ runId: successorRunId, promptId, workspaceId: ctx.workspace.id, outcome: "process" });
+      workspaces.resetPromptToTodo(promptId, "Retry selected successor");
+      await pipelineScheduler.playNamed(saved.id);
+      assert.equal(started.at(-1)!.provider, "claude");
+      assert.equal(started.at(-1)!.model, successorModel ?? null);
+    } finally {
+      ctx.cleanup();
+    }
+  });
+}
+
+test("pipeline execution override persists and clears incompatible models without changing station rules", () => {
+  const ctx = fixture(1);
+  try {
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("override"), suiteIds: [ctx.suite.id] });
+    assert.equal(saved.executionProvider, null);
+    workspaces.updatePipeline(saved.id, { executionProvider: "claude", executionModel: "claude-test-model" });
+    const reader = new Database(workspaces.databasePath, { readonly: true });
+    try {
+      assert.deepEqual(reader.prepare("SELECT execution_provider provider, execution_model model FROM pipeline WHERE id=?").get(saved.id), { provider: "claude", model: "claude-test-model" });
+    } finally { reader.close(); }
+    assert.equal(workspaces.updatePipeline(saved.id, { name: unique("rename") }).executionModel, "claude-test-model");
+    const switched = workspaces.updatePipeline(saved.id, { executionProvider: "codex" });
+    assert.equal(switched.executionModel, null);
+    assert.throws(() => workspaces.updatePipeline(saved.id, { executionProvider: "unknown" }), (error: unknown) => error instanceof WorkspaceError && error.status === 422);
+    assert.throws(() => workspaces.updatePipeline(saved.id, { executionModel: 42 }), (error: unknown) => error instanceof WorkspaceError && error.status === 422);
+    const cleared = workspaces.updatePipeline(saved.id, { executionProvider: null });
+    assert.equal(cleared.executionProvider, null);
+    assert.equal(cleared.executionModel, null);
+    assert.equal(workspaces.pipelineRule(ctx.prompts[0]!.id).provider, "claude");
+  } finally { ctx.cleanup(); }
+});
+
+test("pipeline override controls every station and suite, survives restart, and can be removed", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    for (const prompt of ctx.prompts) workspaces.upsertPipelineRule(prompt.id, { provider: "codex", model: "station-codex-model" });
+    const suiteB = workspaces.createChild("suite", ctx.program.id, { name: unique("suiteB"), overview: "" }) as SuiteRecord;
+    const promptB = workspaces.createChild("prompt", suiteB.id, { title: unique("b"), content: "third" }) as PromptRecord;
+    workspaces.addPipelineStep(promptB.id, { provider: "codex", model: "station-codex-model" });
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("override"), suiteIds: [ctx.suite.id, suiteB.id] });
+    workspaces.updatePipeline(saved.id, { executionProvider: "claude", executionModel: null });
+    await pipelineScheduler.playNamed(saved.id, { provider: "codex", model: "play-codex-model" });
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.deepEqual(started.map(run => [run.provider, run.model]), [["claude", null], ["claude", null]]);
+
+    const interrupted = workspaces.activePipeline(ctx.suite.id)!;
+    workspaces.finishAgentRun(interrupted.currentRunId!, "interrupted");
+    workspaces.updatePipelineRun(interrupted.id, { state: "INTERRUPTED", currentRunId: null, stopReason: "server_restart", endedAt: new Date().toISOString() });
+    workspaces.updateNamedPipelineRun(interrupted.pipelineRunId!, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
+    workspaces.resetPromptToTodo(ctx.prompts[1]!.id, "Recovered after restart");
+    await pipelineScheduler.playNamed(saved.id);
+    assert.equal(started.at(-1)!.provider, "claude");
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[1]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(workspaces.activeNamedPipelineRun(saved.id)!.currentSuiteId, suiteB.id);
+    assert.equal(started.at(-1)!.promptId, promptB.id);
+    assert.equal(started.at(-1)!.provider, "claude");
+
+    await endStation({ runId: workspaces.activePipeline(suiteB.id)!.currentRunId!, promptId: promptB.id, workspaceId: ctx.workspace.id, outcome: "process" });
+    workspaces.updatePipeline(saved.id, { executionProvider: null });
+    workspaces.resetPromptToTodo(promptB.id, "Use station assignments again");
+    await pipelineScheduler.playNamed(saved.id);
+    assert.equal(started.at(-1)!.provider, "codex");
+    assert.equal(started.at(-1)!.model, "station-codex-model");
+  } finally { ctx.cleanup(); }
+});
+
+test("manual course correction controls recovery and response retries without restarting completed tasks", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[1]!.id;
+    workspaces.upsertPipelineRule(promptId, { provider: "codex", model: "old-model", onBlocked: "recover", recoverProvider: "codex", recoverModel: "old-recovery-model" });
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("correct"), suiteIds: [ctx.suite.id] });
+    await pipelineScheduler.playNamed(saved.id);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId: ctx.prompts[0]!.id, workspaceId: ctx.workspace.id, outcome: "DONE" });
+    assert.equal(started.at(-1)!.provider, "codex");
+    // Saving while a process is running affects its successor, not that process.
+    workspaces.updatePipeline(saved.id, { executionProvider: "claude", executionModel: "claude-test-model" });
+    assert.equal(started.length, 2);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId, workspaceId: ctx.workspace.id, outcome: "process" });
+    assert.equal(started.at(-1)!.provider, "claude");
+    assert.equal(started.at(-1)!.model, "claude-test-model");
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId, workspaceId: ctx.workspace.id, outcome: "process" });
+    // Exhausted recovery stops the run. A fresh play still uses the saved override.
+    workspaces.resetPromptToTodo(promptId, "Retry corrected agent");
+    workspaces.upsertPipelineRule(promptId, { onBlocked: "wait" });
+    await pipelineScheduler.playNamed(saved.id);
+    await endStation({ runId: workspaces.activePipeline(ctx.suite.id)!.currentRunId!, promptId, workspaceId: ctx.workspace.id, outcome: "human" });
+    const result = await respondAndContinue(promptId, { provider: "codex", model: "old-model", content: "Continue with the saved pipeline agent." });
+    assert.equal(result.started, true);
+    assert.equal(started.at(-1)!.provider, "claude");
+    assert.equal(started.filter(run => run.promptId === ctx.prompts[0]!.id).length, 1);
+    assert.equal(workspaces.promptOutcome(ctx.prompts[0]!.id).status, "DONE");
+  } finally { ctx.cleanup(); }
+});
+
+test("handoff respects the pipeline override without rewriting underlying station assignments", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    workspaces.upsertPipelineRule(promptId, { provider: "codex", model: "station-model" });
+    const saved = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("handoff-override"), suiteIds: [ctx.suite.id] });
+    await pipelineScheduler.playNamed(saved.id);
+    const sourceRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    await endStation({ runId: sourceRunId, promptId, workspaceId: ctx.workspace.id, outcome: "process" });
+    workspaces.updatePipeline(saved.id, { executionProvider: "claude", executionModel: null });
+    const handoff = workspaces.createHandoff({ id: newId("handoff"), workspaceId: ctx.workspace.id, promptId, sourceRunId, provider: "claude", model: null });
+    workspaces.updateHandoff(handoff.id, { state: "READY", recommendation: "CONTINUE", briefMarkdown: "Continue pending work.", completedAt: new Date().toISOString() });
+    const result = await scheduleHandoff({ workspaceId: ctx.workspace.id, promptId, sourceRunId, sourceProvider: "codex", sourceModel: "station-model", successorProvider: "codex", successorModel: "stale-dialog-model", processState: "error", namedPipelineId: saved.id });
+    assert.equal(result.started, true);
+    assert.equal(started.at(-1)!.provider, "claude");
+    assert.equal(started.at(-1)!.model, null);
+    assert.equal(workspaces.pipelineRule(promptId).provider, "codex");
+    assert.equal(workspaces.pipelineRule(promptId).model, "station-model");
+  } finally { ctx.cleanup(); }
 });
 
 test("named pipeline stop records operator_stop in the archive", async () => {

@@ -407,6 +407,14 @@ migrate();
   }
 }
 
+db.transaction(() => {
+  const version = (db.prepare("SELECT MAX(version) version FROM schema_migration").get() as { version: number }).version;
+  if (version < 14) {
+    db.exec("ALTER TABLE pipeline ADD COLUMN execution_provider TEXT; ALTER TABLE pipeline ADD COLUMN execution_model TEXT;");
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(14,?)").run(new Date().toISOString());
+  }
+})();
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -439,6 +447,7 @@ const recoverAbandonedRuns=db.transaction(()=>{
   // A verification still marked RUNNING after a restart died with the process;
   // leaving it live would strand the suite badge on "verifying" forever.
   db.prepare("UPDATE suite_verification SET state='INTERRUPTED',ended_at=? WHERE state='RUNNING'").run(now);
+  db.prepare("UPDATE handoff SET state='FAILED',error='Server restarted while handoff was active',completed_at=? WHERE state IN ('QUEUED','RUNNING')").run(now);
   for(const row of rows)db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,row.id);
   const orphaned=db.prepare(`SELECT p.id,(SELECT r.id FROM agent_run r WHERE r.prompt_id=p.id AND r.role='execute' ORDER BY r.started_at DESC LIMIT 1) runId FROM prompt p WHERE p.status='IN_PROGRESS' AND NOT EXISTS(SELECT 1 FROM agent_run active WHERE active.prompt_id=p.id AND active.state IN ('STARTING','RUNNING') AND active.role='execute')`).all() as Array<{id:number;runId:string|null}>;
   for(const prompt of orphaned){const reason="No active agent run exists for this IN_PROGRESS prompt; the latest run ended without a terminal prompt status.";db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,prompt.id);db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);}
@@ -453,7 +462,7 @@ type SuiteRow = { id: number; program_id: number; name: string; overview: string
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number };
 type PipelineRuleRow = { prompt_id: number; provider: string | null; model: string | null; on_done: string; on_blocked: string; retry_limit: number; recover_provider: string | null; recover_model: string | null; updated_at: string; enabled?: number; step_order?: number };
 type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; pipeline_run_id: string | null };
-type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
+type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; execution_provider: string | null; execution_model: string | null; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
@@ -1312,6 +1321,8 @@ export const workspaces = {
       workspaceName:workspace.name,
       name:row.name,
       description:row.description,
+      executionProvider:asProviderId(row.execution_provider),
+      executionModel:row.execution_model,
       createdAt:row.created_at,
       updatedAt:row.updated_at,
       stages:this.pipelineStages(row.id),
@@ -1371,10 +1382,16 @@ export const workspaces = {
       const current=this.getPipeline(id);
       const name=input.name===undefined?current.name:requireText(input.name,"name",120);
       const description=input.description===undefined?current.description:requireText(input.description,"description",4000,true);
+      const executionProvider = "executionProvider" in input ? optionalProviderField(input.executionProvider, "executionProvider") : current.executionProvider;
+      // Clear a previous provider's model when switching or removing the override.
+      const executionModel = executionProvider === null ? null : "executionModel" in input
+        ? optionalModelField(input.executionModel, "executionModel")
+        : executionProvider === current.executionProvider ? current.executionModel : null;
       if("suiteIds" in input && current.active!==null){
         throw new WorkspaceError(409,"pipeline_active","Stop the running pipeline before changing its stages");
       }
-      db.prepare("UPDATE pipeline SET name=?,description=?,updated_at=? WHERE id=?").run(name,description,new Date().toISOString(),id);
+      db.prepare("UPDATE pipeline SET name=?,description=?,execution_provider=?,execution_model=?,updated_at=? WHERE id=?")
+        .run(name,description,executionProvider,executionModel,new Date().toISOString(),id);
       if("suiteIds" in input){
         const suiteIds=Array.isArray(input.suiteIds)?input.suiteIds.filter((value):value is number=>typeof value==="number"):[];
         db.prepare("DELETE FROM pipeline_stage WHERE pipeline_id=?").run(id);

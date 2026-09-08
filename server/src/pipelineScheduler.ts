@@ -64,7 +64,9 @@ export function resolveExecuteTarget(args: {
   playModel: string | null;
   defaultProvider: ProviderId | null;
   defaultModel: string | null;
+  executionOverride?: { provider: ProviderId; model: string | null } | null;
 }): { provider: ProviderId; model: string | null } | null {
+  if (args.executionOverride) return { ...args.executionOverride };
   if (args.recovering) {
     if (args.rule.recoverProvider === null) return null;
     return {
@@ -125,6 +127,9 @@ async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number)
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
   const rule = workspaces.pipelineRule(promptId);
   const defaults = workspaces.suitePipelineDefaults(live.suiteId);
+  const named = live.pipelineRunId === null ? null : workspaces.namedPipelineRunById(live.pipelineRunId);
+  const definition = named === null ? null : workspaces.getPipeline(named.pipelineId);
+  const executionOverride = definition?.executionProvider == null ? null : { provider: definition.executionProvider, model: definition.executionModel };
   const target = resolveExecuteTarget({
     recovering: live.recovering,
     rule,
@@ -132,12 +137,14 @@ async function startCurrentStation(pipeline: SuitePipelineRun, promptId: number)
     playModel: live.playModel,
     defaultProvider: defaults.defaultProvider,
     defaultModel: defaults.defaultModel,
+    executionOverride,
   });
   if (target === null) {
     await terminate(live, "STOPPED", "no_provider");
     throw new WorkspaceError(422, "provider_required", "Play needs a provider on the station, the play request, or the suite default.");
   }
   workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: null });
+  log.info(`start suite=${live.suiteId} prompt=${promptId} provider=${target.provider} model=${target.model ?? "configured-default"} pipeline-override=${executionOverride !== null}`);
   try {
     const { runId } = await startStationFn({
       workspaceId: live.workspaceId,
@@ -364,7 +371,14 @@ async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipel
 async function startNextNamedStage(named: PipelineRun): Promise<PipelineRun> {
   const pipeline = workspaces.getPipeline(named.pipelineId);
   const currentIndex = named.currentSuiteId === null ? -1 : pipeline.stages.findIndex((stage) => stage.suiteId === named.currentSuiteId);
-  const next = pipeline.stages[currentIndex + 1];
+  // A restarted run has no suite history of its own. Use the work item
+  // outcomes to skip stages that were already finished by an earlier run.
+  const next = pipeline.stages.slice(currentIndex + 1).find((stage) =>
+    workspaces.remainingPipelinePromptIds(stage.suiteId).some((promptId) => {
+      const status = workspaces.promptOutcome(promptId).status;
+      return status !== "DONE" && status !== "SKIPPED";
+    }),
+  );
   if (next === undefined) {
     log.info(`named-complete pipeline=${named.pipelineId}`);
     return workspaces.updateNamedPipelineRun(named.id, {

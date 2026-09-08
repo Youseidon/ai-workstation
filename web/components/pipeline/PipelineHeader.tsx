@@ -8,7 +8,7 @@ import { useDialogs } from "@/components/ui/Dialogs";
 import { cn } from "@/lib/cn";
 import type { RunStatus } from "@/lib/agentConsole";
 import type { ModelSelection } from "@/lib/useModelSelection";
-import { playKind, showPause, showStop } from "./status";
+import { blockedDiagnosis, playKind, showPause, showStop } from "./status";
 
 export function PipelineHeader({
   suite,
@@ -47,10 +47,15 @@ export function PipelineHeader({
   const waiting = suite.counts.AWAITING_RESPONSE + suite.counts.RECOVERY_NEEDED;
   const interrupted = suite.pipeline?.latest?.state === "INTERRUPTED" && suite.pipeline.active === null;
   const latest = suite.pipeline?.latest ?? pipeline ?? null;
-  const blockedKey =
+  const blockedItem =
     latest?.currentPromptId === null
       ? null
-      : suite.prompts.find((item) => item.prompt.id === latest?.currentPromptId)?.prompt.externalKey;
+      : (suite.prompts.find((item) => item.prompt.id === latest?.currentPromptId) ?? null);
+  const blocked = blockedItem === null ? null : blockedDiagnosis(blockedItem);
+  const blockedKey =
+    blockedItem === null
+      ? null
+      : blockedItem.prompt.externalKey;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -88,7 +93,7 @@ export function PipelineHeader({
           <div className="mt-0.5 text-[10px] uppercase tracking-wider text-fg-dim">
             {done}/{total} done
             {suite.counts.WORKING > 0 && ` · ${suite.counts.WORKING} working`}
-            {waiting > 0 && ` · ${waiting} waiting on human`}
+            {waiting > 0 && ` · ${waiting} needs attention`}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -131,7 +136,11 @@ export function PipelineHeader({
         <Banner tone="caution">Paused — current station will finish.</Banner>
       )}
       {pipeline?.state === "WAITING_HUMAN" && (
-        <Banner tone="warning">Waiting for you — answer in the detail pane, then Resume.</Banner>
+        <Banner tone="warning">
+          {blocked?.requiresHuman === false
+            ? `${blocked.title} — ${blocked.message}`
+            : "Waiting for you — answer in the detail pane, then Resume."}
+        </Banner>
       )}
       {interrupted && (
         <Banner tone="caution">

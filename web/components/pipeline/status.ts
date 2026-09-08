@@ -74,6 +74,80 @@ export const PIPELINE_TONE: Record<PipelineState, Tone> = {
   INTERRUPTED: "caution",
 };
 
+export type BlockedDiagnosisKind = "ready_handoff" | "process_gap" | "human_response";
+
+export interface BlockedDiagnosis {
+  kind: BlockedDiagnosisKind;
+  title: string;
+  message: string;
+  canContinueHandoff: boolean;
+  canRetryExistingContext: boolean;
+  requiresHuman: boolean;
+}
+
+function hasProcessGapIntervention(item: OperationsPrompt): boolean {
+  const latest = item.latestIntervention?.toLowerCase() ?? "";
+  return (
+    latest.includes("agent process ended") ||
+    latest.includes("without posting the required done or blocked status") ||
+    latest.includes("no active agent run")
+  );
+}
+
+function handoffHasHumanBlocker(item: OperationsPrompt): boolean {
+  const handoff = item.latestHandoff;
+  if (handoff === null) return false;
+  if (handoff.recommendation === "WAIT_FOR_HUMAN") return true;
+  return handoff.brief?.blockers.some((blocker) => blocker.requiresHuman) ?? false;
+}
+
+export function readyContinueHandoff(item: OperationsPrompt): boolean {
+  return (
+    item.latestHandoff?.state === "READY" &&
+    item.latestHandoff.recommendation === "CONTINUE" &&
+    !handoffHasHumanBlocker(item)
+  );
+}
+
+export function blockedDiagnosis(item: OperationsPrompt): BlockedDiagnosis | null {
+  if (item.operationalState !== "AWAITING_RESPONSE") return null;
+  const processGap = hasProcessGapIntervention(item);
+  const continuableHandoff = readyContinueHandoff(item);
+
+  if (continuableHandoff) {
+    return {
+      kind: "ready_handoff",
+      title: "Ready to continue",
+      message: processGap
+        ? "Codex exited without a terminal status, but a handoff brief is ready and records no human blocker."
+        : "A handoff brief is ready and recommends continuing; no human blocker is recorded.",
+      canContinueHandoff: true,
+      canRetryExistingContext: true,
+      requiresHuman: false,
+    };
+  }
+
+  if (processGap) {
+    return {
+      kind: "process_gap",
+      title: "Retryable process gap",
+      message: "The agent process ended without recording DONE or BLOCKED. No human question is recorded, so this can be retried with the existing context.",
+      canContinueHandoff: false,
+      canRetryExistingContext: true,
+      requiresHuman: false,
+    };
+  }
+
+  return {
+    kind: "human_response",
+    title: "Human response needed",
+    message: "The current station is blocked on a response before the pipeline can continue.",
+    canContinueHandoff: false,
+    canRetryExistingContext: false,
+    requiresHuman: true,
+  };
+}
+
 export function pipelineRunBadge(
   run: PipelineRun | SuitePipelineRun | null | undefined,
 ): { label: string; tone: Tone; pulse?: boolean } | null {

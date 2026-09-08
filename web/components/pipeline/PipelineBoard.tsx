@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type {
@@ -14,8 +14,8 @@ import type {
   SuitePipelineView,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { modelLabel, PROVIDER_IDS } from "@agent-console/shared";
-import { needsHumanResponse } from "@/lib/humanInput";
+import { modelLabel, MODEL_CATALOG, PROVIDER_IDS } from "@agent-console/shared";
+import { canRetryWithExistingContext, needsHumanResponse } from "@/lib/humanInput";
 import { HumanInputDialog } from "@/components/HumanInputDialog";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
@@ -41,6 +41,8 @@ import { PipelineConstellation, type ConstellationStage } from "./PipelineConste
 import { SnakeFlow } from "./SnakeFlow";
 import {
   LABEL,
+  blockedDiagnosis,
+  type BlockedDiagnosis,
   namedPlayKind,
   onBlockedChip,
   onDoneChip,
@@ -76,6 +78,9 @@ export function PipelineBoard() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const [agentOverrideOpen, setAgentOverrideOpen] = useState(false);
+  const [executionProvider, setExecutionProvider] = useState<ProviderId | "">("");
+  const [executionModel, setExecutionModel] = useState("");
   const [handoffProvider, setHandoffProvider] = useState<ProviderId>("claude");
   const [successorProvider, setSuccessorProvider] = useState<ProviderId>("claude");
   const [saveName, setSaveName] = useState("");
@@ -231,33 +236,39 @@ export function PipelineBoard() {
   }, [workspaceId, pipelineId, activeSuiteId]);
 
   const live = pipeline?.active ?? pipeline?.latest ?? null;
+  const pinnedProvider = pipeline?.executionProvider ?? null;
+  const pinnedModel = pipeline?.executionModel ?? null;
   const occupancy =
     workspaceId === null
       ? null
       : (console_.runs.find((run) => run.workspace.id === workspaceId && run.role === "execute") ?? null);
   const kind = namedPlayKind(live);
   const firstAvailable = console_.providers.find((item) => item.available)?.id ?? "claude";
+  const savedPromptProviders = console_.providers.filter((item) => item.savedPromptExecuteAvailable);
+  const firstSavedPromptProvider = savedPromptProviders[0]?.id ?? firstAvailable;
   const suiteOps = activeSuiteId === null ? null : (operationsById.get(activeSuiteId) ?? null);
   const resumeSuiteOps = live?.currentSuiteId === null || live?.currentSuiteId === undefined ? null : (operationsById.get(live.currentSuiteId) ?? null);
   const resumeSuiteRun = resumeSuiteOps?.pipeline?.active ?? resumeSuiteOps?.pipeline?.latest ?? null;
-  const resumeItem = resumeSuiteRun?.currentPromptId == null ? null : (resumeSuiteOps?.prompts.find((item) => item.prompt.id === resumeSuiteRun.currentPromptId) ?? null);
+  const resumeItem = resumeSuiteRun?.currentPromptId == null ? null : (resumeSuiteOps?.prompts.find((item) =>
+    item.prompt.id === resumeSuiteRun.currentPromptId && item.prompt.status !== "DONE" && item.prompt.status !== "SKIPPED"
+  ) ?? null);
+  const resumeReadyHandoff = resumeItem?.latestHandoff?.state === "READY" && resumeItem.latestHandoff.recommendation === "CONTINUE";
+  const resumeDiagnosis = resumeItem === null ? null : blockedDiagnosis(resumeItem);
   const steps = view?.steps ?? [];
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
   const flowSteps = steps.filter((step) => byId.has(step.promptId));
 
-  const crew = useMemo(() => {
-    return PROVIDER_IDS.map((id) => {
-      const info = console_.providers.find((item) => item.id === id);
-      const assigned = stages.some((stage) => stage.providers.includes(id));
-      const state = info === undefined ? null : agentState(info, console_.runs, console_.items, console_.lastRun);
-      const activity: AgentActivity = !assigned
-        ? "offline"
-        : (state?.activity ?? (info?.available === true ? "idle" : "offline"));
-      return { id, assigned, activity, caption: state?.caption ?? (assigned ? "on this rail" : "not assigned") };
-    });
-  }, [console_.items, console_.lastRun, console_.providers, console_.runs, stages]);
+  const crew = PROVIDER_IDS.map((id) => {
+    const info = console_.providers.find((item) => item.id === id);
+    const assigned = pinnedProvider !== null ? id === pinnedProvider : stages.some((stage) => stage.providers.includes(id));
+    const state = info === undefined ? null : agentState(info, console_.runs, console_.items, console_.lastRun);
+    const activity: AgentActivity = !assigned
+      ? "offline"
+      : (state?.activity ?? (info?.available === true ? "idle" : "offline"));
+    return { id, assigned, activity, caption: state?.caption ?? (assigned ? "on this rail" : "not assigned") };
+  });
 
-  const playBlocked = useMemo(() => {
+  const playBlocked = (() => {
     if (console_.connection !== "open") return "backend disconnected";
     if (pipelineId === null) return "save this pipeline first";
     if (draftSuiteIds.length === 0) return "add at least one suite";
@@ -267,7 +278,7 @@ export function PipelineBoard() {
       return "workspace has a writer";
     }
     return null;
-  }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live]);
+  })();
 
   const act = async (operation: () => Promise<void>, success?: string) => {
     setBusy(true);
@@ -285,6 +296,42 @@ export function PipelineBoard() {
       setBusy(false);
     }
   };
+
+  const openContinuation = (item: OperationsPrompt) => {
+    const available = savedPromptProviders.some(provider => provider.id === inputProvider) ? inputProvider : firstSavedPromptProvider;
+    const readOnly =
+      item.latestHandoff?.state === "READY" && item.latestHandoff.recommendation === "CONTINUE"
+        ? item.latestHandoff.provider
+        : (console_.providers.find((provider) => provider.available && provider.id !== "cursor")?.id ?? available);
+    setHandoffProvider(readOnly);
+    setSuccessorProvider(pinnedProvider ?? available);
+    setHandoffOpen(true);
+  };
+
+  const savePipelineAgent = (retry: boolean) => void act(async () => {
+    if (pipelineId === null) throw new Error("Save this pipeline first.");
+    await workspaceApi.updatePipeline(SERVER_URL, pipelineId, { executionProvider: executionProvider || null, executionModel: executionModel.trim() || null });
+    if (retry && resumeItem !== null && executionProvider !== "") {
+      const result = await workspaceApi.respondAndContinue(SERVER_URL, resumeItem.prompt.id, {
+        content: `Retry with the saved pipeline agent ${executionProvider}. Inspect the existing working tree and prior evidence, then continue the unfinished task.`,
+        provider: executionProvider,
+        model: executionModel.trim() || null,
+      });
+      if (!result.started) throw new Error(result.error ?? "Agent saved, but the task could not resume. Review its current status.");
+    }
+    setAgentOverrideOpen(false);
+  }, retry ? "Pipeline agent saved; retry started" : "Pipeline agent saved. Resume when ready.");
+
+  const retryExistingContext = (item: OperationsPrompt) =>
+    void act(async () => {
+      if (pipelineId === null) throw new Error("Save this pipeline before resuming it.");
+      await workspaceApi.respond(
+        SERVER_URL,
+        item.prompt.id,
+        "Retry requested with no additional context. The previous agent process ended without recording a terminal status; inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.",
+      );
+      await workspaceApi.playPipeline(SERVER_URL, pipelineId);
+    }, "Retrying with existing context");
 
   // Global beacon switched projects — drop local draft/selection for the old one.
   // Skip the first assignment from boot/URL so deep links keep pipeline/suite.
@@ -359,6 +406,18 @@ export function PipelineBoard() {
         actions={
           <div className="flex flex-wrap items-center gap-3">
             <CrewStrip crew={crew} />
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy || pipelineId === null}
+              onClick={() => {
+                setExecutionProvider(pinnedProvider ?? "");
+                setExecutionModel(pinnedModel ?? "");
+                setAgentOverrideOpen(true);
+              }}
+            >
+              Pipeline agent: {pinnedProvider ?? "station assignments"}
+            </Button>
             {live !== null && (
               <Badge tone={PIPELINE_TONE[live.state]} dot pulse={live.state === "PLAYING"} uppercase>
                 {PIPELINE_LABEL[live.state]}
@@ -411,9 +470,8 @@ export function PipelineBoard() {
                     return;
                   }
                   if (kind === "resume" && resumeItem !== null) {
-                    const available=console_.providers.find((provider)=>provider.available)?.id??firstAvailable;
-                    const readOnly=console_.providers.find((provider)=>provider.available&&provider.id!=="cursor")?.id??available;
-                    setHandoffProvider(readOnly);setSuccessorProvider(available);setHandoffOpen(true);return;
+                    openContinuation(resumeItem);
+                    return;
                   }
                   void act(async () => { await workspaceApi.playPipeline(SERVER_URL, pipelineId!); }, "Pipeline is running");
                 }}
@@ -424,6 +482,13 @@ export function PipelineBoard() {
           </div>
         }
       />
+
+      {pinnedProvider !== null && (
+        <div role="status" className="border-b border-line bg-surface-1 px-4 py-2 text-xs text-fg-muted">
+          All upcoming tasks, retries, and recovery runs use {pinnedProvider} · {modelLabel(pinnedProvider, pinnedModel) ?? "configured default"}.
+          {" "}This saved override takes priority over station assignments. An agent already running keeps its current selection.
+        </div>
+      )}
 
       {loadError !== null && (
         <div role="alert" className="border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
@@ -618,9 +683,28 @@ export function PipelineBoard() {
             {(live?.state === "WAITING_HUMAN" || needsHumanResponse(resumeItem)) && (
               <Banner tone="warning">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="min-w-0 flex-1">Blocked — the current station needs a response before the pipeline can continue.</span>
+                  <span className="min-w-0 flex-1">
+                    {resumeDiagnosis?.requiresHuman === false
+                      ? `${resumeDiagnosis.title} — ${resumeDiagnosis.message}`
+                      : "Blocked — the current station needs a response before the pipeline can continue."}
+                  </span>
                   {resumeItem !== null && needsHumanResponse(resumeItem) && (
                     <Button size="sm" variant="success" onClick={() => setInputItem(resumeItem)}>Review and respond</Button>
+                  )}
+                  {resumeItem !== null && resumeDiagnosis?.canContinueHandoff === true && (
+                    <Button
+                      size="sm"
+                      variant="success"
+                      disabled={busy || savedPromptProviders.length === 0}
+                      onClick={() => openContinuation(resumeItem)}
+                    >
+                      Continue from handoff
+                    </Button>
+                  )}
+                  {resumeItem !== null && resumeDiagnosis?.canRetryExistingContext === true && (
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => retryExistingContext(resumeItem)}>
+                      Retry with existing context
+                    </Button>
                   )}
                 </div>
               </Banner>
@@ -729,6 +813,8 @@ export function PipelineBoard() {
                           rule={step}
                           current={current}
                           occupancy={liveRun}
+                          diagnosis={current ? blockedDiagnosis(item) : null}
+                          canResolve={current && live?.state === "WAITING_HUMAN" && !busy}
                           onConfig={() => setConfigId(step.promptId)}
                           onRemove={() =>
                             void act(async () => {
@@ -736,6 +822,8 @@ export function PipelineBoard() {
                               setView(result.pipeline);
                             })
                           }
+                          onContinueHandoff={() => openContinuation(item)}
+                          onRetryExistingContext={() => retryExistingContext(item)}
                         />
                       );
                     }}
@@ -833,21 +921,123 @@ export function PipelineBoard() {
         </Modal>
       )}
 
-      {inputItem !== null && <HumanInputDialog item={inputItem} provider={inputProvider} model={models.resolve(inputProvider)} pipeline onClose={() => setInputItem(null)} />}
+      {agentOverrideOpen && pipelineId !== null && (
+        <Modal
+          open
+          onClose={() => setAgentOverrideOpen(false)}
+          title="Pipeline agent"
+          description="Choose one agent for all upcoming tasks, retries, and recovery runs. This setting survives restarts. It takes effect on the next agent start; it does not interrupt a running agent."
+          footer={<>
+            <Button variant="ghost" onClick={() => setAgentOverrideOpen(false)}>Cancel</Button>
+            <Button disabled={busy} variant="secondary" onClick={() => savePipelineAgent(false)}>Save pipeline agent</Button>
+            {resumeItem !== null && canRetryWithExistingContext(resumeItem) && <Button disabled={busy || executionProvider === "" || occupancy !== null} variant="success" onClick={() => savePipelineAgent(true)}>Save and retry current task</Button>}
+          </>}
+        >
+          <div className="space-y-4">
+            <label className="block space-y-1.5 text-xs text-fg-muted">
+              <span>Agent for this pipeline</span>
+              <select aria-label="Agent for this pipeline" value={executionProvider} onChange={event => {
+                setExecutionProvider(event.target.value as ProviderId | "");
+                setExecutionModel("");
+              }} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">
+                <option value="">Use individual station assignments</option>
+                {PROVIDER_IDS.map(provider => <option key={provider} value={provider}>{provider}{console_.providers.some(info => info.id === provider && info.savedPromptExecuteAvailable) ? "" : " · unavailable"}</option>)}
+              </select>
+            </label>
+            {executionProvider !== "" && <label className="block space-y-1.5 text-xs text-fg-muted">
+              <span>Model (optional)</span>
+              <TextInput aria-label="Pipeline model" value={executionModel} onChange={event => setExecutionModel(event.target.value)} placeholder="Use this agent’s configured default" list="pipeline-override-models" />
+              <datalist id="pipeline-override-models">{MODEL_CATALOG[executionProvider].filter(model => model.id !== null).map(model => <option key={model.id!} value={model.id!}>{model.label}</option>)}</datalist>
+            </label>}
+            <p className="text-xs text-fg-muted">Use individual station assignments to remove the override. Saving does not reset completed work or resume the pipeline.</p>
+          </div>
+        </Modal>
+      )}
+      {inputItem !== null && <HumanInputDialog item={inputItem} provider={pinnedProvider ?? inputProvider} model={pinnedProvider !== null ? pinnedModel : models.resolve(inputProvider)} pipeline onClose={() => setInputItem(null)} />}
       {handoffOpen && resumeItem !== null && pipelineId !== null && (
         <Modal
           open
           onClose={() => setHandoffOpen(false)}
           title={`Continue ${resumeItem.prompt.externalKey ?? resumeItem.prompt.title}`}
-          description="A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline."
+          description={
+            resumeReadyHandoff
+              ? "A handoff brief is already ready. The selected developer agent will continue from it without spending another handoff attempt."
+              : "A read-only agent will prepare the handoff first. After it identifies completed and pending work, the selected developer agent will continue the pipeline."
+          }
           size="md"
-          footer={<><Button variant="ghost" onClick={() => setHandoffOpen(false)}>Cancel</Button><Button variant="success" disabled={busy} onClick={() => void act(async()=>{await workspaceApi.startHandoff(SERVER_URL,resumeItem.prompt.id,{handoffProvider,handoffModel:models.resolve(handoffProvider),successorProvider,successorModel:models.resolve(successorProvider),pipelineId});setHandoffOpen(false);},"Handoff started")}>Prepare handoff and continue</Button></>}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setHandoffOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="success"
+                disabled={busy || savedPromptProviders.length === 0}
+                onClick={() =>
+                  void act(async () => {
+                    await workspaceApi.startHandoff(SERVER_URL, resumeItem.prompt.id, {
+                      handoffProvider,
+                      handoffModel: models.resolve(handoffProvider),
+                      successorProvider: pinnedProvider ?? successorProvider,
+                      successorModel: pinnedProvider !== null ? pinnedModel : models.resolve(successorProvider),
+                      pipelineId,
+                    });
+                    setHandoffOpen(false);
+                  }, resumeReadyHandoff ? "Continuing from handoff" : "Handoff started")
+                }
+              >
+                {resumeReadyHandoff ? "Continue from handoff" : "Prepare handoff and continue"}
+              </Button>
+            </>
+          }
         >
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-1.5 text-xs text-fg-muted"><span>Handoff agent · read-only</span><select value={handoffProvider} onChange={(event)=>setHandoffProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available&&provider.id!=="cursor").map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
-            <label className="space-y-1.5 text-xs text-fg-muted"><span>Successor developer agent</span><select value={successorProvider} onChange={(event)=>setSuccessorProvider(event.target.value as ProviderId)} className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg">{console_.providers.filter((provider)=>provider.available).map((provider)=><option key={provider.id} value={provider.id}>{provider.label} · {modelLabel(provider.id,models.resolve(provider.id))??"default"}</option>)}</select></label>
+            <label className="space-y-1.5 text-xs text-fg-muted">
+              <span>Handoff agent · read-only</span>
+              <select
+                value={handoffProvider}
+                disabled={resumeReadyHandoff}
+                onChange={(event) => setHandoffProvider(event.target.value as ProviderId)}
+                className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg disabled:opacity-70"
+              >
+                {resumeReadyHandoff ? (
+                  <option value={resumeItem.latestHandoff!.provider}>{resumeItem.latestHandoff!.provider} · ready brief</option>
+                ) : (
+                  console_.providers
+                    .filter((provider) => provider.available && provider.id !== "cursor")
+                    .map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.label} · {modelLabel(provider.id, models.resolve(provider.id)) ?? "default"}
+                      </option>
+                    ))
+                )}
+              </select>
+            </label>
+            <label className="space-y-1.5 text-xs text-fg-muted">
+              <span>{pinnedProvider !== null ? "Successor developer agent · pipeline override" : "Successor developer agent · saved for this station"}</span>
+              <select
+                value={pinnedProvider ?? successorProvider}
+                disabled={pinnedProvider !== null || savedPromptProviders.length === 0}
+                onChange={(event) => setSuccessorProvider(event.target.value as ProviderId)}
+                className="h-10 w-full rounded-md border border-line bg-surface-2 px-3 text-sm text-fg disabled:opacity-70"
+              >
+                {pinnedProvider !== null ? (
+                  <option value={pinnedProvider}>{pinnedProvider} · {modelLabel(pinnedProvider, pinnedModel) ?? "configured default"}</option>
+                ) : savedPromptProviders.length === 0 ? (
+                  <option value={successorProvider}>No saved-prompt provider available</option>
+                ) : (
+                  savedPromptProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label} · {modelLabel(provider.id, models.resolve(provider.id)) ?? "default"}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
           </div>
-          <p className="mt-4 text-xs leading-5 text-fg-dim">Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.</p>
+          <p className="mt-4 text-xs leading-5 text-fg-dim">
+            Nothing starts on app launch. This handoff begins only after you confirm, and its progress appears on the pipeline station before the successor starts.
+          </p>
         </Modal>
       )}
     </main>
@@ -870,7 +1060,7 @@ function CrewStrip({
   );
 }
 
-function Banner({ tone, children }: { tone: "caution" | "warning"; children: React.ReactNode }) {
+function Banner({ tone, children }: { tone: "caution" | "warning"; children: ReactNode }) {
   return (
     <div
       className={cn(
@@ -890,16 +1080,24 @@ function FlowNode({
   rule,
   current,
   occupancy,
+  diagnosis,
+  canResolve,
   onConfig,
   onRemove,
+  onContinueHandoff,
+  onRetryExistingContext,
 }: {
   index: number;
   item: OperationsPrompt;
   rule: PromptPipelineRule;
   current: boolean;
   occupancy: ReturnType<typeof stationOccupancy>;
+  diagnosis: BlockedDiagnosis | null;
+  canResolve: boolean;
   onConfig(): void;
   onRemove(): void;
+  onContinueHandoff(): void;
+  onRetryExistingContext(): void;
 }) {
   const theme = rule.provider === null ? null : providerTheme[rule.provider];
   const who = overrideChip(rule);
@@ -941,6 +1139,26 @@ function FlowNode({
             <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
               <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
               running
+            </div>
+          )}
+          {diagnosis !== null && (
+            <div className="mt-3 rounded-md border border-warning/30 bg-warning/5 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-warning">{diagnosis.title}</div>
+              <p className="mt-1 text-[11px] leading-5 text-fg-muted">{diagnosis.message}</p>
+              {canResolve && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {diagnosis.canContinueHandoff && (
+                    <Button size="sm" variant="success" onClick={onContinueHandoff}>
+                      Continue from handoff
+                    </Button>
+                  )}
+                  {diagnosis.canRetryExistingContext && (
+                    <Button size="sm" variant="secondary" onClick={onRetryExistingContext}>
+                      Retry with existing context
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

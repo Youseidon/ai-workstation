@@ -113,7 +113,9 @@ export function PipelineConstellation({
               </div>
             )}
             {ops !== undefined && ops !== null && ops.attentionCount > 0 && (
-              <div className="mt-2 text-[11px] text-warning">{ops.attentionCount} need you</div>
+              <div className="mt-2 text-[11px] text-warning">
+                {ops.attentionCount} need{ops.attentionCount === 1 ? "s" : ""} attention
+              </div>
             )}
           </button>
         );

@@ -5,7 +5,7 @@ import type { OperationsPrompt, PromptPipelineRule, SuitePipelineRun } from "@ag
 import { modelLabel } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
-import { onBlockedChip } from "./status";
+import { blockedDiagnosis, onBlockedChip } from "./status";
 
 export function RecoverySiding({
   item,
@@ -44,7 +44,7 @@ export function RecoverySiding({
           style={{ background: `color-mix(in oklab, ${hue}, 12%, transparent)` }}
         >
           <div className="text-[10px] uppercase tracking-wider text-fg-dim">recovery siding</div>
-          <div className="mt-0.5 text-[11px] text-fg-muted">{copy({ rule, pipeline, recovering, exhausted, retrying })}</div>
+          <div className="mt-0.5 text-[11px] text-fg-muted">{copy({ item, rule, pipeline, recovering, exhausted, retrying })}</div>
           {children !== undefined && children !== null && <div className="mt-1.5">{children}</div>}
         </div>
       </div>
@@ -53,23 +53,28 @@ export function RecoverySiding({
 }
 
 function copy({
+  item,
   rule,
   pipeline,
   recovering,
   exhausted,
   retrying,
 }: {
+  item: OperationsPrompt;
   rule: PromptPipelineRule;
   pipeline: SuitePipelineRun | null | undefined;
   recovering: boolean;
   exhausted: boolean;
   retrying: boolean;
 }): string {
+  const diagnosis = blockedDiagnosis(item);
   if (exhausted) return "Recovered, still blocked — pipeline stopped.";
   if (recovering) {
     const model = rule.recoverProvider === null ? null : modelLabel(rule.recoverProvider, rule.recoverModel);
     return `Recovering with ${rule.recoverProvider ?? "override"}${model === null ? "" : ` · ${model}`}`;
   }
+  if (diagnosis?.kind === "ready_handoff") return "Ready handoff recommends continuing; no human blocker is recorded.";
+  if (diagnosis?.kind === "process_gap") return "Agent process ended without a terminal status; retry with existing context.";
   if (pipeline != null && (retrying || (rule.onBlocked === "retry" && pipeline.attempt > 0))) {
     const n = Math.max(pipeline.attempt, 1);
     return `Retry ${n}/${rule.retryLimit} with ${pipeline.playProvider ?? "the play provider"}…`;

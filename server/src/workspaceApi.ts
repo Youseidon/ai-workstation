@@ -283,9 +283,9 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if(handoffProvider==="cursor")throw new WorkspaceError(422,"handoff_not_supported","Cursor cannot guarantee a read-only handoff");
       const sourceRunId=workspaces.latestExecuteRunId(promptId);const source=workspaces.runSummary(sourceRunId);
       const namedPipelineId=typeof input.pipelineId==="number"&&Number.isSafeInteger(input.pipelineId)&&input.pipelineId>0?input.pipelineId:undefined;
-      const started=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
-      if(!started)throw new WorkspaceError(409,"handoff_not_started","A handoff already exists for this run, the attempt limit was reached, or the selected provider is unavailable");
-      json(res,202,{started:true});return true;
+      const result=await scheduleHandoff({workspaceId:source.workspaceId,promptId,sourceRunId,sourceProvider:source.provider,sourceModel:source.model,processState:source.state.toLowerCase(),handoffProvider,handoffModel:typeof input.handoffModel==="string"?input.handoffModel:null,successorProvider,successorModel:typeof input.successorModel==="string"?input.successorModel:null,namedPipelineId});
+      if(!result.started)throw new WorkspaceError(409,result.code,result.message,result.detail===undefined?undefined:{detail:result.detail});
+      json(res,202,result);return true;
     }
     json(res, 404, { error: { code: "not_found", message: "Route not found" } }); return true;
   } catch (error) { failure(res, error); return true; }

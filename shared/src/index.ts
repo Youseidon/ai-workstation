@@ -816,6 +816,9 @@ export interface PipelineRecord {
   workspaceName: string;
   name: string;
   description: string;
+  /** Persistent execution override; null keeps individual station assignments. */
+  executionProvider: ProviderId | null;
+  executionModel: string | null;
   createdAt: string;
   updatedAt: string;
   stages: PipelineStage[];

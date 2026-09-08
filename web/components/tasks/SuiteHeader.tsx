@@ -67,7 +67,7 @@ export function SuiteHeader({
               {done}/{total} done
             </span>
             {suite.counts.WORKING > 0 && <span className="text-info">{suite.counts.WORKING} working</span>}
-            {waiting > 0 && <span className="text-warning">{waiting} needs you</span>}
+            {waiting > 0 && <span className="text-warning">{waiting} needs attention</span>}
             {suite.counts.READY > 0 && <span>{suite.counts.READY} ready</span>}
             {suite.attentionCount > 0 && (
               <span className="text-warning">{suite.attentionCount} attention</span>

@@ -1,14 +1,19 @@
-import { HANDOFF_RECOMMENDATIONS, type HandoffBrief, type ProviderId } from "@agent-console/shared";
+import { HANDOFF_RECOMMENDATIONS, type HandoffBrief, type HandoffRecord, type ProviderId } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
-import { workspaces } from "./workspaces.ts";
+import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const log=createLogger("handoff");
 const MAX_GENERATIONS=3;
+
+type HandoffArgs={workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number};
+export type HandoffScheduleResult=
+  | {started:true;handoffId:string;runId:string|null;reusedReady:boolean}
+  | {started:false;code:string;message:string;detail?:string;handoffId?:string};
 
 function list(value:unknown):string[]{return Array.isArray(value)?value.filter((item):item is string=>typeof item==="string").slice(0,30):[];}
 function parseBrief(text:string,originalObjective:string,terminationReason:string):HandoffBrief {
@@ -31,13 +36,56 @@ async function providerFor(requested:ProviderId):Promise<ProviderId|null>{
   return eligible.some(item=>item.id===requested)?requested:null;
 }
 
-export async function scheduleHandoff(args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;handoffProvider?:ProviderId;handoffModel?:string|null;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<boolean>{
+function canReuseReadyHandoff(handoff:HandoffRecord,sourceRunId:string):boolean{
+  return handoff.state==="READY"&&handoff.recommendation==="CONTINUE"&&handoff.briefMarkdown.trim()!==""&&(handoff.sourceRunId===sourceRunId||handoff.successorRunId===sourceRunId);
+}
+
+async function startSuccessorFromHandoff(handoff:HandoffRecord,args:HandoffArgs):Promise<HandoffScheduleResult>{
+  let successorProvider = args.successorProvider ?? args.sourceProvider;
+  let successorModel = args.successorModel !== undefined
+    ? args.successorModel
+    : successorProvider === args.sourceProvider ? args.sourceModel : null;
+  let pipelineOverride = false;
+  if (args.namedPipelineId !== undefined) {
+    const pipeline = workspaces.getPipeline(args.namedPipelineId);
+    const home = workspaces.promptHome(args.promptId);
+    if (pipeline.workspaceId !== args.workspaceId || !pipeline.stages.some(stage => stage.suiteId === home.suiteId) || !workspaces.pipelineRule(args.promptId).enabled) {
+      throw new WorkspaceError(422, "invalid_pipeline", "The work item must be an enabled step in the selected pipeline.");
+    }
+    if (pipeline.executionProvider !== null) {
+      successorProvider = pipeline.executionProvider;
+      successorModel = pipeline.executionModel;
+      pipelineOverride = true;
+    }
+  }
+  workspaces.preparePromptForSuccessor(args.promptId,handoff.id,handoff.briefMarkdown);
+  if(args.namedPipelineId!==undefined){
+    // Station assignments outrank pipeline defaults. Save the explicit choice
+    // on this station so the successor and subsequent retries use it.
+    if (!pipelineOverride) workspaces.upsertPipelineRule(args.promptId, { provider: successorProvider, model: successorModel });
+    const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:successorProvider,model:successorModel});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);workspaces.updateHandoff(handoff.id,{successorRunId:suite?.currentRunId??null});
+    return{started:true,handoffId:handoff.id,runId:suite?.currentRunId??null,reusedReady:true};
+  }
+  const {startExecute}=await import("./runService.ts");const result=await startExecute({workspaceId:args.workspaceId,promptId:args.promptId,provider:successorProvider,model:successorModel});workspaces.updateHandoff(handoff.id,{successorRunId:result.runId});
+  return{started:true,handoffId:handoff.id,runId:result.runId,reusedReady:true};
+}
+
+export async function scheduleHandoff(args:HandoffArgs):Promise<HandoffScheduleResult>{
   const outcome=workspaces.promptOutcome(args.promptId);
-  if(outcome.status==="DONE"||outcome.status==="SKIPPED")return false;
+  if(outcome.status==="DONE"||outcome.status==="SKIPPED")return{started:false,code:"already_terminal",message:"This work item is already complete or skipped."};
   const previous=workspaces.handoffsForPrompt(args.promptId);
+  const active=previous.find(item=>item.state==="QUEUED"||item.state==="RUNNING");
+  if(active!==undefined)return{started:false,code:"handoff_active",message:`A handoff is already ${active.state.toLowerCase()} for this work item.`,handoffId:active.id};
   const priorForRun=previous.find(item=>item.sourceRunId===args.sourceRunId);
-  if((priorForRun!==undefined&&priorForRun.state!=="FAILED")||(priorForRun===undefined&&previous.length>=MAX_GENERATIONS))return false;
-  const provider=await providerFor(args.handoffProvider??args.sourceProvider);if(provider===null){log.warn(`requested read-only provider unavailable prompt=${args.promptId}`);return false;}
+  if(priorForRun!==undefined&&priorForRun.state!=="FAILED"){
+    if(canReuseReadyHandoff(priorForRun,args.sourceRunId))return startSuccessorFromHandoff(priorForRun,args);
+    return{started:false,code:"handoff_exists",message:`A ${priorForRun.state.toLowerCase()} handoff already exists for this run.`,handoffId:priorForRun.id};
+  }
+  const reusable=previous.find(item=>canReuseReadyHandoff(item,args.sourceRunId));
+  if(reusable!==undefined)return startSuccessorFromHandoff(reusable,args);
+  if(priorForRun===undefined&&previous.length>=MAX_GENERATIONS)return{started:false,code:"handoff_attempt_limit",message:`This work item already has ${MAX_GENERATIONS} handoff attempts. Review an existing handoff or reset the item before creating another.`};
+  const requestedProvider=args.handoffProvider??args.sourceProvider;
+  const provider=await providerFor(requestedProvider);if(provider===null){log.warn(`requested read-only provider unavailable prompt=${args.promptId}`);return{started:false,code:"handoff_provider_unavailable",message:`${requestedProvider} is not available for a read-only handoff.`};}
   const handoffModel=args.handoffModel??(provider===args.sourceProvider?args.sourceModel:null);
   const id=priorForRun?.id??newId("handoff");const record=priorForRun===undefined?workspaces.createHandoff({id,workspaceId:args.workspaceId,promptId:args.promptId,sourceRunId:args.sourceRunId,provider,model:handoffModel}):workspaces.updateHandoff(id,{state:"QUEUED",handoffRunId:null,recommendation:null,brief:null,briefMarkdown:"",error:null,completedAt:null});
   const runId=newId("run");const credential=runContexts.create(runId,args.workspaceId,args.promptId);
@@ -50,7 +98,7 @@ export async function scheduleHandoff(args:{workspaceId:number;promptId:number;s
   workspaces.markAgentRunRunning(runId);
   const saved=workspaces.resolvePrompt(args.workspaceId,args.promptId);
   runHub.start({handle,workspace:{id:args.workspaceId,name:workspaces.get(args.workspaceId).name,workDirectory:workspaces.get(args.workspaceId).workDirectory},source:{type:"handoff",handoffId:id,promptId:args.promptId,promptKey:saved.externalKey,title:saved.title,sourceRunId:args.sourceRunId},role:"handoff",permissionMode:handle.permissionMode});
-  void handle.done.catch(error=>log.error("run failed",error));return true;
+  void handle.done.catch(error=>log.error("run failed",error));return{started:true,handoffId:id,runId,reusedReady:false};
 }
 
 async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"error",answer:string,args:{workspaceId:number;promptId:number;sourceRunId:string;sourceProvider:ProviderId;sourceModel:string|null;processState:string;successorProvider?:ProviderId;successorModel?:string|null;namedPipelineId?:number}):Promise<void>{
@@ -60,13 +108,7 @@ async function finishHandoff(id:string,runId:string,state:"done"|"interrupted"|"
     const context=workspaces.agentContext(args.workspaceId,args.promptId);const brief=parseBrief(answer,context.prompt.content,`Agent process ended ${args.processState}`);const rendered=markdown(brief);
     workspaces.updateHandoff(id,{state:"READY",recommendation:brief.recommendation,brief,briefMarkdown:rendered,completedAt:new Date().toISOString()});
     if(brief.recommendation==="CONTINUE"){
-      workspaces.preparePromptForSuccessor(args.promptId,id,rendered);
-      const successorProvider=args.successorProvider??args.sourceProvider;const successorModel=args.successorModel??args.sourceModel;
-      if(args.namedPipelineId!==undefined){
-        const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:successorProvider,model:successorModel});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);workspaces.updateHandoff(id,{successorRunId:suite?.currentRunId??null});
-      }else{
-        const {startExecute}=await import("./runService.ts");const result=await startExecute({workspaceId:args.workspaceId,promptId:args.promptId,provider:successorProvider,model:successorModel});workspaces.updateHandoff(id,{successorRunId:result.runId});
-      }
+      await startSuccessorFromHandoff(workspaces.handoffById(id)!,args);
     }else{
       const {pipelineScheduler}=await import("./pipelineScheduler.ts");
       await pipelineScheduler.onExecuteEnded({runId:args.sourceRunId,workspaceId:args.workspaceId,promptId:args.promptId,processState:args.processState as never});
