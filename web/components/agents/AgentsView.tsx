@@ -206,7 +206,7 @@ export function AgentsView() {
           <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
             <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Runtime</h2>
             <p className="mt-1 text-[11px] text-fg-dim">
-              Shared with every provider. Host access is required for docker compose and other host sockets.
+              Shared with every provider. Host access enables live local API calls, docker compose, and other host services; saved prompts can fall back to inline status reporting.
             </p>
             {generalFields.map((field) => (
               <SettingRow

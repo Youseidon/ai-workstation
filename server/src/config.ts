@@ -21,15 +21,31 @@ function int(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function origin(name: string, fallback: string): string {
+  const value = str(name, fallback);
+  try {
+    const url = new URL(value);
+    return url.origin;
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Boot-time only. Everything a user can change while the server is running
  * lives in `settings.ts` instead, which layers saved overrides over these
  * same `.env` values.
  */
+const host = str("HOST", "127.0.0.1");
+const port = int("PORT", 4000);
+const agentHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+
 export const config = {
   repoRoot,
-  host: str("HOST", "127.0.0.1"),
-  port: int("PORT", 4000),
+  host,
+  port,
+  /** Base URL embedded in prompts for agent-side context/status calls. */
+  agentApiBaseUrl: origin("AGENT_API_BASE_URL", `http://${agentHost}:${port}`),
   /** Origins allowed to open a WebSocket / call the REST endpoints. */
   allowedOrigins: str("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     .split(",")

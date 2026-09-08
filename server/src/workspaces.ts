@@ -739,14 +739,14 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt);
   }); },
   markAgentRunRunning(runId:string):void { db.prepare("UPDATE agent_run SET state='RUNNING' WHERE id=? AND state='STARTING'").run(runId); },
-  finishAgentRun(runId:string,state:string,answer=""):void { sqliteGuard(()=>db.transaction(()=>{
+  finishAgentRun(runId:string,state:string,answer="",terminalStatusFailure:string|null=null):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;if(!run)return;
     const now=new Date().toISOString();db.prepare("UPDATE agent_run SET state=?,ended_at=? WHERE id=?").run(state.toUpperCase(),now,runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};
     if(prompt.status==="IN_PROGRESS"){
-      const reason=`Agent process ended ${state} without posting the required DONE or BLOCKED status.`;
+      const reason=terminalStatusFailure??`Agent process ended ${state} without posting the required DONE or BLOCKED status.`;
       db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,run.prompt_id);
       db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(run.prompt_id,runId,reason,now);

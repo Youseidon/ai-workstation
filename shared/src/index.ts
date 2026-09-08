@@ -107,6 +107,10 @@ export interface ProviderInfo {
   available: boolean;
   /** Human-readable reason shown in a tooltip when `available` is false. */
   reason: string | null;
+  /** Whether saved-prompt execute has a supported context/status reporting path. */
+  savedPromptExecuteAvailable: boolean;
+  /** Human-readable note when saved-prompt execute uses a fallback path. */
+  savedPromptExecuteReason: string | null;
   /** Version string when cheaply obtainable, else null. */
   version: string | null;
   /** How the provider is driven, for display purposes. */

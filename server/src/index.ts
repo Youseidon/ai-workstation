@@ -13,7 +13,7 @@ import { runContexts } from "./runContext.ts";
 import { contextMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
-import { ProviderUnavailableError, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, agentApiUrl, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 
 const log = createLogger("server");
 
@@ -88,6 +88,10 @@ async function broadcastSettingsChange(): Promise<void> {
   }
 }
 
+function progressApiMarkdown(runId: string, token: string): string {
+  return `## Progress API\n\nThis run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.\n\nPost a remark with:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "remarks")} -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"What changed or was discovered"}'\n\`\`\`\n\nAllowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.\n\nBefore finishing, post exactly one terminal prompt status. For success:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "status")} -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'\n\`\`\`\n\nBLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "status")} -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'\n\`\`\`\n\nEvery requestId must be unique for this run.\n\n`;
+}
+
 const httpServer = createServer((req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") {
@@ -115,7 +119,7 @@ const httpServer = createServer((req, res) => {
         }
         if(memory.promptId===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
         const context=workspaces.agentContext(memory.workspaceId,memory.promptId);
-        if(req.headers.accept?.includes("application/json"))sendJson(res,200,context);else{const api=`## Progress API\n\nThis run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.\n\nPost a remark with:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"What changed or was discovered"}'\n\`\`\`\n\nAllowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.\n\nBefore finishing, post exactly one terminal prompt status. For success:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'\n\`\`\`\n\nBLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' http://127.0.0.1:${config.port}/api/agent/runs/${runId}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'\n\`\`\`\n\nEvery requestId must be unique for this run.\n\n`;res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(`${contextMarkdown(context)}\n\n${api}`);}return;
+        if(req.headers.accept?.includes("application/json"))sendJson(res,200,context);else{const api=progressApiMarkdown(runId,token);res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(`${contextMarkdown(context)}\n\n${api}`);}return;
       }
       if(operation==="state"&&req.method==="GET"){
         if(memory.promptId===null){sendJson(res,200,{events:[],remarks:[],runs:[]});return;}

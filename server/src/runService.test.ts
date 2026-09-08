@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { RunHandle } from "./runner.ts";
 import { runHub } from "./runHub.ts";
-import { ProviderUnavailableError, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, agentApiReachabilityProblem, offlineStatusRequestId, parseOfflineAgentStatus, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { settings } from "./settings.ts";
 import { WorkspaceError } from "./workspaces.ts";
 
 function fakeHandle(runId: string): RunHandle {
@@ -29,6 +30,17 @@ function firstIndex(source: string, pattern: string): number {
   const index = source.indexOf(pattern);
   assert.ok(index >= 0, `missing ${pattern}`);
   return index;
+}
+
+function withHostAccess<T>(enabled: boolean, fn: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(settings, "hostAccess");
+  Object.defineProperty(settings, "hostAccess", { configurable: true, enumerable: true, get: () => enabled });
+  try {
+    return fn();
+  } finally {
+    if (previous) Object.defineProperty(settings, "hostAccess", previous);
+    else delete (settings as { hostAccess?: unknown }).hostAccess;
+  }
 }
 
 const workspace = { id: 91001, name: "Lock", workDirectory: "/tmp/run-service-lock" };
@@ -104,8 +116,10 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
 test("startConsult does not take the writer lock and forces the consult sandbox", () => {
   const body = functionBody(readFileSync(new URL("./runService.ts", import.meta.url), "utf8"), "startConsult");
   assert.doesNotMatch(body, /activeForWorkspace|activePipelineForWorkspace|beginAgentRun|onExecuteEnded/);
+  assert.doesNotMatch(body, /curl -fsS|agentApiUrl/);
   assert.match(body, /consultsForWorkspace/);
   assert.match(body, /beginConsultRun/);
+  assert.match(body, /consultContextText/);
   assert.match(body, /permissionOverride:\s*"consult"/);
   assert.doesNotMatch(body, /permissionOverride:\s*"inherit"/);
   assert.doesNotMatch(body, /hostAccess/);
@@ -115,6 +129,51 @@ test("startConsult does not take the writer lock and forces the consult sandbox"
   const begin = firstIndex(body, "beginConsultRun");
   const launch = firstIndex(body, "startRun(");
   assert.ok(cursor < cap && cap < provider && provider < begin && begin < launch);
+});
+
+test("saved-prompt execute uses offline status reporting when the provider cannot reach the agent API", () => {
+  const source = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /agent_api_unreachable/);
+  assert.match(source, /offlineCompletionProtocol/);
+  assert.match(source, /parseOfflineAgentStatus/);
+  withHostAccess(false, () => {
+    assert.match(agentApiReachabilityProblem("codex") ?? "", /cannot reach the saved-prompt context/);
+    assert.match(agentApiReachabilityProblem("grok") ?? "", /cannot reach the saved-prompt context/);
+    assert.equal(agentApiReachabilityProblem("claude"), null);
+    assert.equal(agentApiReachabilityProblem("cursor"), null);
+  });
+  withHostAccess(true, () => {
+    assert.equal(agentApiReachabilityProblem("codex"), null);
+    assert.equal(agentApiReachabilityProblem("grok"), null);
+  });
+});
+
+test("parseOfflineAgentStatus accepts the final agent-status block", () => {
+  assert.deepEqual(
+    parseOfflineAgentStatus(`work complete\n\n\`\`\`agent-status\n{"status":"DONE","reason":"Completed","verificationSummary":"npm test passed"}\n\`\`\``),
+    { status: "DONE", reason: "Completed", verificationSummary: "npm test passed" },
+  );
+  assert.deepEqual(
+    parseOfflineAgentStatus(`AGENT_STATUS {"status":"BLOCKED","reason":"Need deployment access","verificationSummary":"Grant deploy token"}`),
+    { status: "BLOCKED", reason: "Need deployment access", verificationSummary: "Grant deploy token" },
+  );
+  assert.equal(parseOfflineAgentStatus(`{"status":"BLOCKED","reason":"Need deployment access"}`), null);
+});
+
+test("offline status request id is valid even when the run id contains underscores", () => {
+  const commandRequestIdPattern = /^[-0-9a-zA-Z]{8,100}$/;
+  const runId = "run_b0dd1f00-64d0-4664-83b4-4f63e5dd6b3d";
+  assert.doesNotMatch(`offline-status-${runId}`, commandRequestIdPattern);
+  assert.match(offlineStatusRequestId(), commandRequestIdPattern);
+});
+
+test("offline status apply failures are surfaced through prompt finalization", () => {
+  const runService = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
+  const workspaces = readFileSync(new URL("./workspaces.ts", import.meta.url), "utf8");
+  assert.match(runService, /offlineStatusApplyFailureReason/);
+  assert.match(runService, /finishAgentRun\(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure\)/);
+  assert.match(workspaces, /terminalStatusFailure/);
+  assert.match(workspaces, /terminalStatusFailure\?\?`Agent process ended/);
 });
 
 test("startConsult does not 409 when an execute owns the workspace", async () => {

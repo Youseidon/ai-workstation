@@ -68,6 +68,8 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     label: adapter.label,
     available: report.available,
     reason: report.reason,
+    savedPromptExecuteAvailable: report.available,
+    savedPromptExecuteReason: report.available ? null : report.reason,
     version: report.version,
     transport: adapter.transport,
     binary: report.binary,

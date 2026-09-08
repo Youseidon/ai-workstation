@@ -57,13 +57,13 @@ const FIELDS: FieldDef[] = [
   },
   {
     key: "hostAccess",
-    label: "Host access (Docker)",
+    label: "Host access",
     group: "General",
     type: "boolean",
     envVar: "AGENT_HOST_ACCESS",
     fallback: false,
     description:
-      "Lets every provider reach Docker and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, and Grok's OS sandbox is turned off. Needed for docker compose, local stacks, and /var/run/docker.sock. The per-provider sandbox settings below are ignored while this is on.",
+      "Lets every provider reach Docker, local backend APIs, and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, and Grok's OS sandbox is turned off. Needed for live saved-prompt Progress API calls from sandboxed CLIs, docker compose, local stacks, and /var/run/docker.sock. Saved-prompt execution can fall back to inline context and final status reporting while this is off. The per-provider sandbox settings below are ignored while this is on.",
     isDangerous: (value) => value === true,
   },
 
@@ -801,6 +801,17 @@ export function effectiveGrokPermissionMode(): string {
 /** Effective Grok sandbox profile after the host-access overlay. */
 export function effectiveGrokSandboxMode(): string {
   return settings.hostAccess ? "off" : settings.grok.sandboxMode;
+}
+
+export function savedPromptExecuteReachabilityProblem(provider: ProviderId): string | null {
+  if (settings.hostAccess) return null;
+  if (provider === "codex" && effectiveCodexSandboxMode() !== "danger-full-access") {
+    return "Codex runs in a sandbox without host networking, so it cannot reach the saved-prompt context and Progress API on the local backend. Enable Host access or set Codex sandbox mode to danger-full-access before running saved work items.";
+  }
+  if (provider === "grok" && effectiveGrokSandboxMode() !== "off") {
+    return "Grok runs in an OS sandbox without host networking, so it cannot reach the saved-prompt context and Progress API on the local backend. Enable Host access or set Grok sandbox mode to off before running saved work items.";
+  }
+  return null;
 }
 
 /** Effective Cursor --force after the host-access overlay. */

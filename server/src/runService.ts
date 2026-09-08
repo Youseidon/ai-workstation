@@ -7,12 +7,92 @@ import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
+import { savedPromptExecuteReachabilityProblem } from "./settings.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const CONSULT_LIMIT = 3;
 
 const log = createLogger("run");
+
+export function agentApiUrl(runId: string, operation: "context" | "remarks" | "status" | "state"): string {
+  return `${config.agentApiBaseUrl}/api/agent/runs/${runId}/${operation}`;
+}
+
+export function agentApiReachabilityProblem(provider: ProviderId): string | null {
+  return savedPromptExecuteReachabilityProblem(provider);
+}
+
+export interface OfflineAgentStatus {
+  status: "DONE" | "BLOCKED";
+  reason: string;
+  verificationSummary: string;
+}
+
+export function offlineStatusRequestId(): string {
+  return "offline-status-final";
+}
+
+export function parseOfflineAgentStatus(text: string): OfflineAgentStatus | null {
+  const candidates = [...text.matchAll(/```(?:agent-status|json)?\s*([\s\S]*?)```/gi)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean)
+    .reverse();
+  const marker = text.lastIndexOf("AGENT_STATUS");
+  if (marker >= 0) {
+    const match = text.slice(marker).match(/\{[\s\S]*\}/);
+    if (match) candidates.unshift(match[0]);
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>;
+      const raw = (parsed.agentStatus && typeof parsed.agentStatus === "object" ? parsed.agentStatus : parsed) as Record<string, unknown>;
+      const status = raw.status;
+      if (status !== "DONE" && status !== "BLOCKED") continue;
+      const reason = typeof raw.reason === "string" ? raw.reason.trim() : "";
+      const verificationSummary = typeof raw.verificationSummary === "string" ? raw.verificationSummary.trim() : "";
+      if (status === "DONE" && verificationSummary === "") continue;
+      if (status === "BLOCKED" && (reason === "" || verificationSummary === "")) continue;
+      return { status, reason: status === "DONE" && reason === "" ? "Completed" : reason, verificationSummary };
+    } catch {
+      // Keep scanning; agents often include other fenced blocks before the final marker.
+    }
+  }
+  return null;
+}
+
+function offlineStatusApplyFailureReason(status: OfflineAgentStatus["status"], error: unknown): string {
+  const detail = error instanceof WorkspaceError
+    ? `${error.code}: ${error.message}`
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  return `Internal orchestration error: parsed ${status} agent-status, but failed to apply it: ${detail}`;
+}
+
+function offlineCompletionProtocol(reason: string): string {
+  return `## Offline completion reporting
+
+The local Progress API is not reachable from this provider sandbox:
+
+${reason}
+
+Do not call the Progress API. The full authoritative work-item context is already included above. Before your final response ends, include exactly one fenced \`agent-status\` block so the console can update the prompt after the process exits.
+
+For success:
+
+\`\`\`agent-status
+{"status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}
+\`\`\`
+
+For a real blocker:
+
+\`\`\`agent-status
+{"status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}
+\`\`\`
+
+The BLOCKED rules from the work-item protocol still apply.`;
+}
 
 export interface StartExecuteArgs {
   workspaceId: number;
@@ -116,6 +196,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId), "clarify")}\n\n## Human question\n\n${question.trim()}`;
     } else {
       if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
+      const reachabilityProblem = agentApiReachabilityProblem(provider);
       const credential = runContexts.create(plannedRunId, workspaceId, promptId);
       try {
         workspaces.beginAgentRun({
@@ -133,8 +214,12 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         throw error;
       }
       activeContextRunId = plannedRunId;
-      const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
-      resolvedPrompt = `Execute saved work item ${record.externalKey ?? record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
+      if (reachabilityProblem === null) {
+        const contextUrl = agentApiUrl(plannedRunId, "context");
+        resolvedPrompt = `Execute saved work item ${record.externalKey ?? record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
+      } else {
+        resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId))}\n\n${offlineCompletionProtocol(reachabilityProblem)}`;
+      }
     }
   } else {
     resolvedPrompt = prompt?.trim() ?? "";
@@ -145,6 +230,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
 
   let clarificationAnswer = "";
   let executionAnswer = "";
+  let terminalStatusApplyFailure: string | null = null;
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),
@@ -169,7 +255,22 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       const endedPromptId = savedPrompt?.id ?? promptId;
       const endedWorkspaceId = workspace.id;
       if (activeContextRunId !== null) {
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer);
+        if (state === "done") {
+          const offlineStatus = parseOfflineAgentStatus(executionAnswer);
+          if (offlineStatus !== null) {
+            try {
+              workspaces.updateAgentStatus(activeContextRunId, {
+                requestId: offlineStatusRequestId(),
+                expectedStatus: "IN_PROGRESS",
+                ...offlineStatus,
+              });
+            } catch (error) {
+              terminalStatusApplyFailure = offlineStatusApplyFailureReason(offlineStatus.status, error);
+              log.warn("could not apply offline agent status", error);
+            }
+          }
+        }
+        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure);
         runContexts.complete(activeContextRunId);
         activeContextRunId = null;
       }
@@ -261,9 +362,9 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
 
   const writer = runHub.activeExecuteForWorkspace(workspaceId);
   const liveBanner = liveTreeBanner(writer === undefined ? null : { provider: writer.provider, model: writer.model });
-  const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
+  const context = consultContextText(workspaceId, promptId, question);
   let resolvedPrompt =
-    `${liveBanner}Answer a research question about this working tree. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable. The tree may be changing under you if a writer is active.\n\nBefore answering, retrieve the authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nDo not post remarks or status. You cannot use the Progress API.\n\n## Question\n\n${question}`;
+    `${liveBanner}Answer a research question about this working tree. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable. The tree may be changing under you if a writer is active.\n\n${context}`;
   if (savedPrompt === null && workspace.description.trim() !== "") {
     resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
   }

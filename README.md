@@ -142,7 +142,7 @@ gitignored) and survive restarts.
   is told whether a key is set, never its value.
 - **Dangerous values are called out** — selecting `bypassPermissions`,
   `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, or turning on
-  **Host access (Docker)** is flagged inline and asks for confirmation before saving.
+  **Host access** is flagged inline and asks for confirmation before saving.
 
 The Agents page is generated from the field table in `server/src/settings.ts`.
 Adding a new tunable is one entry there — label, group, type, `.env` variable,
@@ -190,8 +190,16 @@ strict `IN_PROGRESS` → `DONE`/`BLOCKED` transition through `POST .../status`.
 Every mutation is idempotent, audited, transactionally applied, and scoped to
 the selected prompt. Custom prompts continue to be sent directly.
 
-Host, port, and `ALLOWED_ORIGINS` are deliberately **not** editable from the UI —
-they are boot-time only and live in `config.ts`.
+Saved-prompt execute runs use the console's local agent API when the provider can
+reach it, which lets the agent fetch context and post live remarks/status. If a
+provider is sandboxed away from host networking, the console inlines the
+authoritative context and asks for a final machine-readable `agent-status` block;
+the server records DONE/BLOCKED after the process exits. Use **Host access** or
+`AGENT_API_BASE_URL` only when agents need live Progress API calls or other host
+services.
+
+Host, port, `AGENT_API_BASE_URL`, and `ALLOWED_ORIGINS` are deliberately **not**
+editable from the UI — they are boot-time only and live in `config.ts`.
 
 ---
 
@@ -204,7 +212,7 @@ changed at any time from the Agents page:
 
 | Provider | Env var | Default | What it means |
 |---|---|---|---|
-| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
+| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker, local backend APIs, and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`. Needed for live Progress API calls from sandboxed CLIs and for `docker compose` — Codex's `workspace-write` sandbox cannot connect to host services such as `/var/run/docker.sock`, but saved-prompt execution can fall back to inline context and final status reporting. |
 | Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
 | Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
 | Cursor | `CURSOR_FORCE` | `true` | Cursor has no sandbox: `--force` means it will not stop to ask. Set `false` to keep approvals on (headless runs may then stall). |
@@ -214,12 +222,12 @@ changed at any time from the Agents page:
 fit for a headless console: prompts have nowhere to go, so tool calls get denied
 or the run stalls. Use `acceptEdits`, `plan`, or `dontAsk`.
 
-**Docker / compose.** Codex's default `workspace-write` sandbox cannot connect to
-`/var/run/docker.sock` even when your user is in the `docker` group — that is a
-sandbox deny, not a missing CLI. Turn on **Host access (Docker)** on the Agents
-page (or set `AGENT_HOST_ACCESS=true` and restart the server). The OS user that
-runs this console still has to be in the `docker` group, or Docker itself will
-refuse the socket.
+**Host services.** Codex's default `workspace-write` sandbox cannot connect to
+the console's own local API or `/var/run/docker.sock` even when those services
+are running — that is a sandbox deny, not a missing process. Turn on **Host
+access** on the Agents page (or set `AGENT_HOST_ACCESS=true` and restart the
+server). The OS user that runs this console still has to have permission for
+the target service, or the service itself will refuse the request.
 
 Each run uses the selected workspace's directory as `cwd`. Relative paths on a
 workspace resolve against the repo root. **Point a workspace at the project you
