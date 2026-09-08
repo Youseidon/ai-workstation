@@ -1698,14 +1698,16 @@ function buildStoppedRemarks(promptId:number):PromptRemark[] {
   ).all(promptId,...kinds,limit) as PromptRemark[];
   const byId=new Map<number,PromptRemark>();
   for(const remark of select(["CONTINUATION"],1))byId.set(remark.id,remark);
-  for(const remark of select(["BLOCKER"],1))byId.set(remark.id,remark);
-  const lastStatus=db.prepare(
-    "SELECT created_at createdAt FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1",
-  ).get(promptId) as {createdAt:string}|undefined;
+  const blocker=select(["BLOCKER"],1)[0];
+  if(blocker!==undefined)byId.set(blocker.id,blocker);
   const human=select(["HUMAN_RESPONSE"],1)[0];
-  // A human answer that landed after the last status change is still pending
-  // action — include it next to the blocker so the agent does not re-ask.
-  if(human!==undefined&&(lastStatus===undefined||human.createdAt>lastStatus.createdAt)){
+  // Pair an answer with the blocker it resolves, not with the latest status.
+  // Starting the resumed run writes a newer IN_PROGRESS status before this
+  // context is assembled; comparing against that status hid every answer at
+  // exactly the moment the next agent needed to read it. Both records are
+  // remarks, so their ids give us an unambiguous ordering even when SQLite
+  // timestamps land in the same millisecond.
+  if(human!==undefined&&(blocker===undefined||human.id>blocker.id)){
     byId.set(human.id,human);
   }
   for(const remark of select(["PROGRESS","VERIFICATION"],3))byId.set(remark.id,remark);

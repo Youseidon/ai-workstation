@@ -278,3 +278,54 @@ test("agentContext supplies parent, stopped remarks, and no AGENT_RESPONSE by de
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("resumed execute context keeps the human answer after run_started", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-human-response-"));
+  const workspace = workspaces.create({ name: unique("ws"), workDirectory: dir });
+  const program = workspaces.createChild("program", workspace.id, { name: unique("prog") }) as ProgramRecord;
+  const suite = workspaces.createChild("suite", program.id, { name: unique("suite") }) as SuiteRecord;
+  const prompt = workspaces.createChild("prompt", suite.id, {
+    title: "Human decision", content: "Wait for the operator's disposition.",
+  }) as PromptRecord;
+  const firstRunId = newId("run");
+  const firstCredential = runContexts.create(firstRunId, workspace.id, prompt.id);
+  const secondRunId = newId("run");
+  const secondCredential = runContexts.create(secondRunId, workspace.id, prompt.id);
+
+  try {
+    workspaces.beginAgentRun({
+      runId: firstRunId, workspaceId: workspace.id, promptId: prompt.id,
+      provider: "codex", model: null,
+      tokenHash: firstCredential.tokenHash, expiresAt: firstCredential.expiresAt,
+    });
+    workspaces.markAgentRunRunning(firstRunId);
+    workspaces.updateAgentStatus(firstRunId, {
+      requestId: unique("blocked"),
+      expectedStatus: "IN_PROGRESS",
+      status: "BLOCKED",
+      reason: "The unused routes need a disposition.",
+      verificationSummary: "Choose port, delete, or defer.",
+    });
+    workspaces.finishAgentRun(firstRunId, "done");
+
+    workspaces.respondToBlockedPrompt(prompt.id, {
+      content: "Port all routes and retain scope-audit.json as the record.",
+    });
+    workspaces.beginAgentRun({
+      runId: secondRunId, workspaceId: workspace.id, promptId: prompt.id,
+      provider: "codex", model: null,
+      tokenHash: secondCredential.tokenHash, expiresAt: secondCredential.expiresAt,
+    });
+
+    const context = workspaces.agentContext(workspace.id, prompt.id);
+    const markdown = contextMarkdown(context, "execute");
+    assert.equal(context.prompt.status, "IN_PROGRESS");
+    assert.match(markdown, /Port all routes and retain scope-audit\.json as the record\./);
+    assert.match(markdown, /Choose port, delete, or defer\./);
+  } finally {
+    runContexts.revoke(firstRunId);
+    runContexts.revoke(secondRunId);
+    workspaces.remove(workspace.id);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
