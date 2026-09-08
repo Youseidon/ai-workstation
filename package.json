@@ -23,7 +23,7 @@
     "concurrently": "^9.1.2"
   },
   "engines": {
-    "node": ">=20.10"
+    "node": ">=22"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

@@ -40,6 +40,9 @@ workspace/*
 # Local agent/runtime metadata injected by development tools
 .agents/
 .codex/
+# Machine-specific Claude command approvals
+.claude/settings.json
+.claude/settings.local.json
 
 # Logs and diagnostic output
 *.log
