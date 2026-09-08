@@ -6,7 +6,7 @@ import { cn } from "@/lib/cn";
 import type { RunStatus } from "@/lib/agentConsole";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
-import { onBlockedChip, overrideChip, stationOccupancy, TONE, LABEL } from "./status";
+import { onUnfinishedChip, overrideChip, stationOccupancy, TONE, LABEL } from "./status";
 
 export interface SubStepRuleView {
   rule: PromptPipelineRule;
@@ -68,7 +68,7 @@ export function SubPipeline({
   const pinned = items.filter((item) => !ruleFor(item.prompt.id).inherited).length;
   // The first slice the scheduler will refuse to walk past.
   const blocking = items.find(
-    (item) => item.operationalState === "RECOVERY_NEEDED" || item.operationalState === "BLOCKED",
+    (item) => item.prompt.recoverable || item.operationalState === "BLOCKED",
   );
 
   return (
@@ -121,7 +121,7 @@ export function SubPipeline({
         <div className="mt-3 border-t border-line pt-2 text-[11px] text-fg-dim">
           Inherited from this step: <span className="text-fg-muted">{overrideChip(parentRule) ?? "no agent yet"}</span>
           {" · on blocked "}
-          <span className="text-fg-muted">{onBlockedChip(parentRule)}</span>
+          <span className="text-fg-muted">{onUnfinishedChip(parentRule)}</span>
         </div>
       </div>
 
@@ -153,7 +153,7 @@ export function SubPipeline({
                 onOpenSubPipeline={item.children.length > 0 ? () => onOpen(item.prompt.id) : undefined}
                 onConfig={readOnly || busy ? undefined : () => onConfig(item.prompt.id)}
                 onUseStationSettings={readOnly || busy ? undefined : () => onUseStationSettings(item.prompt.id)}
-                onRetry={readOnly || busy || item.operationalState !== "RECOVERY_NEEDED" ? undefined : () => onRetry(item.prompt.id)}
+                onRetry={readOnly || busy || !item.prompt.recoverable ? undefined : () => onRetry(item.prompt.id)}
                 onRemove={readOnly || busy || isDone(item) ? undefined : () => onSkip(item.prompt.id)}
                 removeLabel="Skip"
               />

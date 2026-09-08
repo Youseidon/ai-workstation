@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port ${WEB_PORT:-3000}",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test components/**/*.test.ts lib/**/*.test.ts"
+    "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
   },
   "dependencies": {
     "@agent-console/shared": "*",

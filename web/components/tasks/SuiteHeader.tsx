@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { OperationsSuite } from "@agent-console/shared";
+import { countStations, countSubSteps } from "@/components/tasks/tree";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 
@@ -29,8 +30,8 @@ export function SuiteHeader({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const done = suite.counts.DONE;
-  const total = suite.prompts.length;
+  const stations = countStations(suite.prompts);
+  const subSteps = countSubSteps(suite.prompts);
   const waiting = suite.counts.BLOCKED + suite.counts.RECOVERY_NEEDED;
 
   useEffect(() => {
@@ -64,8 +65,13 @@ export function SuiteHeader({
           </h2>
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-fg-dim">
             <span>
-              {done}/{total} done
+              {stations.done}/{stations.total} stations done
             </span>
+            {subSteps.total > 0 && (
+              <span>
+                {subSteps.done}/{subSteps.total} sub-steps done
+              </span>
+            )}
             {suite.counts.WORKING > 0 && <span className="text-info">{suite.counts.WORKING} working</span>}
             {waiting > 0 && <span className="text-warning">{waiting} needs you</span>}
             {suite.counts.READY > 0 && <span>{suite.counts.READY} ready</span>}
@@ -125,7 +131,9 @@ export function SuiteHeader({
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-3">
         <div
           className={cn("h-full rounded-full bg-success transition-[width]")}
-          style={{ width: `${total === 0 ? 0 : Math.round((done / total) * 100)}%` }}
+          style={{
+            width: `${stations.total === 0 ? 0 : Math.round((stations.done / stations.total) * 100)}%`,
+          }}
         />
       </div>
     </div>

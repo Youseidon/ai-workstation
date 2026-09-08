@@ -1,0 +1,467 @@
+/**
+ * What the pipeline transport controls render, cell by cell.
+ *
+ * This started as a characterisation test around the old `if` chain, and it
+ * passed unchanged through the conversion to the declarative table in
+ * `shared/src/pipelineRules.ts` — that is what proved the conversion faithful.
+ * It has since been extended deliberately for the recovery rows and for the
+ * removal of the `resumable` argument.
+ *
+ * This file covers the view the UI actually renders. The table's structural
+ * invariants — totality, ordering, no unreachable rows — live next to the table
+ * itself in `shared/test/pipelineRules.test.ts`.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import type { OnUnfinishedAction, PromptPipelineRule } from "@agent-console/shared";
+import { DEFAULT_STATUS_CATALOG, STEP_DISPLAY_STATUSES, statusDefinition } from "@agent-console/shared";
+import {
+  CONTROL_LABEL,
+  DEFAULT_PIPELINE_POLICY,
+  LABEL,
+  PIPELINE_LABEL,
+  PIPELINE_TONE,
+  TONE,
+  onUnfinishedChip,
+  onDoneChip,
+  overrideChip,
+  pipelineStatus,
+  type PipelineControl,
+} from "../../../components/pipeline/status";
+
+type Args = Parameters<typeof pipelineStatus>[0];
+
+const STATION = "S6 · S6-07";
+
+function status(over: Partial<Args> = {}) {
+  return pipelineStatus({
+    run: null,
+    stationState: null,
+    station: STATION,
+    awaitingHuman: false,
+    ...over,
+  });
+}
+
+/** The whole table in one shape, so a changed cell names itself in the diff. */
+interface Cell {
+  name: string;
+  args: Partial<Args>;
+  label: string;
+  tone: string;
+  pulse: boolean;
+  primary: PipelineControl | null;
+  secondary: PipelineControl[];
+}
+
+const TABLE: Cell[] = [
+  {
+    name: "no run yet → Play",
+    args: { run: null },
+    label: "Not started",
+    tone: "neutral",
+    pulse: false,
+    primary: "play",
+    secondary: [],
+  },
+  {
+    name: "PLAYING → Pause, with Stop demoted",
+    args: { run: { state: "PLAYING", stopReason: null, waitReason: null } },
+    label: "Running",
+    tone: "info",
+    pulse: true,
+    primary: "pause",
+    secondary: ["stop"],
+  },
+  {
+    name: "PAUSED while the agent is still draining → Stop only",
+    args: { run: { state: "PAUSED", stopReason: null, waitReason: null }, agentActive: true },
+    label: "Pausing",
+    tone: "caution",
+    pulse: true,
+    primary: "stop",
+    secondary: [],
+  },
+  {
+    name: "PAUSED and idle → Resume",
+    args: { run: { state: "PAUSED", stopReason: null, waitReason: null }, agentActive: false },
+    label: "Paused",
+    tone: "caution",
+    pulse: false,
+    primary: "resume",
+    secondary: ["stop"],
+  },
+  {
+    name: "WAITING_HUMAN on a station rule → Resume",
+    args: { run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, awaitingHuman: false },
+    label: "Needs you",
+    tone: "warning",
+    pulse: true,
+    primary: "resume",
+    secondary: ["stop"],
+  },
+  {
+    name: "WAITING_HUMAN on an unanswered intervention → Resume",
+    args: { run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, awaitingHuman: true },
+    label: "Needs you",
+    tone: "warning",
+    pulse: true,
+    primary: "resume",
+    secondary: ["stop"],
+  },
+  {
+    name: "WAITING_HUMAN whose station lost its agent → Recover",
+    args: {
+      run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null },
+      stationState: "RECOVERY_NEEDED",
+    },
+    label: "Recovery needed",
+    tone: "caution",
+    pulse: false,
+    primary: "recover",
+    secondary: ["stop"],
+  },
+  {
+    name: "INTERRUPTED whose station lost its agent → Recover",
+    args: {
+      run: { state: "INTERRUPTED", stopReason: "server_restart", waitReason: null },
+      stationState: "RECOVERY_NEEDED",
+    },
+    label: "Recovery needed",
+    tone: "caution",
+    pulse: false,
+    primary: "recover",
+    secondary: ["newRun"],
+  },
+  {
+    name: "STOPPED whose station lost its agent → Recover",
+    args: {
+      run: { state: "STOPPED", stopReason: "operator_stop", waitReason: null },
+      stationState: "RECOVERY_NEEDED",
+    },
+    label: "Recovery needed",
+    tone: "caution",
+    pulse: false,
+    primary: "recover",
+    secondary: ["newRun"],
+  },
+  {
+    name: "INTERRUPTED → resuming by itself",
+    args: { run: { state: "INTERRUPTED", stopReason: "server_restart", waitReason: null } },
+    label: "Resuming",
+    tone: "info",
+    pulse: true,
+    primary: "stop",
+    secondary: [],
+  },
+  {
+    name: "INTERRUPTED under onRestart=newRun → Start new run",
+    args: {
+      run: { state: "INTERRUPTED", stopReason: "server_restart", waitReason: null },
+      policy: { ...DEFAULT_PIPELINE_POLICY, onRestart: "newRun" },
+    },
+    label: "Interrupted",
+    tone: "caution",
+    pulse: false,
+    primary: "newRun",
+    secondary: [],
+  },
+  {
+    name: "STOPPED → Start new run",
+    args: { run: { state: "STOPPED", stopReason: "operator_stop", waitReason: null } },
+    label: "Stopped",
+    tone: "neutral",
+    pulse: false,
+    primary: "newRun",
+    secondary: [],
+  },
+  {
+    name: "COMPLETE → Start new run",
+    args: { run: { state: "COMPLETE", stopReason: null, waitReason: null } },
+    label: "Complete",
+    tone: "success",
+    pulse: false,
+    primary: "newRun",
+    secondary: [],
+  },
+];
+
+for (const cell of TABLE) {
+  test(`control table: ${cell.name}`, () => {
+    const view = status(cell.args);
+    assert.equal(view.label, cell.label, "label");
+    assert.equal(view.tone, cell.tone, "tone");
+    assert.equal(view.pulse, cell.pulse, "pulse");
+    assert.equal(view.primary, cell.primary, "primary control");
+    assert.deepEqual(view.secondary, cell.secondary, "secondary controls");
+  });
+}
+
+test("every state offers at most one primary control, and never repeats it as secondary", () => {
+  for (const cell of TABLE) {
+    const view = status(cell.args);
+    assert.ok(
+      view.primary === null || !view.secondary.includes(view.primary),
+      `${cell.name} lists its primary control twice`,
+    );
+    assert.equal(new Set(view.secondary).size, view.secondary.length, `${cell.name} has duplicate secondaries`);
+  }
+});
+
+test("every control the table can emit has a label", () => {
+  for (const cell of TABLE) {
+    const view = status(cell.args);
+    for (const control of [...(view.primary === null ? [] : [view.primary]), ...view.secondary]) {
+      assert.ok(CONTROL_LABEL[control] !== undefined, `${control} has no label`);
+    }
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* D2: resumability is derived, not supplied                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * `pipelineStatus` used to take a `resumable` boolean. A STOPPED or INTERRUPTED
+ * run is never active and so was never resumable, which made two branches of
+ * the old chain unrenderable. The argument is gone; these assert that the
+ * contradiction it allowed cannot come back.
+ */
+
+test("a terminal run never offers Resume, whatever the station is doing", () => {
+  const states = ["STOPPED", "INTERRUPTED", "COMPLETE"] as const;
+  for (const state of states) {
+    for (const stationState of [null, "RECOVERY_NEEDED", "BLOCKED", "READY"] as const) {
+      const view = status({ run: { state, stopReason: null, waitReason: null }, stationState });
+      assert.notEqual(view.primary, "resume", `${state}/${stationState} offered Resume`);
+      assert.ok(!view.secondary.includes("resume"), `${state}/${stationState} offered Resume`);
+    }
+  }
+});
+
+test("recovery takes precedence over the ordinary blocked path", () => {
+  const blocked = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, stationState: "BLOCKED" });
+  const dead = status({ run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null }, stationState: "RECOVERY_NEEDED" });
+  assert.equal(blocked.primary, "resume");
+  assert.equal(dead.primary, "recover");
+  assert.notEqual(blocked.rowId, dead.rowId);
+});
+
+test("every view names the row that produced it and explains itself", () => {
+  for (const cell of TABLE) {
+    const view = status(cell.args);
+    assert.ok(view.rowId.length > 0, `${cell.name} has no row id`);
+    assert.ok(view.because.length > 0, `${cell.name} has no because`);
+    assert.ok(view.policy.reason.length > 0, `${cell.name} has no policy reason`);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Copy that the operator actually reads                               */
+/* ------------------------------------------------------------------ */
+
+test("the station label is interpolated into the headline", () => {
+  assert.equal(
+    status({ run: { state: "PLAYING", stopReason: null, waitReason: null } }).headline,
+    `An agent is working ${STATION}.`,
+  );
+});
+
+test("a missing station falls back to a generic phrase rather than 'null'", () => {
+  const view = status({ run: { state: "PLAYING", stopReason: null, waitReason: null }, station: null });
+  assert.equal(view.headline, "An agent is working the current station.");
+  assert.ok(!view.headline.includes("null"));
+});
+
+test("WAITING_HUMAN says something different when an intervention is unanswered", () => {
+  const parked = { state: "WAITING_HUMAN", stopReason: null, waitReason: null } as const;
+  const onRule = status({ run: parked, stationState: "BLOCKED", awaitingHuman: false });
+  const onIntervention = status({ run: parked, stationState: "BLOCKED", awaitingHuman: true });
+  assert.notEqual(onRule.headline, onIntervention.headline);
+  assert.notEqual(onRule.hint, onIntervention.hint);
+  assert.match(onRule.headline, /reported blocked/);
+  assert.match(onIntervention.headline, /only you can make/);
+});
+
+/*
+ * The two things the status bar got wrong about S6-08.5: a station that ended
+ * without posting a status was called "blocked", and a station parked because
+ * its continuations ran out was told its rule was "wait". Both read as
+ * statements of fact about the operator's own configuration.
+ */
+test("a station that never posted a status is not called blocked", () => {
+  const view = status({
+    run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null },
+    stationState: "UNREPORTED",
+  });
+  assert.match(view.headline, /without reporting a status/);
+  assert.doesNotMatch(view.headline, /reported blocked/);
+});
+
+test("continuations running out is not reported as the wait rule", () => {
+  const view = status({
+    run: { state: "WAITING_HUMAN", stopReason: null, waitReason: "continuations_exhausted" },
+    stationState: "UNREPORTED",
+  });
+  assert.equal(view.rowId, "waiting-human-continuations-exhausted");
+  assert.doesNotMatch(view.headline, /rule is "wait"/);
+  assert.match(view.headline, /continued|not finished/i);
+});
+
+test("a reviewer still running is not presented as needing you", () => {
+  const view = status({
+    run: { state: "WAITING_HUMAN", stopReason: null, waitReason: "review_running" },
+    stationState: "UNREPORTED",
+  });
+  assert.notEqual(view.label, "Needs you", "review_running still reads as needing the operator");
+  assert.equal(view.rowId, "waiting-human-review-running");
+  assert.doesNotMatch(view.headline, /rule is "wait"/);
+});
+
+test("a known stopReason is translated into a sentence", () => {
+  const view = status({ run: { state: "STOPPED", stopReason: "on_done_stop", waitReason: null } });
+  assert.equal(view.headline, "This run is stopped. A station's rule said stop when done.");
+});
+
+test("an unknown stopReason is passed through rather than dropped", () => {
+  const view = status({ run: { state: "STOPPED", stopReason: "unexpected_status:WEIRD", waitReason: null } });
+  assert.equal(view.headline, "This run is stopped. unexpected_status:WEIRD");
+});
+
+test("a null stopReason produces no trailing explanation", () => {
+  const view = status({ run: { state: "STOPPED", stopReason: null, waitReason: null } });
+  assert.equal(view.headline, "This run is stopped.");
+});
+
+/*
+ * Every reason the scheduler can persist. If `terminate()` gains a new one and
+ * this list is not updated, the operator sees a raw snake_case token in the UI.
+ */
+test("every stopReason the scheduler writes has a human sentence", () => {
+  const written = [
+    "operator_stop",
+    "server_restart",
+    "blocked_on_dependencies",
+    "on_done_stop",
+    "skip_rest",
+    "no_provider",
+    "start_failed",
+    "no_provider_available",
+    "human_question",
+    "station_rule_wait",
+    "review_running",
+    "continuations_exhausted",
+  ];
+  for (const reason of written) {
+    const view = status({ run: { state: "STOPPED", stopReason: reason, waitReason: null } });
+    assert.notEqual(
+      view.headline,
+      `This run is stopped. ${reason}`,
+      `${reason} has no sentence and would be shown raw`,
+    );
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Chips and lookups the station cards render                          */
+/* ------------------------------------------------------------------ */
+
+test("every operational state has a label and a tone", () => {
+  // Counted against the vocabulary rather than a literal. This assertion used
+  // to read `assert.equal(states.length, 8)`, which meant adding a state to the
+  // shared model broke the test in a way that said nothing about what was
+  // wrong, and removing one from the label map would not have broken it at all.
+  const states = Object.keys(LABEL) as Array<keyof typeof LABEL>;
+  assert.deepEqual([...states].sort(), [...STEP_DISPLAY_STATUSES].sort());
+  for (const state of states) {
+    assert.ok(LABEL[state].length > 0, `${state} has no label`);
+    assert.ok(TONE[state] !== undefined, `${state} has no tone`);
+  }
+});
+
+test("every state in the catalog explains itself", () => {
+  // A state the operator cannot understand is a state they cannot act on, and
+  // the description is what the "why this status" panel renders.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    assert.ok(definition.description.length > 20, `${state} has no usable description`);
+    assert.ok(definition.shortLabel.length > 0, `${state} has no short label`);
+    if (definition.locked.length > 0) {
+      assert.ok(definition.lockedReason !== null, `${state} locks fields without saying why`);
+    }
+  }
+});
+
+test("no state both satisfies a dependency and is unfinished", () => {
+  // The asymmetry that matters: SKIPPED settles a parent but must not entitle a
+  // dependant to run against work that was never done.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    if (definition.satisfiesDependency) {
+      assert.ok(definition.isTerminal, `${state} satisfies a dependency without being terminal`);
+    }
+  }
+  assert.equal(statusDefinition(DEFAULT_STATUS_CATALOG, "SKIPPED").isTerminal, true);
+  assert.equal(statusDefinition(DEFAULT_STATUS_CATALOG, "SKIPPED").satisfiesDependency, false);
+});
+
+test("only a state that needs attention can win a parent rollup", () => {
+  // Precedence is meaningless on a state that never propagates; a non-zero one
+  // there would look configurable while doing nothing.
+  for (const state of STEP_DISPLAY_STATUSES) {
+    const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
+    if (!definition.needsAttention) {
+      assert.equal(definition.precedence, 0, `${state} has a precedence but never propagates`);
+    } else {
+      assert.ok(definition.precedence > 0, `${state} needs attention but cannot win a rollup`);
+    }
+  }
+});
+
+test("every pipeline state has a label and a tone", () => {
+  const states = Object.keys(PIPELINE_LABEL) as Array<keyof typeof PIPELINE_LABEL>;
+  assert.equal(states.length, 6);
+  for (const state of states) {
+    assert.ok(PIPELINE_LABEL[state].length > 0, `${state} has no label`);
+    assert.ok(PIPELINE_TONE[state] !== undefined, `${state} has no tone`);
+  }
+});
+
+test("onDone chips", () => {
+  assert.equal(onDoneChip("continue"), "→ next");
+  assert.equal(onDoneChip("stop"), "■ stop");
+  assert.equal(onDoneChip("skip_rest"), "↛ skip rest");
+});
+
+function rule(over: Partial<PromptPipelineRule> = {}): PromptPipelineRule {
+  return {
+    promptId: 1,
+    provider: null,
+    model: null,
+    fallbackProviders: [],
+    onDone: "continue",
+    onUnfinished: "continue",
+    enabled: true,
+    stepOrder: 0,
+    ...over,
+  };
+}
+
+test("onUnfinished chips", () => {
+  assert.equal(onUnfinishedChip(rule({ onUnfinished: "wait" })), "wait");
+  assert.equal(onUnfinishedChip(rule({ onUnfinished: "skip" })), "skip");
+  assert.equal(onUnfinishedChip(rule({ onUnfinished: "continue" })), "continue");
+});
+
+test("every onUnfinished action renders a chip rather than falling through empty", () => {
+  const actions: OnUnfinishedAction[] = ["continue", "skip", "wait"];
+  for (const onUnfinished of actions) {
+    assert.ok(onUnfinishedChip(rule({ onUnfinished })).length > 0, `${onUnfinished} renders nothing`);
+  }
+});
+
+test("an unset execute override renders no chip", () => {
+  assert.equal(overrideChip(rule({ provider: null })), null);
+  assert.match(overrideChip(rule({ provider: "claude" })) ?? "", /^claude/);
+});

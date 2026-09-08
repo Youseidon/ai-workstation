@@ -29,16 +29,70 @@ counts, all rendered as a scrolling terminal-style log.
 ```bash
 npm install
 cp .env.example .env
-npm run dev               # starts the WebSocket backend and the Next.js frontend
+npm run serve             # builds, then runs the backend and frontend without watch
 ```
 
 Open <http://localhost:3000>. The backend listens on <http://127.0.0.1:4000>
 (`/api/providers`, `/api/health`, and the WebSocket at `/ws`).
 
-Run them separately if you prefer: `npm run dev:server` and `npm run dev:web`.
+## Running a live pipeline
 
-`npm run build` typechecks the server and builds the frontend; `npm run start`
-runs both without watch mode.
+**`npm run serve` is the only way to run a pipeline that is doing real work.**
+
+`npm run dev` runs the server under `tsx watch`. Saving a file restarts it,
+which kills every agent in flight and applies any new migration to the database
+immediately — 22 of the first 34 pipeline runs on this console died exactly that
+way, mid-edit, and none of them resumed on their own. `serve` builds once and
+watches nothing, so editing code cannot touch a running suite.
+
+```bash
+npm run serve             # live: server on :4000, web on :3000, no file watching
+npm run dev:sandbox       # development: a copy of the database on :4100 / :3100
+```
+
+`dev:sandbox` copies `~/.local/state/agent-console/console.sqlite` (and its WAL)
+to `/tmp/agent-console-sandbox/`, then starts the watch server against the copy
+on its own ports. Pass `--keep` to reuse the existing copy instead of taking a
+fresh one (`npm run dev:sandbox -- --keep`). The live database is never opened.
+
+Plain `npm run dev` refuses to start when it would open the live database at its
+default path. Point `AGENT_CONSOLE_DB` somewhere disposable, use `dev:sandbox`,
+or set `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` if you mean it. If a `serve` process
+already holds the lock, the message says so and points at `dev:sandbox`.
+
+### Pipeline behaviour
+
+When a station's run ends, the scheduler has exactly three answers:
+
+| The run ended… | Decision | What the rail does |
+|---|---|---|
+| Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
+| Agent posted **BLOCKED** with a concrete human action | **park** `human_question` | the only human stop — answer it, then Resume |
+| Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
+| Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
+
+There is no automatic handoff, remediation, or retry/recover chain. Resume on a
+parked station writes a USER ledger row and grants a fresh unfinished-continuation
+allowance. Station rules expose `onDone` (`continue` / `stop` / `skip_rest`) and
+`onUnfinished` (`continue` / `skip` / `wait`).
+
+A pipeline that *is* interrupted — the machine rebooted, the console was
+restarted or killed — comes back by itself: about ten seconds after boot, every
+run marked `INTERRUPTED` by a restart in the last 24 hours is resumed on the
+station it was holding, on the same working tree. Nothing is marked done or
+failed; the station is simply re-queued, and the ledger records `restart_resume`
+as the cause. A run **you** stopped with the Stop control stays stopped. This is
+the `pipeline.onRestart` setting; set it to `newRun` or `resumeSameRun` to go
+back to waiting for a button.
+
+Only a `serve` process resumes anything. A sandbox copies the database, not the
+world — its workspace rows still name your real project directories — so a
+development server that resumed the live console's pipeline would launch a real
+agent into a real repository. It logs what it is leaving alone instead.
+
+Run the two halves separately if you prefer: `npm run dev:server` /
+`npm run dev:web`, or `npm run serve:server` / `npm run serve:web`.
+`npm run build` typechecks the server and builds the frontend.
 
 ### Requirements
 
@@ -126,10 +180,14 @@ next to the timestamp and a transcript that mixes providers stays readable.
 ### ⚠️ CLI flags drift
 
 Codex's, Cursor's, Grok's, and Copilot's headless/JSON flags change between releases. The
-flags here were verified against **codex-cli 0.150.1**, **grok 1.0.5**, and
-**GitHub Copilot CLI 1.0.82**; the Cursor mapper was written
+flags here were verified against **codex-cli 0.153.0**, **cursor-agent 2026.09.02**,
+**grok 1.0.13**, and **GitHub Copilot CLI 1.0.82**; the Cursor mapper was written
 against the documented `stream-json` shape and is deliberately tolerant of
-unknown event types. **Check `codex --help`, `codex exec --help`,
+unknown event types.
+
+The **session-resume** flags each adapter uses for a wrap-up turn drift the same way, and
+`codex exec resume` in particular takes a *different* option set from `codex exec` (no `-C`,
+no `-s`, no `--color`) — check `codex exec resume --help` too. **Check `codex --help`, `codex exec --help`,
 `cursor-agent --help`, `grok --help`, and `copilot --help` for your installed versions** before
 assuming a mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
 `CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` / `COPILOT_EXTRA_ARGS` so you can adjust without editing
@@ -141,10 +199,11 @@ code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 
 Everything in `.env` that is safe to change while the server is running is also
 editable from the **Agents** page — per-provider default model, permission/sandbox
-mode, binary name, extra CLI arguments, API keys, and host access. (Day-to-day
-model switching happens in the header, not here; the `Model` field only supplies
-the fallback.) Changes are saved to `.agent-console/settings.json` (mode `0600`,
-gitignored) and survive restarts.
+mode, binary name, extra CLI arguments, API keys, host access, run budgets,
+pipeline policy, and transcript retention. (Day-to-day model switching happens in
+the header, not here; the `Model` field only supplies the fallback.) Changes are
+saved to `.agent-console/settings.json` (mode `0600`, gitignored) and survive
+restarts.
 
 - **Layering** — `.env` supplies the default for every field; saved overrides sit
   on top. A field edited back to its `.env` value drops the override entirely.
@@ -188,6 +247,19 @@ workspace: create one on the Workspaces page, pointing it at an existing
 directory, before you can add programs, suites, or run an agent. Each run
 uses that workspace's directory as `cwd`.
 
+Transcript events (`agent_run_event`) are capped by the **Retention** settings
+(`RETENTION_EVENTS_PER_RUN`, `RETENTION_EVENT_AGE_DAYS`,
+`RETENTION_KEEP_FINAL_EVENTS`): a sweep runs a minute after boot and then every
+six hours, deleting oldest events first while always keeping the last N of each
+run. Runs, remarks, status events and commands are not touched. Deletes free
+pages inside the file; reclaiming them on disk needs an offline `VACUUM` when
+`auto_vacuum` is not incremental (the default):
+
+```bash
+# Stop every console process first — VACUUM needs the file to itself.
+sqlite3 ~/.local/state/agent-console/console.sqlite 'VACUUM;'
+```
+
 Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
 CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
 parent cascades to its owned children.
@@ -206,9 +278,10 @@ The server creates a persisted run and a random bearer token, writes a per-run
 the run ends), and tells the agent to use it:
 
 ```bash
-agent-step remark --kind PROGRESS --text "What changed or was verified"
-agent-step done    --verification "The commands you ran and what you observed"
-agent-step blocked --reason "Observed evidence" --action "What only a human can do"
+agent-step remark     --kind PROGRESS --text "What changed or was verified"
+agent-step done       --verification "The commands you ran and what you observed"
+agent-step continue   --remaining "What is left, as instructions for the next run on this tree"
+agent-step blocked    --reason "Observed evidence" --action "What only a human can do"
 ```
 
 The credential is per-run rather than per-process because the Claude adapter

@@ -1,11 +1,20 @@
 "use client";
 
+import Link from "next/link";
 import type { ProviderId } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/Button";
 import { StatusDot } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import { CONTROL_LABEL, type PipelineControl, type PipelineStatusView } from "./status";
+
+export interface PipelineRecoveryActions {
+  /** Present only when the blocker is a lost-status run, not a human question. */
+  onRetry?(): void;
+  onSkip(): void;
+  /** Deep link into Tasks, where marking complete and auditing are also available. */
+  openHref: string;
+}
 
 export interface PipelinePosition {
   /** 1-based stage index, 0 when the pipeline has not entered a stage yet. */
@@ -55,6 +64,7 @@ export function PipelineStatusBar({
   status,
   position,
   blockedReason,
+  recoveryActions,
   busy,
   onControl,
   onExplain,
@@ -63,6 +73,9 @@ export function PipelineStatusBar({
   position: PipelinePosition | null;
   /** Why the primary control cannot fire right now, in plain words. */
   blockedReason: string | null;
+  /** Set only while blockedReason names a specific stuck item — lets the
+   * operator clear it right here instead of hunting for it in the flowchart. */
+  recoveryActions: PipelineRecoveryActions | null;
   busy: boolean;
   onControl(control: PipelineControl): void;
   /** Opens the rules panel. The pill is the affordance for "why these buttons?". */
@@ -166,6 +179,28 @@ export function PipelineStatusBar({
               {CONTROL_LABEL[status.primary]} is unavailable — {blockedReason}.
             </span>
           )}
+        </div>
+      )}
+
+      {recoveryActions !== null && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-line/70 px-4 py-2">
+          {recoveryActions.onRetry !== undefined && (
+            <Button size="sm" variant="primary" disabled={busy} onClick={recoveryActions.onRetry}>
+              Retry
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            className="text-danger/80 hover:bg-danger/10 hover:text-danger"
+            onClick={recoveryActions.onSkip}
+          >
+            Skip
+          </Button>
+          <Link href={recoveryActions.openHref} className="text-xs text-accent hover:underline">
+            Open work item for more options →
+          </Link>
         </div>
       )}
     </section>

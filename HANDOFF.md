@@ -9,6 +9,12 @@ Ten commits landed before you (`git log f0032f7..HEAD`). The redesign's named sc
 what is left is listed under "What is left" below. Read this whole file before touching anything —
 there are two things that will bite you, and one of them already destroyed data.
 
+The live redesign plan — what remains, in order, and why — is
+[`docs/pipeline-redesign/PLAN.md`](docs/pipeline-redesign/PLAN.md). Prompts 01–03
+(stable host, budget/wrap-up, continuation loop) have landed in source on
+`pipeline-continuation-loop`. Start there rather than reconstructing the old
+reviewer-matrix / handoff / remediation story from this file.
+
 ---
 
 ## Why this work exists
@@ -89,7 +95,9 @@ counts held on the live file afterwards.
 | `a710577` | Definition of done: three kinds of criterion, inherited, gated in `writeStatus`. Migration 23. |
 | `84d92ab` | The reviewer matrix and the definition of done get a UI. |
 
-Current: **schema 23**, 367 tests passing, `npm run build` clean.
+Current branch work (prompts 01–03) replaces the automatic
+audit → remediate → handoff → retry → recover chain with one continuation loop.
+See `docs/pipeline-redesign/PLAN.md` and `docs/pipeline-redesign/prompts/`.
 
 ### The status model, in brief
 
@@ -105,81 +113,58 @@ Current: **schema 23**, 367 tests passing, `npm run build` clean.
 - Every status change writes exactly one `prompt_status_event` carrying `trigger_id`, `rule_id`
   and `evidence_json`.
 
----
-
-## What the last session did with that scope
-
-**1. Definition of done — done.** Migration 23 adds `definition_of_done`,
-`dod_criterion` and `dod_result` exactly as specified. `PROSE` criteria are
-judged by the reviewer, which now receives them structured with ids and quotes
-each id back, so a verdict lands on the row it was about instead of being
-matched to one by string similarity. `COMMAND` criteria are executed by the
-server (`dodCommands.ts`) and judged on the exit code. `CHILDREN_CLOSED` is read
-off the child rollup.
-
-The gate lives inside `writeStatus`, not at the call sites: there were thirteen
-routes to DONE and a gate spelled thirteen times has holes in it. It is a
-*synchronous read* of recorded results and never executes anything — running a
-test suite from inside a SQLite write transaction would block the event loop of
-a console whose job is watching live agents. Producing the evidence is
-`definitionOfDone.ts`' job, and the paths that intend to close an item call it
-first (the agent door in `index.ts`, and `settleAudit` in the scheduler). A
-COMMAND nobody ran is UNVERIFIED, and UNVERIFIED closes nothing.
-
-The dangling `pipeline.dodEnforcement` is resolved: the setting exists in
-Pipeline policy, defaulting to `block`. `dod_unmet`, the `dod-unmet` transition
-row and the `dodUnmet` reviewer entry are all reachable now — `writeStatus`
-emits the signal, and `workspaces.reviewSituation` reads the recorded cause off
-the ledger rather than guessing from the status, because NEEDS_REVIEW is where
-three different problems land.
-
-**2. Reviewer matrix UI — done.** `ReviewerMatrixPanel.tsx`, in `RulesPanel`
-next to the status catalog, deriving its rows from `REVIEW_TRIGGERS` and its
-verdict actions from `REVIEW_ACTIONS`.
-
-**3. Optional cleanup — still not done**, and still deliberately out of scope.
-Both items below are unchanged.
+When a run ends, the scheduler has exactly three answers: **advance**, **park for a human
+question**, or **continue the same station**. Details and remaining prompts live in
+[`docs/pipeline-redesign/PLAN.md`](docs/pipeline-redesign/PLAN.md).
 
 ---
 
 ## What is left
 
-- **The two coexisting pipeline systems.** Migration 14 copied
-  `prompt_pipeline_rule` into `pipeline_step` and deleted neither the legacy
-  tables nor `/api/suites/:id/play`.
-- **`agent_run_event` has no retention policy.** It is why the database is
-  ~150 MB.
+See [`docs/pipeline-redesign/PLAN.md`](docs/pipeline-redesign/PLAN.md) for the ordered
+redesign prompts. Prompt 08 (cleanup) is done on this branch: one named-pipeline
+Play path, `agent_run_event` retention, and the dead
+`handoff` / `reviewer_config` / `reviewer_reconfigure` / `prompt_pipeline_rule`
+tables dropped (archived under `<state dir>/archive/` first). Legacy
+`pipeline_step` / `suite_pipeline_run` columns for retry/recover are gone.
+`agent_run.role` still includes `'handoff'` because completion audits use that
+role — rebuilding the CHECK was not worth it.
+
+Outside the redesign plan:
+
 - **Nothing here has been used by a real agent.** The reviewer's
   structured-criteria prompt has never faced a live provider, and the
   agent-posts-DONE-over-a-failing-criterion path is covered by a test against
   real SQLite rather than by an actual agent run. Neither new panel has been
   clicked through in a browser.
-- **`reviewer_config` has the bug `definition_of_done` just had fixed.** Both
-  are keyed by `(scope, scope_id)` with no foreign key, and SQLite reuses a
-  deleted row's id — so a deleted suite's reviewer settings will silently attach
-  themselves to the next suite given that id. `forgetOrphanedDefinitionsOfDone`
-  in `workspaces.ts` is the pattern; `reviewer_config` needs the same sweep.
+- **Tables keyed by `(scope, scope_id)` still need an orphan sweep for
+  `definition_of_done`.** `forgetOrphanedScopedRows` in `workspaces.ts` already
+  does that; `reviewer_config` is gone.
+- **Offline `VACUUM` after retention.** A sweep + `VACUUM` on a copy of the live
+  file went 228 MB → ~198 MB (defaults keep up to 4000 events per recent run).
+  Reclaiming more needs tighter Retention settings or deleting old runs, then
+  `VACUUM` with every console process stopped.
 
 ## Invariants — do not break these
 
 1. **Never infer an outcome.** A run that ends without posting is `UNREPORTED` — never `DONE`,
    never `FAILED`, never `BLOCKED`. `FAILED` is written only for an observed process failure.
-   `shared/src/statusModel.test.ts` locks this down; those rows are `policy: { kind: "locked" }`
+   Unfinished work is **continued** on the same station, not guessed at.
+   `shared/test/statusModel.test.ts` locks this down; those rows are `policy: { kind: "locked" }`
    on purpose.
 
 2. **One writer.** Every `prompt.status` change goes through `writeStatus` in `workspaces.ts`. It
    writes the status, the ledger row and any remark in one transaction. Do not add a fourteenth
    direct `UPDATE prompt SET status`.
 
-3. **The scheduler is re-entrant.** `handoffCoordinator.ts:97,111` replay the *source* run's end
-   through `onExecuteEnded`. `applyExecuteEnded` stays correct only because of the
-   `live.currentRunId !== runId` guard (`pipelineScheduler.ts:407`) and the ordering documented in
-   `applyOnBlocked` at `:323` and `:329`, which records two past regressions — a pause that
-   silently burned a retry, and a rule that ran before anything checked whether the work was
-   already finished. Keep it idempotent under replay.
+3. **The scheduler is re-entrant.** `applyExecuteEnded` (and the continuation path that re-enters
+   it) stay correct only because of the `live.currentRunId !== runId` guard in
+   `pipelineScheduler.ts`. Keep it idempotent under replay: a late end event for a run the rail
+   has already moved past must no-op.
 
-4. **`BLOCKED` is a question, not unfinished work.** It is never auto-handed-off, never reviewed,
-   never audited past. A machine deciding it would overrule a request for a human decision.
+4. **`BLOCKED` is a question, not unfinished work.** It parks immediately with
+   `wait_reason = "human_question"` and is never continued, never reviewed past, never audited
+   past. A machine deciding it would overrule a request for a human decision.
 
 5. **The database stays out of reach.** `workspaces.assertDatabaseOutOfReach()` refuses to boot if
    the file sits inside any workspace directory. Do not soften it to a warning.
@@ -217,34 +202,17 @@ Both items below are unchanged.
 
 ```bash
 npm run typecheck    # shared, server, web
-npm test             # 327 currently passing — none may regress
+AGENT_CONSOLE_DB=/tmp/….sqlite npm test
 npm run build        # Next.js build must stay clean
 ```
 
-All four of these were run against a real server on a disposable database
-(`PORT=4137 AGENT_CONSOLE_DB=/tmp/... node --import tsx src/index.ts`), which is
-the way to exercise the real app without creating test items in the owner's live
-console. Re-run them after anything that touches the gate:
-
-1. Point a work item's definition of done at a command that fails; confirm the
-   close is refused and the failing command's **real output** appears as
-   evidence. ✓ — the compiler's own `error TS2322` line lands in
-   `evidence_json`. Note that the operator's own **Mark complete** is an
-   override and is *meant* to get through; it records what it closed over.
-2. Confirm a passing command actually ran — check the recorded exit code, do not
-   take the reviewer's word for it. ✓ — `exit 0`, source `RUNNER`.
-3. Rename a status on the rules screen; confirm it changes on the board, the
-   station card and the status bar from that one edit. ✓
-4. Kill an agent mid-run; confirm the item shows `UNREPORTED` — **not** failed,
-   **not** blocked. ✓ — worth re-running after any `writeStatus` change, since
-   that path goes through it.
+Do not run `npm run dev` against the live database. Use `npm run serve` for real
+pipeline work, or `npm run dev:sandbox` / a disposable `AGENT_CONSOLE_DB` for
+development. See the README.
 
 Write tests that assert the *claim*, not the implementation. The existing suites are written that
 way and their names say what is being protected — read
-`server/src/statusLedger.test.ts` and `server/src/statusCatalog.test.ts` before writing yours.
-
-The full original plan, including sections already delivered, is at
-`~/.claude/plans/graceful-baking-hartmanis.md`.
+`server/test/statusLedger.test.ts` and `server/test/pipelineScheduler.test.ts` before writing yours.
 
 ---
 

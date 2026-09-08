@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES } from "@agent-console/shared";
 import type { OperationsPrompt, OperationsSnapshot } from "@agent-console/shared";
@@ -12,7 +12,13 @@ import { useToast } from "@/components/ui/Toast";
 import { SuiteHeader } from "@/components/tasks/SuiteHeader";
 import { SuiteRail } from "@/components/tasks/SuiteRail";
 import { WorkItemDetail } from "@/components/tasks/WorkItemDetail";
-import { WorkItemList, type TasksFilter } from "@/components/tasks/WorkItemList";
+import { WorkItemList } from "@/components/tasks/WorkItemList";
+import {
+  findOperationsPromptInSuite,
+  findParentPrompt,
+  suiteContainsPrompt,
+  type TasksFilter,
+} from "@/components/tasks/tree";
 import { cn } from "@/lib/cn";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole } from "@/lib/agentConsole";
@@ -177,26 +183,16 @@ export function TasksView() {
   // A deep-linked prompt implies its suite, even before the user picks one.
   const suite =
     suites.find((item) => item.id === suiteId) ??
-    (promptId === null
-      ? undefined
-      : suites.find((item) => item.prompts.some((p) => p.prompt.id === promptId))) ??
+    (promptId === null ? undefined : suites.find((item) => suiteContainsPrompt(item, promptId))) ??
     suites[0] ??
     null;
 
-  const prompts = useMemo(
-    () =>
-      suite?.prompts.filter(
-        (item) =>
-          filter === "all" ||
-          (filter === "attention" && item.attention) ||
-          (filter === "working" && item.operationalState === "WORKING"),
-      ) ?? [],
-    [suite, filter],
-  );
-
-  // Fall back to the first row rather than storing a correction in state.
+  // Prefer the deep-linked / clicked id when it exists anywhere in the tree;
+  // otherwise fall back to the first station root.
   const activePromptId =
-    prompts.some((item) => item.prompt.id === promptId) ? promptId : prompts[0]?.prompt.id ?? null;
+    suite !== null && promptId !== null && findOperationsPromptInSuite(suite, promptId) !== null
+      ? promptId
+      : (suite?.prompts[0]?.prompt.id ?? null);
 
   const providerInfo = console_.providers.find((item) => item.id === provider) ?? null;
   const models = useModelSelection(console_.providers);
@@ -238,7 +234,14 @@ export function TasksView() {
   // actually selected — the fetch is async and the selection can move under it.
   const item =
     activity !== null && activity.item.prompt.id === activePromptId ? activity.item : null;
-  const listItem = prompts.find((entry) => entry.prompt.id === activePromptId) ?? item;
+  const listItem =
+    (suite !== null && activePromptId !== null
+      ? findOperationsPromptInSuite(suite, activePromptId)
+      : null) ?? item;
+  const parentItem =
+    suite !== null && listItem !== null
+      ? findParentPrompt(suite.prompts, listItem.prompt.id)
+      : null;
   const canStart =
     console_.connection === "open" &&
     listItem !== null &&
@@ -454,6 +457,7 @@ export function TasksView() {
   const detailProps = {
     suite,
     item: listItem,
+    parent: parentItem,
     activity,
     // From the snapshot, not the shipped defaults, so a status the operator has
     // renamed reads the same here as it does on the board. The defaults stand
@@ -475,6 +479,7 @@ export function TasksView() {
     onRespond: respond,
     onComplete: () => markComplete(),
     onVerifyItem: () => void verifyWorkItem(),
+    onSelectChild: selectPrompt,
   } as const;
 
   return (
@@ -537,7 +542,7 @@ export function TasksView() {
             {suite === null ? (
               <p className="text-sm text-fg-dim">Select a suite to see its work items.</p>
             ) : (
-              <div className="mx-auto max-w-4xl space-y-4">
+              <div className="w-full space-y-4">
                 <SuiteHeader
                   suite={suite}
                   providerLabel={providerInfo?.label ?? provider}
@@ -564,7 +569,6 @@ export function TasksView() {
 
                 <WorkItemList
                   suite={suite}
-                  prompts={prompts}
                   filter={filter}
                   activePromptId={activePromptId}
                   busy={busy}

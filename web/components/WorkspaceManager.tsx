@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { parseVerifyBlock } from "@agent-console/shared";
 import type {
   ProgramRecord,
   PromptRecord,
@@ -800,6 +801,7 @@ function PromptEditor({
   const [draft, setDraft] = useState({ title: value.title, content: value.content });
   const [mode, setMode] = useState<"view" | "edit">("view");
   const dirty = draft.title !== value.title || draft.content !== value.content;
+  const verifyCommands = useMemo(() => parseVerifyBlock(draft.content).commands, [draft.content]);
 
   return (
     <form
@@ -855,6 +857,27 @@ function PromptEditor({
             value={draft.content}
             onChange={(event) => setDraft({ ...draft, content: event.target.value })}
           />
+          {verifyCommands.length > 0 && (
+            <div className="rounded-md border border-line bg-surface-0/60 px-3 py-2">
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">These run on `done`</p>
+              <ul className="space-y-1 font-mono text-[11px] text-fg-muted">
+                {verifyCommands.map((command) => (
+                  <li key={command.text} className="truncate" title={command.text}>{command.text}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {verifyCommands.length > 0 && mode === "view" && (
+        <div className="border-t border-line bg-surface-0/40 px-5 py-3 sm:px-8">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">These run on `done`</p>
+          <ul className="space-y-1 font-mono text-[11px] text-fg-muted">
+            {verifyCommands.map((command) => (
+              <li key={command.text} className="truncate" title={command.text}>{command.text}</li>
+            ))}
+          </ul>
         </div>
       )}
 

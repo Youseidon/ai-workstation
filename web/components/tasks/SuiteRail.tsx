@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { OperationsSuite } from "@agent-console/shared";
+import { countStations, countSubSteps } from "@/components/tasks/tree";
 import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
@@ -81,9 +82,10 @@ export function SuiteRail({
                   {program}
                 </div>
                 {items.map((entry) => {
-                  const done = entry.counts.DONE;
-                  const total = entry.prompts.length;
-                  const ratio = total === 0 ? 0 : Math.round((done / total) * 100);
+                  const stations = countStations(entry.prompts);
+                  const subSteps = countSubSteps(entry.prompts);
+                  const ratio =
+                    stations.total === 0 ? 0 : Math.round((stations.done / stations.total) * 100);
                   return (
                     <button
                       key={entry.id}
@@ -112,7 +114,9 @@ export function SuiteRail({
                       </div>
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
                         <span className="text-fg-dim">
-                          {done}/{total} done
+                          {stations.done}/{stations.total} stations
+                          {subSteps.total > 0 &&
+                            ` · ${subSteps.done}/${subSteps.total} sub-steps`}
                         </span>
                         {entry.latestVerification === null ? (
                           <Badge tone="neutral">unverified</Badge>

@@ -81,7 +81,7 @@ export function PipelineDashboard() {
       )}
 
       <div className="min-h-0 flex-1 overflow-auto p-5">
-        <div className="mx-auto max-w-6xl space-y-8">
+        <div className="w-full space-y-8">
           {workspaceStatus === "empty" && (
             <p className="text-sm text-fg-dim">
               No workspaces yet.{" "}

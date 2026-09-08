@@ -74,8 +74,8 @@ export function isStatusIcon(value: unknown): value is StatusIcon {
 export type PolicyKey =
   | "pipeline.pauseMode"
   | "pipeline.onRestart"
-  | "pipeline.handoffTrigger"
-  | "pipeline.auditOnBlocked"
+  | "pipeline.maxContinuations"
+  | "pipeline.reviewAfterContinuations"
   | "pipeline.dodEnforcement";
 
 /**
@@ -89,7 +89,7 @@ export type PolicyKey =
 export type RulePolicy =
   | { kind: "locked"; reason: string }
   | { kind: "setting"; key: PolicyKey; reason: string }
-  | { kind: "stationRule"; field: "onDone" | "onBlocked"; reason: string };
+  | { kind: "stationRule"; field: "onDone" | "onUnfinished"; reason: string };
 
 /* ------------------------------------------------------------------ */
 /* The stored status                                                   */
@@ -158,7 +158,7 @@ export const OVERLAY_STATUSES: readonly StepDisplayStatus[] = [
 /* ------------------------------------------------------------------ */
 
 /** What entering a state should set in motion. */
-export const STATUS_ON_ENTER = ["none", "advance", "park", "review", "handoff", "retry"] as const;
+export const STATUS_ON_ENTER = ["none", "advance", "park", "review", "continue", "handoff", "retry"] as const;
 export type StatusOnEnter = (typeof STATUS_ON_ENTER)[number];
 
 export function isStatusOnEnter(value: unknown): value is StatusOnEnter {
@@ -501,24 +501,25 @@ export function statusFieldEditable(
 export const STATUS_TRIGGERS = [
   "agent_post",
   "agent_decompose",
+  "agent_continue",
   "run_started",
   "run_ended_without_post",
   "run_crashed",
   "run_start_failed",
   "budget_exhausted",
+  "continuation",
+  "provider_fallback",
   "review_complete",
-  "review_incomplete",
-  "review_unverifiable",
-  "review_failed",
+  "review_not_complete",
   "dod_unmet",
   "dod_command_failed",
   "child_rollup",
-  "retry_exhausted",
-  "recover_exhausted",
   "operator_override",
   "operator_skip",
   "operator_recover",
   "operator_retry",
+  "operator_resume",
+  "restart_resume",
   "dependency_blocked",
   "import",
 ] as const;
@@ -535,24 +536,25 @@ export function isStatusTrigger(value: unknown): value is StatusTrigger {
 export const DEFAULT_TRIGGER_SENTENCES: Record<StatusTrigger, string> = {
   agent_post: "The agent posted this status itself.",
   agent_decompose: "The agent split this work item into sub-steps.",
+  agent_continue: "The agent recorded its progress and asked to be resumed on the same working tree.",
   run_started: "An agent run started.",
   run_ended_without_post: "The run ended without posting a final status.",
   run_crashed: "The agent process failed.",
   run_start_failed: "The agent process could not be started.",
   budget_exhausted: "The run hit its budget before it finished.",
+  continuation: "The station was re-queued on the same working tree with the previous run's notes.",
+  provider_fallback: "The agent could not run, so the station was started with another provider.",
   review_complete: "A reviewer checked the work and found it complete.",
-  review_incomplete: "A reviewer found the work genuinely unfinished.",
-  review_unverifiable: "A reviewer could not confirm the work either way.",
-  review_failed: "The reviewer itself could not be run.",
+  review_not_complete: "A reviewer could not confirm the work was finished.",
   dod_unmet: "The definition of done was not satisfied.",
   dod_command_failed: "A definition-of-done command did not pass.",
   child_rollup: "A sub-step's outcome propagated up to this item.",
-  retry_exhausted: "It ran out of retries.",
-  recover_exhausted: "Recovery did not clear the block.",
   operator_override: "You set this status yourself.",
   operator_skip: "You skipped it.",
   operator_recover: "You recovered it.",
   operator_retry: "You retried it.",
+  operator_resume: "You resumed the station, granting a fresh continuation allowance.",
+  restart_resume: "The server restarted mid-run, so the station was re-queued on the same working tree.",
   dependency_blocked: "Every remaining path is waiting on something else.",
   import: "It was created by an import.",
 };
@@ -580,10 +582,12 @@ export function describeTrigger(
 export const STEP_SIGNALS = [
   "agent_posted_done",
   "agent_posted_blocked",
+  "agent_posted_continue",
   "agent_decomposed",
   "run_ended_no_post",
   "run_crashed",
   "run_start_failed",
+  "provider_could_not_run",
   "review_verdict_complete",
   "review_verdict_incomplete",
   "review_verdict_unverifiable",
@@ -599,7 +603,7 @@ export function isStepSignal(value: unknown): value is StepSignal {
 }
 
 /** What the scheduler should do once the status is written. */
-export const STEP_NEXT_ACTIONS = ["advance", "park", "review", "handoff", "rule"] as const;
+export const STEP_NEXT_ACTIONS = ["advance", "park", "review", "continue", "rule"] as const;
 export type StepNextAction = (typeof STEP_NEXT_ACTIONS)[number];
 
 export interface StepTransitionRow {
@@ -661,6 +665,19 @@ export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
     policy: { kind: "locked", reason: LOCKED_AGENT_AUTHORITY },
   },
   {
+    id: "agent-continue",
+    when: { signal: "agent_posted_continue" },
+    to: "TODO",
+    trigger: "agent_continue",
+    next: "rule",
+    condition: "The agent recorded what remains and asked to be resumed",
+    because:
+      "The agent's own account of what remains is the cheapest brief there is — it wrote it "
+      + "while it still had the context, so the run that resumes this item does not have to "
+      + "rediscover the work.",
+    policy: { kind: "locked", reason: LOCKED_AGENT_AUTHORITY },
+  },
+  {
     id: "agent-decomposed",
     when: { signal: "agent_decomposed" },
     to: "TODO",
@@ -671,36 +688,56 @@ export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
     policy: { kind: "locked", reason: "A parent waits on its children by construction." },
   },
   {
+    // Above run-crashed / run-start-failed in the catalog: a provider that
+    // could not run is swapped, not continued. The scheduler writes this
+    // trigger itself after classifyFailure; the signal is not produced by
+    // endOfRunSignal.
+    id: "provider-fallback",
+    when: { signal: "provider_could_not_run" },
+    to: "TODO",
+    trigger: "provider_fallback",
+    next: "rule",
+    condition: "The agent process could not run for a reason that says nothing about the work",
+    because:
+      "The agent could not run, so the station was started with another provider. "
+      + "This does not consume a continuation.",
+    policy: {
+      kind: "locked",
+      reason: "A capacity, quota, auth or start failure is about the provider, not the work.",
+    },
+  },
+  {
     id: "run-start-failed",
     when: { signal: "run_start_failed" },
     to: "FAILED",
     trigger: "run_start_failed",
-    next: "park",
+    next: "continue",
     condition: "The agent process could not start",
-    because: "No agent ever ran, so nothing about the work can be concluded.",
+    because: "No agent ever ran, so nothing about the work can be concluded. The station is continued rather than parked.",
     policy: { kind: "locked", reason: "A process that never started cannot have finished." },
-  },
-  {
-    id: "run-crashed",
-    when: { signal: "run_crashed" },
-    to: "FAILED",
-    trigger: "run_crashed",
-    next: "rule",
-    condition: "The agent process failed",
-    because: "The process exited abnormally, which is an observed failure rather than a guess.",
-    policy: { kind: "locked", reason: "An observed crash is a fact, not a preference." },
   },
   {
     id: "run-ended-no-post",
     when: { signal: "run_ended_no_post" },
     to: "UNREPORTED",
     trigger: "run_ended_without_post",
-    next: "review",
+    next: "continue",
     condition: "The run ended without posting a status",
     because:
       "The run finished cleanly but never said what it achieved, so whether the work is "
-      + "done is unknown until a reviewer checks.",
+      + "done is unknown. The station is continued on the same working tree rather than "
+      + "guessed at.",
     policy: { kind: "locked", reason: LOCKED_NO_INFERENCE },
+  },
+  {
+    id: "run-crashed",
+    when: { signal: "run_crashed" },
+    to: "FAILED",
+    trigger: "run_crashed",
+    next: "continue",
+    condition: "The agent process failed",
+    because: "The process exited abnormally, which is an observed failure rather than a guess. The station is continued rather than parked.",
+    policy: { kind: "locked", reason: "An observed crash is a fact, not a preference." },
   },
   {
     id: "review-complete",
@@ -708,61 +745,45 @@ export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
     to: "DONE",
     trigger: "review_complete",
     next: "rule",
-    condition: "A reviewer confirmed the work",
+    condition: "A reviewer confirmed the work, after continuations ran out",
     because: "An independent read-only agent checked the tree and found every criterion met.",
     policy: {
       kind: "setting",
       key: "pipeline.dodEnforcement",
-      reason: "Whether a reviewer may close a station on its own is a house rule.",
+      reason: "The definition of done still gets the last word on whether this closes.",
     },
   },
   {
-    id: "review-incomplete-with-work",
-    when: { signal: "review_verdict_incomplete", producedWork: true },
+    id: "review-not-complete",
+    when: { signal: "review_verdict_incomplete" },
     to: null,
-    trigger: "review_incomplete",
-    next: "handoff",
-    condition: "A reviewer found it unfinished, and the run left work behind",
-    because:
-      "There is real work a successor must not redo, so it is summarised before anything "
-      + "else picks the item up.",
+    trigger: "review_not_complete",
+    next: "park",
+    condition: "A reviewer could not confirm the work is finished, after continuations ran out",
+    because: "The station is held for you rather than continued again or guessed at.",
     policy: {
       kind: "setting",
-      key: "pipeline.handoffTrigger",
-      reason: "When a handoff is prepared is a house rule.",
-    },
-  },
-  {
-    id: "review-incomplete-no-work",
-    when: { signal: "review_verdict_incomplete", producedWork: false },
-    to: null,
-    trigger: "review_incomplete",
-    next: "rule",
-    condition: "A reviewer found it unfinished, and the run left nothing behind",
-    because: "Nothing was produced, so there is nothing to summarise — the station's rule decides.",
-    policy: {
-      kind: "stationRule",
-      field: "onBlocked",
-      reason: "With nothing to hand over, this is exactly the ordinary blocked path.",
+      key: "pipeline.reviewAfterContinuations",
+      reason: "Whether a reviewer is sent after continuations run out is a house rule.",
     },
   },
   {
     id: "review-unverifiable",
     when: { signal: "review_verdict_unverifiable" },
-    to: "NEEDS_REVIEW",
-    trigger: "review_unverifiable",
+    to: null,
+    trigger: "review_not_complete",
     next: "park",
-    condition: "A reviewer could not tell either way",
+    condition: "A reviewer could not tell either way, after continuations ran out",
     because: "Neither completion nor failure could be established, so it waits for your judgement.",
     policy: { kind: "locked", reason: LOCKED_NO_INFERENCE },
   },
   {
     id: "review-unavailable",
     when: { signal: "review_unavailable" },
-    to: "NEEDS_REVIEW",
-    trigger: "review_failed",
+    to: null,
+    trigger: "review_not_complete",
     next: "park",
-    condition: "The reviewer could not be run",
+    condition: "The reviewer itself could not be run, after continuations ran out",
     because:
       "No second opinion was available, and an unchecked run is not evidence of anything.",
     policy: { kind: "locked", reason: LOCKED_NO_INFERENCE },
@@ -1090,157 +1111,4 @@ export function dodUnmetReason(evaluation: DodEvaluation): string {
   const more = unmet.length > 3 ? ` (and ${unmet.length - 3} more)` : "";
   return `The definition of done was not satisfied: ${names}${more}. `
     + "The work item is held for review rather than closed on this evidence.";
-}
-
-/* ------------------------------------------------------------------ */
-/* The reviewer                                                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * The situations a reviewer can be sent into.
- *
- * These are the states where the app has no first-hand account of what
- * happened. There used to be one global switch — `auditOnBlocked`, with the
- * values off / report / autocomplete — which meant every one of these
- * situations had to be handled identically, and the operator could not say
- * "check an unreported run, but never touch one I was asked a question about".
- */
-export const REVIEW_TRIGGERS = ["unreported", "failed", "dodUnmet", "childFailed"] as const;
-export type ReviewTrigger = (typeof REVIEW_TRIGGERS)[number];
-
-export function isReviewTrigger(value: unknown): value is ReviewTrigger {
-  return typeof value === "string" && (REVIEW_TRIGGERS as readonly string[]).includes(value);
-}
-
-export const REVIEW_TRIGGER_LABEL: Record<ReviewTrigger, string> = {
-  unreported: "A run ended without reporting",
-  failed: "The agent process failed",
-  dodUnmet: "The definition of done was not satisfied",
-  childFailed: "A sub-step needs attention",
-};
-
-/** What a verdict is allowed to do. */
-export const REVIEW_ACTIONS = ["close", "remediate", "handoff", "retry", "park", "markReview"] as const;
-export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
-
-export function isReviewAction(value: unknown): value is ReviewAction {
-  return typeof value === "string" && (REVIEW_ACTIONS as readonly string[]).includes(value);
-}
-
-export const REVIEW_ACTION_LABEL: Record<ReviewAction, string> = {
-  close: "Close the work item",
-  remediate: "Finish the work it named, then carry on",
-  handoff: "Prepare a continuation brief",
-  retry: "Run it again",
-  park: "Hold and wait for you",
-  markReview: "Mark it as needing review",
-};
-
-/**
- * One line on what each action actually costs and does, for the reviewer
- * matrix. `remediate` and `handoff` both spend an agent run, and the difference
- * between them is the whole point: one writes the missing work, the other
- * writes a description of it.
- */
-export const REVIEW_ACTION_CONSEQUENCE: Record<ReviewAction, string> = {
-  close: "Marks the item DONE. Only ever honoured on a COMPLETE verdict whose own checks passed, and the definition of done still gets the last word.",
-  remediate: "Starts a developer run scoped to the remaining work the reviewer named, then continues the rail by itself. Needs a non-empty `remainingWork`; falls back to holding when there is none.",
-  handoff: "Spends a read-only run writing a continuation brief, then holds. Useful before a human takes over; pure cost if the next step is another agent.",
-  retry: "Runs the whole item again from the top. The previous run's work stays in the tree, but nothing tells the next agent what was already done.",
-  park: "Stops and waits for you, with the reviewer's report on the item.",
-  markReview: "Flags the item NEEDS_REVIEW and holds, so it shows on the attention list without claiming an outcome.",
-};
-
-/**
- * What a reviewer does in one situation.
- *
- * `null` on provider or model means "pick an available one", which is what the
- * app did unconditionally before this was configurable.
- */
-export interface ReviewerConfig {
-  trigger: ReviewTrigger;
-  enabled: boolean;
-  provider: string | null;
-  model: string | null;
-  maxAttempts: number;
-  /**
-   * The reviewer must not be the agent whose run is on trial. Configurable
-   * rather than fixed because a single-provider setup would otherwise never get
-   * a review at all — but it defaults on, since marking your own homework is
-   * the failure mode this whole mechanism exists to avoid.
-   */
-  mustDifferFromSource: boolean;
-  onComplete: ReviewAction;
-  onIncomplete: ReviewAction;
-  onUnverifiable: ReviewAction;
-}
-
-/**
- * What ships.
- *
- * `onIncomplete` was `handoff`, which is what made a correct reviewer useless:
- * it found the missing work, named it precisely, and then spent a second
- * read-only run writing that finding out as prose before parking. The station
- * was retried from the top by an agent who had to rediscover everything. The
- * verdict was right every time and nothing acted on it.
- *
- * `remediate` sends the reviewer's own `remainingWork` list to a developer run
- * as its brief. It falls back to `handoff` when the reviewer named no remaining
- * work, so a vague INCOMPLETE still gets a human-readable summary rather than a
- * run with nothing to do.
- */
-export const DEFAULT_REVIEWER_CONFIG: Record<ReviewTrigger, ReviewerConfig> = {
-  unreported: {
-    trigger: "unreported", enabled: true, provider: null, model: null,
-    maxAttempts: 1, mustDifferFromSource: true,
-    onComplete: "close", onIncomplete: "remediate", onUnverifiable: "park",
-  },
-  failed: {
-    trigger: "failed", enabled: true, provider: null, model: null,
-    maxAttempts: 1, mustDifferFromSource: true,
-    // A crashed run may still have finished the work, so it is worth checking —
-    // but a crash is an observed fact, and closing on it deserves more caution
-    // than closing on a run that merely went quiet.
-    onComplete: "close", onIncomplete: "remediate", onUnverifiable: "park",
-  },
-  dodUnmet: {
-    trigger: "dodUnmet", enabled: false, provider: null, model: null,
-    maxAttempts: 1, mustDifferFromSource: true,
-    onComplete: "close", onIncomplete: "park", onUnverifiable: "park",
-  },
-  childFailed: {
-    trigger: "childFailed", enabled: false, provider: null, model: null,
-    maxAttempts: 1, mustDifferFromSource: true,
-    onComplete: "close", onIncomplete: "park", onUnverifiable: "park",
-  },
-};
-
-/**
- * The situation a status puts a work item in, or null if none needs a reviewer.
- *
- * `NEEDS_REVIEW` needs the trigger as well as the status, because the status
- * alone does not say what went wrong: an unmet definition of done, a reviewer
- * that could not tell either way, and a sub-step in trouble all land there, and
- * they are three different questions to send a reviewer to answer. Reading the
- * cause off the ledger row rather than guessing from the status is the whole
- * point of having recorded it.
- */
-export function reviewTriggerFor(
-  status: StepStatus,
-  trigger: StatusTrigger | null = null,
-): ReviewTrigger | null {
-  if (status === "UNREPORTED") return "unreported";
-  if (status === "FAILED") return "failed";
-  if (status === "NEEDS_REVIEW") {
-    if (trigger === "dod_unmet" || trigger === "dod_command_failed") return "dodUnmet";
-    if (trigger === "child_rollup") return "childFailed";
-    // A reviewer that already said "I cannot tell" is not asked again, and a
-    // reviewer that could not be run at all is an operator's problem, not
-    // another review's.
-    return null;
-  }
-  // BLOCKED is deliberately absent. An agent that stopped to ask a human a
-  // question has not left an unanswered question about *the work* — reviewing
-  // past it would be a machine overruling a request for a human decision.
-  return null;
 }

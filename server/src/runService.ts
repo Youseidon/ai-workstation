@@ -1,9 +1,11 @@
+import { spawnSync } from "node:child_process";
 import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
 import { config } from "./config.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
+import { isCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
 import { createAgentShim, removeAgentShim } from "./agentShim.ts";
 import { runContexts } from "./runContext.ts";
@@ -178,8 +180,6 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     model,
     role: "execute",
     permissionOverride: "inherit",
-    budgetDepth: savedPrompt === null ? 0 : workspaces.decomposeDepth(savedPrompt.id),
-    budgetMultiplier: savedPrompt === null ? 1 : workspaces.promptBudgetMultiplier(savedPrompt.id),
     onEvent: (event) => {
       if (event.type === "assistant_text" && event.payload.kind === "message") {
         if (clarificationId !== null) clarificationAnswer += event.payload.text;
@@ -195,8 +195,25 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     onEnd: (runId, state, metrics) => {
       const endedPromptId = savedPrompt?.id ?? promptId;
       const endedWorkspaceId = workspace.id;
+      // A budget stop is not a verdict on the work, and the agent that just hit
+      // it is the only cheap source of "what is done and what remains". Before
+      // anything concludes anything, it gets a short turn to say so — on the
+      // same provider session, so it does not pay to re-read what it just read.
+      //
+      // The status transition is held back for exactly as long as that takes:
+      // applying it here would move the item out of IN_PROGRESS and the wrap-up
+      // run's own post would be refused as an invalid transition.
+      const wrapUp =
+        mode === "execute" &&
+        activeContextRunId !== null &&
+        endedPromptId !== undefined &&
+        typeof metrics.stopReason === "string" &&
+        metrics.stopReason.startsWith("budget_") &&
+        workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
+          ? { promptId: endedPromptId, stopReason: metrics.stopReason, sessionId: metrics.sessionId }
+          : null;
       if (activeContextRunId !== null) {
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics);
+        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null });
         runContexts.complete(activeContextRunId);
         // The launcher holds this run's token. The credential is collapsed to a
         // short TTL above, but a live-looking token sitting in tmp after its run
@@ -213,11 +230,56 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       }
       runHub.end(runId, state);
       if (mode === "execute") readBack(endedWorkspaceId);
-      if (mode === "execute" && endedPromptId !== undefined) {
+      const tellPipeline = () => {
+        if (mode !== "execute" || endedPromptId === undefined) return;
+        // Always the *source* run id: the scheduler's `currentRunId` guard keys
+        // on the run it started, and the wrap-up's own end must not fire this a
+        // second time.
         void pipelineScheduler
           .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
           .catch((error:unknown)=>log.error(`pipeline advance failed after run ${runId}`,error));
-      }
+      };
+      if (wrapUp === null) { tellPipeline(); return; }
+      void (async () => {
+        // A cooling source provider cannot resume its session; pick another
+        // available provider for a fresh short turn, or skip the wrap-up and
+        // continue without notes (prompt 05).
+        let wrapProvider = provider;
+        let wrapModel = model;
+        let wrapSession = wrapUp.sessionId;
+        if (isCooling(provider)) {
+          const providers = await detectProviders();
+          const next = providers.find((item) => item.available && item.id !== provider && !isCooling(item.id));
+          if (next === undefined) {
+            log.warn(`wrap-up skipped after run ${runId}: ${provider} is cooling and no fallback is free`);
+            workspaces.applyDeferredRunEnd(runId);
+            return;
+          }
+          wrapProvider = next.id;
+          wrapModel = null;
+          wrapSession = null;
+          log.info(`wrap-up fallback after run ${runId}: ${provider}→${wrapProvider}`);
+        }
+        const started = await startWrapUp({
+          workspaceId: endedWorkspaceId,
+          promptId: wrapUp.promptId,
+          sourceRunId: runId,
+          provider: wrapProvider,
+          model: wrapModel,
+          sessionId: wrapSession,
+          stopReason: wrapUp.stopReason,
+        });
+        await started.done;
+      })()
+        .catch((error: unknown) => {
+          // The provider is gone, or the run could not be recorded. The item
+          // must land exactly where it would have without this feature rather
+          // than sitting IN_PROGRESS forever waiting for a turn that is not
+          // coming.
+          log.error(`wrap-up could not start after run ${runId}`, error);
+          workspaces.applyDeferredRunEnd(runId);
+        })
+        .finally(tellPipeline);
     },
   });
   // Marked RUNNING before the announcement, so a client that reacts to
@@ -236,6 +298,262 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   });
   void handle.done.catch((error: unknown) => log.error("run failed", error));
   return { runId: handle.runId };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The wrap-up turn                                                           */
+/* -------------------------------------------------------------------------- */
+
+/** What a wrap-up turn is allowed to spend. Long enough to write, not to work. */
+const WRAP_UP_BUDGET = {
+  maxToolCalls: 12,
+  maxWallClockMs: 4 * 60_000,
+  // Never metered: the run this speaks for already spent the money, and a
+  // wrap-up refused for cost is the one thing worse than no wrap-up at all.
+  maxInputTokens: null,
+  maxToolOutputBytes: null,
+  noProgressToolCalls: null,
+} as const;
+
+/** How much `git status`/`git diff --stat` a fresh-session brief may carry. */
+const WRAP_UP_TREE_BUDGET_BYTES = 8192;
+
+export interface StartWrapUpArgs {
+  workspaceId: number;
+  promptId: number;
+  sourceRunId: string;
+  provider: ProviderId;
+  model: string | null;
+  /** The provider session to resume, or null to run a fresh short session. */
+  sessionId: string | null;
+  /** The source run's stop reason, quoted to the agent verbatim. */
+  stopReason: string;
+}
+
+/**
+ * The turn a run gets after its budget stopped it, whose only job is to write
+ * down what it learned.
+ *
+ * 23 execute runs on this install were killed mid-work by a budget. Every one
+ * of them was interrupted with no wrap-up, no notes and no status, and the
+ * station landed UNREPORTED with the stop reason as its only record — one work
+ * item died that way four times in twenty minutes with nothing written to disk.
+ * The reviewer and handoff runs sent afterwards to reconstruct what happened
+ * have cost ~30 M input tokens. The agent that did the work is the cheapest and
+ * best source of "what is done and what remains": it already has the context,
+ * and on a resumed session it does not even have to re-read a file.
+ */
+export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: string; done: Promise<unknown> }> {
+  const workspace = workspaces.get(args.workspaceId);
+  const record = workspaces.resolvePrompt(args.workspaceId, args.promptId);
+  const plannedRunId = newId("run");
+  // The prompt's own credential scope, on a new run id: the wrap-up posts
+  // against the same work item, and `requireActiveExecuteRun` admits it because
+  // it is a live execute run on that prompt.
+  const credential = runContexts.create(plannedRunId, args.workspaceId, args.promptId);
+  try {
+    workspaces.beginWrapUpRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      promptId: args.promptId,
+      provider: args.provider,
+      model: args.model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      sourceRunId: args.sourceRunId,
+      sessionId: args.sessionId,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  const resumable = args.sessionId !== null && providerCanResume(args.provider);
+  const prompt = wrapUpPrompt({
+    stopReason: args.stopReason,
+    shimPath,
+    runId: plannedRunId,
+    token: credential.token,
+    port: config.port,
+    freshSession: resumable
+      ? null
+      : {
+          title: `${record.externalKey ?? ""} ${record.title}`.trim(),
+          remarks: workspaces.recentProgressRemarks(args.promptId, 5),
+          tree: workingTreeSummary(workspace.workDirectory),
+        },
+  });
+
+  let answer = "";
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(args.provider),
+    prompt,
+    cwd: workspace.workDirectory,
+    model: args.model,
+    role: "execute",
+    // Same as an execute run. `agent-step` is a shell command talking to
+    // 127.0.0.1, and a read-only sandbox blocks that outright on Codex — a
+    // wrap-up that cannot reach the door has nothing to write with.
+    permissionOverride: "inherit",
+    resumeSessionId: resumable ? args.sessionId : null,
+    budget: { ...WRAP_UP_BUDGET },
+    onEvent: (event) => {
+      if (event.type === "assistant_text" && event.payload.kind === "message") answer += event.payload.text;
+      if (event.type === "result" && event.payload.text) answer = event.payload.text;
+      workspaces.recordAgentEvent(plannedRunId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state, metrics) => {
+      // No wrap-up of a wrap-up: if this one trips its own budget it simply
+      // ends, and `finishAgentRun` applies the transition the source run's end
+      // deferred — attributing the *source* run's stop reason, because that is
+      // what stopped the work.
+      workspaces.finishAgentRun(runId, state, answer, metrics);
+      runContexts.complete(runId);
+      removeAgentShim(runId);
+      runHub.end(runId, state);
+    },
+  });
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: {
+      type: "wrapup",
+      promptId: args.promptId,
+      promptKey: record.externalKey,
+      title: record.title,
+      sourceRunId: args.sourceRunId,
+      stopReason: args.stopReason,
+    },
+    role: "execute",
+    permissionMode: handle.permissionMode,
+  });
+  // Handed back rather than only logged: the pipeline is not told about the
+  // source run until this turn has had its say.
+  return { runId: handle.runId, done: handle.done.catch((error: unknown) => log.error("wrap-up failed", error)) };
+}
+
+/**
+ * Whether this provider can be told to continue its own session.
+ *
+ * All five installed CLIs can (`cursor-agent --resume=`, `codex exec resume`,
+ * the Claude SDK's `resume`, `grok --resume=`, `copilot --resume=`), so this is
+ * a list rather than a check — but it is a list so that a provider whose resume
+ * flag disappears in an upgrade can be demoted to the fresh-session form in one
+ * place instead of failing every wrap-up turn it is given.
+ */
+function providerCanResume(provider: ProviderId): boolean {
+  return provider === "cursor" || provider === "codex" || provider === "claude" || provider === "grok" || provider === "copilot";
+}
+
+/**
+ * What the working tree looks like right now, for a wrap-up that could not
+ * resume the session and therefore has to be told.
+ *
+ * Captured by the server rather than asked of the agent: a wrap-up turn has 12
+ * tool calls, and spending two of them re-discovering what the server already
+ * knows is two it cannot spend writing.
+ */
+function workingTreeSummary(cwd: string): string {
+  const read = (args: string[]): string => {
+    try {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1_000_000 });
+      if (result.status !== 0) return "";
+      return result.stdout.trim();
+    } catch {
+      return "";
+    }
+  };
+  const status = read(["status", "--short"]);
+  const stat = read(["diff", "--stat"]);
+  const text = [
+    status === "" ? "" : `git status --short:\n${status}`,
+    stat === "" ? "" : `git diff --stat:\n${stat}`,
+  ].filter((part) => part !== "").join("\n\n");
+  if (text === "") return "";
+  return text.length <= WRAP_UP_TREE_BUDGET_BYTES
+    ? text
+    : `${text.slice(0, WRAP_UP_TREE_BUDGET_BYTES)}\n… [truncated by the orchestrator]`;
+}
+
+/**
+ * The turn itself, in as few words as it can be said.
+ *
+ * On a resumed session the agent already holds everything: the prompt's whole
+ * job is to change what it is doing, not to tell it what it was doing. The
+ * fresh-session form adds only what a new session cannot know, and says plainly
+ * that it is new so the agent does not claim to have verified something it is
+ * reading about for the first time.
+ */
+function wrapUpPrompt(args: {
+  stopReason: string;
+  shimPath: string | null;
+  runId: string;
+  token: string;
+  port: number;
+  freshSession: { title: string; remarks: Array<{ kind: string; content: string; createdAt: string }>; tree: string } | null;
+}): string {
+  const step = args.shimPath === null ? null : JSON.stringify(args.shimPath);
+  const base = `http://127.0.0.1:${args.port}/api/agent/runs/${args.runId}`;
+  const auth = `-H 'Authorization: Bearer ${args.token}' -H 'Content-Type: application/json'`;
+  const remark = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"wrapup-progress","kind":"PROGRESS","content":"…"}'`
+    : `${step} remark --kind PROGRESS --text "…"`;
+  const done = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'`
+    : `${step} done --verification "…"`;
+  const cont = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'`
+    : `${step} continue --remaining "…"`;
+  const blocked = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'`
+    : `${step} blocked --reason "…" --action "…"`;
+
+  const context = args.freshSession === null
+    ? ""
+    : [
+        "",
+        "This is a **fresh session**: the run that did the work could not be resumed, so you are",
+        "reading this rather than remembering it. Report only what the evidence below and the",
+        "working tree actually show — do not claim to have verified anything yourself.",
+        "",
+        `## Work item\n\n${args.freshSession.title}`,
+        "",
+        "## What the stopped run banked",
+        "",
+        args.freshSession.remarks.length === 0
+          ? "Nothing. It was stopped before it recorded anything."
+          : args.freshSession.remarks.map((entry) => `### ${entry.kind} · ${entry.createdAt}\n\n${entry.content.trim()}`).join("\n\n"),
+        "",
+        ...(args.freshSession.tree === "" ? [] : ["## Working tree", "", "```", args.freshSession.tree, "```", ""]),
+      ].join("\n");
+
+  return [
+    `Your run was stopped by the orchestrator's budget (\`${args.stopReason}\`), not because anything failed.`,
+    "",
+    "**Do not edit files or run build/test commands.** Do exactly this, in order:",
+    "",
+    `1. \`\`\`bash\n${remark}\n\`\`\``,
+    "   — what is verified (with the command and result), what is partly done (file paths), and",
+    "   any decision you made that the next run must know.",
+    "",
+    "2. Then exactly one of:",
+    "",
+    `   - \`\`\`bash\n${done}\n\`\`\``,
+    "     only if every acceptance criterion is already verified; or",
+    "",
+    `   - \`\`\`bash\n${cont}\n\`\`\``,
+    "     — the remaining work as concrete instructions for the run that resumes this item on the",
+    "     same working tree (files, routes, commands, what \"done\" looks like); or",
+    "",
+    `   - \`\`\`bash\n${blocked}\n\`\`\``,
+    "     only for a concrete external dependency that needs a human.",
+    "",
+    "A run that ends without one of these is treated as `continue` with no notes.",
+    context,
+  ].join("\n");
 }
 
 /** Research consult: forced sandbox, no writer lock, no prompt status mutation. */

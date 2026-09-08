@@ -22,6 +22,13 @@ export interface RunOptions {
   /** Server-side log; adapter stderr goes here, never to the browser. */
   log: Logger;
   permissionOverride: PermissionOverride;
+  /**
+   * Continue the provider's own session with this id instead of starting a
+   * fresh one. Set only by the wrap-up turn after a budget stop, where the
+   * whole point is that the agent still has the context it just spent its
+   * budget building. `null`/omitted starts a new session.
+   */
+  resumeSessionId?: string | null;
 }
 
 export interface AvailabilityReport {
@@ -71,6 +78,7 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     version: report.version,
     transport: adapter.transport,
     binary: report.binary,
+    cooling: null,
     reportsTokens: adapter.reportsTokens,
     permissionMode: adapter.permissionMode,
     model: adapter.model,

@@ -1,13 +1,14 @@
 "use client";
 
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
-import { ReviewerMatrixPanel } from "./ReviewerMatrixPanel";
 import { StatusCatalogPanel } from "./StatusCatalogPanel";
-import type { PipelinePolicy, RuleContext, RulePolicy, TransitionRow } from "@agent-console/shared";
+import type { PipelinePolicy, ProviderId, RuleContext, RulePolicy, TransitionRow } from "@agent-console/shared";
+import { COOLING_MINUTES, TRANSIENT_PATTERNS } from "@agent-console/shared";
 import { Modal } from "@/components/ui/Modal";
 import { StatusDot } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import { CONTROL_LABEL, TRANSITIONS, type PipelineStatusView } from "./status";
+import { SuiteFallbackEditor } from "./SuiteFallbackEditor";
 
 /**
  * The interlocking, rendered.
@@ -27,6 +28,9 @@ export function RulesPanel({
   onEditPolicy,
   onStatusesChanged,
   suiteId,
+  pipelineId,
+  suiteFallbackProviders = [],
+  onSuiteFallbacksChanged,
 }: {
   open: boolean;
   onClose(): void;
@@ -46,6 +50,11 @@ export function RulesPanel({
    * shown editing nothing.
    */
   suiteId?: number | null;
+  /** Named pipeline that owns the stage; required to PATCH suite fallbacks. */
+  pipelineId?: number | null;
+  /** Suite-level ordered fallbacks; empty means house default. */
+  suiteFallbackProviders?: ProviderId[];
+  onSuiteFallbacksChanged?(): void;
 }) {
   const controls = [
     ...(status.primary === null ? [] : [{ control: status.primary, primary: true }]),
@@ -113,9 +122,60 @@ export function RulesPanel({
           <span className="text-fg-muted">
             {policy.stopInterruptsAgent ? "interrupts" : "does not interrupt"}
           </span>{" "}
-          the running agent. Handoffs are offered{" "}
-          <span className="text-fg-muted">{requirementPhrase(policy)}</span>.
+          the running agent. A station that does not finish is continued up to{" "}
+          <span className="text-fg-muted">{policy.maxContinuations}</span>
+          {policy.reviewAfterContinuations
+            ? ", then a read-only reviewer is sent before the rail parks."
+            : ", then the rail parks."}
+          {" "}House fallbacks:{" "}
+          <span className="text-fg-muted">
+            {policy.fallbackProviders.length > 0 ? policy.fallbackProviders.join(" → ") : "none"}
+          </span>
+          .
         </p>
+      </section>
+
+      <section className="mt-6 space-y-3">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-dim">
+          Provider fallbacks
+        </h3>
+        <p className="text-[11px] leading-5 text-fg-dim">
+          When an agent cannot start or dies before doing any work for a reason that says nothing
+          about the work, the station is started on the next provider in its fallback list. That
+          does not consume a continuation. The failing provider cools for a few minutes.
+        </p>
+        <div className="overflow-x-auto rounded-md border border-line">
+          <table className="w-full min-w-[28rem] border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-line bg-surface-2">
+                <Th>Id</Th>
+                <Th>Because</Th>
+                <Th>Cooling</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {TRANSIENT_PATTERNS.map((row) => (
+                <tr key={row.id} className="border-b border-line/60 last:border-b-0">
+                  <td className="px-3 py-2 font-mono text-[11px] text-fg">{row.id}</td>
+                  <td className="px-3 py-2 text-fg-muted">{row.because}</td>
+                  <td className="px-3 py-2 text-fg-dim">{COOLING_MINUTES[row.id] ?? 5} min</td>
+                </tr>
+              ))}
+              <tr className="border-b border-line/60 last:border-b-0">
+                <td className="px-3 py-2 font-mono text-[11px] text-fg">start_failed</td>
+                <td className="px-3 py-2 text-fg-muted">The agent process failed to start.</td>
+                <td className="px-3 py-2 text-fg-dim">{COOLING_MINUTES.start_failed} min</td>
+              </tr>
+              <tr className="border-b border-line/60 last:border-b-0">
+                <td className="px-3 py-2 font-mono text-[11px] text-fg">died_before_work</td>
+                <td className="px-3 py-2 text-fg-muted">
+                  The agent never made a tool call, so nothing about the work was learned.
+                </td>
+                <td className="px-3 py-2 text-fg-dim">{COOLING_MINUTES.died_before_work} min</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {/* The states themselves, editable. Kept in the same dialog as the rule
@@ -130,19 +190,27 @@ export function RulesPanel({
         </div>
       </section>
 
-      {/* Two rows of the table above defer to these, so they belong in the same
-          dialog: "a reviewer confirmed the work" is decided by the matrix, and
-          "the definition of done was not satisfied" by the criteria. Sending the
-          operator somewhere else to find them is how a rule row ends up pointing
-          at a screen nobody can locate. */}
-      <section className="mt-6 border-t border-line pt-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
-          When a reviewer is sent, and what its verdict may do
-        </h3>
-        <div className="mt-2">
-          <ReviewerMatrixPanel />
-        </div>
-      </section>
+      {suiteId != null && (
+        <section className="mt-6 border-t border-line pt-4">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+            This suite&rsquo;s provider fallbacks
+          </h3>
+          <p className="mt-1 text-[11px] leading-5 text-fg-dim">
+            Used when a station leaves its own list empty. Empty here means the house default (
+            {policy.fallbackProviders.join(" → ") || "none"}).
+          </p>
+          <div className="mt-2">
+            {pipelineId != null && (
+              <SuiteFallbackEditor
+                pipelineId={pipelineId}
+                suiteId={suiteId}
+                value={suiteFallbackProviders}
+                onChanged={onSuiteFallbacksChanged}
+              />
+            )}
+          </div>
+        </section>
+      )}
 
       {suiteId != null && (
         <section className="mt-6 border-t border-line pt-4">
@@ -254,7 +322,7 @@ function SetBy({
     );
   }
   if (policy.kind === "stationRule") {
-    const label = policy.field === "onDone" ? "This station's “on done”" : "This station's “on blocked”";
+    const label = policy.field === "onDone" ? "This station's “on done”" : "This station's “on unfinished”";
     if (onEditStationRule === undefined) {
       return <span title={policy.reason} className="text-fg-muted">{label}</span>;
     }
@@ -281,12 +349,6 @@ function secondaryHint(control: string): string {
   if (control === "newRun") return "Starts a fresh run from the first unfinished station.";
   if (control === "pause") return "Holds the rail without ending the run.";
   return "Continues the run from here.";
-}
-
-function requirementPhrase(policy: PipelinePolicy): string {
-  if (policy.handoffRequirement === "always") return "before every resume";
-  if (policy.handoffRequirement === "never") return "never";
-  return "when the previous run produced work";
 }
 
 /** Exported for tests: the context shape the panel's summary reads. */

@@ -16,11 +16,31 @@ export interface InstanceLock {
   release(): void;
 }
 
+/**
+ * Who holds the lock. `mode` is what separates the two failure reports the
+ * operator needs told apart: a second *development* server is debris to clear,
+ * while a `serve` process is a live pipeline somebody is depending on and the
+ * advice is to develop against a copy instead.
+ */
+export interface LockHolder {
+  pid: number;
+  /** `AGENT_CONSOLE_MODE` of the holding process; "dev" when it did not say. */
+  mode: string;
+  /** ISO timestamp, or null for a lock file written before this payload existed. */
+  startedAt: string | null;
+}
+
 export class InstanceLockedError extends Error {
-  constructor(readonly path: string, readonly heldByPid: number) {
+  constructor(readonly path: string, readonly heldByPid: number, readonly holder: LockHolder | null = null) {
     super(`database is locked by process ${heldByPid} (${path})`);
     this.name = "InstanceLockedError";
   }
+}
+
+/** The mode this process claims a lock under. */
+export function currentLockMode(): string {
+  const mode = process.env.AGENT_CONSOLE_MODE;
+  return mode === undefined || mode.trim() === "" ? "dev" : mode.trim();
 }
 
 /**
@@ -36,13 +56,39 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function readHolder(path: string): number | null {
+/*
+ * The payload is JSON, and a bare pid is still read as one.
+ *
+ * Lock files outlive an upgrade: a `serve` process started before this change
+ * left `1234\n` behind, and treating that as debris would have the next boot
+ * displace a server that is still running. The bare-pid branch is not legacy
+ * tolerance for its own sake — it is the difference between refusing to start
+ * and stealing a live console's database.
+ */
+export function readHolder(path: string): LockHolder | null {
+  let raw: string;
   try {
-    const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    raw = readFileSync(path, "utf8").trim();
   } catch {
     return null;
   }
+  if (raw === "") return null;
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<LockHolder>;
+      const pid = typeof parsed.pid === "number" ? parsed.pid : Number.NaN;
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      return {
+        pid,
+        mode: typeof parsed.mode === "string" && parsed.mode !== "" ? parsed.mode : "dev",
+        startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+  const pid = Number.parseInt(raw, 10);
+  return Number.isInteger(pid) && pid > 0 ? { pid, mode: "dev", startedAt: null } : null;
 }
 
 function write(path: string): boolean {
@@ -54,7 +100,8 @@ function write(path: string): boolean {
     throw error;
   }
   try {
-    writeSync(fd, `${process.pid}\n`);
+    const holder: LockHolder = { pid: process.pid, mode: currentLockMode(), startedAt: new Date().toISOString() };
+    writeSync(fd, `${JSON.stringify(holder)}\n`);
   } finally {
     closeSync(fd);
   }
@@ -66,7 +113,7 @@ export function acquireInstanceLock(path: string): InstanceLock {
     const holder = readHolder(path);
     // A holder that is gone left the file behind by crashing or being killed
     // with SIGKILL; an unreadable or malformed file is debris either way.
-    if (holder !== null && processAlive(holder)) throw new InstanceLockedError(path, holder);
+    if (holder !== null && processAlive(holder.pid)) throw new InstanceLockedError(path, holder.pid, holder);
     try {
       unlinkSync(path);
     } catch (error) {
@@ -74,7 +121,10 @@ export function acquireInstanceLock(path: string): InstanceLock {
     }
     // Losing this second attempt means another process took the stale lock
     // first; it now owns the database and this one must not proceed.
-    if (!write(path)) throw new InstanceLockedError(path, readHolder(path) ?? 0);
+    if (!write(path)) {
+      const successor = readHolder(path);
+      throw new InstanceLockedError(path, successor?.pid ?? 0, successor);
+    }
   }
 
   let released = false;
@@ -82,7 +132,7 @@ export function acquireInstanceLock(path: string): InstanceLock {
     release(): void {
       if (released) return;
       released = true;
-      if (readHolder(path) !== process.pid) return;
+      if (readHolder(path)?.pid !== process.pid) return;
       try {
         unlinkSync(path);
       } catch (error) {

@@ -96,10 +96,10 @@ function sourceText(source: RunSource): string {
       return `Selected saved prompt: ${source.promptKey === null ? "" : `${source.promptKey} — `}${source.title}\n${source.programName} / ${source.suiteName}`;
     case "consult":
       return `Consulting: ${source.question}`;
-    case "handoff":
-      return `Preparing handoff for ${source.promptKey ?? source.title}`;
     case "audit":
       return `Auditing whether ${source.promptKey ?? source.title} was actually finished`;
+    case "wrapup":
+      return `Wrapping up ${source.promptKey ?? source.title}: the run before this one was stopped by its budget (${source.stopReason}) and is recording what it verified and what remains`;
   }
 }
 

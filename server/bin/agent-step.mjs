@@ -26,13 +26,18 @@ const TOKEN = process.env.AGENT_CONSOLE_RUN_TOKEN ?? "";
 
 const USAGE = `agent-step — record progress and status for this work item.
 
-  agent-step context                        Re-read the authoritative work item context
+  agent-step context [--full]               Re-read the authoritative work item context
+                                            (--full: uncapped remarks and clarifications)
   agent-step state                          Everything recorded against it so far
   agent-step remark --kind KIND --text "…"  Bank what you just verified
   agent-step done --verification "…"        Finish: what you ran and what you observed
   agent-step blocked --reason "…" --action "…"
                                             Stop for a human: evidence, and the exact
                                             action only they can take
+  agent-step continue --remaining "…" [--verified "…"]
+                                            Hand over: what still has to happen, as
+                                            instructions for the run that resumes this
+                                            item on the same working tree
   agent-step decompose --file children.json Split into sub-steps
 
 Remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.
@@ -41,9 +46,12 @@ Post a PROGRESS remark after each verified slice. It is how you see how much
 budget is left, and it is what makes your work resumable if the run is stopped —
 a run that banks nothing and is then stopped has produced nothing.
 
-Before finishing you must post exactly one of 'done' or 'blocked'. A run that
-ends without one is recorded as unreported, and a reviewer is sent to work out
-whether the work was actually finished.`;
+Before finishing you must post exactly one of 'done', 'continue' or 'blocked'.
+A run that ends without one is recorded as unreported — not as success and not
+as failure — and nobody can tell what it achieved.
+
+'blocked' is for a concrete external dependency only a human can clear. Work
+that simply is not finished yet is 'continue'.`;
 
 function fail(message, code = 1) {
   process.stderr.write(`${message}\n`);
@@ -92,12 +100,39 @@ async function send(path, init, attempt = 0) {
 /** Turns the server's own error code into something to do about it. */
 const ADVICE = {
   stale_status: "Someone else moved this work item. Run 'agent-step state' to see where it is now.",
-  invalid_transition: "Only IN_PROGRESS may become DONE or BLOCKED, and only once.",
+  invalid_transition: "Only IN_PROGRESS may become DONE, BLOCKED or CONTINUE, and only once.",
   validation_error: "A required field was missing or empty.",
   request_id_conflict: "That requestId was already used for a different call.",
   invalid_run_token: "This run's credential has expired. The run is over; stop working.",
   consult_read_only: "This is a read-only run. It cannot post remarks or status.",
+  verification_failed: "The server ran this item's Verify commands and at least one failed. Fix them, then post done again — or continue with what remains.",
+  decompose_title_conflict: "Rename the conflicting titles and post again; existing sub-steps are kept.",
+  decompose_depth_exceeded: "Finish this sub-step, or post continue with what remains.",
 };
+
+/** One readable block per failing Verify command (409 verification_failed). */
+function formatVerificationFailures(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) return "";
+  return failures.map((failure) => {
+    const command = typeof failure?.command === "string" ? failure.command : "(unknown command)";
+    const exit = failure?.exitCode === null || failure?.exitCode === undefined ? "killed" : String(failure.exitCode);
+    const output = typeof failure?.output === "string" && failure.output.trim() !== ""
+      ? failure.output.trim()
+      : "(no output)";
+    return `\n---\n$ ${command}\nexit ${exit}\n${output}`;
+  }).join("") + "\n---";
+}
+
+/** Title collisions from a refused decompose (422 decompose_title_conflict). */
+function formatDecomposeConflicts(conflicts) {
+  if (!Array.isArray(conflicts) || conflicts.length === 0) return "";
+  return "\n" + conflicts.map((conflict) => {
+    const index = typeof conflict?.index === "number" ? conflict.index : "?";
+    const title = typeof conflict?.title === "string" ? conflict.title : "(untitled)";
+    const existing = typeof conflict?.existing === "string" ? conflict.existing : "(unknown)";
+    return `  children[${index}] "${title}" conflicts with ${existing}`;
+  }).join("\n");
+}
 
 async function post(path, body) {
   const response = await send(path, {
@@ -111,9 +146,14 @@ async function post(path, body) {
     const code = parsed?.error?.code ?? String(response.status);
     const message = parsed?.error?.message ?? text;
     const advice = ADVICE[code];
+    const detail = code === "verification_failed"
+      ? formatVerificationFailures(parsed?.error?.failures)
+      : code === "decompose_title_conflict"
+        ? formatDecomposeConflicts(parsed?.error?.conflicts)
+        : "";
     // Non-zero and specific. A silently swallowed refusal is how a run ends
     // believing it reported when it did not.
-    fail(`agent-step: refused (${code}): ${message}${advice === undefined ? "" : `\n  ${advice}`}`, 2);
+    fail(`agent-step: refused (${code}): ${message}${detail}${advice === undefined ? "" : `\n  ${advice}`}`, 2);
   }
   if (parsed?.budget !== undefined && parsed.budget !== null) {
     const b = parsed.budget;
@@ -144,7 +184,7 @@ if (BASE === "" || TOKEN === "") {
 }
 
 switch (command) {
-  case "context": await get("/context"); break;
+  case "context": await get(args.full === true ? "/context?full=1" : "/context"); break;
   case "state": await get("/state"); break;
   case "remark": {
     const text = args.text ?? args.content;
@@ -175,6 +215,20 @@ switch (command) {
         + "  external dependency, after in-scope alternatives are exhausted.");
     }
     await post("/status", { expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason, verificationSummary: action });
+    break;
+  }
+  case "continue": {
+    const remaining = args.remaining ?? args.reason;
+    if (typeof remaining !== "string" || remaining.trim() === "") {
+      fail("agent-step continue needs --remaining \"what still has to happen\".\n"
+        + "  Write it as instructions for the run that picks this up on the same working\n"
+        + "  tree: files, routes, commands, and what \"done\" looks like.");
+    }
+    await post("/status", {
+      expectedStatus: "IN_PROGRESS", status: "CONTINUE",
+      reason: remaining,
+      verificationSummary: typeof args.verified === "string" ? args.verified : "",
+    });
     break;
   }
   case "decompose": {

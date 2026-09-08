@@ -11,6 +11,14 @@ export interface SpawnSpec {
   env?: NodeJS.ProcessEnv;
   /** When set, written to the child's stdin and then closed. */
   stdin?: string;
+  /**
+   * The session id this spawn is known to have before a byte of stdout arrives:
+   * either one the adapter assigned itself (`--session-id`) or the one it is
+   * resuming. Announced as a status event straight after spawn, because a
+   * provider that only names its session in a final result event names it for
+   * exactly the runs that do not need it — a budget stop never gets there.
+   */
+  sessionId?: string;
 }
 
 /**
@@ -116,6 +124,11 @@ export abstract class SpawnAdapter implements AgentAdapter {
     }
 
     this.children.set(opts.runId, child);
+
+    // Before any provider output, so the id survives an interrupt.
+    if (spec.sessionId !== undefined) {
+      queue.push({ type: "status", payload: { state: "running", detail: `session ${spec.sessionId}`, sessionId: spec.sessionId } });
+    }
 
     if (spec.stdin !== undefined && child.stdin) {
       child.stdin.on("error", (error) => {

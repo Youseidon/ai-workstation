@@ -71,6 +71,7 @@ type ActivityPayload = Awaited<ReturnType<typeof import("@/lib/workspacesApi").w
 export function WorkItemDetail({
   suite,
   item,
+  parent,
   activity,
   statusCatalog,
   triggerSentences,
@@ -89,10 +90,13 @@ export function WorkItemDetail({
   onRespond,
   onComplete,
   onVerifyItem,
+  onSelectChild,
   onClose,
 }: {
   suite: OperationsSuite | null;
   item: OperationsPrompt | null;
+  /** Immediate parent when this row is a decompose sub-step. */
+  parent?: OperationsPrompt | null;
   activity: ActivityPayload | null;
   /** Resolved catalog from the operations snapshot, so renames show here too. */
   statusCatalog: readonly StatusDefinition[];
@@ -112,6 +116,7 @@ export function WorkItemDetail({
   onRespond(): void;
   onComplete(): void;
   onVerifyItem(): void;
+  onSelectChild?(promptId: number): void;
   onClose?(): void;
 }) {
   const [tab, setTab] = useState<DetailTab>("overview");
@@ -167,6 +172,15 @@ export function WorkItemDetail({
       <header className="border-b border-line px-4 py-3">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
+            {parent != null && (
+              <button
+                type="button"
+                onClick={() => onSelectChild?.(parent.prompt.id)}
+                className="mb-1 truncate text-[10px] text-accent hover:underline"
+              >
+                ← {parent.prompt.externalKey ?? parent.prompt.title}
+              </button>
+            )}
             <Badge tone={TONE[item.operationalState]} dot pulse={item.operationalState === "WORKING"}>
               {LABEL[item.operationalState]}
             </Badge>
@@ -221,25 +235,6 @@ export function WorkItemDetail({
         {tab === "overview" && (
           <div className="space-y-4">
             {item.latestAudit !== null && <CompletionAuditCard audit={item.latestAudit} />}
-            {item.latestHandoff !== null && (
-              <div className="rounded-panel border border-info/30 bg-info/5 p-4">
-                <div className="text-[10px] uppercase tracking-wider text-info">
-                  Handoff · {item.latestHandoff.state.toLowerCase().replaceAll("_", " ")}
-                </div>
-                {item.latestHandoff.recommendation !== null && (
-                  <div className="mt-1 text-xs text-fg-muted">
-                    Recommendation: {item.latestHandoff.recommendation.toLowerCase().replaceAll("_", " ")}
-                  </div>
-                )}
-                {item.latestHandoff.brief !== null && (
-                  <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-                    <div><div className="mb-1 text-fg-dim">Completed</div>{item.latestHandoff.brief.completedWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
-                    <div><div className="mb-1 text-fg-dim">Pending</div>{item.latestHandoff.brief.pendingWork.slice(0, 4).map((entry) => <div key={entry}>• {entry}</div>)}</div>
-                  </div>
-                )}
-                {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
-              </div>
-            )}
             {/* The answer to "why is it showing this", from the ledger rather
                 than reconstructed at render time. First thing in the overview
                 because it is the first thing an operator asks of a status they
@@ -257,13 +252,47 @@ export function WorkItemDetail({
                 this is the next thing the operator wants. */}
             <DefinitionOfDonePanel scope="prompt" scopeId={item.prompt.id} promptId={item.prompt.id} />
 
+            {item.children.length > 0 && (
+              <section className="rounded-panel border border-line bg-surface-1 p-4">
+                <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
+                  Sub-steps · {item.children.length}
+                </div>
+                <ul className="space-y-1.5">
+                  {item.children.map((child) => (
+                    <li key={child.prompt.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectChild?.(child.prompt.id)}
+                        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">
+                          {child.prompt.externalKey !== null && (
+                            <span className="mr-2 text-[11px] font-semibold text-fg-muted">
+                              {child.prompt.externalKey}
+                            </span>
+                          )}
+                          {child.prompt.title}
+                        </span>
+                        <Badge tone={TONE[child.operationalState]}>{LABEL[child.operationalState]}</Badge>
+                        {child.childAttention !== null && (
+                          <Badge tone={TONE[child.childAttention]}>
+                            {LABEL[child.childAttention].toLowerCase()}
+                          </Badge>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>
                   Run work item
                 </Button>
               )}
-              {item.operationalState === "RECOVERY_NEEDED" && (
+              {item.prompt.recoverable && (
                 <>
                   <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
                     Recover and resume
@@ -314,8 +343,7 @@ export function WorkItemDetail({
               </div>
             )}
 
-            {(item.operationalState === "BLOCKED" ||
-              item.operationalState === "RECOVERY_NEEDED") && (
+            {(item.operationalState === "BLOCKED" || item.prompt.recoverable) && (
               <div className="rounded-panel border border-line bg-surface-1 p-4">
                 <TextArea
                   label={item.operationalState === "BLOCKED" ? "Your response" : "Evidence"}

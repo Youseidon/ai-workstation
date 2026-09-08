@@ -36,6 +36,7 @@ const ON_ENTER_LABEL: Record<StatusOnEnter, string> = {
   advance: "Move on to the next station",
   park: "Hold the run and wait for you",
   review: "Send a reviewer to check the work",
+  continue: "Re-run the same station with its prior notes",
   handoff: "Prepare a continuation brief",
   retry: "Run it again",
 };

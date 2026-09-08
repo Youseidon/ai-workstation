@@ -74,8 +74,16 @@ export function cursorAgentArgs(input: {
   force: boolean;
   model: string | null;
   extraArgs: string[];
+  /** Continue this chat instead of opening a new one. */
+  resumeSessionId?: string | null;
 }): string[] {
   const args = ["-p", "--output-format", input.outputFormat];
+  // `--resume [chatId]` takes an *optional* value, so the id has to be attached
+  // with `=`; passed as a separate argv entry it is read as the prompt and a
+  // session picker opens instead. Verified against cursor-agent 2026.09.02.
+  if (typeof input.resumeSessionId === "string" && input.resumeSessionId !== "") {
+    args.push(`--resume=${input.resumeSessionId}`);
+  }
   if (input.force) args.push("--force");
   if (input.model !== null) args.push("--model", input.model);
   args.push(...input.extraArgs, input.prompt);
@@ -123,11 +131,15 @@ export class CursorMapper implements StreamMapper {
     const event = value as CursorEvent;
     switch (event.type) {
       case "system":
+        // `session_id` is Cursor's chat id, and it arrives on the first line —
+        // which is what makes a wrap-up turn possible after a budget stop kills
+        // the process long before any result event.
         return [{
           type: "status",
           payload: {
             state: "running",
             detail: event.model ? `model ${event.model}` : (event.subtype ?? "session started"),
+            sessionId: event.session_id ?? null,
           },
         }];
       case "assistant":
@@ -403,6 +415,7 @@ export class CursorAdapter extends SpawnAdapter {
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const model = opts.model ?? settings.cursor.model;
+    const resumeSessionId = opts.resumeSessionId ?? null;
     return {
       args: cursorAgentArgs({
         prompt,
@@ -410,7 +423,9 @@ export class CursorAdapter extends SpawnAdapter {
         force: effectiveCursorForce(),
         model,
         extraArgs: settings.cursor.extraArgs,
+        resumeSessionId,
       }),
+      ...(resumeSessionId === null ? {} : { sessionId: resumeSessionId }),
     };
   }
 

@@ -82,9 +82,12 @@ class CodexMapper implements StreamMapper {
     const event = value as CodexEvent;
     switch (event.type) {
       case "thread.started":
+        // The thread id is what `codex exec resume <id>` takes, and it is on the
+        // first line — banked here so a budget-stopped run can still be resumed
+        // for its wrap-up turn.
         return [{
           type: "status",
-          payload: { state: "running", detail: `thread ${event.thread_id ?? "?"}` },
+          payload: { state: "running", detail: `thread ${event.thread_id ?? "?"}`, sessionId: event.thread_id ?? null },
         }];
       case "turn.started":
         return [{ type: "status", payload: { state: "running", detail: "turn started" } }];
@@ -287,15 +290,26 @@ export class CodexAdapter extends SpawnAdapter {
   }
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
-    const args = ["exec", "--json", "--color", "never", "-C", opts.cwd];
-    args.push("-s", opts.permissionOverride !== "inherit" ? "read-only" : effectiveCodexSandboxMode());
+    const resumeSessionId = opts.resumeSessionId ?? null;
+    const sandbox = opts.permissionOverride !== "inherit" ? "read-only" : effectiveCodexSandboxMode();
+    // `codex exec resume <SESSION_ID> [PROMPT]` continues a recorded thread.
+    // Its flag set is *not* `codex exec`'s: `-C`, `-s` and `--color` are absent
+    // from it (checked against codex-cli 0.153.0, `codex exec resume --help`),
+    // so the working root comes from the spawn's own cwd and the sandbox goes
+    // through the `-c` config override that resume does accept — an unknown
+    // flag makes codex exit before it says anything, which reaches the operator
+    // as "the provider crashed" rather than as a flag drift. See README's
+    // "CLI flags drift" note; re-check both help pages when codex is upgraded.
+    const args = resumeSessionId === null
+      ? ["exec", "--json", "--color", "never", "-C", opts.cwd, "-s", sandbox]
+      : ["exec", "resume", resumeSessionId, "--json", "-c", `sandbox_mode="${sandbox}"`];
     if (settings.codex.skipGitRepoCheck) args.push("--skip-git-repo-check");
     const model = opts.model ?? settings.codex.model;
     if (model !== null) args.push("-m", model);
     args.push(...settings.codex.extraArgs);
     // `-` makes codex read the prompt from stdin, so no argv escaping worries.
     args.push("-");
-    return { args, stdin: prompt };
+    return { args, stdin: prompt, ...(resumeSessionId === null ? {} : { sessionId: resumeSessionId }) };
   }
 
   protected createMapper(): StreamMapper {
