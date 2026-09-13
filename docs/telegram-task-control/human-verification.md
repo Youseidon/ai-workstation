@@ -1,8 +1,9 @@
-# M1 human verification checklist
+# M1/M2 human verification checklist
 
-Scope: M1 personal task-control foundation with fake services only. Do not use a
-live Telegram bot, private Git remote, paid/provider execution or teammate
-subscription delegation for these checks.
+Scope: M1 personal task-control foundation and M2 local execution safety/quota
+advisor with fake services only. Do not use a live Telegram bot, private Git
+remote, paid/provider execution or teammate subscription delegation for these
+checks.
 
 Expected commit topics:
 
@@ -10,6 +11,8 @@ Expected commit topics:
 - settings-backed task-control capability and fake Telegram adapter;
 - M1 fake-service completion with pairing, sanitized rendering, adapter callback
   dispatch, fake E2E coverage and this checklist.
+- M2 durable start-intent ownership, restart reconciliation and advisory quota
+  warnings.
 
 ## Preconditions
 
@@ -37,6 +40,11 @@ fake-service verification sign-off on 2026-09-13.
 | H-M1-08 | Wrong actor/bot/topic | Run `server/src/taskControl.test.ts`. | Wrong actor, bot and topic are rejected with durable receipts and no task mutation. | PASS | PASS - Junaid, 2026-09-13 |
 | H-M1-09 | Stale revision | Run `server/src/taskControl.test.ts`. | A changed task/question rejects the old action; no answer is saved. | PASS | PASS - Junaid, 2026-09-13 |
 | H-M1-10 | Disabled remote actions | Run `server/src/taskControl.test.ts`. | Remote callbacks are rejected while remote controls are disabled. Local Stop remains outside this feature. | PASS | PASS - Junaid, 2026-09-13 |
+| H-M2-01 | Durable effective-directory reservation | Run `server/src/startIntent.test.ts`. | Aliased workspace paths produce exactly one active `workspace_start_intent`; the competing start is rejected. | PASS | Pending |
+| H-M2-02 | Reservation before provider discovery | Run `server/src/runService.test.ts`. | Source-order regression confirms `reserveStartIntent` precedes awaited provider discovery. | PASS | Pending |
+| H-M2-03 | Restart unknown ownership | Run `server/src/startIntent.test.ts`. | Start-after-spawn and unreleased start-intent rows classify as `START_UNKNOWN` and stay unreleased. | PASS | Pending |
+| H-M2-04 | Fake Telegram start-path ownership | Run `server/src/startIntent.test.ts`. | Fake Telegram Answer and resume saves the answer but reports resume failure when another durable owner holds the workspace. | PASS | Pending |
+| H-M2-05 | Advisory quota warning | Run `server/src/quotaAdvisor.test.ts`. | Fresh 5% remaining usage emits one warning with choices and dedupe; stale/unavailable/missing/above-threshold inputs do not warn. | PASS | Pending |
 
 ## Command evidence
 
@@ -54,20 +62,23 @@ Human UI evidence:
 Use an isolated copy for DB-backed tests where possible:
 
 ```bash
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-full npm test --workspace server
 node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts
 npm run typecheck --workspace shared
 npm run typecheck --workspace server
-npm run build --workspace server
 npm run typecheck --workspace web
-cd web && npx eslint lib/workspacesApi.ts components/agents/AgentsView.tsx
+npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/AgentsView.tsx
 ```
 
 Known blockers outside M1 fake behavior:
 
 - `npm run lint --workspace web` currently fails on pre-existing React lint
-  findings outside the task-control slice.
+  findings outside the M1/M2 touched-file slice.
 - `npm run build --workspace web` is blocked in this environment by Next/Turbopack
   build issues recorded in `implementation.md`.
+- No dedicated browser automation script exists for the passive M2 quota warning
+  display.
 
 ## Stop conditions
 
@@ -76,9 +87,12 @@ Stop verification and report blocked if a check requires any of the following:
 - live Telegram Bot API calls or a real bot token;
 - Git remote fetch/push or protected-ref policy evidence;
 - provider subscription delegation, paid/API execution or real LLM execution;
+- automatic pause, provider switch, spending, teammate delegation or takeover
+  from a quota warning;
 - credential/secret isolation certification;
 - enterprise governance, retention or data-audience approval.
 
-M1 is verified only for local fake-service personal task control. It is not
-evidence that live Telegram setup, teammate takeover or production delegation is
-ready.
+M1/M2 are verified only for local fake-service personal task control, local
+execution ownership and advisory quota warnings. This is not evidence that live
+Telegram setup, teammate takeover, shared Git transfer or production delegation
+is ready.

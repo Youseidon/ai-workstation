@@ -171,6 +171,61 @@ zero rows for `task_control_actor`, `task_control_action`,
 `telegram_poll_cursor`. No live Telegram messages, paid/provider execution, Git
 pushes/fetches or remote mutations were performed.
 
+Implemented fifth slice (M2 local execution safety and quota advisor):
+
+- Added additive SQLite migration 19 for durable `workspace_start_intent`
+  records keyed by effective working directory. Active rows distinguish
+  `START_INTENT`, `RUNNING`, `KNOWN_STOPPED`, `KNOWN_NO_SPAWN` and
+  `START_UNKNOWN`.
+- `startExecute` now reserves ownership before awaited provider discovery and
+  records no-spawn/stopped outcomes for provider, validation and launch failures.
+- Restart reconciliation preserves unknown ownership for start-before-spawn and
+  start-after-spawn records instead of blindly releasing the workspace. Operator
+  recovery refuses `START_UNKNOWN` until the user confirms the provider process
+  is not still running.
+- UI, pipeline retry/resume and fake Telegram answer-and-resume paths all route
+  through the same start reservation/hold checks.
+- Added `server/src/quotaAdvisor.ts`, producing advisory-only fresh low-quota
+  warnings with window identity, freshness and dedupe. The advisor does not
+  pause work, switch providers, spend, delegate or mutate execution state.
+- Added passive quota-warning display to the existing Agents plan-usage panel and
+  fake Telegram outbox rendering for warning notifications. These surfaces show
+  choices only; they do not add action callbacks.
+- Added `AGENT_CONSOLE_REPO_ROOT` for isolated test database roots so tests can
+  run without mutating the user's live `.agent-console` DB.
+
+M2 remains local/fake-service only. It does not enable live Telegram, shared Git
+transfer, provider-paid execution, teammate delegation, production deployment or
+external integrations. Unfinished integrations remain default-off.
+
+Verification on 2026-09-13 in isolated roots under `/tmp`:
+
+- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts` passed. Covered reservation-before-provider source order, aliased effective-directory ownership, restart reconciliation to `START_UNKNOWN`, fake Telegram resume-path ownership, and quota advisor freshness/dedupe/threshold behavior.
+- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-full npm test --workspace server` passed all 15 server test files without using the live console DB.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/AgentsView.tsx` passed for touched frontend files.
+
+Known blockers outside M2 behavior:
+
+- No browser automation script is present for these touched UI files. The UI
+  change is passive rendering in an existing panel and was covered by TypeScript
+  and touched-file ESLint.
+- Live Telegram, production Bot API setup, Git transfer, subscription delegation,
+  teammate takeover and external deployment gates remain blocked/default-off by
+  G01-G04 and by explicit M2 scope.
+
+Rollback/default-off behavior:
+
+- Reverting this slice leaves migration 19 additive and inert. Active ownership
+  rows can be inspected and released by marking terminal states if a local
+  operator confirms no provider process remains.
+- Task Control settings still default off. `taskControl.transport=telegram`
+  remains a reserved value, not a live integration.
+- Quota warnings are advisory JSON/UI/outbox payloads only; ignoring a warning
+  leaves existing approved work unchanged.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
@@ -178,14 +233,14 @@ pushes/fetches or remote mutations were performed.
 | [humanInput.ts](../../server/src/humanInput.ts) | Save-only, question-bound local submissions, retry continuation and preserve owning pipeline. | Remote actor authorization and durable command receipts remain to be added. |
 | [agentContext.ts](../../server/src/agentContext.ts) | Structured task instructions, history and clarification context. | Raw output is not an approved export and includes local references. |
 | [handoffCoordinator.ts](../../server/src/handoffCoordinator.ts) | Existing local handoff evidence and successor handling. | It launches an LLM to produce a brief and may auto-start a successor; a Telegram transfer needs explicit authority and a no-LLM capture path. |
-| [workspaces.ts](../../server/src/workspaces.ts) | Local persistence, run events, task relationships, migrations. | Local IDs/database are not shared identity; startup recovery marks abandoned runs but does not prove orphan processes stopped. |
-| [runService.ts](../../server/src/runService.ts) | Start a saved task in a selected local directory. | Busy check precedes awaited provider discovery; add atomic reservation across all start paths. |
+| [workspaces.ts](../../server/src/workspaces.ts) | Local persistence, run events, task relationships, migrations, durable local start-intent ownership and unknown-start reconciliation. | Local IDs/database are not shared identity; `START_UNKNOWN` still requires explicit local confirmation before release. |
+| [runService.ts](../../server/src/runService.ts) | Start a saved task in a selected local directory with durable reservation before provider discovery. | This is local-only ownership, not cross-workstation transfer or provider process attestation. |
 | [runHub.ts](../../server/src/runHub.ts) | Observed local events, stop request and completion signal. | In-memory ownership alone does not survive restart or coordinate machines. |
-| [pipelineScheduler.ts](../../server/src/pipelineScheduler.ts) | Pipeline ownership, retry/recovery and progression. | Add persisted delegation/decision holds respected by every resume/retry path and startup recovery. |
+| [pipelineScheduler.ts](../../server/src/pipelineScheduler.ts) | Pipeline ownership, retry/recovery and progression through the shared local start reservation. | Delegation/transfer records remain out of scope. |
 | [settings.ts](../../server/src/settings.ts) | Existing settings, permission flags, UI metadata. | Settings are largely provider/global, including host-access overrides. There is no complete enforceable per-workspace transfer policy or separate secret broker today. |
 | [claudePermissions.ts](../../server/src/lib/claudePermissions.ts) | Existing provider-specific rule handling. | Best-effort rule matching is not a security sandbox or proof against arbitrary shell execution. |
 | [adapters](../../server/src/adapters/types.ts) | Provider checks, run/interrupt and usage hooks. | Add a tested capability contract for identity/billing attribution, effective permissions, pause/process observation and quota window applicability. |
-| [registry.ts](../../server/src/adapters/registry.ts) | Existing account usage polling and cache. | Current one-minute cache is not a quota reservation or exact remaining-token count. |
+| [registry.ts](../../server/src/adapters/registry.ts) | Existing account usage polling and cache feeding advisory quota warnings. | Current one-minute cache is not a quota reservation or exact remaining-token count. |
 | [index.ts](../../server/src/index.ts) | Local API and event wiring. | No internet-facing multi-user authorization. Keep it local; Telegram must invoke validated internal services, not expose generic REST access. |
 | [shared types](../../shared/src/index.ts) | Existing task/provider/event contracts. | Add versioned task-control/transfer schemas; no mutation of provider IDs into account identities. |
 
