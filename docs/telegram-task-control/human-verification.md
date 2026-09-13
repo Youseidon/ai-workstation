@@ -23,12 +23,13 @@ Expected commit topics:
 
 Automated status reflects the isolated verification run recorded in
 `implementation.md` on 2026-09-13. Human status remains pending until the
-reviewer named in the release notes reruns or inspects the case.
+reviewer named in the release notes reruns or inspects the case. UI visibility
+status reflects the human observation reported by Junaid on 2026-09-13.
 
 | ID | Case | Steps | Expected result | Automated status | Human status |
 | --- | --- | --- | --- | --- | --- |
 | H-M1-01 | Default-off capability | Start the server or inspect `TaskControlService.capability()` with default settings. | Capability reports disabled/default-off and G01-G04 remain blocked. | PASS | PENDING |
-| H-M1-02 | Settings are visible | Open Agents settings and inspect Task Control, or inspect `server/src/settings.ts` and `web/components/agents/AgentsView.tsx`. | Task Control has enablement, notifications, remote actions, transport and bot ID fields; defaults do not enable remote actions. | PASS | PENDING |
+| H-M1-02 | Settings are visible | Open Agents settings and inspect Task Control, or inspect `server/src/settings.ts` and `web/components/agents/AgentsView.tsx`. | Task Control has enablement, notifications, remote actions, transport and bot ID fields; defaults do not enable remote actions. | PASS | PASS - Junaid, 2026-09-13 |
 | H-M1-03 | Fake pairing | Run `server/src/taskControl.test.ts`. | Pairing is single-use, expires and rejects wrong chat/topic. Usernames are not authority. | PASS | PENDING |
 | H-M1-04 | Fake question render | Run `server/src/taskControl.test.ts`. | Rendered phone payload redacts localhost URLs and secret-like values; no raw run IDs or transcript dumps are included. | PASS | PENDING |
 | H-M1-05 | Durable fake outbox | Run `server/src/telegramAdapter.test.ts`. | Send failure is recorded, retry can mark the same outbox item sent, and no task state changes merely because send failed. | PASS | PENDING |
@@ -39,6 +40,15 @@ reviewer named in the release notes reruns or inspects the case.
 | H-M1-10 | Disabled remote actions | Run `server/src/taskControl.test.ts`. | Remote callbacks are rejected while remote controls are disabled. Local Stop remains outside this feature. | PASS | PENDING |
 
 ## Command evidence
+
+Human UI evidence:
+
+- Junaid confirmed `http://localhost:3011/agents` shows the Task Control section
+  with Enable task control, Notifications, Remote actions, Transport and Bot ID
+  controls.
+- Runtime was corrected by running the backend with `ALLOWED_ORIGINS` including
+  `http://localhost:3011` and `http://127.0.0.1:3011`; WebSocket acceptance from
+  `http://localhost:3011` was verified locally.
 
 Use an isolated copy for DB-backed tests where possible:
 
