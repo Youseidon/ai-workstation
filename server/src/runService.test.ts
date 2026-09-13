@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { RunHandle } from "./runner.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, agentApiReachabilityProblem, offlineStatusRequestId, parseOfflineAgentStatus, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 import { settings } from "./settings.ts";
-import { WorkspaceError } from "./workspaces.ts";
+import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 function fakeHandle(runId: string): RunHandle {
   return {
@@ -79,13 +81,20 @@ test("provider unavailable keeps the detection snapshot", () => {
 });
 
 test("startExecute rejects an unknown provider when the workspace is free", async () => {
-  await assert.rejects(
-    () => startExecute({ workspaceId: workspace.id, provider: "not-a-provider", model: null, prompt: "x" }),
-    (error: unknown) =>
-      error instanceof WorkspaceError &&
-      error.status === 422 &&
-      error.code === "unknown_provider",
-  );
+  const dir = mkdtempSync(join(tmpdir(), "run-svc-"));
+  const saved = workspaces.create({ name: `run-svc-${Date.now()}`, description: "", workDirectory: dir });
+  try {
+    await assert.rejects(
+      () => startExecute({ workspaceId: saved.id, provider: "not-a-provider", model: null, prompt: "x" }),
+      (error: unknown) =>
+        error instanceof WorkspaceError &&
+        error.status === 422 &&
+        error.code === "unknown_provider",
+    );
+  } finally {
+    workspaces.remove(saved.id);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("runService starts without a socket and does not interrupt", () => {
@@ -102,11 +111,13 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   const body = functionBody(readFileSync(new URL("./runService.ts", import.meta.url), "utf8"), "startExecute");
   const pipelineLock = firstIndex(body, "activePipelineForWorkspace");
   const lock = firstIndex(body, "runHub.activeForWorkspace");
+  const reserve = firstIndex(body, "reserveStartIntent");
+  const provider = firstIndex(body, "requireAvailableProvider");
   const begin = firstIndex(body, "beginAgentRun");
   const launch = firstIndex(body, "startRun(");
   const running = firstIndex(body, "markAgentRunRunning");
   const hubStart = firstIndex(body, "runHub.start");
-  assert.ok(pipelineLock < lock && lock < begin && begin < launch && launch < running && running < hubStart);
+  assert.ok(pipelineLock < lock && lock < reserve && reserve < provider && provider < begin && begin < launch && launch < running && running < hubStart);
   const onEnd = body.slice(firstIndex(body, "onEnd:"), running);
   assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
   assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));

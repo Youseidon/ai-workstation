@@ -137,6 +137,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const prompt = args.prompt;
   const promptId = args.promptId;
   const question = args.question;
+  const plannedRunId = newId("run");
 
   const owner = workspaces.activePipelineForWorkspace(workspaceId);
   if (owner !== null) {
@@ -173,29 +174,51 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     );
   }
 
-  const provider = await requireAvailableProvider(providerId);
+  const workspace = workspaces.get(workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  workspaces.reserveStartIntent({
+    runId: plannedRunId,
+    workspaceId,
+    promptId: promptId ?? null,
+    provider: providerId,
+    model,
+    source: mode === "clarify" ? "clarify" : promptId === undefined ? "custom" : "saved",
+  });
+
+  let provider: ProviderId;
+  try {
+    provider = await requireAvailableProvider(providerId);
+  } catch (error) {
+    workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 
   let resolvedPrompt: string;
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
   let customDisplay = "";
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
-  const plannedRunId = newId("run");
-
-  const workspace = workspaces.get(workspaceId);
-  if (!workspace.workDirectoryExists) {
-    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
-  }
   if (promptId !== undefined) {
     const record = workspaces.resolvePrompt(workspaceId, promptId);
     savedPrompt = record;
     if (mode === "clarify") {
-      if (record.status !== "BLOCKED" && workspaces.pendingHumanQuestion(promptId) === null) throw new WorkspaceError(409, "prompt_not_blocked", "Clarification is only available while a prompt needs input");
-      if (typeof question !== "string" || question.trim() === "") throw new WorkspaceError(422, "validation_error", "A clarification question is required");
+      if (record.status !== "BLOCKED" && workspaces.pendingHumanQuestion(promptId) === null) {
+        workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", "Clarification is only available while a prompt needs input");
+        throw new WorkspaceError(409, "prompt_not_blocked", "Clarification is only available while a prompt needs input");
+      }
+      if (typeof question !== "string" || question.trim() === "") {
+        workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", "A clarification question is required");
+        throw new WorkspaceError(422, "validation_error", "A clarification question is required");
+      }
       clarificationId = workspaces.beginClarification(promptId, question, provider, model);
       resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId), "clarify")}\n\n## Human question\n\n${question.trim()}`;
     } else {
-      if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
+      if (!record.ready) {
+        workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
+        throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
+      }
       const reachabilityProblem = agentApiReachabilityProblem(provider);
       const credential = runContexts.create(plannedRunId, workspaceId, promptId);
       try {
@@ -211,6 +234,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         });
       } catch (error) {
         runContexts.revoke(plannedRunId);
+        workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", error instanceof Error ? error.message : String(error));
         throw error;
       }
       activeContextRunId = plannedRunId;
@@ -224,69 +248,80 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   } else {
     resolvedPrompt = prompt?.trim() ?? "";
     customDisplay = resolvedPrompt;
-    if (resolvedPrompt === "") throw new WorkspaceError(422, "validation_error", "Prompt is empty");
+    if (resolvedPrompt === "") {
+      workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", "Prompt is empty");
+      throw new WorkspaceError(422, "validation_error", "Prompt is empty");
+    }
     if (workspace.description.trim() !== "") resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n# Work item\n\n${resolvedPrompt}`;
   }
 
   let clarificationAnswer = "";
   let executionAnswer = "";
   let terminalStatusApplyFailure: string | null = null;
-  const handle = startRun({
-    runId: plannedRunId,
-    adapter: getAdapter(provider),
-    prompt: resolvedPrompt,
-    cwd: workspace.workDirectory,
-    model,
-    role: "execute",
-    permissionOverride: "inherit",
-    onEvent: (event) => {
-      if (event.type === "assistant_text" && event.payload.kind === "message") {
-        if (clarificationId !== null) clarificationAnswer += event.payload.text;
-        else if (activeContextRunId !== null) executionAnswer += event.payload.text;
-      }
-      if (event.type === "result" && event.payload.text) {
-        if (clarificationId !== null) clarificationAnswer = event.payload.text;
-        else if (activeContextRunId !== null) executionAnswer = event.payload.text;
-      }
-      if (activeContextRunId !== null) workspaces.recordAgentEvent(activeContextRunId, event);
-      runHub.event(plannedRunId, event);
-    },
-    onEnd: (runId, state) => {
-      const endedPromptId = savedPrompt?.id ?? promptId;
-      const endedWorkspaceId = workspace.id;
-      if (activeContextRunId !== null) {
-        if (state === "done") {
-          const offlineStatus = parseOfflineAgentStatus(executionAnswer);
-          if (offlineStatus !== null) {
-            try {
-              workspaces.updateAgentStatus(activeContextRunId, {
-                requestId: offlineStatusRequestId(),
-                expectedStatus: "IN_PROGRESS",
-                ...offlineStatus,
-              });
-            } catch (error) {
-              terminalStatusApplyFailure = offlineStatusApplyFailureReason(offlineStatus.status, error);
-              log.warn("could not apply offline agent status", error);
+  let handle: ReturnType<typeof startRun>;
+  try {
+    handle = startRun({
+      runId: plannedRunId,
+      adapter: getAdapter(provider),
+      prompt: resolvedPrompt,
+      cwd: workspace.workDirectory,
+      model,
+      role: "execute",
+      permissionOverride: "inherit",
+      onEvent: (event) => {
+        if (event.type === "assistant_text" && event.payload.kind === "message") {
+          if (clarificationId !== null) clarificationAnswer += event.payload.text;
+          else if (activeContextRunId !== null) executionAnswer += event.payload.text;
+        }
+        if (event.type === "result" && event.payload.text) {
+          if (clarificationId !== null) clarificationAnswer = event.payload.text;
+          else if (activeContextRunId !== null) executionAnswer = event.payload.text;
+        }
+        if (activeContextRunId !== null) workspaces.recordAgentEvent(activeContextRunId, event);
+        runHub.event(plannedRunId, event);
+      },
+      onEnd: (runId, state) => {
+        const endedPromptId = savedPrompt?.id ?? promptId;
+        const endedWorkspaceId = workspace.id;
+        if (activeContextRunId !== null) {
+          if (state === "done") {
+            const offlineStatus = parseOfflineAgentStatus(executionAnswer);
+            if (offlineStatus !== null) {
+              try {
+                workspaces.updateAgentStatus(activeContextRunId, {
+                  requestId: offlineStatusRequestId(),
+                  expectedStatus: "IN_PROGRESS",
+                  ...offlineStatus,
+                });
+              } catch (error) {
+                terminalStatusApplyFailure = offlineStatusApplyFailureReason(offlineStatus.status, error);
+                log.warn("could not apply offline agent status", error);
+              }
             }
           }
+          workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure);
+          runContexts.complete(activeContextRunId);
+          activeContextRunId = null;
         }
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure);
-        runContexts.complete(activeContextRunId);
-        activeContextRunId = null;
-      }
-      if (clarificationId !== null) {
-        workspaces.finishClarification(
-          clarificationId,
-          state === "done" ? "DONE" : state === "interrupted" ? "INTERRUPTED" : "ERROR",
-          clarificationAnswer,
-        );
-      }
-      runHub.end(runId, state);
-      if (mode === "execute" && endedPromptId !== undefined) {
-        void pipelineScheduler.onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state});
-      }
-    },
-  });
+        if (clarificationId !== null) {
+          workspaces.finishClarification(
+            clarificationId,
+            state === "done" ? "DONE" : state === "interrupted" ? "INTERRUPTED" : "ERROR",
+            clarificationAnswer,
+          );
+        }
+        runHub.end(runId, state);
+        workspaces.markStartIntent(runId, "KNOWN_STOPPED", `Process ended ${state}.`);
+        if (mode === "execute" && endedPromptId !== undefined) {
+          void pipelineScheduler.onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state});
+        }
+      },
+    });
+  } catch (error) {
+    workspaces.markStartIntent(plannedRunId, "KNOWN_NO_SPAWN", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  workspaces.markStartIntent(plannedRunId, "RUNNING");
   // Marked RUNNING before the announcement, so a client that reacts to
   // run_started by refetching never reads a stale STARTING row.
   if (savedPrompt !== null && mode === "execute") workspaces.markAgentRunRunning(handle.runId);

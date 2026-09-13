@@ -514,6 +514,30 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(18,?)").run(new Date().toISOString());
   }
+  if (version < 19) {
+    db.exec(`
+      CREATE TABLE workspace_start_intent (
+        id TEXT PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        effective_directory TEXT NOT NULL,
+        prompt_id INTEGER REFERENCES prompt(id) ON DELETE SET NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        source TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('START_INTENT','RUNNING','KNOWN_STOPPED','KNOWN_NO_SPAWN','START_UNKNOWN')),
+        detail TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        released_at TEXT
+      );
+      CREATE UNIQUE INDEX workspace_start_intent_active_dir_uq
+        ON workspace_start_intent(effective_directory)
+        WHERE released_at IS NULL;
+      CREATE INDEX workspace_start_intent_workspace_idx ON workspace_start_intent(workspace_id, created_at);
+      CREATE INDEX workspace_start_intent_prompt_idx ON workspace_start_intent(prompt_id, created_at);
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(19,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -543,13 +567,27 @@ function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord
 }
 
 const recoverAbandonedRuns=db.transaction(()=>{
-  const rows=db.prepare("SELECT id,prompt_id FROM agent_run WHERE state IN ('STARTING','RUNNING')").all() as Array<{id:string;prompt_id:number|null}>;
+  const rows=db.prepare("SELECT id,prompt_id,workspace_id FROM agent_run WHERE state IN ('STARTING','RUNNING')").all() as Array<{id:string;prompt_id:number|null;workspace_id:number}>;
   const now=new Date().toISOString();
   // A verification still marked RUNNING after a restart died with the process;
   // leaving it live would strand the suite badge on "verifying" forever.
   db.prepare("UPDATE suite_verification SET state='INTERRUPTED',ended_at=? WHERE state='RUNNING'").run(now);
   db.prepare("UPDATE handoff SET state='FAILED',error='Server restarted while handoff was active',completed_at=? WHERE state IN ('QUEUED','RUNNING')").run(now);
-  for(const row of rows)db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,row.id);
+  for(const row of rows){
+    const existing=db.prepare("SELECT id FROM workspace_start_intent WHERE id=? AND released_at IS NULL").get(row.id) as {id:string}|undefined;
+    if(existing){
+      db.prepare("UPDATE workspace_start_intent SET state='START_UNKNOWN',detail=?,updated_at=? WHERE id=? AND released_at IS NULL")
+        .run("Server restarted while this start was not known stopped; ownership remains held.",now,row.id);
+      continue;
+    }
+    const workspace=db.prepare("SELECT work_directory FROM workspace WHERE id=?").get(row.workspace_id) as {work_directory:string}|undefined;
+    if(workspace){
+      db.prepare("INSERT OR IGNORE INTO workspace_start_intent(id,workspace_id,effective_directory,prompt_id,provider,model,source,state,detail,created_at,updated_at) SELECT id,workspace_id,?,prompt_id,provider,model,'restart-reconciliation','START_UNKNOWN',?,started_at,? FROM agent_run WHERE id=?")
+        .run(effectiveDirectory(workspace.work_directory),"Server restarted with an active run row but no in-memory supervisor.",now,row.id);
+    }
+  }
+  db.prepare("UPDATE workspace_start_intent SET state='START_UNKNOWN',detail=?,updated_at=? WHERE released_at IS NULL AND state='START_INTENT'")
+    .run("Server restarted after reserving ownership but before spawn was observed.",now);
   const orphaned=db.prepare(`SELECT p.id,(SELECT r.id FROM agent_run r WHERE r.prompt_id=p.id AND r.role='execute' ORDER BY r.started_at DESC LIMIT 1) runId FROM prompt p WHERE p.status='IN_PROGRESS' AND NOT EXISTS(SELECT 1 FROM agent_run active WHERE active.prompt_id=p.id AND active.state IN ('STARTING','RUNNING') AND active.role='execute')`).all() as Array<{id:number;runId:string|null}>;
   for(const prompt of orphaned){const reason="No active agent run exists for this IN_PROGRESS prompt; the latest run ended without a terminal prompt status.";db.prepare("UPDATE prompt SET status='BLOCKED',result=?,updated_at=? WHERE id=?").run(reason,now,prompt.id);db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','BLOCKED',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'BLOCKER',?,'SYSTEM',?)").run(prompt.id,prompt.runId,reason,now);}
   db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
@@ -568,6 +606,8 @@ type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: numb
 type TaskControlActorRow = { id: string; transport: string; transport_user_id: string; chat_id: string; topic_id: string | null; label: string; enabled: number; created_at: string };
 type TaskControlActionRow = { ref: string; action: TaskControlAction; prompt_id: number; actor_id: string; chat_id: string; topic_id: string | null; bot_id: string; message_id: string | null; expected_revision: string; provider: string | null; model: string | null; expires_at: string; created_at: string; applied_command_id: string | null };
 type TaskControlReceiptRow = { command_id: string; action_ref: string; state: TaskControlReceipt["state"]; response_id: number | null; started: number; run_id: string | null; message: string; error_code: string | null; created_at: string; action: TaskControlAction; prompt_id: number };
+type StartIntentState = "START_INTENT" | "RUNNING" | "KNOWN_STOPPED" | "KNOWN_NO_SPAWN" | "START_UNKNOWN";
+type StartIntentRow = { id: string; workspace_id: number; effective_directory: string; prompt_id: number | null; provider: string; model: string | null; source: string; state: StartIntentState; detail: string | null; created_at: string; updated_at: string; released_at: string | null };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
   return value !== null && value !== undefined && isProviderId(value) ? value : null;
@@ -671,6 +711,12 @@ function directory(value: unknown): string {
   const absolute = isAbsolute(input) ? resolve(input) : resolve(config.repoRoot, input);
   if (!existsSync(absolute) || !statSync(absolute).isDirectory()) throw new WorkspaceError(422, "invalid_directory", "Work directory must be an existing directory", { workDirectory: "Directory does not exist" });
   return realpathSync(absolute);
+}
+
+function effectiveDirectory(path: string): string {
+  const absolute = isAbsolute(path) ? resolve(path) : resolve(config.repoRoot, path);
+  try { return realpathSync(absolute); }
+  catch { return absolute; }
 }
 
 function nextOrder(table: "program" | "suite" | "prompt", parentColumn: "workspace_id" | "program_id" | "suite_id", parentId: number): number {
@@ -1016,6 +1062,50 @@ export const workspaces = {
   }); },
   removeChild(kind:"program"|"suite"|"prompt",id:number):void { if(db.prepare(`DELETE FROM ${kind} WHERE id=?`).run(id).changes===0) throw new WorkspaceError(404,"not_found",`${kind} not found`); },
   importProgram(workspaceId:number,pack:ImportedProgram):WorkspaceTree { return sqliteGuard(()=>{ importProgramTransaction(workspaceId,pack); return this.tree(workspaceId); }); },
+  reserveStartIntent(args:{runId:string;workspaceId:number;promptId?:number|null;provider:string;model:string|null;source:string}):void { sqliteGuard(()=>db.transaction(()=>{
+    const workspace=db.prepare("SELECT id,work_directory FROM workspace WHERE id=?").get(args.workspaceId) as {id:number;work_directory:string}|undefined;
+    if(!workspace)throw new WorkspaceError(404,"not_found","Workspace not found");
+    const dir=effectiveDirectory(workspace.work_directory);
+    const existing=db.prepare("SELECT id,state,provider,model,created_at createdAt FROM workspace_start_intent WHERE effective_directory=? AND released_at IS NULL ORDER BY created_at DESC LIMIT 1").get(dir) as {id:string;state:StartIntentState;provider:string;model:string|null;createdAt:string}|undefined;
+    if(existing&&existing.id!==args.runId){
+      throw new WorkspaceError(409,"workspace_busy",`A start already owns this working directory (${existing.provider}${existing.model===null?"":` · ${existing.model}`}, ${existing.state}, started ${existing.createdAt}).`,{runId:existing.id,state:existing.state,detail:"Recover or stop the existing owner before starting another agent in this working directory."});
+    }
+    const active=db.prepare("SELECT id,provider,model,state,started_at startedAt FROM agent_run WHERE workspace_id=? AND state IN ('STARTING','RUNNING') AND role='execute' ORDER BY started_at DESC LIMIT 1").get(args.workspaceId) as {id:string;provider:string;model:string|null;state:string;startedAt:string}|undefined;
+    if(active&&active.id!==args.runId){
+      throw new WorkspaceError(409,"workspace_busy",`A run is already in progress in this workspace (${active.provider}${active.model===null?"":` · ${active.model}`}).`,{runId:active.id,state:active.state,detail:"Recover or stop the existing owner before starting another agent in this working directory."});
+    }
+    const now=new Date().toISOString();
+    db.prepare("INSERT INTO workspace_start_intent(id,workspace_id,effective_directory,prompt_id,provider,model,source,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'START_INTENT',?,?)")
+      .run(args.runId,args.workspaceId,dir,args.promptId??null,args.provider,args.model,args.source,now,now);
+  })()); },
+  markStartIntent(runId:string,state:StartIntentState,detail:string|null=null):void {
+    const now=new Date().toISOString();
+    const terminal=state==="KNOWN_STOPPED"||state==="KNOWN_NO_SPAWN";
+    db.prepare("UPDATE workspace_start_intent SET state=?,detail=?,updated_at=?,released_at=CASE WHEN ?=1 THEN ? ELSE released_at END WHERE id=?")
+      .run(state,detail,now,terminal?1:0,terminal?now:null,runId);
+  },
+  activeStartIntentForWorkspace(workspaceId:number):StartIntentRow|null {
+    return (db.prepare("SELECT * FROM workspace_start_intent WHERE workspace_id=? AND released_at IS NULL ORDER BY created_at DESC LIMIT 1").get(workspaceId) as StartIntentRow|undefined)??null;
+  },
+  reconcileStartIntentsForRestart():void {
+    const now=new Date().toISOString();
+    const rows=db.prepare("SELECT id,workspace_id FROM agent_run WHERE state IN ('STARTING','RUNNING')").all() as Array<{id:string;workspace_id:number}>;
+    for(const row of rows){
+      const existing=db.prepare("SELECT id FROM workspace_start_intent WHERE id=? AND released_at IS NULL").get(row.id) as {id:string}|undefined;
+      if(existing){
+        db.prepare("UPDATE workspace_start_intent SET state='START_UNKNOWN',detail=?,updated_at=? WHERE id=? AND released_at IS NULL")
+          .run("Server restarted while this start was not known stopped; ownership remains held.",now,row.id);
+        continue;
+      }
+      const workspace=db.prepare("SELECT work_directory FROM workspace WHERE id=?").get(row.workspace_id) as {work_directory:string}|undefined;
+      if(workspace){
+        db.prepare("INSERT OR IGNORE INTO workspace_start_intent(id,workspace_id,effective_directory,prompt_id,provider,model,source,state,detail,created_at,updated_at) SELECT id,workspace_id,?,prompt_id,provider,model,'restart-reconciliation','START_UNKNOWN',?,started_at,? FROM agent_run WHERE id=?")
+          .run(effectiveDirectory(workspace.work_directory),"Server restarted with an active run row but no in-memory supervisor.",now,row.id);
+      }
+    }
+    db.prepare("UPDATE workspace_start_intent SET state='START_UNKNOWN',detail=?,updated_at=? WHERE released_at IS NULL AND state='START_INTENT'")
+      .run("Server restarted after reserving ownership but before spawn was observed.",now);
+  },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
   beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
   beginHandoffAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>{
@@ -1027,6 +1117,8 @@ export const workspaces = {
   finishAgentRun(runId:string,state:string,answer="",terminalStatusFailure:string|null=null):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;if(!run)return;
     const now=new Date().toISOString();db.prepare("UPDATE agent_run SET state=?,ended_at=? WHERE id=?").run(state.toUpperCase(),now,runId);
+    db.prepare("UPDATE workspace_start_intent SET state='KNOWN_STOPPED',detail=?,updated_at=?,released_at=? WHERE id=? AND released_at IS NULL")
+      .run(`Process ended ${state}.`,now,now,runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};
@@ -1277,11 +1369,14 @@ export const workspaces = {
     const run=db.prepare("SELECT id,state FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string;state:string}|undefined;
     if(!run||run.id!==expectedRunId)throw new WorkspaceError(409,"run_changed","A newer run exists; refresh before recovering");
     if(activeRuns.has(run.id))throw new WorkspaceError(409,"run_active","The agent process is still active; stop it before recovering");
+    const intent=db.prepare("SELECT state FROM workspace_start_intent WHERE id=? AND released_at IS NULL").get(run.id) as {state:StartIntentState}|undefined;
+    if(intent?.state==="START_UNKNOWN")throw new WorkspaceError(409,"start_unknown","The previous start is unknown after restart. Confirm the provider process is not still running before recovering.");
     const abandoned=prompt.status==="IN_PROGRESS"&&(run.state==="STARTING"||run.state==="RUNNING");
     const systemInterrupted=prompt.status==="BLOCKED"&&(run.state==="INTERRUPTED"||run.state==="ERROR")&&(prompt.result.startsWith("Agent process ended")||prompt.result.startsWith("No active agent run"));
     if(!abandoned&&!systemInterrupted)throw new WorkspaceError(409,"not_recoverable","This prompt is not an abandoned or system-interrupted run");
     const now=new Date().toISOString();
     if(run.state==="STARTING"||run.state==="RUNNING")db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=?").run(now,run.id);
+    db.prepare("UPDATE workspace_start_intent SET state='KNOWN_STOPPED',detail='Operator recovered the abandoned run.',updated_at=?,released_at=? WHERE id=? AND released_at IS NULL").run(now,now,run.id);
     db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
     db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,?,'TODO','Operator recovered an abandoned agent run','USER',?)").run(promptId,run.id,prompt.status,now);
     db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?, 'HUMAN_RESPONSE','The previous agent run was interrupted or lost. Continue from the existing working tree and prior run evidence; inspect current changes before repeating work.','USER',?)").run(promptId,run.id,now);

@@ -50,7 +50,7 @@ function future(): string {
 
 test("schema version 9 rebuilds agent_run with nullable prompt_id and execute-only uniqueness", () => {
   const source = readFileSync(new URL("./workspaces.ts", import.meta.url), "utf8");
-  const migrate9 = source.slice(source.indexOf("if (version < 9)"), source.indexOf("const recoverAbandonedRuns"));
+  const migrate9 = source.slice(source.indexOf("if (version < 9)"), source.indexOf("const afterNine"));
   assert.match(migrate9, /prompt_id INTEGER REFERENCES prompt\(id\) ON DELETE CASCADE/);
   assert.doesNotMatch(migrate9, /prompt_id INTEGER NOT NULL/);
   assert.match(migrate9, /WHERE state IN \('STARTING','RUNNING'\) AND role = 'execute'/);

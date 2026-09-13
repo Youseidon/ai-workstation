@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 
 /** Repo root, derived from this file rather than from the cwd of the process. */
-const repoRoot = resolve(fileURLToPath(import.meta.url), "../../..");
+const defaultRepoRoot = resolve(fileURLToPath(import.meta.url), "../../..");
+const repoRoot = process.env.AGENT_CONSOLE_REPO_ROOT?.trim()
+  ? resolve(process.env.AGENT_CONSOLE_REPO_ROOT.trim())
+  : defaultRepoRoot;
 
 // Load .env from the repo root first, then server/.env (the latter wins).
 loadDotenv({ path: resolve(repoRoot, ".env"), quiet: true });
