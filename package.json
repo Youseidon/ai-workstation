@@ -17,7 +17,8 @@
     "start:server": "npm run start --workspace server",
     "start:web": "npm run start --workspace web",
     "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web",
-    "verify:contrast": "node scripts/verify-contrast.mjs"
+    "verify:contrast": "node scripts/verify-contrast.mjs",
+    "verify:m4-browser": "npm run verify:m4-browser --workspace web"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

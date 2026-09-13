@@ -287,6 +287,71 @@ Rollback/default-off behavior:
 - Quota warnings remain advisory UI/outbox payloads only; ignoring, rendering,
   queueing or delivering a warning leaves existing approved work unchanged.
 
+Implemented fourth slice (M4 local task-control recovery UX and browser harness):
+
+- Added an additive `PromptOption.recovery` DTO with `none`, `recoverable` and
+  `start_unknown` states. The DTO exposes only fixed UI guidance and does not
+  include start-intent detail, raw process facts, provider credentials, external
+  IDs or secrets.
+- `START_UNKNOWN` remains server-blocked: `recoverPrompt` still rejects it until
+  a local server-side classification changes the previous start to known stopped
+  or no spawn. Known recoverable prompts continue to expose `recoverable: true`
+  and keep the existing recovery behavior.
+- The Chat work-item picker and Tasks work-item list/detail surfaces now show an
+  existing warning/badge pattern for unknown ownership. The warning says
+  ownership is unknown, directs the user to confirm provider process state before
+  recovery and explains that recovery stays blocked until the server knows the
+  previous start is stopped or no spawn.
+- The START_UNKNOWN affordance offers no blind release/recovery action. Merely
+  viewing Chat or Tasks performs no stop, start, pause, provider switch, spend,
+  delegation, takeover or execution-state mutation.
+- Added `scripts/verify-m4-browser.mjs` and `npm run verify:m4-browser` as a
+  fake-fixture browser harness for mobile and desktop overflow/passive-control
+  checks when Playwright/Chromium is available.
+- No persistence changes or migrations were added for M4.
+
+M4 remains local/fake-service only. It does not enable live Telegram, shared Git
+transfer, provider-paid execution, teammate delegation, production deployment,
+external integrations or automatic quota actions. Unfinished integrations remain
+default-off.
+
+Verification on 2026-09-13 in isolated roots under `/tmp`:
+
+- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m4-start-unknown node --import tsx --test --test-concurrency=1 server/src/startIntent.test.ts server/src/operationalState.test.ts server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts` passed. Covered START_UNKNOWN API/DTO/recovery behavior, known-stopped recovery reclassification, operational visibility, existing quota advisor invariants and fake Telegram advisory-only warning delivery.
+- `npm run test:quota-ui --workspace web` passed. Covered healthy/no warning, fresh 5% warning, stale/unavailable/missing no-warning cases, duplicate provider/window/reset dedupe, display-only quota choices, START_UNKNOWN required copy, no blind release/recovery action and narrow/wide overflow guard markup.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npm run lint --workspace web -- components/ContextPicker.tsx components/tasks/WorkItemDetail.tsx components/tasks/WorkItemList.tsx components/recovery.test.tsx components/agents/usage.tsx components/agents/usage.test.tsx` passed for touched frontend files.
+- `npm run verify:m4-browser` was attempted and failed before exercising UI
+  behavior because this environment has no `playwright` package installed:
+  `Cannot find package 'playwright' imported from scripts/verify-m4-browser.mjs`.
+  The script is documented and ready to run with a local Playwright module or
+  `--playwright` path; executed coverage for this environment is the React
+  render test above.
+
+Known blockers and remaining gates outside M4 behavior:
+
+- Live browser screenshots remain blocked by the missing Playwright/Chromium
+  dependency in this environment. The added harness records the exact fake
+  fixture and viewport assertions to run once that dependency is available.
+- There is still no live Telegram Bot API setup, Git transfer, subscription
+  delegation, teammate takeover, provider-paid execution or external deployment
+  approval. G01-G04 remain production/external gates.
+- Manual operator classification from START_UNKNOWN to known stopped/no spawn is
+  still a local server-side operation; M4 only exposes safe UI state and keeps
+  recovery blocked until that classification exists.
+
+Rollback/default-off behavior:
+
+- Reverting M4 removes the additive DTO field, passive UI warnings, render tests
+  and optional browser harness. No schema rollback is required.
+- Task Control settings still default off. `taskControl.transport=telegram`
+  remains a reserved value, not a live integration.
+- Quota warnings remain advisory UI/outbox payloads only; rendering, queueing or
+  delivering a warning leaves runs, pipelines, tasks and callback actions
+  unchanged.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

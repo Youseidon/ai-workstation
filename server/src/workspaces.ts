@@ -1035,7 +1035,47 @@ export const workspaces = {
   releaseHumanResponse(promptId: number, responseId: number): void {
     db.prepare("DELETE FROM human_response_hold WHERE prompt_id=? AND response_id=?").run(promptId, responseId);
   },
-  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' AND state IN ('STARTING','RUNNING') THEN 0 ELSE 1 END, started_at DESC LIMIT 1");const result=db.prepare("SELECT result FROM prompt WHERE id=?"); return rows.map(row=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const interrupted=run?.state==="INTERRUPTED"||run?.state==="ERROR";const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const promptResult=(result.get(row.id) as {result:string}).result;const systemInterrupted=row.status==="BLOCKED"&&interrupted&&(promptResult.startsWith("Agent process ended")||promptResult.startsWith("No active agent run"));const humanResponseHeld=!!db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?").get(row.id);return{...row,humanResponseHeld,ready:!humanResponseHeld&&row.status==="TODO"&&blockedBy.length===0&&this.pendingHumanQuestion(row.id)===null,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
+  promptOptions(id: number): PromptOption[] {
+    this.get(id);
+    const rows = db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption, "ready" | "blockedBy" | "currentRun" | "recoverable" | "recovery">>;
+    const latest = db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' AND state IN ('STARTING','RUNNING') THEN 0 ELSE 1 END, started_at DESC LIMIT 1");
+    const result = db.prepare("SELECT result FROM prompt WHERE id=?");
+    const dependency = db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`);
+    const hold = db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?");
+    const activeIntent = db.prepare("SELECT state FROM workspace_start_intent WHERE id=? AND released_at IS NULL");
+    return rows.map(row => {
+      const blockedBy = (dependency.all(row.id) as Array<{ external_key: string }>).map(x => x.external_key);
+      const run = latest.get(row.id) as { id: string; provider: string; model: string | null; role: RunRole; state: string; startedAt: string; endedAt: string | null } | undefined;
+      const processActive = run ? run.role === "execute" && activeRuns.has(run.id) : false;
+      const interrupted = run?.state === "INTERRUPTED" || run?.state === "ERROR";
+      const abandoned = row.status === "IN_PROGRESS" && !!run && !processActive && (run.state === "STARTING" || run.state === "RUNNING");
+      const promptResult = (result.get(row.id) as { result: string }).result;
+      const systemInterrupted = row.status === "BLOCKED" && interrupted && (promptResult.startsWith("Agent process ended") || promptResult.startsWith("No active agent run"));
+      const humanResponseHeld = !!hold.get(row.id);
+      const intent = run === undefined ? undefined : activeIntent.get(run.id) as { state: StartIntentState } | undefined;
+      const startUnknown = intent?.state === "START_UNKNOWN";
+      const recoverable = !startUnknown && blockedBy.length === 0 && (abandoned || systemInterrupted);
+      return {
+        ...row,
+        humanResponseHeld,
+        ready: !humanResponseHeld && row.status === "TODO" && blockedBy.length === 0 && this.pendingHumanQuestion(row.id) === null,
+        blockedBy,
+        currentRun: run ? { ...run, processActive } : null,
+        recoverable,
+        recovery: startUnknown
+          ? {
+              kind: "start_unknown",
+              message: "Ownership is unknown after restart. Confirm the provider process state outside Agent Console before recovery; recovery stays blocked until the server classifies the previous start as known stopped or no spawn.",
+            }
+          : recoverable
+            ? {
+                kind: "recoverable",
+                message: "The previous run is known stopped or did not spawn; recovery can return this work item to ready.",
+              }
+            : { kind: "none", message: null },
+      };
+    });
+  },
   resolvePrompt(workspaceId: number, promptId: number): PromptOption {
     const row = this.promptOptions(workspaceId).find(prompt => prompt.id === promptId);
     if (!row) throw new WorkspaceError(404, "not_found", "Prompt was not found in this workspace"); return row;

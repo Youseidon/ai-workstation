@@ -654,6 +654,7 @@ export interface PromptOption {
   blockedBy: string[];
   currentRun: PromptRunSummary | null;
   recoverable: boolean;
+  recovery: PromptRecoveryState;
 }
 
 export interface PromptRunSummary {
@@ -665,6 +666,13 @@ export interface PromptRunSummary {
   startedAt: string;
   endedAt: string | null;
   processActive: boolean;
+}
+
+export type PromptRecoveryKind = "none" | "recoverable" | "start_unknown";
+
+export interface PromptRecoveryState {
+  kind: PromptRecoveryKind;
+  message: string | null;
 }
 
 export interface PromptDependency {

@@ -179,16 +179,31 @@ export function WorkItemDetail({
                 {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
               </div>
             )}
+            {item.prompt.recovery.kind === "start_unknown" && (
+              <div
+                role="status"
+                data-testid="start-unknown-warning"
+                className="min-w-0 rounded-panel border border-warning/40 bg-warning/10 p-4"
+              >
+                <h3 className="mb-2 text-sm font-semibold text-warning">Ownership unknown</h3>
+                <p className="break-words text-xs leading-5 text-fg-muted">
+                  Confirm provider process state before recovery. Recovery stays blocked until the server knows the previous start is stopped or no spawn.
+                </p>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>
                   Run work item
                 </Button>
               )}
-              {item.operationalState === "RECOVERY_NEEDED" && (
+              {item.operationalState === "RECOVERY_NEEDED" && item.prompt.recovery.kind !== "start_unknown" && (
                 <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
                   Recover and resume
                 </Button>
+              )}
+              {item.operationalState === "RECOVERY_NEEDED" && item.prompt.recovery.kind === "start_unknown" && (
+                <Badge tone="warning">Recovery blocked</Badge>
               )}
               {item.operationalState === "WORKING" && item.prompt.currentRun !== null && (
                 <Button size="sm" variant="danger" disabled={busy} onClick={onStop}>

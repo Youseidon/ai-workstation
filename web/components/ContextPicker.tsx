@@ -10,6 +10,7 @@ import { Combobox, type ComboboxItem } from "./ui/Combobox";
 /** How a saved prompt reads at a glance. */
 export function promptState(prompt: PromptOption): { text: string; tone: Tone } {
   if (prompt.currentRun?.processActive === true) return { text: "agent working", tone: "info" };
+  if (prompt.recovery.kind === "start_unknown") return { text: "ownership unknown", tone: "warning" };
   if (prompt.recoverable) return { text: "recovery needed", tone: "caution" };
   if (prompt.blockedBy.length > 0) return { text: "waiting", tone: "neutral" };
   switch (prompt.status) {
@@ -61,7 +62,7 @@ export function ContextPicker({
   const savedRun = savedPrompt?.currentRun ?? null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Combobox
         label="Work item"
         value={savedPromptId}
@@ -117,9 +118,22 @@ export function ContextPicker({
             Recover interrupted run
           </Button>
         )}
+        {savedPrompt?.recovery.kind === "start_unknown" && (
+          <div
+            role="status"
+            data-testid="start-unknown-warning"
+            className="max-w-full min-w-0 rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] leading-4 text-warning"
+          >
+            <span className="font-semibold">Ownership unknown.</span>{" "}
+            <span className="break-words text-fg-muted">
+              Confirm provider process state before recovery. Recovery stays blocked until the server knows the previous start is stopped or no spawn.
+            </span>
+          </div>
+        )}
         {savedPrompt?.status === "IN_PROGRESS" &&
           savedRun?.processActive !== true &&
-          savedPrompt.recoverable !== true && (
+          savedPrompt.recoverable !== true &&
+          savedPrompt.recovery.kind !== "start_unknown" && (
             <Badge tone="warning">reconciling run state…</Badge>
           )}
       </div>

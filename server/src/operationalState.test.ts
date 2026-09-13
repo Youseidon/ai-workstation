@@ -3,11 +3,12 @@ import test from "node:test";
 import type { PromptOption, PromptStatus } from "@agent-console/shared";
 import { operationalState } from "./operationalState.ts";
 
-function prompt(status:PromptStatus,overrides:Partial<PromptOption>={}):PromptOption{return{id:1,title:"Work",content:"Do work",suiteId:1,suiteName:"Suite",programId:1,programName:"Program",externalKey:"X-01",status,ready:status==="TODO",blockedBy:[],currentRun:null,recoverable:false,...overrides};}
+function prompt(status:PromptStatus,overrides:Partial<PromptOption>={}):PromptOption{return{id:1,title:"Work",content:"Do work",suiteId:1,suiteName:"Suite",programId:1,programName:"Program",externalKey:"X-01",status,ready:status==="TODO",blockedBy:[],currentRun:null,recoverable:false,recovery:{kind:"none",message:null},...overrides};}
 
 test("operational state prioritises live ownership and recovery",()=>{
   assert.equal(operationalState(prompt("IN_PROGRESS",{currentRun:{id:"run",provider:"codex",model:null,role:"execute",state:"RUNNING",startedAt:"",endedAt:null,processActive:true}})),"WORKING");
   assert.equal(operationalState(prompt("BLOCKED",{recoverable:true})),"RECOVERY_NEEDED");
+  assert.equal(operationalState(prompt("IN_PROGRESS",{recovery:{kind:"start_unknown",message:"Ownership is unknown."}})),"RECOVERY_NEEDED");
 });
 
 test("operational state separates intervention, dependency, and terminal states",()=>{

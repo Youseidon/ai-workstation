@@ -98,9 +98,15 @@ export function WorkItemList({
                     )}
                     <span className="truncate text-[13px] text-fg">{entry.prompt.title}</span>
                     <Badge tone={TONE[entry.operationalState]}>{LABEL[entry.operationalState]}</Badge>
+                    {entry.prompt.recovery.kind === "start_unknown" && (
+                      <Badge tone="warning">ownership unknown</Badge>
+                    )}
                   </div>
                   <div className="mt-1 text-[10px] text-fg-dim">
                     {new Date(entry.lastActivityAt).toLocaleString()}
+                    {entry.prompt.recovery.kind === "start_unknown" && (
+                      <span className="ml-2 text-warning">confirm provider process state before recovery</span>
+                    )}
                     {entry.latestIntervention !== null && (
                       <span className="ml-2 text-warning">{entry.latestIntervention}</span>
                     )}
@@ -160,6 +166,13 @@ function RowAction({
     );
   }
   if (entry.operationalState === "RECOVERY_NEEDED") {
+    if (entry.prompt.recovery.kind === "start_unknown") {
+      return (
+        <Badge tone="warning">
+          Recovery blocked
+        </Badge>
+      );
+    }
     return (
       <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover} title={`Recover with ${providerLabel}`}>
         Recover and resume

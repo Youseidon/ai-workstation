@@ -164,6 +164,32 @@ test("recovery refuses START_UNKNOWN and allows explicit recovery after known st
   }
 });
 
+test("prompt DTO distinguishes START_UNKNOWN from known recoverable without leaking start details", () => {
+  const ctx = fixture();
+  const runId = "run_prompt_dto_unknown_then_known";
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+
+    const unknown = workspaces.promptOptions(ctx.workspace.id).find(option => option.id === ctx.prompt.id)!;
+    assert.equal(unknown.recoverable, false);
+    assert.equal(unknown.recovery.kind, "start_unknown");
+    assert.match(unknown.recovery.message ?? "", /Ownership is unknown/);
+    assert.match(unknown.recovery.message ?? "", /Confirm the provider process state/);
+    assert.doesNotMatch(unknown.recovery.message ?? "", /Server restarted|in-memory supervisor|before spawn/);
+
+    workspaces.markStartIntent(runId, "KNOWN_STOPPED", "operator confirmed provider process is stopped");
+    const known = workspaces.promptOptions(ctx.workspace.id).find(option => option.id === ctx.prompt.id)!;
+    assert.equal(known.recoverable, true);
+    assert.equal(known.recovery.kind, "recoverable");
+  } finally {
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
 test("fake Telegram resume path respects the same active start ownership", async () => {
   const ctx = fixture();
   const botId = unique("fake-bot");
