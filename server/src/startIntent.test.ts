@@ -76,6 +76,94 @@ test("restart reconciliation classifies reserved and spawned owners as START_UNK
   }
 });
 
+test("start-before-spawn remains START_UNKNOWN after restart reconciliation", () => {
+  const ctx = fixture();
+  const db = new Database(workspaces.databasePath);
+  try {
+    workspaces.reserveStartIntent({ runId: "run_before_spawn_unknown", workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.reconcileStartIntentsForRestart();
+    const row = db.prepare("SELECT state,released_at releasedAt,detail FROM workspace_start_intent WHERE id=?").get("run_before_spawn_unknown") as {state:string;releasedAt:string|null;detail:string|null};
+    assert.equal(row.state, "START_UNKNOWN");
+    assert.equal(row.releasedAt, null);
+    assert.match(row.detail ?? "", /before spawn was observed/);
+  } finally {
+    db.close();
+    ctx.cleanup();
+  }
+});
+
+test("start-after-spawn remains START_UNKNOWN after restart reconciliation", () => {
+  const ctx = fixture();
+  const runId = "run_after_spawn_unknown";
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  const db = new Database(workspaces.databasePath);
+  try {
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.markAgentRunRunning(runId);
+    workspaces.reconcileStartIntentsForRestart();
+    const row = db.prepare("SELECT state,released_at releasedAt,source,detail FROM workspace_start_intent WHERE id=?").get(runId) as {state:string;releasedAt:string|null;source:string;detail:string|null};
+    assert.equal(row.state, "START_UNKNOWN");
+    assert.equal(row.releasedAt, null);
+    assert.equal(row.source, "restart-reconciliation");
+    assert.match(row.detail ?? "", /active run row/);
+  } finally {
+    db.close();
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
+test("known no-spawn and known stopped classifications release ownership", () => {
+  const ctx = fixture();
+  const stoppedRunId = "run_known_stopped";
+  const credential = runContexts.create(stoppedRunId, ctx.workspace.id, ctx.prompt.id);
+  const db = new Database(workspaces.databasePath);
+  try {
+    workspaces.reserveStartIntent({ runId: "run_known_no_spawn", workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.markStartIntent("run_known_no_spawn", "KNOWN_NO_SPAWN", "provider discovery failed before spawn");
+    workspaces.reserveStartIntent({ runId: stoppedRunId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId: stoppedRunId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.finishAgentRun(stoppedRunId, "interrupted");
+    const rows = db.prepare("SELECT id,state,released_at releasedAt FROM workspace_start_intent WHERE id IN (?,?) ORDER BY id").all("run_known_no_spawn", stoppedRunId) as Array<{id:string;state:string;releasedAt:string|null}>;
+    assert.deepEqual(rows.map(row => [row.id, row.state, row.releasedAt !== null]), [
+      ["run_known_no_spawn", "KNOWN_NO_SPAWN", true],
+      [stoppedRunId, "KNOWN_STOPPED", true],
+    ]);
+    assert.equal(workspaces.activeStartIntentForWorkspace(ctx.workspace.id), null);
+  } finally {
+    db.close();
+    runContexts.revoke(stoppedRunId);
+    ctx.cleanup();
+  }
+});
+
+test("recovery refuses START_UNKNOWN and allows explicit recovery after known stopped classification", () => {
+  const ctx = fixture();
+  const runId = "run_recover_unknown_then_known";
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  const db = new Database(workspaces.databasePath);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+    assert.throws(
+      () => workspaces.recoverPrompt(ctx.prompt.id, runId),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "start_unknown",
+    );
+    workspaces.markStartIntent(runId, "KNOWN_STOPPED", "operator confirmed provider process is stopped");
+    workspaces.recoverPrompt(ctx.prompt.id, runId);
+    const prompt = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
+    const row = db.prepare("SELECT state,released_at releasedAt FROM workspace_start_intent WHERE id=?").get(runId) as {state:string;releasedAt:string|null};
+    assert.equal(prompt.status, "TODO");
+    assert.equal(row.state, "KNOWN_STOPPED");
+    assert.notEqual(row.releasedAt, null);
+  } finally {
+    db.close();
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
 test("fake Telegram resume path respects the same active start ownership", async () => {
   const ctx = fixture();
   const botId = unique("fake-bot");

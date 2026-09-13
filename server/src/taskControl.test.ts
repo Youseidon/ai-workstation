@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
+import Database from "better-sqlite3";
+import type { ProgramRecord, PromptRecord, QuotaWarning, SuiteRecord } from "@agent-console/shared";
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { TaskControlService } from "./taskControl.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
@@ -206,6 +207,70 @@ test("fake question payload is sanitized for phone rendering", async () => {
     assert.match(payload.title, /\[redacted\]/);
     assert.equal(JSON.stringify(payload).includes("sourceRunId"), false);
   } finally { if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
+});
+
+test("fake Telegram quota warning is sanitized, outbox-only, and advisory", () => {
+  const f = fixture();
+  const botId = `fake-bot-quota-${f.workspace.id}`;
+  const db = new Database(workspaces.databasePath);
+  let actorId: string | null = null;
+  try {
+    const control = service(botId);
+    const actor = control.enrollFakeActor({ transportUserId: "101", chatId: "9001", topicId: "quota", label: "Owner" });
+    actorId = actor.id;
+    const beforeOutbox = workspaces.telegramOutbox().filter(row => row.botId === botId).length;
+    const beforeActions = (db.prepare("SELECT count(*) count FROM task_control_action WHERE bot_id=?").get(botId) as { count: number }).count;
+    const beforePrompt = workspaces.promptActivity(f.prompt.id);
+    const warning: QuotaWarning = {
+      id: "quota_test",
+      provider: "claude",
+      windowKind: "session",
+      windowIdentity: "claude:session:2026-09-13T10:00:00.000Z",
+      remainingPercent: 5,
+      usedPercent: 95,
+      fetchedAt: "2026-09-13T09:00:00.000Z",
+      freshness: "fresh",
+      message: "Claude quota near token=sk-ant-secretvalue at http://localhost:4000/internal",
+      choices: [
+        { id: "continue", label: "Continue" },
+        { id: "prepare_pause", label: "Prepare to pause" },
+        { id: "review_takeover", label: "Review takeover" },
+      ],
+    };
+
+    const queued = control.postQuotaWarning(actor.id, warning);
+    const outbox = workspaces.telegramOutbox().find(row => row.id === queued.outboxId)!;
+    assert.equal(workspaces.telegramOutbox().filter(row => row.botId === botId).length, beforeOutbox + 1);
+    assert.equal(outbox.state, "QUEUED");
+    assert.equal(outbox.botId, botId);
+    assert.equal(outbox.chatId, "9001");
+    assert.equal(outbox.topicId, "quota");
+    assert.deepEqual(outbox.payload, {
+      kind: "quota_warning",
+      warningId: "quota_test",
+      provider: "claude",
+      window: "session",
+      message: "Claude quota near [redacted] at [redacted]",
+      choices: ["Continue", "Prepare to pause", "Review takeover"],
+    });
+    assert.equal((db.prepare("SELECT count(*) count FROM task_control_action WHERE bot_id=?").get(botId) as { count: number }).count, beforeActions);
+
+    control.markQuestionDelivered(queued.outboxId);
+    const delivered = workspaces.telegramOutbox().find(row => row.id === queued.outboxId)!;
+    assert.equal(delivered.state, "SENT");
+    assert.equal(delivered.attemptCount, 1);
+    assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, beforePrompt.humanInput.savedResponseId);
+    const afterPrompt = workspaces.promptActivity(f.prompt.id);
+    assert.equal(afterPrompt.item.prompt.status, beforePrompt.item.prompt.status);
+    assert.equal(afterPrompt.item.operationalState, beforePrompt.item.operationalState);
+    assert.equal(afterPrompt.sessions.length, beforePrompt.sessions.length);
+    assert.equal(afterPrompt.remarks.length, beforePrompt.remarks.length);
+  } finally {
+    db.close();
+    if (actorId !== null) workspaces.removeTaskControlActor(actorId);
+    workspaces.removeTelegramRecordsForBot(botId);
+    f.cleanup();
+  }
 });
 
 test("task-control rejects remote callbacks while controls are disabled", async () => {
