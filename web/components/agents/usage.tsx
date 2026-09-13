@@ -54,9 +54,14 @@ export function UsageBlock({
         ))}
       </dl>
       {warnings.map((warning) => (
-        <div key={warning.id} className="mt-2 rounded border border-warning/40 bg-warning/10 p-2 text-[11px] text-fg">
-          <div>{warning.message}</div>
-          <div className="mt-1 text-[10px] text-fg-dim">
+        <div
+          key={warning.id}
+          data-testid="quota-warning"
+          data-warning-id={warning.id}
+          className="mt-2 min-w-0 rounded border border-warning/40 bg-warning/10 p-2 text-[11px] text-fg"
+        >
+          <div className="break-words">{warning.message}</div>
+          <div className="mt-1 break-words text-[10px] text-fg-dim">
             Choices: {warning.choices.map((choice) => choice.label).join(" · ")}
           </div>
         </div>

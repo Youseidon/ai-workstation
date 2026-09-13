@@ -4,6 +4,18 @@ import { useCallback, useEffect, useState } from "react";
 import type { ProviderId, ProviderUsage, QuotaWarning } from "@agent-console/shared";
 import { SERVER_URL } from "./serverUrl";
 
+export function groupQuotaWarnings(warnings: readonly QuotaWarning[]): Record<ProviderId, QuotaWarning[]> {
+  const nextWarnings = {} as Record<ProviderId, QuotaWarning[]>;
+  const seen = new Set<string>();
+  for (const warning of warnings) {
+    const key = `${warning.provider}:${warning.windowKind}:${warning.windowIdentity}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    nextWarnings[warning.provider] = [...(nextWarnings[warning.provider] ?? []), warning];
+  }
+  return nextWarnings;
+}
+
 export function useProviderUsage(enabled: boolean) {
   const [usage, setUsage] = useState<Record<ProviderId, ProviderUsage> | null>(null);
   const [warnings, setWarnings] = useState<Record<ProviderId, QuotaWarning[]> | null>(null);
@@ -20,12 +32,8 @@ export function useProviderUsage(enabled: boolean) {
       const body = (await response.json()) as { usage: ProviderUsage[]; warnings?: QuotaWarning[] };
       const next = {} as Record<ProviderId, ProviderUsage>;
       for (const entry of body.usage) next[entry.provider] = entry;
-      const nextWarnings = {} as Record<ProviderId, QuotaWarning[]>;
-      for (const warning of body.warnings ?? []) {
-        nextWarnings[warning.provider] = [...(nextWarnings[warning.provider] ?? []), warning];
-      }
       setUsage(next);
-      setWarnings(nextWarnings);
+      setWarnings(groupQuotaWarnings(body.warnings ?? []));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
