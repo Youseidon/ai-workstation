@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import type { ProviderId, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
+import type { ProviderId, QuotaWarning, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
-import { renderPersonalQuestion } from "./taskControlRenderer.ts";
+import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 export interface TaskControlConfig {
@@ -150,6 +150,19 @@ export class TaskControlService {
       payload: renderPersonalQuestion(promptId, actions.map(action => ({ ...action, promptId, expectedRevision: humanInput.revision, expiresAt }))),
     });
     return { outboxId, actions };
+  }
+
+  postQuotaWarning(actorId: string, warning: QuotaWarning): { outboxId: number } {
+    this.assertEnabled();
+    if (!this.config.notificationsEnabled) throw new WorkspaceError(409, "notifications_disabled", "Task-control notifications are disabled.");
+    const actor = this.actorById(actorId);
+    const outboxId = workspaces.enqueueTelegramOutbox({
+      botId: this.config.botId,
+      chatId: actor.chat_id,
+      topicId: actor.topic_id,
+      payload: renderQuotaWarning(warning),
+    });
+    return { outboxId };
   }
 
   markQuestionDelivered(outboxId: number): void {

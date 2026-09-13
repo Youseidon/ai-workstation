@@ -11,6 +11,7 @@ import {
   type ProviderId,
   type ProviderInfo,
   type ProviderUsage,
+  type QuotaWarning,
   type SettingField,
   type SettingValue,
 } from "@agent-console/shared";
@@ -346,6 +347,7 @@ export function AgentsView() {
                 onPickModel={(value) => models.select(agent.provider, value)}
                 onClearModel={() => models.clear(agent.provider)}
                 usage={credits.usage?.[agent.provider] ?? null}
+                warnings={credits.warnings?.[agent.provider] ?? []}
                 usageLoading={credits.loading && credits.usage === null}
                 settingsOpen={settingsOpen === agent.provider}
                 onToggleSettings={() =>
@@ -419,6 +421,7 @@ function AgentCard({
   onPickModel,
   onClearModel,
   usage,
+  warnings,
   usageLoading,
   settingsOpen,
   onToggleSettings,
@@ -443,6 +446,7 @@ function AgentCard({
   onPickModel(model: string | null): void;
   onClearModel(): void;
   usage: ProviderUsage | null;
+  warnings: QuotaWarning[];
   usageLoading: boolean;
   settingsOpen: boolean;
   onToggleSettings(): void;
@@ -572,7 +576,7 @@ function AgentCard({
         </div>
       )}
 
-      <UsageBlock usage={usage} loading={usageLoading} available={enabled && agent.available} />
+      <UsageBlock usage={usage} warnings={warnings} loading={usageLoading} available={enabled && agent.available} />
 
       <div className="mt-3 border-t border-line pt-3">
         <button

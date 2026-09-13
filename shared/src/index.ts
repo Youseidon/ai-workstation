@@ -178,6 +178,22 @@ export interface ProviderUsage {
   credits: ProviderUsageCredits | null;
 }
 
+export const QUOTA_WARNING_CHOICES = ["continue", "prepare_pause", "review_takeover"] as const;
+export type QuotaWarningChoice = (typeof QUOTA_WARNING_CHOICES)[number];
+
+export interface QuotaWarning {
+  id: string;
+  provider: ProviderId;
+  windowKind: UsageWindowKind;
+  windowIdentity: string;
+  remainingPercent: number;
+  usedPercent: number;
+  fetchedAt: string;
+  freshness: "fresh" | "stale";
+  message: string;
+  choices: Array<{ id: QuotaWarningChoice; label: string }>;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Token usage                                                                 */
 /* -------------------------------------------------------------------------- */

@@ -14,6 +14,7 @@ import { contextMarkdown } from "./agentContext.ts";
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, agentApiUrl, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { quotaWarnings } from "./quotaAdvisor.ts";
 
 const log = createLogger("server");
 
@@ -161,7 +162,7 @@ const httpServer = createServer((req, res) => {
   if (url.pathname === "/api/providers/usage") {
     const force = url.searchParams.get("refresh") === "1";
     collectAccountUsage(force)
-      .then((usage) => sendJson(res, 200, { usage, fetchedAt: new Date().toISOString() }))
+      .then((usage) => sendJson(res, 200, { usage, warnings: quotaWarnings(usage), fetchedAt: new Date().toISOString() }))
       .catch((error: unknown) => {
         log.error("provider usage fetch failed", error);
         sendJson(res, 500, { error: "provider usage fetch failed" });

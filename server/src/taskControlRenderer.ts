@@ -1,4 +1,4 @@
-import type { TaskControlActionReference } from "@agent-console/shared";
+import type { QuotaWarning, TaskControlActionReference } from "@agent-console/shared";
 import { workspaces } from "./workspaces.ts";
 
 const SECRET_PATTERNS = [
@@ -16,6 +16,15 @@ export interface RenderedTaskControlQuestion {
   receipt: string;
   question: string;
   actions: Array<Pick<TaskControlActionReference, "ref" | "action">>;
+}
+
+export interface RenderedQuotaWarning {
+  kind: "quota_warning";
+  warningId: string;
+  provider: string;
+  window: string;
+  message: string;
+  choices: string[];
 }
 
 export function sanitizeTelegramText(value: string): string {
@@ -39,5 +48,16 @@ export function renderPersonalQuestion(promptId: number, actions: Array<Pick<Tas
     receipt: "waiting for action",
     question: sanitizeTelegramText(question),
     actions,
+  };
+}
+
+export function renderQuotaWarning(warning: QuotaWarning): RenderedQuotaWarning {
+  return {
+    kind: "quota_warning",
+    warningId: warning.id,
+    provider: warning.provider,
+    window: warning.windowKind,
+    message: sanitizeTelegramText(warning.message),
+    choices: warning.choices.map((choice) => choice.label),
   };
 }

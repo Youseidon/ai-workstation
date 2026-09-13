@@ -4,6 +4,7 @@ import {
   formatResetIn,
   type ProviderUsage,
   type ProviderUsageWindow,
+  type QuotaWarning,
 } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { Skeleton } from "@/components/ui/Spinner";
@@ -12,10 +13,12 @@ const WINDOW_ORDER = ["session", "daily", "weekly", "monthly"] as const;
 
 export function UsageBlock({
   usage,
+  warnings = [],
   loading,
   available,
 }: {
   usage: ProviderUsage | null;
+  warnings?: QuotaWarning[];
   loading: boolean;
   available: boolean;
 }) {
@@ -50,6 +53,14 @@ export function UsageBlock({
           <UsageMeter key={window.kind} window={window} />
         ))}
       </dl>
+      {warnings.map((warning) => (
+        <div key={warning.id} className="mt-2 rounded border border-warning/40 bg-warning/10 p-2 text-[11px] text-fg">
+          <div>{warning.message}</div>
+          <div className="mt-1 text-[10px] text-fg-dim">
+            Choices: {warning.choices.map((choice) => choice.label).join(" · ")}
+          </div>
+        </div>
+      ))}
       {usage.credits !== null && <CreditsLine credits={usage.credits} />}
     </div>
   );
