@@ -226,6 +226,67 @@ Rollback/default-off behavior:
 - Quota warnings are advisory JSON/UI/outbox payloads only; ignoring a warning
   leaves existing approved work unchanged.
 
+Implemented sixth slice (M3 local task-control robustness):
+
+- Added isolated server coverage for fake Telegram quota-warning notifications.
+  The warning payload is sanitized, queued only through the fake outbox, creates
+  no callback action rows and does not mutate prompt, run, pipeline or human
+  response state when queued or marked delivered.
+- Strengthened ownership tests for start-before-spawn, start-after-spawn,
+  known no-spawn, known stopped and recovery refusal while ownership is
+  `START_UNKNOWN`. Recovery is allowed only after an explicit known-stopped
+  classification.
+- Added scripted Agents quota-warning UI coverage in
+  `web/components/agents/usage.test.tsx`, exposed as
+  `npm run test:quota-ui --workspace web`. The test covers healthy usage, fresh
+  5% warnings, missing/unavailable usage, duplicate provider/window/reset
+  identity dedupe, display-only warning choices and narrow/wide overflow guard
+  markup.
+- Added UI dedupe for quota warnings by provider/window/reset identity and
+  break-word/min-width constraints on the passive warning block. The block still
+  has no action buttons or links.
+- No persistence changes or migrations were added for M3.
+
+M3 remains local/fake-service only. It does not enable live Telegram, shared Git
+transfer, provider-paid execution, teammate delegation, production deployment,
+external integrations or automatic quota actions. Unfinished integrations remain
+default-off.
+
+Verification on 2026-09-13:
+
+- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m3-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts` passed. Covered quota advisor freshness/dedupe/thresholds, fake Telegram quota-warning outbox/action/state invariants and ownership classification edge cases.
+- `npm run test:quota-ui --workspace web` passed. Covered scripted React-render checks for the Agents quota warning display.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/usage.test.tsx` passed for touched frontend files.
+
+Known blockers and remaining gates outside M3 behavior:
+
+- `START_UNKNOWN` does not yet have a visible UI affordance. Existing prompt and
+  operation DTOs expose `recoverable`, not the underlying start-intent
+  classification/detail, so M3 documents this as a remaining UI gate instead of
+  inventing a blind release/recovery surface. Future UI must clearly say
+  ownership is unknown, must not offer blind release and must direct the user to
+  confirm provider process state before recovery.
+- This environment has no system Chromium/Chrome binary available, so the M3 UI
+  check is a scripted React-render test rather than a live browser screenshot
+  test. It verifies the passive markup, advisory-only controls and mobile/desktop
+  overflow guard classes; a future browser harness can add visual overlap
+  screenshots without changing M3 behavior.
+- Live Telegram, production Bot API setup, Git transfer, subscription
+  delegation, teammate takeover and external deployment gates remain
+  blocked/default-off by G01-G04 and by explicit M3 scope.
+
+Rollback/default-off behavior:
+
+- Reverting M3 removes only tests, the UI warning dedupe helper, stable warning
+  test selectors and overflow guard classes. No schema rollback is required.
+- Task Control settings still default off. `taskControl.transport=telegram`
+  remains a reserved value, not a live integration.
+- Quota warnings remain advisory UI/outbox payloads only; ignoring, rendering,
+  queueing or delivering a warning leaves existing approved work unchanged.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
