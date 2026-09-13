@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { ProviderId, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
+import { renderPersonalQuestion } from "./taskControlRenderer.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 export interface TaskControlConfig {
@@ -91,6 +92,31 @@ export class TaskControlService {
     return { id: actor.id };
   }
 
+  createPairingChallenge(input: { chatId: string; topicId?: string | null; label: string; ttlMs?: number }): { challenge: string; expiresAt: string } {
+    this.assertEnabled();
+    const challenge = `pair_${randomBytes(18).toString("base64url")}`;
+    return workspaces.createTaskControlPairing({
+      challenge,
+      transport: this.config.transport,
+      chatId: input.chatId,
+      topicId: input.topicId ?? null,
+      label: input.label,
+      expiresAt: new Date(Date.now() + (input.ttlMs ?? 10 * 60 * 1000)).toISOString(),
+    });
+  }
+
+  confirmPairing(input: { challenge: string; transportUserId: string; chatId: string; topicId?: string | null }): { id: string } {
+    this.assertEnabled();
+    const actor = workspaces.consumeTaskControlPairing({
+      challenge: input.challenge,
+      transport: this.config.transport,
+      transportUserId: input.transportUserId,
+      chatId: input.chatId,
+      topicId: input.topicId ?? null,
+    });
+    return { id: actor.id };
+  }
+
   postPersonalQuestion(promptId: number, actorId: string, options?: { provider?: ProviderId | null; model?: string | null; ttlMs?: number }): TaskControlQuestionCard {
     this.assertEnabled();
     if (!this.config.notificationsEnabled) throw new WorkspaceError(409, "notifications_disabled", "Task-control notifications are disabled.");
@@ -121,7 +147,7 @@ export class TaskControlService {
       botId: this.config.botId,
       chatId: actor.chat_id,
       topicId: actor.topic_id,
-      payload: { kind: "personal_question", promptId, revision: humanInput.revision, actions },
+      payload: renderPersonalQuestion(promptId, actions.map(action => ({ ...action, promptId, expectedRevision: humanInput.revision, expiresAt }))),
     });
     return { outboxId, actions };
   }

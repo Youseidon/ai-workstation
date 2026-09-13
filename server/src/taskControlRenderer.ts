@@ -1,0 +1,43 @@
+import type { TaskControlActionReference } from "@agent-console/shared";
+import { workspaces } from "./workspaces.ts";
+
+const SECRET_PATTERNS = [
+  /\b(?:sk|xai|ghp|glpat|sk-ant)-[A-Za-z0-9_-]{8,}\b/g,
+  /\b(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
+  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*/gi,
+];
+
+export interface RenderedTaskControlQuestion {
+  kind: "personal_question";
+  promptId: number;
+  title: string;
+  execution: string;
+  decision: string;
+  receipt: string;
+  question: string;
+  actions: Array<Pick<TaskControlActionReference, "ref" | "action">>;
+}
+
+export function sanitizeTelegramText(value: string): string {
+  let output = value;
+  for (const pattern of SECRET_PATTERNS) output = output.replace(pattern, "[redacted]");
+  return output.replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+
+export function renderPersonalQuestion(promptId: number, actions: Array<Pick<TaskControlActionReference, "ref" | "action">>): RenderedTaskControlQuestion {
+  const activity = workspaces.promptActivity(promptId);
+  const run = activity.sessions.find(session => session.role === "execute" && ["STARTING", "RUNNING"].includes(session.state));
+  const saved = activity.humanInput.savedResponseId !== null;
+  const question = workspaces.pendingHumanQuestion(promptId)
+    ?? (saved ? "An answer is saved. Choose whether to resume with the saved answer." : "This task needs your input.");
+  return {
+    kind: "personal_question",
+    promptId,
+    title: sanitizeTelegramText(activity.item.prompt.title),
+    execution: run ? `Running on ${run.provider}` : activity.item.prompt.status.toLowerCase(),
+    decision: saved ? "answer saved" : activity.item.operationalState.toLowerCase(),
+    receipt: "waiting for action",
+    question: sanitizeTelegramText(question),
+    actions,
+  };
+}

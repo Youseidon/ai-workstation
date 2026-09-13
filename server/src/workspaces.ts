@@ -498,6 +498,22 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(17,?)").run(new Date().toISOString());
   }
+  if (version < 18) {
+    db.exec(`
+      CREATE TABLE task_control_pairing_challenge (
+        challenge TEXT PRIMARY KEY,
+        transport TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT,
+        label TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        actor_id TEXT REFERENCES task_control_actor(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(18,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -836,6 +852,26 @@ export const workspaces = {
     `).run(id, input.transport, transportUserId, chatId, topicId, label, input.enabled === false ? 0 : 1, now);
     return db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow;
   }); },
+  createTaskControlPairing(input: { challenge: string; transport: "fake_telegram" | "telegram"; chatId: string; topicId?: string | null; label: string; expiresAt: string }): { challenge: string; expiresAt: string } { return sqliteGuard(() => {
+    const expires = new Date(input.expiresAt);
+    if (Number.isNaN(expires.getTime())) throw new WorkspaceError(422, "validation_error", "expiresAt must be an ISO timestamp.");
+    const challenge = requireText(input.challenge, "challenge", 160);
+    db.prepare("INSERT INTO task_control_pairing_challenge(challenge,transport,chat_id,topic_id,label,expires_at,created_at) VALUES(?,?,?,?,?,?,?)")
+      .run(challenge, input.transport, requireText(input.chatId, "chatId", 120), input.topicId ?? null, requireText(input.label, "label", 200), input.expiresAt, new Date().toISOString());
+    return { challenge, expiresAt: input.expiresAt };
+  }); },
+  consumeTaskControlPairing(input: { challenge: string; transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; topicId?: string | null }): TaskControlActorRow { return sqliteGuard(() => db.transaction(() => {
+    const challenge = requireText(input.challenge, "challenge", 160);
+    const row = db.prepare("SELECT challenge,transport,chat_id,topic_id,label,expires_at,consumed_at FROM task_control_pairing_challenge WHERE challenge=?").get(challenge) as { challenge: string; transport: string; chat_id: string; topic_id: string | null; label: string; expires_at: string; consumed_at: string | null } | undefined;
+    if (!row) throw new WorkspaceError(404, "pairing_not_found", "Pairing challenge was not found.");
+    if (row.consumed_at !== null) throw new WorkspaceError(409, "pairing_consumed", "Pairing challenge was already used.");
+    if (Date.parse(row.expires_at) <= Date.now()) throw new WorkspaceError(409, "pairing_expired", "Pairing challenge expired.");
+    if (row.transport !== input.transport || row.chat_id !== input.chatId || row.topic_id !== (input.topicId ?? null)) throw new WorkspaceError(403, "pairing_context_mismatch", "Pairing challenge belongs to another chat or topic.");
+    const actorId = `${input.transport}-${input.transportUserId}-${input.chatId}-${input.topicId ?? "main"}`;
+    const actor = this.upsertTaskControlActor({ id: actorId, transport: input.transport, transportUserId: input.transportUserId, chatId: input.chatId, topicId: input.topicId ?? null, label: row.label });
+    db.prepare("UPDATE task_control_pairing_challenge SET consumed_at=?,actor_id=? WHERE challenge=?").run(new Date().toISOString(), actor.id, challenge);
+    return actor;
+  })()); },
   taskControlActorFor(input: { transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; topicId?: string | null }): TaskControlActorRow | null {
     const topicId = input.topicId === undefined ? null : input.topicId;
     return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND transport_user_id=? AND chat_id=? AND topic_id IS ?").get(input.transport, input.transportUserId, input.chatId, topicId) as TaskControlActorRow | undefined) ?? null;
@@ -928,6 +964,10 @@ export const workspaces = {
     return (db.prepare("SELECT bot_id botId,update_id updateId,payload_json payload,processed_at processedAt,created_at createdAt FROM telegram_inbox WHERE bot_id=? ORDER BY update_id").all(botId) as Array<{ botId: string; updateId: number; payload: string; processedAt: string | null; createdAt: string }>)
       .map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
   },
+  pendingTelegramInbox(botId: string): Array<{ botId: string; updateId: number; payload: unknown; processedAt: string | null; createdAt: string }> {
+    return (db.prepare("SELECT bot_id botId,update_id updateId,payload_json payload,processed_at processedAt,created_at createdAt FROM telegram_inbox WHERE bot_id=? AND processed_at IS NULL ORDER BY update_id").all(botId) as Array<{ botId: string; updateId: number; payload: string; processedAt: string | null; createdAt: string }>)
+      .map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+  },
   removeTaskControlActor(id: string): void {
     db.prepare("DELETE FROM task_control_actor WHERE id=?").run(id);
   },
@@ -938,6 +978,7 @@ export const workspaces = {
       db.prepare("DELETE FROM telegram_outbox WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_inbox WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_poll_cursor WHERE bot_id=?").run(botId);
+      db.prepare("DELETE FROM task_control_pairing_challenge WHERE actor_id IS NULL OR actor_id NOT IN (SELECT id FROM task_control_actor)").run();
     })();
   },
   holdHumanResponse(promptId: number, responseId: number): void {

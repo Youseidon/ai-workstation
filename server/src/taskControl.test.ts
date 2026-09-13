@@ -72,6 +72,32 @@ test("task-control capability follows its dynamic settings source while producti
   assert(capability.gates.every(gate => gate.status === "blocked"));
 });
 
+test("fake pairing is single-use, context-bound, and expires", async () => {
+  const control = service("fake-bot-pairing");
+  const pairing = control.createPairingChallenge({ chatId: "chat-a", topicId: "topic-a", label: "Owner" });
+  assert.throws(
+    () => control.confirmPairing({ challenge: pairing.challenge, transportUserId: "101", chatId: "chat-b", topicId: "topic-a" }),
+    (error: unknown) => error instanceof WorkspaceError && error.code === "pairing_context_mismatch",
+  );
+  const actor = control.confirmPairing({ challenge: pairing.challenge, transportUserId: "101", chatId: "chat-a", topicId: "topic-a" });
+  try {
+    assert.match(actor.id, /fake_telegram-101-chat-a-topic-a/);
+    assert.throws(
+      () => control.confirmPairing({ challenge: pairing.challenge, transportUserId: "101", chatId: "chat-a", topicId: "topic-a" }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "pairing_consumed",
+    );
+
+    const expired = control.createPairingChallenge({ chatId: "chat-a", label: "Expired", ttlMs: -1 });
+    assert.throws(
+      () => control.confirmPairing({ challenge: expired.challenge, transportUserId: "202", chatId: "chat-a" }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "pairing_expired",
+    );
+  } finally {
+    workspaces.removeTaskControlActor(actor.id);
+    workspaces.removeTelegramRecordsForBot("fake-bot-pairing");
+  }
+});
+
 test("fake Telegram saves an answer, reissues current actions, and resumes once", async () => {
   const f = fixture();
   let starts = 0;
@@ -128,6 +154,14 @@ test("fake Telegram rejects wrong actor and stale question without mutating the 
     assert.equal(wrong.errorCode, "actor_not_enrolled");
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
 
+    const wrongBot = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", botId: "other-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-wrong-bot", content: "Owner answer" });
+    assert.equal(wrongBot.state, "REJECTED");
+    assert.equal(wrongBot.errorCode, "wrong_bot");
+
+    const wrongTopic = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", topicId: "other-topic", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-wrong-topic", content: "Owner answer" });
+    assert.equal(wrongTopic.state, "REJECTED");
+    assert.equal(wrongTopic.errorCode, "wrong_chat");
+
     workspaces.updateChild("prompt", f.prompt.id, { content: "Use a changed criterion" });
     const stale = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-stale", content: "Owner answer" });
     assert.equal(stale.state, "REJECTED");
@@ -152,6 +186,25 @@ test("fake outbox delivery records send failure without claiming action applicat
     assert.equal(outbox.attemptCount, 1);
     assert.match(outbox.lastError!, /fake timeout/);
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
+  } finally { if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
+});
+
+test("fake question payload is sanitized for phone rendering", async () => {
+  const f = fixture();
+  const botId = `fake-bot-render-${f.workspace.id}`;
+  let actorId: string | null = null;
+  try {
+    workspaces.updateChild("prompt", f.prompt.id, { title: "Inspect http://localhost:4000 and token=sk-ant-secretvalue" });
+    const control = service(botId);
+    const actor = control.enrollFakeActor({ transportUserId: "101", chatId: "9001", label: "Owner" });
+    actorId = actor.id;
+    await refreshQuestion(f);
+    const card = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });
+    const payload = workspaces.telegramOutbox().find(row => row.id === card.outboxId)?.payload as { title: string; question: string };
+    assert.equal(payload.title.includes("localhost"), false);
+    assert.equal(payload.title.includes("sk-ant-secretvalue"), false);
+    assert.match(payload.title, /\[redacted\]/);
+    assert.equal(JSON.stringify(payload).includes("sourceRunId"), false);
   } finally { if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
 });
 

@@ -131,6 +131,46 @@ run against `.agent-console/console.sqlite` for test IDs prefixed `fake-poll-`,
 `fake-send-`, `fake-bot` and `fake-tg-`; no user task, provider or workspace
 records were intentionally changed.
 
+Implemented fourth slice (M1 fake-service completion):
+
+- Added durable pairing challenges with expiry, single-use consumption and
+  chat/topic binding for fake setup verification.
+- Added sanitized phone-question rendering for personal task-control cards.
+- Added adapter-side processing of durable fake callback updates into
+  task-control receipts.
+- Added fake E2E coverage for pairing, rendered question delivery, callback
+  save, reissued resume and duplicate callback idempotency.
+- Added [M1 human verification checklist](human-verification.md) with reviewer
+  test cases and stop conditions.
+
+M1 is complete for local fake-service personal task control. The live Telegram
+adapter, real Bot API polling, real setup/pairing UX, teammate transfer, Git
+publication, provider subscription delegation and enterprise release claims remain
+default-off or blocked by G01-G04.
+
+Verification on 2026-09-13 in `/tmp/ai-workstation-m1-finish-ZwINsb`, copied
+from the repo with `.agent-console` excluded and local `node_modules` symlinked:
+
+- `node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts` passed. Covered M1 fake E2E, pairing replay/expiry/context mismatch, wrong actor/bot/topic, stale revision rejection, sanitized phone payloads, durable inbox/outbox, duplicate updates and resume-once behavior.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run build --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npx eslint lib/workspacesApi.ts components/agents/AgentsView.tsx` from the
+  `web` directory passed for touched frontend files.
+- `npm run lint --workspace web` remains blocked by pre-existing lint findings
+  outside M1: `web/components/pipeline/RuleChip.tsx`,
+  `web/components/pipeline/RulePopover.tsx`,
+  `web/components/tasks/TasksView.tsx`, `web/lib/providerUsage.ts`, plus existing
+  unused-variable warnings.
+
+Local database hygiene after running the focused tests in the real checkout:
+querying task-control fake prefixes in `.agent-console/console.sqlite` returned
+zero rows for `task_control_actor`, `task_control_action`,
+`task_control_receipt`, `telegram_outbox`, `telegram_inbox` and
+`telegram_poll_cursor`. No live Telegram messages, paid/provider execution, Git
+pushes/fetches or remote mutations were performed.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

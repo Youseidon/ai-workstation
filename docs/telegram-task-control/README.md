@@ -19,7 +19,9 @@ is a release gate, not an established capability.
    failure tests and release gates.
 5. [Executable engineering plan](engineering-plan.md): baseline classification,
    traceability and dependency-ordered milestones.
-6. [Engineering standards](../engineering-standards.md): repository code-change
+6. [M1 human verification checklist](human-verification.md): reviewer-facing
+   fake-service test cases and stop conditions.
+7. [Engineering standards](../engineering-standards.md): repository code-change
    standards and execution contract.
 
 MUST and MUST NOT are requirements. Defaults are concrete implementation choices
