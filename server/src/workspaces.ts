@@ -479,6 +479,25 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(16,?)").run(new Date().toISOString());
   }
+  if (version < 17) {
+    db.exec(`
+      CREATE TABLE telegram_inbox (
+        bot_id TEXT NOT NULL,
+        update_id INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        processed_at TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(bot_id, update_id)
+      );
+      CREATE INDEX telegram_inbox_processed_idx ON telegram_inbox(bot_id, processed_at, update_id);
+      CREATE TABLE telegram_poll_cursor (
+        bot_id TEXT PRIMARY KEY,
+        next_update_id INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(17,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -880,6 +899,46 @@ export const workspaces = {
   telegramOutbox(): Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }> {
     return (db.prepare("SELECT id,bot_id botId,chat_id chatId,topic_id topicId,payload_json payload,state,attempt_count attemptCount,last_error lastError FROM telegram_outbox ORDER BY id").all() as Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: string; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }>)
       .map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+  },
+  telegramCursor(botId: string): number {
+    const row = db.prepare("SELECT next_update_id nextUpdateId FROM telegram_poll_cursor WHERE bot_id=?").get(botId) as { nextUpdateId: number } | undefined;
+    return row?.nextUpdateId ?? 0;
+  },
+  saveTelegramUpdates(botId: string, updates: Array<{ updateId: number; payload: unknown }>): number {
+    return sqliteGuard(() => db.transaction(() => {
+      const insert = db.prepare("INSERT OR IGNORE INTO telegram_inbox(bot_id,update_id,payload_json,created_at) VALUES(?,?,?,?)");
+      const now = new Date().toISOString();
+      let saved = 0;
+      for (const update of updates) {
+        if (!Number.isSafeInteger(update.updateId) || update.updateId < 0) throw new WorkspaceError(422, "invalid_update_id", "Telegram update id must be a non-negative integer.");
+        saved += insert.run(requireText(botId, "botId", 120), update.updateId, JSON.stringify(update.payload), now).changes;
+      }
+      return saved;
+    })());
+  },
+  advanceTelegramCursor(botId: string, nextUpdateId: number): void {
+    if (!Number.isSafeInteger(nextUpdateId) || nextUpdateId < 0) throw new WorkspaceError(422, "invalid_update_id", "Telegram cursor must be a non-negative integer.");
+    db.prepare("INSERT INTO telegram_poll_cursor(bot_id,next_update_id,updated_at) VALUES(?,?,?) ON CONFLICT(bot_id) DO UPDATE SET next_update_id=excluded.next_update_id,updated_at=excluded.updated_at")
+      .run(requireText(botId, "botId", 120), nextUpdateId, new Date().toISOString());
+  },
+  markTelegramUpdateProcessed(botId: string, updateId: number): void {
+    db.prepare("UPDATE telegram_inbox SET processed_at=? WHERE bot_id=? AND update_id=? AND processed_at IS NULL").run(new Date().toISOString(), botId, updateId);
+  },
+  telegramInbox(botId: string): Array<{ botId: string; updateId: number; payload: unknown; processedAt: string | null; createdAt: string }> {
+    return (db.prepare("SELECT bot_id botId,update_id updateId,payload_json payload,processed_at processedAt,created_at createdAt FROM telegram_inbox WHERE bot_id=? ORDER BY update_id").all(botId) as Array<{ botId: string; updateId: number; payload: string; processedAt: string | null; createdAt: string }>)
+      .map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+  },
+  removeTaskControlActor(id: string): void {
+    db.prepare("DELETE FROM task_control_actor WHERE id=?").run(id);
+  },
+  removeTelegramRecordsForBot(botId: string): void {
+    db.transaction(() => {
+      db.prepare("DELETE FROM task_control_receipt WHERE action_ref IN (SELECT ref FROM task_control_action WHERE bot_id=?)").run(botId);
+      db.prepare("DELETE FROM task_control_action WHERE bot_id=?").run(botId);
+      db.prepare("DELETE FROM telegram_outbox WHERE bot_id=?").run(botId);
+      db.prepare("DELETE FROM telegram_inbox WHERE bot_id=?").run(botId);
+      db.prepare("DELETE FROM telegram_poll_cursor WHERE bot_id=?").run(botId);
+    })();
   },
   holdHumanResponse(promptId: number, responseId: number): void {
     const response = db.prepare("SELECT id FROM prompt_remark WHERE prompt_id=? AND kind='HUMAN_RESPONSE' ORDER BY id DESC LIMIT 1").get(promptId) as { id: number } | undefined;

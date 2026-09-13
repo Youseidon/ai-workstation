@@ -42,7 +42,7 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI"] as const;
+export const GROUPS = ["General", "Task Control", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI"] as const;
 
 const FIELDS: FieldDef[] = [
   {
@@ -65,6 +65,61 @@ const FIELDS: FieldDef[] = [
     description:
       "Lets every provider reach Docker, local backend APIs, and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, and Grok's OS sandbox is turned off. Needed for live saved-prompt Progress API calls from sandboxed CLIs, docker compose, local stacks, and /var/run/docker.sock. Saved-prompt execution can fall back to inline context and final status reporting while this is off. The per-provider sandbox settings below are ignored while this is on.",
     isDangerous: (value) => value === true,
+  },
+  {
+    key: "taskControl.enabled",
+    label: "Enable task control",
+    group: "Task Control",
+    type: "boolean",
+    envVar: "TASK_CONTROL_ENABLED",
+    fallback: false,
+    description:
+      "Enables local task-control services. This does not connect a live Telegram bot or enable teammate transfer.",
+  },
+  {
+    key: "taskControl.notificationsEnabled",
+    label: "Notifications",
+    group: "Task Control",
+    type: "boolean",
+    envVar: "TASK_CONTROL_NOTIFICATIONS_ENABLED",
+    fallback: false,
+    description:
+      "Allows the local task-control service to queue fake or configured transport notifications for task questions.",
+  },
+  {
+    key: "taskControl.remoteActionsEnabled",
+    label: "Remote actions",
+    group: "Task Control",
+    type: "boolean",
+    envVar: "TASK_CONTROL_REMOTE_ACTIONS_ENABLED",
+    fallback: false,
+    description:
+      "Allows validated task-control callbacks to save an answer or request resume. Leave off until setup and fake-service checks pass.",
+  },
+  {
+    key: "taskControl.transport",
+    label: "Transport",
+    group: "Task Control",
+    type: "select",
+    envVar: "TASK_CONTROL_TRANSPORT",
+    fallback: "fake_telegram",
+    description:
+      "Transport implementation for task control. Real Telegram remains blocked until live setup is explicitly implemented.",
+    options: [
+      option("fake_telegram", "Fake Telegram", "Local fake used by tests and development"),
+      option("telegram", "Telegram", "Reserved for future live Bot API setup"),
+    ],
+  },
+  {
+    key: "taskControl.botId",
+    label: "Bot ID",
+    group: "Task Control",
+    type: "string",
+    envVar: "TASK_CONTROL_BOT_ID",
+    fallback: "local-fake-bot",
+    placeholder: "local-fake-bot",
+    description:
+      "Local bot identity label for fake task-control records. Do not store a live bot token here.",
   },
 
   {
@@ -542,6 +597,23 @@ export const settings = {
    */
   get hostAccess(): boolean {
     return flag("hostAccess");
+  },
+  taskControl: {
+    get enabled(): boolean {
+      return flag("taskControl.enabled");
+    },
+    get notificationsEnabled(): boolean {
+      return flag("taskControl.notificationsEnabled");
+    },
+    get remoteActionsEnabled(): boolean {
+      return flag("taskControl.remoteActionsEnabled");
+    },
+    get transport(): "fake_telegram" | "telegram" {
+      return text("taskControl.transport") === "telegram" ? "telegram" : "fake_telegram";
+    },
+    get botId(): string {
+      return text("taskControl.botId") || "local-fake-bot";
+    },
   },
 
   claude: {

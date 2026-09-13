@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { ProviderId, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
+import { settings } from "./settings.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 export interface TaskControlConfig {
@@ -35,7 +36,11 @@ export interface TaskControlQuestionCard {
 }
 
 export class TaskControlService {
-  constructor(private readonly config: TaskControlConfig) {}
+  constructor(private readonly configSource: TaskControlConfig | (() => TaskControlConfig)) {}
+
+  private get config(): TaskControlConfig {
+    return typeof this.configSource === "function" ? this.configSource() : this.configSource;
+  }
 
   capability(): TaskControlCapability {
     if (!this.config.enabled) {
@@ -209,10 +214,10 @@ export class TaskControlService {
   }
 }
 
-export const taskControl = new TaskControlService({
-  enabled: false,
-  notificationsEnabled: false,
-  remoteActionsEnabled: false,
-  transport: "fake_telegram",
-  botId: "local-disabled",
-});
+export const taskControl = new TaskControlService(() => ({
+  enabled: settings.taskControl.enabled,
+  notificationsEnabled: settings.taskControl.notificationsEnabled,
+  remoteActionsEnabled: settings.taskControl.remoteActionsEnabled,
+  transport: settings.taskControl.transport,
+  botId: settings.taskControl.botId,
+}));

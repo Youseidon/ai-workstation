@@ -8,13 +8,13 @@ import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { TaskControlService } from "./taskControl.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
-function service() {
+function service(botId = `fake-bot-${Date.now()}-${Math.random()}`) {
   return new TaskControlService({
     enabled: true,
     notificationsEnabled: true,
     remoteActionsEnabled: true,
     transport: "fake_telegram",
-    botId: "fake-bot",
+    botId,
   });
 }
 
@@ -52,9 +52,31 @@ test("task-control capability is disabled by default with production gates visib
   assert(capability.gates.every(gate => gate.status === "blocked"));
 });
 
+test("task-control capability follows its dynamic settings source while production gates stay blocked", () => {
+  let enabled = false;
+  const control = new TaskControlService(() => ({
+    enabled,
+    notificationsEnabled: enabled,
+    remoteActionsEnabled: false,
+    transport: "fake_telegram",
+    botId: "test-fake-bot",
+  }));
+  assert.equal(control.capability().enabled, false);
+  enabled = true;
+  const capability = control.capability();
+  assert.equal(capability.enabled, true);
+  assert.equal(capability.notificationsEnabled, true);
+  assert.equal(capability.remoteActionsEnabled, false);
+  assert.equal(capability.transport, "fake_telegram");
+  assert.equal(capability.status, "blocked");
+  assert(capability.gates.every(gate => gate.status === "blocked"));
+});
+
 test("fake Telegram saves an answer, reissues current actions, and resumes once", async () => {
   const f = fixture();
   let starts = 0;
+  const botId = `fake-bot-save-${f.workspace.id}`;
+  let actorId: string | null = null;
   try {
     workspaces.addPipelineStep(f.prompt.id, { provider: "claude" });
     const suiteRun = workspaces.createPipelineRun({ id: `tc-suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
@@ -65,13 +87,14 @@ test("fake Telegram saves an answer, reissues current actions, and resumes once"
       workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "claude", model: null, tokenHash: "test", expiresAt: new Date().toISOString() });
       return { runId };
     });
-    const control = service();
+    const control = service(botId);
     const actor = control.enrollFakeActor({ transportUserId: "101", chatId: "9001", topicId: "7", label: "Owner" });
+    actorId = actor.id;
     await refreshQuestion(f);
     const first = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });
     assert.equal(workspaces.telegramOutbox().at(-1)?.state, "QUEUED");
     const save = first.actions.find(action => action.action === "save_human_response")!;
-    const saved = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId: "fake-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-save", content: "Use directory.example" });
+    const saved = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-save", content: "Use directory.example" });
     assert.equal(saved.state, "APPLIED");
     assert.equal(saved.started, false);
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, saved.responseId);
@@ -79,42 +102,48 @@ test("fake Telegram saves an answer, reissues current actions, and resumes once"
     await refreshQuestion(f);
     const second = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });
     const resume = second.actions.find(action => action.action === "answer_and_resume")!;
-    const applied = await control.handleCallback({ ref: resume.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId: "fake-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-resume", content: "Use directory.example" });
+    const applied = await control.handleCallback({ ref: resume.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-resume", content: "Use directory.example" });
     assert.equal(applied.state, "APPLIED", applied.message);
     assert.equal(applied.started, true);
-    const duplicate = await control.handleCallback({ ref: resume.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId: "fake-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-resume-duplicate", content: "Use directory.example" });
+    const duplicate = await control.handleCallback({ ref: resume.ref, transportUserId: "101", chatId: "9001", topicId: "7", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-resume-duplicate", content: "Use directory.example" });
     assert.equal(duplicate.commandId, applied.commandId);
     assert.equal(duplicate.runId, applied.runId);
     assert.equal(starts, 1);
-  } finally { setPipelineStationStarter(null); f.cleanup(); }
+  } finally { setPipelineStationStarter(null); if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
 });
 
 test("fake Telegram rejects wrong actor and stale question without mutating the task", async () => {
   const f = fixture();
+  const botId = `fake-bot-reject-${f.workspace.id}`;
+  let actorId: string | null = null;
   try {
-    const control = service();
+    const control = service(botId);
     const actor = control.enrollFakeActor({ transportUserId: "101", chatId: "9001", topicId: null, label: "Owner" });
+    actorId = actor.id;
     await refreshQuestion(f);
     const card = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });
     const save = card.actions.find(action => action.action === "save_human_response")!;
-    const wrong = await control.handleCallback({ ref: save.ref, transportUserId: "202", chatId: "9001", botId: "fake-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-wrong", content: "Wrong" });
+    const wrong = await control.handleCallback({ ref: save.ref, transportUserId: "202", chatId: "9001", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-wrong", content: "Wrong" });
     assert.equal(wrong.state, "REJECTED");
     assert.equal(wrong.errorCode, "actor_not_enrolled");
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
 
     workspaces.updateChild("prompt", f.prompt.id, { content: "Use a changed criterion" });
-    const stale = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", botId: "fake-bot", messageId: `question-${f.prompt.id}`, commandId: "cmd-stale", content: "Owner answer" });
+    const stale = await control.handleCallback({ ref: save.ref, transportUserId: "101", chatId: "9001", botId, messageId: `question-${f.prompt.id}`, commandId: "cmd-stale", content: "Owner answer" });
     assert.equal(stale.state, "REJECTED");
     assert.equal(stale.errorCode, "question_changed");
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
-  } finally { f.cleanup(); }
+  } finally { if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
 });
 
 test("fake outbox delivery records send failure without claiming action application", async () => {
   const f = fixture();
+  const botId = `fake-bot-outbox-${f.workspace.id}`;
+  let actorId: string | null = null;
   try {
-    const control = service();
+    const control = service(botId);
     const actor = control.enrollFakeActor({ transportUserId: "101", chatId: "9001", label: "Owner" });
+    actorId = actor.id;
     await refreshQuestion(f);
     const card = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });
     control.markQuestionDeliveryFailed(card.outboxId, "fake timeout");
@@ -123,7 +152,7 @@ test("fake outbox delivery records send failure without claiming action applicat
     assert.equal(outbox.attemptCount, 1);
     assert.match(outbox.lastError!, /fake timeout/);
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
-  } finally { f.cleanup(); }
+  } finally { if (actorId !== null) workspaces.removeTaskControlActor(actorId); workspaces.removeTelegramRecordsForBot(botId); f.cleanup(); }
 });
 
 test("task-control rejects remote callbacks while controls are disabled", async () => {

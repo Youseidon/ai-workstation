@@ -82,6 +82,55 @@ from the repo with `.agent-console` excluded and local `node_modules` symlinked:
   unused-variable warnings. No live Telegram messages, paid/provider execution,
   Git pushes/fetches or remote mutations were performed.
 
+Implemented third slice (M1 settings and fake Telegram adapter skeleton):
+
+- Added default-off Task Control settings for enablement, notifications, remote
+  actions, transport and local bot identity. These settings are exposed in the
+  existing Agents settings page under a separate Task Control section.
+- Changed the task-control singleton to read capability state from settings while
+  keeping all production gates blocked.
+- Routed `/api/task-control/capability` through the top-level server router.
+- Added additive SQLite migration 17 for durable fake Telegram inbox records and
+  polling cursors.
+- Added a fakeable Telegram adapter and fake Bot API implementation for polling
+  updates and sending queued outbox messages without network access.
+- Added test cleanup helpers so fake transport tests do not leave bot/action
+  records behind after ordinary test runs.
+
+This slice still does not implement live Bot API calls, real pairing challenges,
+real Telegram callback routes, topic rendering, production setup UI, shared Git
+records or teammate execution. Setting `taskControl.transport=telegram` is only a
+reserved value until a live adapter is implemented and explicitly authorized.
+
+Verification on 2026-09-13 in `/tmp/ai-workstation-task-control-settings-lSERl5`,
+copied from the repo with `.agent-console` excluded and local `node_modules`
+symlinked:
+
+- `node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts` passed. Covered dynamic settings-backed capability, fake polling cursor advancement, duplicate update handling, durable fake outbox failure/retry, Save answer, Answer and resume and callback idempotency.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run build --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npx eslint lib/workspacesApi.ts components/agents/AgentsView.tsx` from the
+  `web` directory passed for touched frontend files.
+- `npm run lint --workspace web` remains blocked by the same pre-existing lint
+  findings outside this slice.
+- `npm run build --workspace web` in the isolated symlinked copy was blocked by a
+  Turbopack limitation with `web/node_modules` pointing outside the project root.
+  Running it in the real checkout first failed under sandboxed network because
+  Next could not fetch Google fonts; the escalated rerun got past that and then
+  hit a Turbopack/PostCSS worker `EPERM` while binding a local port. The webpack
+  fallback `npm run build --workspace web -- --webpack` failed before app
+  compilation with `Could not parse output from TypeScript's --showConfig`.
+  These build failures are recorded as harness/build-system blockers, not
+  evidence of production readiness.
+
+No live Telegram messages, paid/provider execution, Git pushes/fetches or remote
+mutations were performed. A short-lived local fake transport record cleanup was
+run against `.agent-console/console.sqlite` for test IDs prefixed `fake-poll-`,
+`fake-send-`, `fake-bot` and `fake-tg-`; no user task, provider or workspace
+records were intentionally changed.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

@@ -137,7 +137,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/task-control/capability" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }

@@ -109,6 +109,8 @@ export function AgentsView() {
 
   const generalFields = snapshot?.fields.filter((field) => field.group === "General") ?? [];
   const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
+  const taskControlFields = snapshot?.fields.filter((field) => field.group === "Task Control") ?? [];
+  const taskControlDirty = dirtyKeys.filter((key) => taskControlFields.some((field) => field.key === key));
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -252,6 +254,62 @@ export function AgentsView() {
                   loading={saving}
                 >
                   Save {generalDirty.length}
+                </Button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {taskControlFields.length > 0 && (
+          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
+            <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
+            <p className="mt-1 text-[11px] text-fg-dim">
+              Personal task controls stay local and fake-only until live setup is explicitly implemented.
+            </p>
+            {taskControlFields.map((field) => (
+              <SettingRow
+                key={field.key}
+                field={field}
+                draft={drafts[field.key]}
+                disabled={saving}
+                onChange={(key, value) => {
+                  setNotice(null);
+                  setDrafts((current) => ({ ...current, [key]: value }));
+                }}
+                onRevert={(key) => {
+                  setNotice(null);
+                  void reset([key]);
+                  setDrafts((current) => {
+                    const next = { ...current };
+                    delete next[key];
+                    return next;
+                  });
+                }}
+              />
+            ))}
+            {taskControlDirty.length > 0 && (
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDrafts((current) => {
+                      const next = { ...current };
+                      for (const key of taskControlDirty) delete next[key];
+                      return next;
+                    });
+                  }}
+                  disabled={saving}
+                >
+                  Discard
+                </Button>
+                <Button
+                  size="sm"
+                  variant="success"
+                  onClick={() => void saveDrafts(taskControlDirty)}
+                  loading={saving}
+                >
+                  Save {taskControlDirty.length}
                 </Button>
               </div>
             )}
