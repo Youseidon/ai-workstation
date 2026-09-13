@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -413,6 +414,71 @@ db.transaction(() => {
     db.exec("ALTER TABLE pipeline ADD COLUMN execution_provider TEXT; ALTER TABLE pipeline ADD COLUMN execution_model TEXT;");
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(14,?)").run(new Date().toISOString());
   }
+  if (version < 15) {
+    db.exec(`CREATE TABLE human_response_hold (
+      prompt_id INTEGER PRIMARY KEY REFERENCES prompt(id) ON DELETE CASCADE,
+      response_id INTEGER NOT NULL REFERENCES prompt_remark(id) ON DELETE CASCADE
+    );`);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(15,?)").run(new Date().toISOString());
+  }
+  if (version < 16) {
+    db.exec(`
+      CREATE TABLE task_control_actor (
+        id TEXT PRIMARY KEY,
+        transport TEXT NOT NULL,
+        transport_user_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT,
+        label TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        UNIQUE(transport, transport_user_id, chat_id, topic_id)
+      );
+      CREATE TABLE task_control_action (
+        ref TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('save_human_response','answer_and_resume')),
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        actor_id TEXT NOT NULL REFERENCES task_control_actor(id) ON DELETE CASCADE,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT,
+        bot_id TEXT NOT NULL,
+        message_id TEXT,
+        expected_revision TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        applied_command_id TEXT
+      );
+      CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
+      CREATE TABLE task_control_receipt (
+        command_id TEXT PRIMARY KEY,
+        action_ref TEXT NOT NULL REFERENCES task_control_action(ref) ON DELETE CASCADE,
+        state TEXT NOT NULL CHECK(state IN ('APPLIED','REJECTED')),
+        response_id INTEGER,
+        started INTEGER NOT NULL DEFAULT 0,
+        run_id TEXT,
+        message TEXT NOT NULL,
+        error_code TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX task_control_receipt_action_applied_uq ON task_control_receipt(action_ref) WHERE state='APPLIED';
+      CREATE TABLE telegram_outbox (
+        id INTEGER PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT,
+        payload_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','SENT','FAILED')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX telegram_outbox_state_idx ON telegram_outbox(state, updated_at);
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(16,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -464,6 +530,9 @@ type PipelineRuleRow = { prompt_id: number; provider: string | null; model: stri
 type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; attempt: number; recovering: number; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; pipeline_run_id: string | null };
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; execution_provider: string | null; execution_model: string | null; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
+type TaskControlActorRow = { id: string; transport: string; transport_user_id: string; chat_id: string; topic_id: string | null; label: string; enabled: number; created_at: string };
+type TaskControlActionRow = { ref: string; action: TaskControlAction; prompt_id: number; actor_id: string; chat_id: string; topic_id: string | null; bot_id: string; message_id: string | null; expected_revision: string; provider: string | null; model: string | null; expires_at: string; created_at: string; applied_command_id: string | null };
+type TaskControlReceiptRow = { command_id: string; action_ref: string; state: TaskControlReceipt["state"]; response_id: number | null; started: number; run_id: string | null; message: string; error_code: string | null; created_at: string; action: TaskControlAction; prompt_id: number };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
   return value !== null && value !== undefined && isProviderId(value) ? value : null;
@@ -608,6 +677,9 @@ function commandResult(runId:string,requestId:unknown,operation:string,execute:(
 const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole})=>{
   const prompt=db.prepare(`SELECT p.id,p.status FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=? AND g.workspace_id=?`).get(args.promptId,args.workspaceId) as {id:number;status:PromptRecord["status"]}|undefined;
   if(!prompt)throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
+  if ((args.role ?? "execute") === "execute" && db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?").get(args.promptId)) {
+    throw new WorkspaceError(409, "human_response_held", "Your answer is saved. Use Resume with saved answer before starting this task.");
+  }
   const active=db.prepare("SELECT id,provider,model,state,started_at startedAt FROM agent_run WHERE prompt_id=? AND state IN ('STARTING','RUNNING') AND role='execute' ORDER BY started_at DESC LIMIT 1").get(args.promptId) as {id:string;provider:string;model:string|null;state:string;startedAt:string}|undefined;
   if(active)throw new WorkspaceError(409,"prompt_run_active",`This prompt already has an active session: ${active.id} (${active.provider}${active.model?` / ${active.model}`:""}, ${active.state.toLowerCase()}, started ${active.startedAt}). Open Sessions to inspect it before starting another run.`,{runId:active.id,state:active.state,provider:active.provider,startedAt:active.startedAt});
   const now=new Date().toISOString(); db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.role??"execute");
@@ -713,7 +785,111 @@ export const workspaces = {
     if (db.prepare("SELECT 1 FROM prompt_remark WHERE prompt_id=? AND kind='HUMAN_RESPONSE' AND created_at>=? LIMIT 1").get(promptId, since)) return null;
     return handoff.brief?.blockers.filter(item => item.requiresHuman).map(item => [item.description, item.requiredAction].filter(Boolean).join("\n\n")).join("\n\n") || "The handoff agent needs your input. Review its recommendation and provide instructions to continue.";
   },
-  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' AND state IN ('STARTING','RUNNING') THEN 0 ELSE 1 END, started_at DESC LIMIT 1");const result=db.prepare("SELECT result FROM prompt WHERE id=?"); return rows.map(row=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const interrupted=run?.state==="INTERRUPTED"||run?.state==="ERROR";const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const promptResult=(result.get(row.id) as {result:string}).result;const systemInterrupted=row.status==="BLOCKED"&&interrupted&&(promptResult.startsWith("Agent process ended")||promptResult.startsWith("No active agent run"));return{...row,ready:row.status==="TODO"&&blockedBy.length===0&&this.pendingHumanQuestion(row.id)===null,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
+  humanInputState(promptId: number): PromptActivity["humanInput"] {
+    const prompt = db.prepare(`SELECT p.id,p.title,p.content,p.status,p.result,p.updated_at,
+      s.overview suite_overview,g.overview program_overview,w.work_directory
+      FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id
+      JOIN workspace w ON w.id=g.workspace_id WHERE p.id=?`).get(promptId) as { status: string } | undefined;
+    if (!prompt) throw new WorkspaceError(404, "not_found", "Prompt not found");
+    const decision = db.prepare("SELECT id,content FROM prompt_remark WHERE prompt_id=? AND kind IN ('BLOCKER','DECISION_NEEDED','HUMAN_RESPONSE') ORDER BY id DESC LIMIT 1").get(promptId) ?? null;
+    const event = db.prepare("SELECT id FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1").get(promptId) ?? null;
+    const handoff = this.handoffsForPrompt(promptId)[0] ?? null;
+    const hold = db.prepare("SELECT response_id responseId FROM human_response_hold WHERE prompt_id=?").get(promptId) as { responseId: number } | undefined;
+    const revision = createHash("sha256").update(JSON.stringify({ prompt, decision, event, handoff, hold: hold ?? null })).digest("hex");
+    return { revision, savedResponseId: prompt.status === "TODO" && this.pendingHumanQuestion(promptId) === null ? hold?.responseId ?? null : null };
+  },
+  assertHumanInputRevision(promptId: number, expected: unknown): void {
+    if (expected === undefined) return; // Legacy local callers have no revision yet.
+    if (typeof expected !== "string" || !/^[a-f0-9]{64}$/.test(expected)) throw new WorkspaceError(422, "validation_error", "A valid question revision is required.");
+    if (this.humanInputState(promptId).revision !== expected) throw new WorkspaceError(409, "question_changed", "The task or question changed. Review it before submitting your answer.");
+  },
+  upsertTaskControlActor(input: { id: string; transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; topicId?: string | null; label: string; enabled?: boolean }): TaskControlActorRow { return sqliteGuard(() => {
+    const now = new Date().toISOString();
+    const id = requireText(input.id, "id", 120);
+    const transportUserId = requireText(input.transportUserId, "transportUserId", 120);
+    const chatId = requireText(input.chatId, "chatId", 120);
+    const topicId = input.topicId === undefined || input.topicId === null ? null : requireText(input.topicId, "topicId", 120);
+    const label = requireText(input.label, "label", 200);
+    db.prepare(`
+      INSERT INTO task_control_actor(id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at)
+      VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET transport=excluded.transport,transport_user_id=excluded.transport_user_id,chat_id=excluded.chat_id,topic_id=excluded.topic_id,label=excluded.label,enabled=excluded.enabled
+    `).run(id, input.transport, transportUserId, chatId, topicId, label, input.enabled === false ? 0 : 1, now);
+    return db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow;
+  }); },
+  taskControlActorFor(input: { transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; topicId?: string | null }): TaskControlActorRow | null {
+    const topicId = input.topicId === undefined ? null : input.topicId;
+    return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND transport_user_id=? AND chat_id=? AND topic_id IS ?").get(input.transport, input.transportUserId, input.chatId, topicId) as TaskControlActorRow | undefined) ?? null;
+  },
+  taskControlActorById(id: string): TaskControlActorRow | null {
+    return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow | undefined) ?? null;
+  },
+  createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string }): TaskControlActionReference { return sqliteGuard(() => {
+    if (!["save_human_response", "answer_and_resume"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
+    this.assertHumanInputRevision(input.promptId, input.expectedRevision);
+    const ref = requireText(input.ref, "ref", 160);
+    const actor = db.prepare("SELECT id FROM task_control_actor WHERE id=? AND enabled=1").get(input.actorId);
+    if (!actor) throw new WorkspaceError(403, "actor_not_enrolled", "Task-control actor is not enrolled.");
+    const expires = new Date(input.expiresAt);
+    if (Number.isNaN(expires.getTime())) throw new WorkspaceError(422, "validation_error", "expiresAt must be an ISO timestamp.");
+    const chatId = requireText(input.chatId, "chatId", 120);
+    const topicId = input.topicId === undefined || input.topicId === null ? null : requireText(input.topicId, "topicId", 120);
+    const botId = requireText(input.botId, "botId", 120);
+    const messageId = input.messageId === undefined || input.messageId === null ? null : requireText(input.messageId, "messageId", 120);
+    const model = input.model === undefined || input.model === null ? null : requireText(input.model, "model", 200);
+    db.prepare(`
+      INSERT INTO task_control_action(ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(ref, input.action, input.promptId, input.actorId, chatId, topicId, botId, messageId, input.expectedRevision, input.provider ?? null, model, input.expiresAt, new Date().toISOString());
+    return { ref, action: input.action, promptId: input.promptId, expectedRevision: input.expectedRevision, expiresAt: input.expiresAt };
+  }); },
+  taskControlAction(ref: string): TaskControlActionRow | null {
+    return (db.prepare("SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id FROM task_control_action WHERE ref=?").get(ref) as TaskControlActionRow | undefined) ?? null;
+  },
+  taskControlReceiptForAction(ref: string): TaskControlReceipt | null {
+    const row = db.prepare(`
+      SELECT r.command_id,r.action_ref,r.state,r.response_id,r.started,r.run_id,r.message,r.error_code,r.created_at,a.action,a.prompt_id
+      FROM task_control_receipt r JOIN task_control_action a ON a.ref=r.action_ref
+      WHERE r.action_ref=? AND r.state='APPLIED' ORDER BY r.created_at LIMIT 1
+    `).get(ref) as TaskControlReceiptRow | undefined;
+    return row ? { commandId: row.command_id, state: row.state, action: row.action, promptId: row.prompt_id, message: row.message, responseId: row.response_id, started: row.started === 1, runId: row.run_id, errorCode: row.error_code, createdAt: row.created_at } : null;
+  },
+  recordTaskControlReceipt(input: { commandId: string; actionRef: string; state: TaskControlReceipt["state"]; responseId?: number | null; started?: boolean; runId?: string | null; message: string; errorCode?: string | null }): TaskControlReceipt { return sqliteGuard(() => {
+    const existing = db.prepare(`
+      SELECT r.command_id,r.action_ref,r.state,r.response_id,r.started,r.run_id,r.message,r.error_code,r.created_at,a.action,a.prompt_id
+      FROM task_control_receipt r JOIN task_control_action a ON a.ref=r.action_ref
+      WHERE r.command_id=?
+    `).get(input.commandId) as TaskControlReceiptRow | undefined;
+    if (existing) return { commandId: existing.command_id, state: existing.state, action: existing.action, promptId: existing.prompt_id, message: existing.message, responseId: existing.response_id, started: existing.started === 1, runId: existing.run_id, errorCode: existing.error_code, createdAt: existing.created_at };
+    const action = this.taskControlAction(input.actionRef);
+    if (!action) throw new WorkspaceError(404, "action_not_found", "Task-control action was not found.");
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO task_control_receipt(command_id,action_ref,state,response_id,started,run_id,message,error_code,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(input.commandId, input.actionRef, input.state, input.responseId ?? null, input.started === true ? 1 : 0, input.runId ?? null, input.message, input.errorCode ?? null, now);
+    if (input.state === "APPLIED") db.prepare("UPDATE task_control_action SET applied_command_id=? WHERE ref=?").run(input.commandId, input.actionRef);
+    return { commandId: input.commandId, state: input.state, action: action.action, promptId: action.prompt_id, message: input.message, responseId: input.responseId ?? null, started: input.started === true, runId: input.runId ?? null, errorCode: input.errorCode ?? null, createdAt: now };
+  }); },
+  enqueueTelegramOutbox(input: { botId: string; chatId: string; topicId?: string | null; payload: unknown }): number { return sqliteGuard(() => {
+    const now = new Date().toISOString();
+    return Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at) VALUES(?,?,?,?, 'QUEUED',?,?)")
+      .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), input.topicId ?? null, JSON.stringify(input.payload), now, now).lastInsertRowid);
+  }); },
+  markTelegramOutbox(id: number, state: "SENT" | "FAILED", error: string | null = null): void {
+    db.prepare("UPDATE telegram_outbox SET state=?,attempt_count=attempt_count+1,last_error=?,updated_at=? WHERE id=?").run(state, error, new Date().toISOString(), id);
+  },
+  telegramOutbox(): Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }> {
+    return (db.prepare("SELECT id,bot_id botId,chat_id chatId,topic_id topicId,payload_json payload,state,attempt_count attemptCount,last_error lastError FROM telegram_outbox ORDER BY id").all() as Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: string; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }>)
+      .map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+  },
+  holdHumanResponse(promptId: number, responseId: number): void {
+    const response = db.prepare("SELECT id FROM prompt_remark WHERE prompt_id=? AND kind='HUMAN_RESPONSE' ORDER BY id DESC LIMIT 1").get(promptId) as { id: number } | undefined;
+    if (response?.id !== responseId) throw new WorkspaceError(409, "response_changed", "This response is no longer current.");
+    db.prepare("INSERT INTO human_response_hold(prompt_id,response_id) VALUES(?,?) ON CONFLICT(prompt_id) DO UPDATE SET response_id=excluded.response_id").run(promptId, responseId);
+  },
+  releaseHumanResponse(promptId: number, responseId: number): void {
+    db.prepare("DELETE FROM human_response_hold WHERE prompt_id=? AND response_id=?").run(promptId, responseId);
+  },
+  promptOptions(id: number): PromptOption[] { this.get(id); const rows=db.prepare(`SELECT p.id,p.title,p.content,p.external_key externalKey,p.status,s.id suiteId,s.name suiteName,g.id programId,g.name programName FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE g.workspace_id=? ORDER BY g.sort_order,s.sort_order,p.sort_order`).all(id) as Array<Omit<PromptOption,"ready"|"blockedBy"|"currentRun"|"recoverable">>; const latest=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY CASE WHEN role='execute' AND state IN ('STARTING','RUNNING') THEN 0 ELSE 1 END, started_at DESC LIMIT 1");const result=db.prepare("SELECT result FROM prompt WHERE id=?"); return rows.map(row=>{const blockedBy=(db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`).all(row.id) as Array<{external_key:string}>).map(x=>x.external_key);const run=latest.get(row.id) as {id:string;provider:string;model:string|null;role:RunRole;state:string;startedAt:string;endedAt:string|null}|undefined;const processActive=run?run.role==="execute"&&activeRuns.has(run.id):false;const interrupted=run?.state==="INTERRUPTED"||run?.state==="ERROR";const abandoned=row.status==="IN_PROGRESS"&&!!run&&!processActive&&(run.state==="STARTING"||run.state==="RUNNING");const promptResult=(result.get(row.id) as {result:string}).result;const systemInterrupted=row.status==="BLOCKED"&&interrupted&&(promptResult.startsWith("Agent process ended")||promptResult.startsWith("No active agent run"));const humanResponseHeld=!!db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?").get(row.id);return{...row,humanResponseHeld,ready:!humanResponseHeld&&row.status==="TODO"&&blockedBy.length===0&&this.pendingHumanQuestion(row.id)===null,blockedBy,currentRun:run?{...run,processActive}:null,recoverable:blockedBy.length===0&&(abandoned||systemInterrupted)};}); },
   resolvePrompt(workspaceId: number, promptId: number): PromptOption {
     const row = this.promptOptions(workspaceId).find(prompt => prompt.id === promptId);
     if (!row) throw new WorkspaceError(404, "not_found", "Prompt was not found in this workspace"); return row;
@@ -974,13 +1150,14 @@ export const workspaces = {
   promptActivity(promptId:number):PromptActivity {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
     const item=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts.find(prompt=>prompt.prompt.id===promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId)};
+    const history=this.promptHistory(promptId);return{item,humanInput:this.humanInputState(promptId),remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),handoffs:this.handoffsForPrompt(promptId)};
   },
   recordAgentEvent(runId:string,event:NormalizedEvent):void { db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp); },
   clarifications(promptId:number):ClarificationExchange[] { return db.prepare("SELECT id,prompt_id promptId,question,answer,provider,model,state,created_at createdAt,answered_at answeredAt FROM clarification_exchange WHERE prompt_id=? ORDER BY id").all(promptId) as ClarificationExchange[]; },
   beginClarification(promptId:number,questionValue:unknown,provider:string,model:string|null):number { const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:string}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");if(prompt.status!=="BLOCKED"&&this.pendingHumanQuestion(promptId)===null)throw new WorkspaceError(409,"prompt_not_blocked","Clarification is only available while a prompt needs input");const question=requireText(questionValue,"question",10000);return Number(db.prepare("INSERT INTO clarification_exchange(prompt_id,question,provider,model,state,created_at) VALUES(?,?,?,?, 'RUNNING',?)").run(promptId,question,provider,model,new Date().toISOString()).lastInsertRowid); },
   finishClarification(id:number,state:"DONE"|"INTERRUPTED"|"ERROR",answer:string|null):void { db.prepare("UPDATE clarification_exchange SET state=?,answer=?,answered_at=? WHERE id=?").run(state,answer?.trim()||null,new Date().toISOString(),id); },
   respondToBlockedPrompt(promptId:number,input:Record<string,unknown>):PromptRemark { return sqliteGuard(()=>db.transaction(()=>{
+    this.assertHumanInputRevision(promptId, input.expectedRevision);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
     if(prompt.status!=="BLOCKED"&&this.pendingHumanQuestion(promptId)===null)throw new WorkspaceError(409,"prompt_not_blocked","Prompt no longer needs human input");
@@ -988,6 +1165,7 @@ export const workspaces = {
     const remarkId=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'USER',?)").run(promptId,content,now).lastInsertRowid);
     db.prepare("UPDATE prompt SET status='TODO',result='',updated_at=? WHERE id=?").run(now,promptId);
     db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?,'TODO','Human supplied context; ready to resume','USER',?)").run(promptId,prompt.status,now);
+    if (input.hold === true || db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?").get(promptId)) this.holdHumanResponse(promptId, remarkId);
     return{id:remarkId,promptId,runId:null,kind:"HUMAN_RESPONSE",content,actorType:"USER",createdAt:now} satisfies PromptRemark;
   })()); },
   recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior run to recover");return run.id; },

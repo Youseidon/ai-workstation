@@ -6,8 +6,9 @@ import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
 import { isProviderId } from "@agent-console/shared";
 import { startExecute } from "./runService.ts";
-import { respondAndContinue } from "./humanInput.ts";
+import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
+import { taskControl } from "./taskControl.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -47,7 +48,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/task-control/capability" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -59,6 +60,11 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(url.pathname==="/api/operations"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}
+      return true;
+    }
+    if(url.pathname==="/api/task-control/capability"){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{capability:taskControl.capability()});
       return true;
     }
     // The record audit. A POST records a new one; GET reads the latest without
@@ -272,6 +278,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/respond-and-continue$/);
     if(match&&method==="POST"){json(res,200,await respondAndContinue(id(match[1]!),await body(req)));return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/save-human-response$/);
+    if(match&&method==="POST"){json(res,201,await saveHumanResponse(id(match[1]!),await body(req)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);

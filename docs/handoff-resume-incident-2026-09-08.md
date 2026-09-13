@@ -122,3 +122,49 @@ returned successor `run_22caf014-2d1c-4d1d-a0e1-f11870e6c738`; the database
 confirmed that successor was RUNNING with provider `claude`. Database ID 20
 remained DONE. This is now a persistent pipeline correction rather than a
 one-task assignment change.
+
+## Investigation at 11:30 UTC: runtime failures, selection confirmed
+
+The user requested diagnosis before further changes. The prior pipeline 5
+completed task IDs 20 and 21 with Claude. The latest failures are in pipeline 7,
+`AWS study — Post-MVP generator`, task ID 23 (`Selection, review, and progress`).
+
+- Claude execute `run_f7a3517d-dca8-4b5d-8406-fbe154ff80cb` stopped with
+  `Claude reported: rate_limit` and `You're out of extra usage · resets 1am
+  (Australia/Sydney)`, followed by process exit code 1.
+- A later Codex attempt with no model inherited `gpt-6-astra` and failed the
+  CLI-version requirement.
+- The latest execute `run_b760b2b9-f0cf-40b6-8c53-67a28c985e7c` used exactly
+  the pipeline's saved override: `codex` / `gpt-5.6-sol`. It produced no work
+  output and received HTTP 400 saying that model requires newer Codex.
+- The live `/api/providers` response confirms `/usr/bin/codex`, version
+  `codex-cli 0.128.0`. The app reports it available even though execution fails
+  this model compatibility check.
+
+The current selection path is working: saved override -> scheduler target ->
+recorded execute -> provider request. Another provider-precedence change will
+not fix these errors. The current runtime blockers are Claude usage exhaustion
+and Codex executable compatibility. Generic process-failure BLOCKED text makes
+these distinct causes appear to be the same continuation failure. Prefer fixing
+the runtime and preserving/showing its actual error over adding more scheduling
+or handoff branches. No pipeline configuration, source code, or run was changed
+during this investigation.
+
+## Codex runtime upgraded and verified
+
+Installed published `@openai/codex@0.153.4` under
+`.agent-console/codex-cli` and updated the existing app setting `codex.binary`
+through PUT `/api/settings` to the absolute executable path there. The system
+`/usr/bin/codex` installation remains 0.128.0, but the server now explicitly
+uses the upgraded app-local CLI. No scheduler changes were needed.
+
+A read-only ephemeral `gpt-5.6-sol` smoke test returned `OK` and
+`turn.completed` with exit code 0. The live `/api/providers` endpoint confirmed
+`codex-cli 0.153.4` and the new executable path. Pipeline 7 retains its selected
+`codex` / `gpt-5.6-sol` override.
+
+Retried task ID 23 through `/api/prompts/23/respond-and-continue`; the API
+returned `started=true` with run
+`run_1696ec14-0d59-482e-a6e8-aff305640e21`. The CLI compatibility failure was
+verified resolved; completion of the task's implementation remains the
+pipeline agent's work.

@@ -11,7 +11,7 @@ import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 type Props = { item: OperationsPrompt; provider: ProviderId; model: string | null; pipeline?: boolean; onClose(): void };
-type Draft = { text: string; intent: "answer" | "instructions" | "clarify"; responseId?: number };
+type Draft = { text: string; intent: "answer" | "instructions" | "clarify"; responseId?: number; questionRevision?: string };
 const emptyDraft: Draft = { text: "", intent: "answer" };
 
 export function HumanInputDialog(props: Props) {
@@ -52,12 +52,14 @@ function HumanInputPanel({ item, provider, model, pipeline }: Props) {
   };
   const current = activity?.item ?? item;
   const retryable = canRetryWithExistingContext(current);
-  const waiting = current.operationalState === "AWAITING_RESPONSE";
+  const waiting = current.operationalState === "AWAITING_RESPONSE" && activity?.humanInput.savedResponseId == null;
   const latestResponse = activity?.remarks.find(entry => entry.kind === "HUMAN_RESPONSE");
-  const responseId = draft.responseId ?? (!waiting ? latestResponse?.id : undefined);
+  const responseId = !waiting ? activity?.humanInput.savedResponseId ?? draft.responseId ?? latestResponse?.id : undefined;
   const running = console_.runs.some(run => run.workspace.id === item.workspace.id && run.role !== "consult");
   const available = console_.providers.some(entry => entry.id === provider && entry.available);
-  const disabled = !activity || busy || running || !available || console_.connection !== "open";
+  const staleDraft = !!draft.text && draft.questionRevision !== activity?.humanInput.revision;
+  const saveDisabled = !activity || busy || running || console_.connection !== "open" || (waiting && staleDraft);
+  const disabled = saveDisabled || !available;
   const history = [
     ...(activity?.remarks ?? []).filter(entry => ["BLOCKER", "DECISION_NEEDED", "HUMAN_RESPONSE"].includes(entry.kind)).map(entry => ({ id: `remark-${entry.id}`, at: entry.createdAt, label: entry.kind === "HUMAN_RESPONSE" ? "You" : "Agent", text: entry.content })),
     ...(activity?.clarifications ?? []).flatMap(entry => [
@@ -66,7 +68,8 @@ function HumanInputPanel({ item, provider, model, pipeline }: Props) {
     ]),
   ].sort((a, b) => a.at.localeCompare(b.at));
 
-  async function submit(retry = false, existingContext = false) {
+  async function submit(retry = false, existingContext = false, saveOnly = false) {
+    if (!activity) return;
     setBusy(true); setError(null); setMessage(null);
     try {
       if (draft.intent === "clarify" && !retry) {
@@ -75,19 +78,27 @@ function HumanInputPanel({ item, provider, model, pipeline }: Props) {
         updateDraft({ ...emptyDraft, intent: "clarify" });
       } else {
         const content = existingContext ? "Retry requested with existing context. Inspect the previous evidence and continue incomplete work." : draft.intent === "instructions" ? `Updated instructions from the owner (supersede conflicting earlier task instructions):\n\n${draft.text.trim()}` : draft.text.trim();
+        const expectedRevision = retry || existingContext ? activity.humanInput.revision : draft.questionRevision ?? activity.humanInput.revision;
+        if (saveOnly) {
+          const result = await workspaceApi.saveHumanResponse(SERVER_URL, item.prompt.id, { content, expectedRevision });
+          updateDraft({ ...emptyDraft, responseId: result.responseId, questionRevision: result.revision });
+          setMessage("Answer saved. Awaiting resume.");
+          setRevision(value => value + 1);
+          return;
+        }
         setMessage("Saving your answer and starting continuation…");
-        const result = await workspaceApi.respondAndContinue(SERVER_URL, item.prompt.id, { provider, model, ...(retry && responseId ? { responseId } : { content }) });
+        const result = await workspaceApi.respondAndContinue(SERVER_URL, item.prompt.id, { provider, model, expectedRevision, ...(retry && responseId ? { responseId } : { content }) });
         if (result.started) {
           setStarted(true); updateDraft(emptyDraft);
           try { localStorage.removeItem(storageKey); } catch { /* Continuation already started. */ }
           setMessage(pipeline ? "Answer saved. Pipeline continuation started." : "Answer saved. Continuation started.");
         } else {
-          updateDraft({ ...draft, responseId: result.responseId });
+          updateDraft({ ...draft, responseId: result.responseId, questionRevision: result.revision });
           setMessage("Your answer is saved."); setError(result.error ?? "Continuation could not start. Retry when the agent is available.");
         }
       }
       setRevision(value => value + 1);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setRevision(value => value + 1); }
     finally { setBusy(false); }
   }
 
@@ -101,11 +112,15 @@ function HumanInputPanel({ item, provider, model, pipeline }: Props) {
       <div className="flex flex-wrap gap-2" aria-label="Response type">
         {([["answer", "Answer question"], ["clarify", "Ask for clarification"], ["instructions", "Change instructions"]] as const).map(([intent, label]) => <Button key={intent} size="sm" variant={draft.intent === intent ? "primary" : "secondary"} aria-pressed={draft.intent === intent} disabled={busy} onClick={() => updateDraft({ ...draft, intent, responseId: undefined })}>{label}</Button>)}
       </div>
-      <TextArea label={draft.intent === "clarify" ? "Your clarification question" : draft.intent === "instructions" ? "Revised instructions" : "Your answer"} rows={5} value={draft.text} maxLength={19000} disabled={busy} placeholder={draft.intent === "instructions" ? "State what should change and any constraints the agent should keep…" : "Add the details the agent needs…"} hint={draft.intent === "instructions" ? "These instructions will supersede conflicting earlier task instructions and be kept in the conversation." : "Draft saved automatically in this browser. Configure secrets outside this box."} onChange={event => updateDraft({ text: event.target.value, intent: draft.intent })} />
-      <Button variant="success" disabled={disabled || !draft.text.trim()} loading={busy} onClick={() => void submit()}>{draft.intent === "clarify" ? "Ask agent" : draft.intent === "instructions" ? "Apply instructions and continue" : pipeline ? "Send answer and continue pipeline" : "Send answer and continue"}</Button>
+      <TextArea label={draft.intent === "clarify" ? "Your clarification question" : draft.intent === "instructions" ? "Revised instructions" : "Your answer"} rows={5} value={draft.text} maxLength={19000} disabled={busy || !activity} placeholder={draft.intent === "instructions" ? "State what should change and any constraints the agent should keep…" : "Add the details the agent needs…"} hint={draft.intent === "instructions" ? "These instructions will supersede conflicting earlier task instructions and be kept in the conversation." : "Draft saved automatically in this browser. Configure secrets outside this box."} onChange={event => updateDraft({ text: event.target.value, intent: draft.intent, questionRevision: draft.text ? draft.questionRevision : activity?.humanInput.revision })} />
+      {staleDraft && <div className="space-y-2"><p role="alert" className="text-sm text-warning">This draft needs review against the current question.</p><Button size="sm" disabled={busy || !activity} onClick={() => updateDraft({ ...draft, questionRevision: activity?.humanInput.revision })}>Use draft for current question</Button></div>}
+      <div className="flex flex-wrap gap-2">
+        {draft.intent !== "clarify" && <Button disabled={saveDisabled || !draft.text.trim()} onClick={() => void submit(false, false, true)}>Save answer</Button>}
+        <Button variant="success" disabled={disabled || !draft.text.trim()} loading={busy} onClick={() => void submit()}>{draft.intent === "clarify" ? "Ask agent" : "Answer and resume"}</Button>
+      </div>
     </>}
     {!started && waiting && retryable && <Button variant="secondary" disabled={disabled} onClick={() => void submit(false, true)}>Retry with existing context</Button>}
-    {!started && !waiting && responseId !== undefined && <Button variant="success" disabled={disabled} loading={busy} onClick={() => void submit(true)}>Continue with saved answer</Button>}
+    {!started && !waiting && responseId !== undefined && <Button variant="success" disabled={disabled} loading={busy} onClick={() => void submit(true)}>Resume with saved answer</Button>}
     {message && <p role="status" className="text-sm text-info">{message}</p>}
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     {console_.connection !== "open" && <p className="text-xs text-warning">Reconnect to send. Your draft is retained.</p>}

@@ -249,6 +249,11 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
   const posted = workspaces.promptOutcome(promptId);
   const rule = ruleByRun.get(runId) ?? workspaces.pipelineRule(promptId);
   ruleByRun.delete(runId);
+  if (workspaces.humanInputState(promptId).savedResponseId !== null) {
+    const held = workspaces.updatePipelineRun(live.id, { state: live.state === "PAUSED" ? "PAUSED" : "WAITING_HUMAN", stopReason: "human_response_saved" });
+    await syncNamedFromSuite(held);
+    return;
+  }
   if (posted.status === "DONE") {
     await applyOnDone(live, rule);
     return;

@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import type { ProgramRecord, PromptPipelineRule, PromptRecord, ProviderId, SuiteRecord } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
-import { respondAndContinue } from "./humanInput.ts";
+import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { pipelineScheduler, resolveExecuteTarget, setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
@@ -530,6 +530,29 @@ test("recoverAbandonedRuns marks active pipelines INTERRUPTED", async () => {
   } finally {
     ctx.cleanup();
   }
+});
+
+for (const paused of [false, true]) test(`save-only holds a late completion callback${paused ? " without clearing a user pause" : ""}`, async () => {
+  const ctx = fixture(2);
+  const starts = stubStarts();
+  try {
+    const playing = await pipelineScheduler.play(ctx.suite.id, { provider: "claude" });
+    const promptId = ctx.prompts[0]!.id;
+    workspaces.finishAgentRun(playing.currentRunId!, "done");
+    if (paused) workspaces.updatePipelineRun(playing.id, { state: "PAUSED" });
+    await saveHumanResponse(promptId, { content: "Keep the existing edits", expectedRevision: workspaces.humanInputState(promptId).revision });
+    await pipelineScheduler.onExecuteEnded({ runId: playing.currentRunId!, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+    const held = workspaces.pipelineById(playing.id)!;
+    assert.equal(held.state, paused ? "PAUSED" : "WAITING_HUMAN");
+    assert.equal(held.stopReason, "human_response_saved");
+    assert.equal(held.currentPromptId, promptId);
+    assert.equal(held.currentRunId, null);
+    assert.equal(starts.length, 1);
+    assert.equal(workspaces.readyPromptsInSuite(ctx.workspace.id, ctx.suite.id).length, 0);
+    workspaces.interruptPipelinesOnRestart();
+    assert.notEqual(workspaces.humanInputState(promptId).savedResponseId, null);
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, promptId).ready, false);
+  } finally { ctx.cleanup(); }
 });
 
 test("attempt only resets on a new Play, not on resume", async () => {

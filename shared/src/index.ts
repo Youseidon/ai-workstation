@@ -624,6 +624,7 @@ export interface WorkspaceTree extends WorkspaceRecord {
 }
 
 export interface PromptOption {
+  humanResponseHeld?: boolean;
   id: number;
   title: string;
   content: string;
@@ -961,12 +962,54 @@ export interface SuiteVerificationContext {
   scopePromptKey: string | null;
 }
 export interface PromptActivity {
+  humanInput: { revision: string; savedResponseId: number | null };
   item: OperationsPrompt;
   remarks: PromptRemark[];
   events: PromptStatusEvent[];
   clarifications: ClarificationExchange[];
   sessions: AgentSession[];
   handoffs: HandoffRecord[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Task control                                                                */
+/* -------------------------------------------------------------------------- */
+
+export const TASK_CONTROL_ACTIONS = ["save_human_response", "answer_and_resume"] as const;
+export type TaskControlAction = (typeof TASK_CONTROL_ACTIONS)[number];
+
+export const TASK_CONTROL_RECEIPT_STATES = ["APPLIED", "REJECTED"] as const;
+export type TaskControlReceiptState = (typeof TASK_CONTROL_RECEIPT_STATES)[number];
+
+export interface TaskControlCapability {
+  enabled: boolean;
+  notificationsEnabled: boolean;
+  remoteActionsEnabled: boolean;
+  transport: "disabled" | "fake_telegram" | "telegram";
+  status: "disabled" | "ready" | "blocked";
+  reason: string;
+  gates: Array<{ id: string; status: "open" | "blocked"; reason: string }>;
+}
+
+export interface TaskControlActionReference {
+  ref: string;
+  action: TaskControlAction;
+  promptId: number;
+  expectedRevision: string;
+  expiresAt: string;
+}
+
+export interface TaskControlReceipt {
+  commandId: string;
+  state: TaskControlReceiptState;
+  action: TaskControlAction;
+  promptId: number;
+  message: string;
+  responseId: number | null;
+  started: boolean;
+  runId: string | null;
+  errorCode: string | null;
+  createdAt: string;
 }
 
 export const HANDOFF_STATES = ["QUEUED", "RUNNING", "READY", "FAILED", "SUPERSEDED"] as const;

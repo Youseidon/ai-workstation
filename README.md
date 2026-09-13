@@ -26,6 +26,9 @@ counts, all rendered as a scrolling terminal-style log.
 
 ## Quick start
 
+Planned enhancement: [Telegram task control and teammate takeover design](docs/telegram-task-control/README.md).
+This is an implementation specification, not an available feature.
+
 ```bash
 npm install
 cp .env.example .env
