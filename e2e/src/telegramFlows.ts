@@ -36,3 +36,24 @@ export async function pairThroughAgentsPage(page: Page, phone: PhoneDriver): Pro
 export function outboxRows(harness: HarnessEnvironment) {
   return harness.query<{ id: number; state: string; attempt_count: number; sent_message_id: string | null; payload_json: string }>("SELECT id, state, attempt_count, sent_message_id, payload_json FROM telegram_outbox ORDER BY id");
 }
+
+/** Pairs through the local API (same runtime path as the page) for scenarios that are not about pairing. */
+export async function pairThroughApi(phone: PhoneDriver): Promise<void> {
+  await waitForTelegramState("polling");
+  const { pairing } = await state.post<{ pairing: { code: string } }>("/api/task-control/telegram/pairing");
+  const before = await phone.cursor();
+  await phone.send(`/start ${pairing.code}`);
+  await eventually("the pairing code to be observed", async () => (await telegramStatus()).pairing?.observed ?? undefined);
+  await state.post("/api/task-control/telegram/pairing/confirm", { code: pairing.code });
+  await phone.waitForBotMessage("the paired confirmation", (message) => message.text.startsWith("Paired with this workstation"), { afterId: before });
+}
+
+/** Blocks a saved task through the fake agent and waits for its question card on the phone. */
+export async function blockedTaskCard(harness: HarnessEnvironment, phone: PhoneDriver, title: string, extra: { reason?: string; humanAction?: string } = {}) {
+  const { runSavedTask, waitForRunEnd } = await import("./scenarios.ts");
+  const before = await phone.cursor();
+  const { task, runId } = await runSavedTask(harness, { title, scenarios: [{ behavior: "block-on-decision", reason: extra.reason ?? "Two names fit.", humanAction: extra.humanAction ?? "Pick Aurora or Borealis." }] });
+  await waitForRunEnd(task, runId);
+  const card = await phone.waitForBotMessage(`the question card for ${title}`, (message) => message.text.startsWith(`Task needs input: ${title}`), { afterId: before });
+  return { task, card };
+}
