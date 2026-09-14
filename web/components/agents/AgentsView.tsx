@@ -34,6 +34,7 @@ import { useModelSelection } from "@/lib/useModelSelection";
 import { useProviderUsage } from "@/lib/providerUsage";
 import { useSettings } from "@/lib/useSettings";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { TelegramSetupPanel } from "./TelegramSetupPanel";
 import { UsageBlock } from "./usage";
 
 const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
@@ -279,7 +280,7 @@ export function AgentsView() {
               )}
             </div>
             <p className="mt-1 text-[11px] text-fg-dim">
-              {taskControlCapability?.reason ?? "Personal task controls stay local and fake-only until live setup is explicitly configured."}
+              {taskControlCapability?.reason ?? "Personal task controls stay local until the live Telegram transport is enabled and a phone is paired."}
             </p>
             {taskControlFields.map((field) => (
               <SettingRow
@@ -328,6 +329,7 @@ export function AgentsView() {
                 </Button>
               </div>
             )}
+            {taskControlCapability?.transport === "telegram" && <TelegramSetupPanel refreshKey={snapshot} />}
           </section>
         )}
 

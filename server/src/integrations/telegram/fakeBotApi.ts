@@ -1,18 +1,6 @@
-export interface TelegramUpdate {
-  updateId: number;
-  payload: unknown;
-}
+import type { TelegramBotApi, TelegramSendRequest, TelegramUpdate } from "./botApi.ts";
 
-export interface TelegramSendRequest {
-  chatId: string;
-  topicId: string | null;
-  payload: unknown;
-}
-
-export interface TelegramBotApi {
-  getUpdates(offset: number): Promise<TelegramUpdate[]>;
-  sendMessage(request: TelegramSendRequest): Promise<{ messageId: string }>;
-}
+export type { TelegramBotApi, TelegramSendRequest, TelegramUpdate } from "./botApi.ts";
 
 export class FakeTelegramBotApi implements TelegramBotApi {
   private updates: TelegramUpdate[] = [];

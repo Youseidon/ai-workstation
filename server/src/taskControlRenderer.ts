@@ -37,8 +37,13 @@ export function renderPersonalQuestion(promptId: number, actions: Array<Pick<Tas
   const activity = workspaces.promptActivity(promptId);
   const run = activity.sessions.find(session => session.role === "execute" && ["STARTING", "RUNNING"].includes(session.state));
   const saved = activity.humanInput.savedResponseId !== null;
+  // A task blocked by its own agent has no handoff question; its latest blocker
+  // remark is what the operations view shows, so the phone shows it too.
+  const blocker = activity.item.prompt.status === "BLOCKED"
+    ? activity.remarks.filter(remark => remark.kind === "BLOCKER" || remark.kind === "DECISION_NEEDED").sort((a, b) => b.id - a.id)[0]?.content ?? null
+    : null;
   const question = workspaces.pendingHumanQuestion(promptId)
-    ?? (saved ? "An answer is saved. Choose whether to resume with the saved answer." : "This task needs your input.");
+    ?? (saved ? "An answer is saved. Choose whether to resume with the saved answer." : blocker ?? "This task needs your input.");
   return {
     kind: "personal_question",
     promptId,

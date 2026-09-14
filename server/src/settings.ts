@@ -74,7 +74,7 @@ const FIELDS: FieldDef[] = [
     envVar: "TASK_CONTROL_ENABLED",
     fallback: false,
     description:
-      "Enables local task-control services. This does not connect a live Telegram bot or enable teammate transfer.",
+      "Enables local task-control services. With the Telegram transport and a bot token, this connects your own bot for personal control. It never enables teammate transfer.",
   },
   {
     key: "taskControl.notificationsEnabled",
@@ -84,7 +84,7 @@ const FIELDS: FieldDef[] = [
     envVar: "TASK_CONTROL_NOTIFICATIONS_ENABLED",
     fallback: false,
     description:
-      "Allows the local task-control service to queue fake or configured transport notifications for task questions.",
+      "Posts each task that needs your input to enrolled chats, once per question revision.",
   },
   {
     key: "taskControl.remoteActionsEnabled",
@@ -94,7 +94,7 @@ const FIELDS: FieldDef[] = [
     envVar: "TASK_CONTROL_REMOTE_ACTIONS_ENABLED",
     fallback: false,
     description:
-      "Allows validated task-control callbacks to save an answer or request resume. Leave off until setup and fake-service checks pass.",
+      "Allows validated button taps to save an answer or request resume. While off, taps are answered with a rejection and change nothing.",
   },
   {
     key: "taskControl.transport",
@@ -104,10 +104,10 @@ const FIELDS: FieldDef[] = [
     envVar: "TASK_CONTROL_TRANSPORT",
     fallback: "fake_telegram",
     description:
-      "Transport implementation for task control. Real Telegram remains blocked until live setup is explicitly implemented.",
+      "Fake Telegram is the in-memory test transport and never touches the network. Telegram long-polls the real Bot API using TELEGRAM_BOT_TOKEN from .env, which is read at boot and never shown here.",
     options: [
       option("fake_telegram", "Fake Telegram", "Local fake used by tests and development"),
-      option("telegram", "Telegram", "Reserved for future live Bot API setup"),
+      option("telegram", "Telegram", "Live Bot API; needs TELEGRAM_BOT_TOKEN in .env"),
     ],
   },
   {
@@ -119,7 +119,7 @@ const FIELDS: FieldDef[] = [
     fallback: "local-fake-bot",
     placeholder: "local-fake-bot",
     description:
-      "Local bot identity label for fake task-control records. Do not store a live bot token here.",
+      "Bot identity label for fake task-control records. The live transport derives its identity from the token instead. Do not store a live bot token here.",
   },
 
   {

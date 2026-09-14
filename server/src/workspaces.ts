@@ -538,6 +538,22 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(19,?)").run(new Date().toISOString());
   }
+  if (version < 20) {
+    // Live Telegram (L1): durable retry schedule and the Bot API message id of a
+    // sent card, plus the answer text a button tap will submit, since Telegram
+    // callback data cannot carry it. No token is stored anywhere in this schema.
+    db.exec(`
+      ALTER TABLE telegram_outbox ADD COLUMN next_attempt_at TEXT;
+      ALTER TABLE telegram_outbox ADD COLUMN sent_message_id TEXT;
+      CREATE INDEX telegram_outbox_sent_message_idx ON telegram_outbox(bot_id, chat_id, sent_message_id);
+      CREATE TABLE telegram_action_content (
+        action_ref TEXT PRIMARY KEY REFERENCES task_control_action(ref) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(20,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -975,8 +991,67 @@ export const workspaces = {
     return Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at) VALUES(?,?,?,?, 'QUEUED',?,?)")
       .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), input.topicId ?? null, JSON.stringify(input.payload), now, now).lastInsertRowid);
   }); },
-  markTelegramOutbox(id: number, state: "SENT" | "FAILED", error: string | null = null): void {
-    db.prepare("UPDATE telegram_outbox SET state=?,attempt_count=attempt_count+1,last_error=?,updated_at=? WHERE id=?").run(state, error, new Date().toISOString(), id);
+  /**
+   * `nextAttemptAt` schedules a durable retry of a FAILED row; null leaves it
+   * failed for good. `sentMessageId` records the Bot API message id of a SENT row.
+   */
+  markTelegramOutbox(id: number, state: "SENT" | "FAILED", error: string | null = null, delivery: { nextAttemptAt?: string | null; sentMessageId?: string | null } = {}): void {
+    db.prepare("UPDATE telegram_outbox SET state=?,attempt_count=attempt_count+1,last_error=?,updated_at=?,next_attempt_at=?,sent_message_id=COALESCE(?,sent_message_id) WHERE id=?")
+      .run(state, error, new Date().toISOString(), state === "FAILED" ? delivery.nextAttemptAt ?? null : null, delivery.sentMessageId ?? null, id);
+  },
+  /** Rows a live sender should attempt now: never-sent rows, and failed rows whose retry is due. */
+  dueTelegramOutbox(botId: string, now: Date, limit = 20): Array<{ id: number; chatId: string; attemptCount: number }> {
+    return db.prepare("SELECT id,chat_id chatId,attempt_count attemptCount FROM telegram_outbox WHERE bot_id=? AND (state='QUEUED' OR (state='FAILED' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?)) ORDER BY id LIMIT ?")
+      .all(botId, now.toISOString(), limit) as Array<{ id: number; chatId: string; attemptCount: number }>;
+  },
+  telegramOutboxCounts(botId: string): { queued: number; retrying: number; failed: number } {
+    const row = db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN state='QUEUED' THEN 1 ELSE 0 END),0) queued,
+      COALESCE(SUM(CASE WHEN state='FAILED' AND next_attempt_at IS NOT NULL THEN 1 ELSE 0 END),0) retrying,
+      COALESCE(SUM(CASE WHEN state='FAILED' AND next_attempt_at IS NULL THEN 1 ELSE 0 END),0) failed
+      FROM telegram_outbox WHERE bot_id=?`).get(botId) as { queued: number; retrying: number; failed: number };
+    return row;
+  },
+  /** The payload of the card a Telegram message id belongs to, for mapping replies. */
+  telegramOutboxBySentMessage(botId: string, chatId: string, sentMessageId: string): { id: number; topicId: string | null; payload: unknown } | null {
+    const row = db.prepare("SELECT id,topic_id topicId,payload_json payload FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND sent_message_id=? AND state='SENT' ORDER BY id DESC LIMIT 1")
+      .get(botId, chatId, sentMessageId) as { id: number; topicId: string | null; payload: string } | undefined;
+    return row ? { ...row, payload: JSON.parse(row.payload) as unknown } : null;
+  },
+  /**
+   * Binds question-card actions to the Bot API message that actually carries
+   * their buttons, replacing the placeholder id assigned before sending.
+   */
+  bindTaskControlActionsToMessage(botId: string, refs: string[], messageId: string): void {
+    const update = db.prepare("UPDATE task_control_action SET message_id=? WHERE bot_id=? AND ref=?");
+    db.transaction(() => { for (const ref of refs) update.run(requireText(messageId, "messageId", 120), botId, ref); })();
+  },
+  setTelegramActionContent(ref: string, content: string): void { return sqliteGuard(() => {
+    const text = requireText(content, "content", 10000);
+    db.prepare("INSERT INTO telegram_action_content(action_ref,content,created_at) VALUES(?,?,?) ON CONFLICT(action_ref) DO UPDATE SET content=excluded.content")
+      .run(ref, text, new Date().toISOString());
+  }); },
+  telegramActionContent(ref: string): string | null {
+    return (db.prepare("SELECT content FROM telegram_action_content WHERE action_ref=?").get(ref) as { content: string } | undefined)?.content ?? null;
+  },
+  hasTaskControlActionForRevision(input: { promptId: number; actorId: string; botId: string; revision: string }): boolean {
+    return db.prepare("SELECT 1 FROM task_control_action WHERE prompt_id=? AND actor_id=? AND bot_id=? AND expected_revision=? LIMIT 1")
+      .get(input.promptId, input.actorId, input.botId, input.revision) !== undefined;
+  },
+  taskControlActors(transport: "fake_telegram" | "telegram"): TaskControlActorRow[] {
+    return db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND enabled=1 ORDER BY created_at")
+      .all(transport) as TaskControlActorRow[];
+  },
+  /** Saved tasks in the same attention state the operations view shows as awaiting a response. */
+  promptsAwaitingResponse(): PromptOption[] {
+    const awaiting: PromptOption[] = [];
+    for (const workspace of db.prepare("SELECT id FROM workspace ORDER BY id").all() as Array<{ id: number }>) {
+      for (const prompt of this.promptOptions(workspace.id)) {
+        if (prompt.status === "DONE" || prompt.status === "SKIPPED") continue;
+        if (operationalState(prompt, this.pendingHumanQuestion(prompt.id) !== null) === "AWAITING_RESPONSE") awaiting.push(prompt);
+      }
+    }
+    return awaiting;
   },
   telegramOutbox(): Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }> {
     return (db.prepare("SELECT id,bot_id botId,chat_id chatId,topic_id topicId,payload_json payload,state,attempt_count attemptCount,last_error lastError FROM telegram_outbox ORDER BY id").all() as Array<{ id: number; botId: string; chatId: string; topicId: string | null; payload: string; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; lastError: string | null }>)
@@ -1017,9 +1092,14 @@ export const workspaces = {
   removeTaskControlActor(id: string): void {
     db.prepare("DELETE FROM task_control_actor WHERE id=?").run(id);
   },
+  /** Revokes an actor without deleting the actions and receipts that reference it. */
+  disableTaskControlActor(id: string): boolean {
+    return db.prepare("UPDATE task_control_actor SET enabled=0 WHERE id=? AND enabled=1").run(id).changes > 0;
+  },
   removeTelegramRecordsForBot(botId: string): void {
     db.transaction(() => {
       db.prepare("DELETE FROM task_control_receipt WHERE action_ref IN (SELECT ref FROM task_control_action WHERE bot_id=?)").run(botId);
+      db.prepare("DELETE FROM telegram_action_content WHERE action_ref IN (SELECT ref FROM task_control_action WHERE bot_id=?)").run(botId);
       db.prepare("DELETE FROM task_control_action WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_outbox WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_inbox WHERE bot_id=?").run(botId);

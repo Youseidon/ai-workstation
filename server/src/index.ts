@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
@@ -15,8 +16,15 @@ import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, agentApiUrl, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 import { quotaWarnings } from "./quotaAdvisor.ts";
+import { telegramRuntime } from "./integrations/telegram/runtime.ts";
 
 const log = createLogger("server");
+
+// Node's fetch races IPv4 and IPv6 but gives each connection attempt only
+// 250ms by default. Where IPv6 has no route and IPv4 to a host (for example
+// api.telegram.org) takes longer than that to connect, every request fails with
+// ETIMEDOUT even though the host is reachable. Allow slower connects.
+setDefaultAutoSelectFamilyAttemptTimeout(2500);
 
 /* -------------------------------------------------------------------------- */
 /* HTTP: detection + health                                                    */
@@ -138,7 +146,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/task-control/capability" || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname.startsWith("/api/task-control/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }
@@ -185,7 +193,10 @@ const httpServer = createServer((req, res) => {
             sendJson(res, 400, { errors: result.errors, snapshot: result.snapshot });
             return;
           }
-          if (result.changed.length > 0) await broadcastSettingsChange();
+          if (result.changed.length > 0) {
+            void telegramRuntime.reconcile();
+            await broadcastSettingsChange();
+          }
           sendJson(res, 200, { changed: result.changed, snapshot: result.snapshot });
         })
         .catch((error: unknown) => {
@@ -208,7 +219,10 @@ const httpServer = createServer((req, res) => {
           sendJson(res, 400, { errors: result.errors, snapshot: result.snapshot });
           return;
         }
-        if (result.changed.length > 0) await broadcastSettingsChange();
+        if (result.changed.length > 0) {
+          void telegramRuntime.reconcile();
+          await broadcastSettingsChange();
+        }
         sendJson(res, 200, { changed: result.changed, snapshot: result.snapshot });
       })
       .catch((error: unknown) => {
@@ -461,12 +475,16 @@ httpServer.listen(config.port, config.host, () => {
       log.info(`provider ${provider.id.padEnd(7)} ${status}`);
     }
   });
+  // Default-off: this only polls when task control is enabled, the transport is
+  // live Telegram and a token was supplied at boot.
+  void telegramRuntime.reconcile().then(() => log.info(`telegram ${telegramRuntime.status().state}`));
 });
 
 const shutdown = () => {
   log.info("shutting down");
   wss.clients.forEach((client) => client.close());
-  httpServer.close(() => { workspaces.close(); process.exit(0); });
+  // Abort the long poll before closing the database it writes to.
+  httpServer.close(() => { void telegramRuntime.stop().finally(() => { workspaces.close(); process.exit(0); }); });
   setTimeout(() => process.exit(0), 2000).unref();
 };
 

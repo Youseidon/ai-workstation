@@ -9,6 +9,7 @@ import { startExecute } from "./runService.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 import { taskControl } from "./taskControl.ts";
+import { telegramRuntime } from "./integrations/telegram/runtime.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -48,7 +49,7 @@ function failure(res: ServerResponse, error: unknown): void {
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/task-control/capability" && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && !url.pathname.startsWith("/api/task-control/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -65,6 +66,30 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(url.pathname==="/api/task-control/capability"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else json(res,200,{capability:taskControl.capability()});
+      return true;
+    }
+    // Live Telegram setup (L1). Local-only like every route here; responses carry
+    // bot identity and enrolment state, never the token.
+    if(url.pathname==="/api/task-control/telegram"){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else json(res,200,{status:telegramRuntime.status()});
+      return true;
+    }
+    if(url.pathname==="/api/task-control/telegram/pairing"){
+      if(method==="POST")json(res,201,{pairing:telegramRuntime.startPairing()});
+      else if(method==="DELETE"){telegramRuntime.cancelPairing();res.writeHead(204);res.end();}
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    if(url.pathname==="/api/task-control/telegram/pairing/confirm"){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else{const input=await body(req);json(res,200,{actor:telegramRuntime.confirmPairing(input.code),status:telegramRuntime.status()});}
+      return true;
+    }
+    const telegramActorMatch=url.pathname.match(/^\/api\/task-control\/telegram\/actors\/([^/]+)$/);
+    if(telegramActorMatch){
+      if(method!=="DELETE")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else{telegramRuntime.removeActor(decodeURIComponent(telegramActorMatch[1]!));res.writeHead(204);res.end();}
       return true;
     }
     // The record audit. A POST records a new one; GET reads the latest without

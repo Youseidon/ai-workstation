@@ -1017,6 +1017,53 @@ export interface TaskControlCapability {
   gates: Array<{ id: string; status: "open" | "blocked"; reason: string }>;
 }
 
+/**
+ * Live Telegram transport state (L1). Deliberately carries no token: only
+ * whether one is configured and the public bot identity it resolved to.
+ */
+export type TelegramLiveState =
+  | "disabled"
+  | "missing_token"
+  | "connecting"
+  | "polling"
+  | "backoff"
+  | "auth_failed";
+
+export interface TelegramPairingState {
+  /** Single-use code the operator sends to the bot as `/start <code>`. */
+  code: string;
+  deepLink: string | null;
+  expiresAt: string;
+  observed: {
+    transportUserId: string;
+    chatId: string;
+    label: string;
+    username: string | null;
+    observedAt: string;
+  } | null;
+}
+
+export interface TelegramEnrolledActor {
+  id: string;
+  label: string;
+  transportUserId: string;
+  chatId: string;
+  createdAt: string;
+}
+
+export interface TelegramLiveStatus {
+  state: TelegramLiveState;
+  reason: string;
+  tokenConfigured: boolean;
+  bot: { id: string; username: string | null } | null;
+  lastPollAt: string | null;
+  lastError: string | null;
+  nextRetryAt: string | null;
+  outbox: { queued: number; retrying: number; failed: number };
+  pairing: TelegramPairingState | null;
+  actors: TelegramEnrolledActor[];
+}
+
 export type StartUnknownClassification = "known_stopped" | "known_no_spawn";
 
 export interface TaskControlActionReference {
