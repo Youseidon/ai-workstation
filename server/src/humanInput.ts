@@ -62,7 +62,6 @@ async function submit(promptId: number, input: Record<string, unknown>, resume: 
   // A replay must not execute a task twice, including after the first run finishes.
   const successor = activity.sessions.find(run => run.role === "execute" && run.startedAt >= response.createdAt);
   if (successor) return { ...saved, started: true, runId: successor.id };
-  const wasHeld = activity.item.prompt.humanResponseHeld === true;
   try {
     if (workspaces.pendingHumanQuestion(promptId) !== null || workspaces.promptOutcome(promptId).status !== "TODO") {
       throw new Error("A new blocker needs attention. Review the latest question before continuing.");
@@ -87,7 +86,9 @@ async function submit(promptId: number, input: Record<string, unknown>, resume: 
     const run = await startExecute({ workspaceId: workspace.id, promptId, provider: input.provider as ProviderId, model: (input.model as string | null | undefined) ?? null });
     return { ...saved, started: true, runId: run.runId };
   } catch (error) {
-    if (wasHeld) workspaces.holdHumanResponse(promptId, response.id);
+    // Failure preserves the answer as a saved answer, so every surface can offer
+    // Resume with saved answer once the problem is fixed (user-flows 2, step 5).
+    workspaces.holdHumanResponse(promptId, response.id);
     return { ...saved, revision: workspaces.humanInputState(promptId).revision, error: error instanceof Error ? error.message : String(error) };
   }
 }

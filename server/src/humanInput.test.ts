@@ -158,6 +158,26 @@ test("failed resume keeps the saved-answer hold and allows a later explicit retr
   } finally { setPipelineStationStarter(null); f.cleanup(); }
 });
 
+test("a fresh answer whose resume fails becomes a saved answer that can be resumed later", async () => {
+  const f = fixture();
+  try {
+    workspaces.addPipelineStep(f.prompt.id, { provider: "claude" });
+    const suite = workspaces.createPipelineRun({ id: `fresh-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    setPipelineStationStarter(async () => { throw new Error("Provider claude is disabled"); });
+    const failed = await respondAndContinue(f.prompt.id, { content: "Ship it", expectedRevision: await currentQuestion(f), provider: "claude" });
+    assert.equal(failed.started, false);
+    assert.match(failed.error!, /disabled/);
+    const activity = workspaces.promptActivity(f.prompt.id);
+    assert.equal(activity.humanInput.savedResponseId, failed.responseId);
+    assert.equal(activity.item.prompt.humanResponseHeld, true);
+    assert.equal(activity.item.operationalState, "AWAITING_RESPONSE");
+    setPipelineStationStarter(async () => ({ runId: "available-now" }));
+    const retried = await respondAndContinue(f.prompt.id, { responseId: failed.responseId, expectedRevision: failed.revision, provider: "claude" });
+    assert.equal(retried.started, true, retried.error);
+  } finally { setPipelineStationStarter(null); f.cleanup(); }
+});
+
 for (const change of ["task", "question"] as const) test(`a changed ${change} rejects a stale answer without changing history`, async () => {
   const f = fixture();
   try {
