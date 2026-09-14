@@ -226,7 +226,22 @@ Rollback/default-off behavior:
 - Quota warnings are advisory JSON/UI/outbox payloads only; ignoring a warning
   leaves existing approved work unchanged.
 
-Implemented sixth slice (M3 local task-control robustness):
+Numbering correction (2026-09-14): the three slices below were previously
+labelled M3, M4 and M5 in this file and in `human-verification.md`. That
+collided with this plan's own formal M3 ("Checkpoint and Shared Control
+Storage", RTC-09/10), M4 ("Named Teammate Claim and Receiver Execution",
+RTC-11/12) and M5 ("Shared Questions, Return, Apply and Further Handoff",
+RTC-13/15) in section 3 above, none of which exist in this codebase: there is
+no `taskTransfer` module, no package/manifest/roster schema, no offer/claim/
+receiver code and no shared-question/apply/handoff code anywhere in `server/src`
+or its migrations. Every slice below is local hardening and UI work that stays
+within formal M2's scope (RTC-06 through RTC-08: effective-directory
+reservation, process supervision/`START_UNKNOWN` reconciliation and the quota
+advisor). They are relabelled M2b, M2c and M2d accordingly. Formal M3, M4 and
+M5 remain entirely unimplemented; do not read the M2b/M2c/M2d labels below as
+progress toward them.
+
+Implemented sixth slice (M2b local task-control robustness):
 
 - Added isolated server coverage for fake Telegram quota-warning notifications.
   The warning payload is sanitized, queued only through the fake outbox, creates
@@ -245,12 +260,12 @@ Implemented sixth slice (M3 local task-control robustness):
 - Added UI dedupe for quota warnings by provider/window/reset identity and
   break-word/min-width constraints on the passive warning block. The block still
   has no action buttons or links.
-- No persistence changes or migrations were added for M3.
+- No persistence changes or migrations were added for M2b.
 
-M3 remains local/fake-service only. It does not enable live Telegram, shared Git
-transfer, provider-paid execution, teammate delegation, production deployment,
-external integrations or automatic quota actions. Unfinished integrations remain
-default-off.
+M2b remains local/fake-service only. It does not enable live Telegram, shared
+Git transfer, provider-paid execution, teammate delegation, production
+deployment, external integrations or automatic quota actions. Unfinished
+integrations remain default-off.
 
 Verification on 2026-09-13:
 
@@ -261,33 +276,33 @@ Verification on 2026-09-13:
 - `npm run typecheck --workspace web` passed.
 - `npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/usage.test.tsx` passed for touched frontend files.
 
-Known blockers and remaining gates outside M3 behavior:
+Known blockers and remaining gates outside M2b behavior:
 
 - `START_UNKNOWN` does not yet have a visible UI affordance. Existing prompt and
   operation DTOs expose `recoverable`, not the underlying start-intent
-  classification/detail, so M3 documents this as a remaining UI gate instead of
+  classification/detail, so M2b documents this as a remaining UI gate instead of
   inventing a blind release/recovery surface. Future UI must clearly say
   ownership is unknown, must not offer blind release and must direct the user to
   confirm provider process state before recovery.
-- This environment has no system Chromium/Chrome binary available, so the M3 UI
-  check is a scripted React-render test rather than a live browser screenshot
+- This environment has no system Chromium/Chrome binary available, so the M2b
+  UI check is a scripted React-render test rather than a live browser screenshot
   test. It verifies the passive markup, advisory-only controls and mobile/desktop
   overflow guard classes; a future browser harness can add visual overlap
-  screenshots without changing M3 behavior.
+  screenshots without changing M2b behavior.
 - Live Telegram, production Bot API setup, Git transfer, subscription
   delegation, teammate takeover and external deployment gates remain
-  blocked/default-off by G01-G04 and by explicit M3 scope.
+  blocked/default-off by G01-G04 and by explicit M2b scope.
 
 Rollback/default-off behavior:
 
-- Reverting M3 removes only tests, the UI warning dedupe helper, stable warning
+- Reverting M2b removes only tests, the UI warning dedupe helper, stable warning
   test selectors and overflow guard classes. No schema rollback is required.
 - Task Control settings still default off. `taskControl.transport=telegram`
   remains a reserved value, not a live integration.
 - Quota warnings remain advisory UI/outbox payloads only; ignoring, rendering,
   queueing or delivering a warning leaves existing approved work unchanged.
 
-Implemented fourth slice (M4 local task-control recovery UX and browser harness):
+Implemented seventh slice (M2c local start-unknown recovery UX and browser harness):
 
 - Added an additive `PromptOption.recovery` DTO with `none`, `recoverable` and
   `start_unknown` states. The DTO exposes only fixed UI guidance and does not
@@ -307,13 +322,14 @@ Implemented fourth slice (M4 local task-control recovery UX and browser harness)
   delegation, takeover or execution-state mutation.
 - Added `scripts/verify-m4-browser.mjs` and `npm run verify:m4-browser` as a
   fake-fixture browser harness for mobile and desktop overflow/passive-control
-  checks when Playwright/Chromium is available.
-- No persistence changes or migrations were added for M4.
+  checks when Playwright/Chromium is available. (Script/npm-script names keep
+  their original `m4` spelling; renaming them is a separate, non-doc change.)
+- No persistence changes or migrations were added for M2c.
 
-M4 remains local/fake-service only. It does not enable live Telegram, shared Git
-transfer, provider-paid execution, teammate delegation, production deployment,
-external integrations or automatic quota actions. Unfinished integrations remain
-default-off.
+M2c remains local/fake-service only. It does not enable live Telegram, shared
+Git transfer, provider-paid execution, teammate delegation, production
+deployment, external integrations or automatic quota actions. Unfinished
+integrations remain default-off.
 
 Verification on 2026-09-13 in isolated roots under `/tmp`:
 
@@ -330,7 +346,7 @@ Verification on 2026-09-13 in isolated roots under `/tmp`:
   `--playwright` path; executed coverage for this environment is the React
   render test above.
 
-Known blockers and remaining gates outside M4 behavior:
+Known blockers and remaining gates outside M2c behavior:
 
 - Live browser screenshots remain blocked by the missing Playwright/Chromium
   dependency in this environment. The added harness records the exact fake
@@ -339,12 +355,12 @@ Known blockers and remaining gates outside M4 behavior:
   delegation, teammate takeover, provider-paid execution or external deployment
   approval. G01-G04 remain production/external gates.
 - Manual operator classification from START_UNKNOWN to known stopped/no spawn is
-  still a local server-side operation; M4 only exposes safe UI state and keeps
+  still a local server-side operation; M2c only exposes safe UI state and keeps
   recovery blocked until that classification exists.
 
 Rollback/default-off behavior:
 
-- Reverting M4 removes the additive DTO field, passive UI warnings, render tests
+- Reverting M2c removes the additive DTO field, passive UI warnings, render tests
   and optional browser harness. No schema rollback is required.
 - Task Control settings still default off. `taskControl.transport=telegram`
   remains a reserved value, not a live integration.
@@ -352,15 +368,10 @@ Rollback/default-off behavior:
   delivering a warning leaves runs, pipelines, tasks and callback actions
   unchanged.
 
-Implemented fifth slice (M5 local START_UNKNOWN operator classification):
-
-Note on numbering: this is the local task-control track's next slice after M4,
-continuing its own M1-M4 sequence above. It is not the plan's RTC-13-15
-"Shared Questions, Return, Apply and Further Handoff" M5 in section 3, which
-remains unimplemented.
+Implemented eighth slice (M2d local START_UNKNOWN operator classification):
 
 - Added `workspaces.classifyStartUnknown` and
-  `POST /api/prompts/:id/classify-start-unknown`, closing the M4 gap where
+  `POST /api/prompts/:id/classify-start-unknown`, closing the M2c gap where
   `START_UNKNOWN` had no path to `known stopped`/`known no spawn`. The operator
   must pass `confirmed:true` and the `expectedStartIntentId` currently shown by
   the DTO.
@@ -389,12 +400,12 @@ remains unimplemented.
   action is offered; recovery remains a separate, explicit action after
   classification.
 - No new migrations; reuses the existing `workspace_start_intent` and
-  `prompt_status_event` tables from M2/M4.
+  `prompt_status_event` tables from M2/M2c.
 
-M5 remains local/fake-service only. It does not enable live Telegram, shared Git
-transfer, provider-paid execution, teammate delegation, production deployment,
-external integrations or automatic quota actions. Unfinished integrations remain
-default-off.
+M2d remains local/fake-service only. It does not enable live Telegram, shared
+Git transfer, provider-paid execution, teammate delegation, production
+deployment, external integrations or automatic quota actions. Unfinished
+integrations remain default-off.
 
 Verification on 2026-09-14 in isolated roots under `/tmp`:
 
@@ -406,26 +417,28 @@ Verification on 2026-09-14 in isolated roots under `/tmp`:
 - `npm run typecheck --workspace web` passed.
 - `npm run lint --workspace web -- app/page.tsx components/ContextPicker.tsx components/agents/AgentsView.tsx components/recovery.test.tsx components/tasks/TasksView.tsx components/tasks/WorkItemDetail.tsx` passed for touched frontend files.
 
-Known blockers and remaining gates outside M5 behavior:
+Known blockers and remaining gates outside M2d behavior:
 
 - Classification is a local, unauthenticated-by-transport server action gated
   only by the existing local UI; it is not wired to any Telegram/remote actor
   and inherits no new authorization model.
 - Live browser screenshot coverage is still blocked by the missing
-  Playwright/Chromium dependency noted under M4; the new buttons are covered by
+  Playwright/Chromium dependency noted under M2c; the new buttons are covered by
   the React-render tests above, not a live browser check.
 - There is still no live Telegram Bot API setup, Git transfer, subscription
   delegation, teammate takeover, provider-paid execution or external deployment
   approval. G01-G04 remain production/external gates.
-- The plan's formal RTC-13-15 M5 (shared questions, return, apply, further
-  handoff) is unimplemented; this slice does not address it.
+- The plan's formal M3 (RTC-09/10, checkpoint/shared Git storage), M4
+  (RTC-11/12, named teammate claim) and M5 (RTC-13-15, shared questions,
+  return, apply, further handoff) are all unimplemented; this slice, like M2b
+  and M2c before it, does not address any of them.
 
 Rollback/default-off behavior:
 
-- Reverting M5 removes the classification endpoint/method, the additive
+- Reverting M2d removes the classification endpoint/method, the additive
   `startIntentId`/`setup` fields, the new UI actions and their tests. No schema
   rollback is required; `START_UNKNOWN` simply stays server-blocked as it was
-  after M4.
+  after M2c.
 - Task Control settings still default off. `taskControl.transport=telegram`
   remains a reserved value, not a live integration.
 

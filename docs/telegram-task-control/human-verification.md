@@ -1,15 +1,25 @@
-# M1/M2/M3/M5 human verification checklist
+# M1/M2 human verification checklist
 
-Scope: M1 personal task-control foundation, M2 local execution safety/quota
-advisor, M3 local task-control robustness and M5 local START_UNKNOWN operator
-classification, all with fake services only. Do not use a live Telegram bot,
-private Git remote, paid/provider execution, teammate subscription delegation
-or automatic quota actions for these checks.
+Scope: M1 personal task-control foundation and M2 local execution
+safety/quota advisor, including its M2b/M2c/M2d hardening continuations
+(local task-control robustness, local start-unknown recovery UX and local
+START_UNKNOWN operator classification), all with fake services only. Do not
+use a live Telegram bot, private Git remote, paid/provider execution,
+teammate subscription delegation or automatic quota actions for these checks.
 
-Note: M4 (local start-unknown recovery UX, the read-only warning surface) has
-no rows in this checklist; it was recorded only in `implementation.md`. That
-gap predates this update and is not backfilled here to avoid claiming human
-verification that was never actually recorded.
+Numbering note: M2b, M2c and M2d were previously labelled M3, M4 and M5 in
+this file. That collided with the engineering plan's own formal M3
+("Checkpoint and Shared Control Storage"), M4 ("Named Teammate Claim and
+Receiver Execution") and M5 ("Shared Questions, Return, Apply and Further
+Handoff"), none of which exist in this codebase. M2b/M2c/M2d are local
+hardening slices within formal M2's scope only; see `implementation.md` for
+the full explanation. Formal M3, M4 and M5 have no rows here because they are
+unimplemented, not because they were skipped in this checklist.
+
+Note: M2c (local start-unknown recovery UX, the read-only warning surface)
+has no rows in this checklist; it was recorded only in `implementation.md`.
+That gap predates this update and is not backfilled here to avoid claiming
+human verification that was never actually recorded.
 
 Expected commit topics:
 
@@ -19,9 +29,9 @@ Expected commit topics:
   dispatch, fake E2E coverage and this checklist.
 - M2 durable start-intent ownership, restart reconciliation and advisory quota
   warnings.
-- M3 fake Telegram quota-warning invariants, Agents quota-warning UI checks and
-  stronger ownership/recovery edge-case coverage.
-- M5 local START_UNKNOWN operator classification (known stopped/no spawn),
+- M2b fake Telegram quota-warning invariants, Agents quota-warning UI checks
+  and stronger ownership/recovery edge-case coverage.
+- M2d local START_UNKNOWN operator classification (known stopped/no spawn),
   classification API/UI and task-control setup status badge.
 
 ## Preconditions
@@ -55,16 +65,16 @@ fake-service verification sign-off on 2026-09-13.
 | H-M2-03 | Restart unknown ownership | Run `server/src/startIntent.test.ts`. | Start-after-spawn and unreleased start-intent rows classify as `START_UNKNOWN` and stay unreleased. | PASS | Pending |
 | H-M2-04 | Fake Telegram start-path ownership | Run `server/src/startIntent.test.ts`. | Fake Telegram Answer and resume saves the answer but reports resume failure when another durable owner holds the workspace. | PASS | Pending |
 | H-M2-05 | Advisory quota warning | Run `server/src/quotaAdvisor.test.ts`. | Fresh 5% remaining usage emits one warning with choices and dedupe; stale/unavailable/missing/above-threshold inputs do not warn. | PASS | Pending |
-| H-M3-01 | Agents quota warning UI | Run `npm run test:quota-ui --workspace web`. | Healthy quota renders no warning; fresh 5% warning renders; missing/unavailable usage does not warn; duplicate warning identities dedupe; choices are display-only text; warning markup has narrow/wide overflow guards. | PASS | Pending |
-| H-M3-02 | Fake Telegram quota warning | Run `server/src/taskControl.test.ts`. | Warning payload is sanitized, queued in fake outbox only, creates no callback action and does not mutate task/run/pipeline state on queue or delivery. | PASS | Pending |
-| H-M3-03 | Ownership classification edges | Run `server/src/startIntent.test.ts`. | Start-before-spawn and start-after-spawn remain `START_UNKNOWN`; known no-spawn and known stopped release ownership; recovery refuses `START_UNKNOWN` and succeeds only after explicit known-stopped classification. | PASS | Pending |
-| H-M3-04 | START_UNKNOWN UI gate | Inspect `implementation.md` M3 remaining gates. | No blind release UI was invented; future UI must say ownership is unknown and require provider process confirmation before recovery. | PASS | Pending |
-| H-M5-01 | Operator classifies known stopped | Run `server/src/startIntent.test.ts`. | Classification API records the confirmed classification, releases the start intent as `KNOWN_STOPPED` and writes an audited `prompt_status_event`; recovery then succeeds. | PASS | Pending |
-| H-M5-02 | Stale/active classification refused | Run `server/src/startIntent.test.ts`. | A stale `expectedStartIntentId` is rejected with `start_intent_changed`; classification is refused while the run is still active in memory (`run_active`). | PASS | Pending |
-| H-M5-03 | Known no-spawn unblocks recovery | Run `server/src/startIntent.test.ts`. | After a `known_no_spawn` classification, `recoverPrompt` succeeds where it previously refused with `start_unknown`. | PASS | Pending |
-| H-M5-04 | Classification UI controls | Run `npm run test:quota-ui --workspace web`. | ContextPicker and Tasks work-item detail show "Mark known stopped"/"Mark no spawn" next to the existing START_UNKNOWN warning, behind a confirm dialog; no blind release action is offered. | PASS | Pending |
-| H-M5-05 | Task Control setup status | Run `server/src/taskControl.test.ts`. | Capability response exposes `setup` (`disabled`/`fake_only`/`telegram_configured`) without leaking bot token/chat identifiers; Agents settings render it as a badge/reason string. | PASS | Pending |
-| H-M5-06 | No regression across server suite | Run `npm test --workspace server`. | All server test files pass (141 tests), confirming the `workspaces.ts` recovery-detection query change did not affect unrelated suites. | PASS | Pending |
+| H-M2b-01 | Agents quota warning UI | Run `npm run test:quota-ui --workspace web`. | Healthy quota renders no warning; fresh 5% warning renders; missing/unavailable usage does not warn; duplicate warning identities dedupe; choices are display-only text; warning markup has narrow/wide overflow guards. | PASS | Pending |
+| H-M2b-02 | Fake Telegram quota warning | Run `server/src/taskControl.test.ts`. | Warning payload is sanitized, queued in fake outbox only, creates no callback action and does not mutate task/run/pipeline state on queue or delivery. | PASS | Pending |
+| H-M2b-03 | Ownership classification edges | Run `server/src/startIntent.test.ts`. | Start-before-spawn and start-after-spawn remain `START_UNKNOWN`; known no-spawn and known stopped release ownership; recovery refuses `START_UNKNOWN` and succeeds only after explicit known-stopped classification. | PASS | Pending |
+| H-M2b-04 | START_UNKNOWN UI gate | Inspect `implementation.md` M2b remaining gates. | No blind release UI was invented; future UI must say ownership is unknown and require provider process confirmation before recovery. | PASS | Pending |
+| H-M2d-01 | Operator classifies known stopped | Run `server/src/startIntent.test.ts`. | Classification API records the confirmed classification, releases the start intent as `KNOWN_STOPPED` and writes an audited `prompt_status_event`; recovery then succeeds. | PASS | Pending |
+| H-M2d-02 | Stale/active classification refused | Run `server/src/startIntent.test.ts`. | A stale `expectedStartIntentId` is rejected with `start_intent_changed`; classification is refused while the run is still active in memory (`run_active`). | PASS | Pending |
+| H-M2d-03 | Known no-spawn unblocks recovery | Run `server/src/startIntent.test.ts`. | After a `known_no_spawn` classification, `recoverPrompt` succeeds where it previously refused with `start_unknown`. | PASS | Pending |
+| H-M2d-04 | Classification UI controls | Run `npm run test:quota-ui --workspace web`. | ContextPicker and Tasks work-item detail show "Mark known stopped"/"Mark no spawn" next to the existing START_UNKNOWN warning, behind a confirm dialog; no blind release action is offered. | PASS | Pending |
+| H-M2d-05 | Task Control setup status | Run `server/src/taskControl.test.ts`. | Capability response exposes `setup` (`disabled`/`fake_only`/`telegram_configured`) without leaking bot token/chat identifiers; Agents settings render it as a badge/reason string. | PASS | Pending |
+| H-M2d-06 | No regression across server suite | Run `npm test --workspace server`. | All server test files pass (141 tests), confirming the `workspaces.ts` recovery-detection query change did not affect unrelated suites. | PASS | Pending |
 
 ## Command evidence
 
@@ -85,14 +95,14 @@ Use an isolated copy for DB-backed tests where possible:
 AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts
 AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-full npm test --workspace server
 node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m3-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2b-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
 npm run test:quota-ui --workspace web
 npm run typecheck --workspace shared
 npm run typecheck --workspace server
 npm run typecheck --workspace web
 npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/usage.test.tsx
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m5-verify node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m5-full npm test --workspace server
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2d-verify node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2d-full npm test --workspace server
 npm run test:quota-ui --workspace web
 npm run typecheck --workspace shared
 npm run typecheck --workspace server
@@ -100,19 +110,23 @@ npm run typecheck --workspace web
 npm run lint --workspace web -- app/page.tsx components/ContextPicker.tsx components/agents/AgentsView.tsx components/recovery.test.tsx components/tasks/TasksView.tsx components/tasks/WorkItemDetail.tsx
 ```
 
-Known blockers outside M1/M2/M3/M5 fake/local behavior:
+Known blockers outside M1/M2 (including M2b/M2c/M2d) fake/local behavior:
 
 - `npm run lint --workspace web` currently fails on pre-existing React lint
   findings outside the M1/M2 touched-file slice.
 - `npm run build --workspace web` is blocked in this environment by Next/Turbopack
   build issues recorded in `implementation.md`.
-- No system Chromium/Chrome binary is available in this environment. M3 uses a
+- No system Chromium/Chrome binary is available in this environment. M2b uses a
   scripted React-render UI check for the passive Agents quota warning surface;
   a future browser harness should add visual screenshot checks.
-- `START_UNKNOWN` has no existing UI data path/pattern before M5. M3 documents
+- `START_UNKNOWN` has no existing UI data path/pattern before M2d. M2b documents
   this as a remaining UI gate rather than adding blind release/recovery
-  controls; M5 adds the classification controls but is still local-only, as
+  controls; M2d adds the classification controls but is still local-only, as
   its rows above record.
+- The engineering plan's formal M3, M4 and M5 milestones remain entirely
+  unimplemented (no package/manifest capture, no shared Git control storage,
+  no named teammate claim/receiver execution, no shared questions/apply/
+  further-handoff). Nothing in this checklist is evidence toward them.
 
 ## Stop conditions
 
@@ -126,7 +140,9 @@ Stop verification and report blocked if a check requires any of the following:
 - credential/secret isolation certification;
 - enterprise governance, retention or data-audience approval.
 
-M1/M2/M3/M5 are verified only for local fake-service personal task control,
-local execution ownership, advisory quota warnings and local START_UNKNOWN
-operator classification. This is not evidence that live Telegram setup,
-teammate takeover, shared Git transfer or production delegation is ready.
+M1/M2 (including M2b/M2c/M2d) are verified only for local fake-service
+personal task control, local execution ownership, advisory quota warnings and
+local START_UNKNOWN operator classification. This is not evidence that live
+Telegram setup, teammate takeover, shared Git transfer or production
+delegation is ready, and it is not evidence toward the plan's formal M3, M4
+or M5 milestones, which remain unimplemented.
