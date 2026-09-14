@@ -159,40 +159,43 @@ Teammate transfer, group topics and Git transfer remain out of scope and gated b
 - Agents page: Enable task control, Notifications and Remote actions are on, Transport is Telegram, and all four changes are saved.
 - The Live Telegram panel shows connected, and the operator's phone is paired through Pair a phone with local confirmation.
 - Use a throwaway workspace for any case that resumes work, because resume starts a real provider run.
-- With Host access off, use Codex for saved-task cases.
-  Claude is currently given a `curl` context instruction that its `acceptEdits` permission mode refuses, so it blocks for the wrong reason (see known issues below).
+- Claude and Codex both work for saved-task cases with Host access off; Claude reports through typed progress tools (implementation.md, tenth slice).
 - Do not edit files under `server/src` while a live case is running: `npm run dev` restarts the server on change and interrupts in-flight runs.
 - Do not record bot usernames, chat or user IDs, or tokens in this file.
 
 ### L1 test cases
 
-Automated status refers to `server/src/telegramBotApi.test.ts` and `server/src/telegramLiveRuntime.test.ts`, which drive the real HTTP client and runtime against a stubbed Bot API at the fetch layer.
+Automated status refers to `server/src/telegramBotApi.test.ts` and `server/src/telegramLiveRuntime.test.ts`, which drive the real HTTP client and runtime against a stubbed Bot API at the fetch layer, and to the harness scenarios named in the Harness scenario column ([`docs/e2e-scenarios/l1.md`](../e2e-scenarios/l1.md)).
+T1 runs a scenario on the fake Telegram; T3 runs the same scenario on the dedicated test bot through `npm run e2e:live` ([setup](../e2e-live-setup.md)).
 Live status refers to the operator's own bot and phone against the real app and database.
 Evidence rule approved 2026-09-14, for rows not yet passed: a real-Telegram run of the end-to-end harness (tier T3 in [`docs/e2e-harness-plan.md`](../e2e-harness-plan.md): a dedicated test bot, an automated client on the operator's account, an isolated app) plus the operator's phone look check also satisfies Live.
 A fake-Telegram harness run (T1) counts as Automated only.
 
-| ID | Case | Steps | Expected result | Automated status | Live status |
-| --- | --- | --- | --- | --- | --- |
-| H-L1-01 | Default-off, no network | Run with task control disabled, with the Fake Telegram transport, and with no token. | No Bot API call is made; the panel shows off or no token; pairing is refused. | PASS | Pending |
-| H-L1-02 | Token isolation | Inspect logs, `/api/task-control/*`, `/api/settings` and a full database dump. | The token appears nowhere; it is removed from `process.env` at boot so agent processes do not inherit it. | PASS | PASS for a stubbed-Telegram run of the real app, 2026-09-14; a sweep after real-bot use is H-L1-17 |
-| H-L1-03 | Connect and long poll | Start the server with the token and live settings. | The panel shows connected with the bot identity; polling uses a 25s window. | PASS | PASS - 2026-09-14, after the connect-timeout fix in known issues |
-| H-L1-04 | Pairing with local confirmation | Pair a phone, send `/start <code>` from the private chat, confirm in the local panel. | The observed Telegram identity is shown before confirmation; the bot confirms pairing; a wrong code gets no reply; a group chat is refused. | PASS | PASS - 2026-09-14 (happy path only) |
-| H-L1-05 | Human-in-the-loop to completion | Start a saved task whose agent must block on an owner decision; reply to the phone card; tap Answer and resume. | The task blocks; the phone card shows the agent's blocker reason; the reply produces an answer card; the tap records one APPLIED receipt linked to one new run; the task finishes DONE using the answer. | PASS (stubbed Telegram, stubbed start) | PASS - 2026-09-14, see evidence below |
-| H-L1-06 | Save answer, resume later | Reply, tap Save answer; later tap Resume with saved answer on the follow-up card. | Save starts nothing and keeps the task waiting with the saved answer; resume starts exactly one run. | PASS | Pending |
-| H-L1-07 | Offline, short gap | With a task waiting, stop the server; reply or tap on the phone; restart within 10 minutes. | Telegram holds the update; it is processed once after restart. | Partial: durable offset and inbox processing after restart | Pending |
-| H-L1-08 | Offline, long gap | As H-L1-07, but restart after more than 10 minutes. | "Not applied: This action expired" is sent and the current question is reissued; local state is unchanged. | PASS | Pending |
-| H-L1-09 | Answer on both surfaces | With a phone answer card open, answer the same task in the local UI, then tap the phone button. | The phone tap is rejected because the question changed; only the local answer stands. | Covered by H-M1-09 (fake) | Pending |
-| H-L1-10 | Double tap | Tap Answer and resume twice quickly. | One run starts; the second tap shows "Already applied." with no extra message. | PASS | Pending |
-| H-L1-11 | Network drop and recovery | Disconnect the workstation network for about a minute, then reconnect. | The panel shows retrying with the sanitized error, then connected; messages queued during the outage are delivered once. | PASS (429, network failure, send retry) | Pending |
-| H-L1-12 | Restart while waiting | Restart the server while a question card is pending. | No duplicate notification; replying to the existing card still works. | Partial: durable offset | Pending |
-| H-L1-13 | Pipeline step | Block a step in a running pipeline, answer and resume from the phone. | The owning pipeline resumes and continues to its next step. | PASS (stubbed pipeline starter) | Pending |
-| H-L1-14 | Unknown Telegram user | From a second Telegram account, message the bot and send `/start` with a wrong code. | No reply and nothing recorded as an instruction; a stranger's button tap is rejected. | PASS | Pending |
-| H-L1-15 | Controls off and unpair | Turn Remote actions off and tap; then Unpair the chat. | The tap is rejected and changes nothing; after unpairing, no notifications arrive and old buttons are rejected. | PASS for remote actions off; unpair not automated | Pending |
-| H-L1-16 | Resume cannot start | Disable the task's provider, then Answer and resume. | "Answer saved, but resume did not start" is reported and the answer is kept. | Covered by H-M2-04 (fake) | Pending |
-| H-L1-17 | Token sweep after live use | Search logs, API responses and the real database for the token secret. | No match anywhere. | Not applicable | Pending |
-| H-L1-18 | Blocked task shows its reason | Let an agent block with a BLOCKER remark and inspect the phone card. | The card shows the latest blocker text, not a generic prompt. | PASS | PASS - 2026-09-14, via H-L1-05 |
+| ID | Case | Steps | Expected result | Harness scenario (tier) | Automated status | Live status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-L1-01 | Default-off, no network | Run with task control disabled, with the Fake Telegram transport, and with no token. | No Bot API call is made; the panel shows off or no token; pairing is refused. | S-L1-01 (T1) | PASS | Pending |
+| H-L1-02 | Token isolation | Inspect logs, `/api/task-control/*`, `/api/settings` and a full database dump. | The token appears nowhere; it is removed from `process.env` at boot so agent processes do not inherit it. | S-L1-28 (T1, T3) | PASS | PASS for a stubbed-Telegram run of the real app, 2026-09-14; a sweep after real-bot use is H-L1-17 |
+| H-L1-03 | Connect and long poll | Start the server with the token and live settings. | The panel shows connected with the bot identity; polling uses a 25s window. | S-L1-02 (T1, T3); S-L1-30 (T1) | PASS | PASS - 2026-09-14, after the connect-timeout fix in known issues |
+| H-L1-04 | Pairing with local confirmation | Pair a phone, send `/start <code>` from the private chat, confirm in the local panel. | The observed Telegram identity is shown before confirmation; the bot confirms pairing; a wrong code gets no reply; a group chat is refused. | S-L1-03 (T1, T3); S-L1-04, S-L1-30 (T1) | PASS | PASS - 2026-09-14 (happy path only) |
+| H-L1-05 | Human-in-the-loop to completion | Start a saved task whose agent must block on an owner decision; reply to the phone card; tap Answer and resume. | The task blocks; the phone card shows the agent's blocker reason; the reply produces an answer card; the tap records one APPLIED receipt linked to one new run; the task finishes DONE using the answer. | S-L1-05 (T1, T3); S-L1-31 (T3, real Claude) | PASS (stubbed Telegram, stubbed start) | PASS - 2026-09-14, see evidence below |
+| H-L1-06 | Save answer, resume later | Reply, tap Save answer; later tap Resume with saved answer on the follow-up card. | Save starts nothing and keeps the task waiting with the saved answer; resume starts exactly one run. | S-L1-06 (T1, T3); S-L1-32 (T3, real Codex) | PASS | Pending |
+| H-L1-07 | Offline, short gap | With a task waiting, stop the server; reply or tap on the phone; restart within 10 minutes. | Telegram holds the update; it is processed once after restart. | S-L1-14 (T1, T3) | Partial: durable offset and inbox processing after restart | Pending |
+| H-L1-08 | Offline, long gap | As H-L1-07, but restart after more than 10 minutes. | "Not applied: This action expired" is sent and the current question is reissued; local state is unchanged. | S-L1-15 (T1 short TTL, T3 real 10 min) | PASS | Pending |
+| H-L1-09 | Answer on both surfaces | With a phone answer card open, answer the same task in the local UI, then tap the phone button. | The phone tap is rejected because the question changed; only the local answer stands. | S-L1-10 (T1, T3) | Covered by H-M1-09 (fake) | Pending |
+| H-L1-10 | Double tap | Tap Answer and resume twice quickly. | One run starts; the second tap shows "Already applied." with no extra message. | S-L1-07 (T1, T3) | PASS | Pending |
+| H-L1-11 | Network drop and recovery | Disconnect the workstation network for about a minute, then reconnect. | The panel shows retrying with the sanitized error, then connected; messages queued during the outage are delivered once. | S-L1-16 (T1); S-L1-17 (T1 and T3 through the route proxy) | PASS (429, network failure, send retry) | Pending |
+| H-L1-12 | Restart while waiting | Restart the server while a question card is pending. | No duplicate notification; replying to the existing card still works. | S-L1-19 (T1, T3) | Partial: durable offset | Pending |
+| H-L1-13 | Pipeline step | Block a step in a running pipeline, answer and resume from the phone. | The owning pipeline resumes and continues to its next step. | S-L1-21 (T1, T3) | PASS (stubbed pipeline starter) | Pending |
+| H-L1-14 | Unknown Telegram user | From a second Telegram account, message the bot and send `/start` with a wrong code. | No reply and nothing recorded as an instruction; a stranger's button tap is rejected. | S-L1-22 (T1; T3 only with a second account) | PASS | Pending |
+| H-L1-15 | Controls off and unpair | Turn Remote actions off and tap; then Unpair the chat. | The tap is rejected and changes nothing; after unpairing, no notifications arrive and old buttons are rejected. | S-L1-23, S-L1-24 (T1, T3) | PASS for remote actions off; unpair not automated | Pending |
+| H-L1-16 | Resume cannot start | Disable the task's provider, then Answer and resume. | "Answer saved, but resume did not start" is reported and the answer is kept. | S-L1-25 (T1, T3) | Covered by H-M2-04 (fake) | Pending |
+| H-L1-17 | Token sweep after live use | Search logs, API responses and the real database for the token secret. | No match anywhere. | S-L1-28 (T1, T3) and the automatic sweep after every run | Not applicable | Pending |
+| H-L1-18 | Blocked task shows its reason | Let an agent block with a BLOCKER remark and inspect the phone card. | The card shows the latest blocker text, not a generic prompt. | S-L1-05 (T1, T3); S-L1-31 (T3) | PASS | PASS - 2026-09-14, via H-L1-05 |
 
 ### L1 live evidence
+
+Phone look check (harness T4, [`S-H6-33`](../e2e-scenarios/h6.md)): Pending.
+After a T3 run that includes the LIVE rows, open the test bot chat on the phone and record here whether the cards, answer cards, result messages and edited cards read well (length, line breaks, button labels, no clipped text), with the run date.
 
 H-L1-05, verified 2026-09-14 against the real database, with a Codex saved task in a throwaway workspace and Host access off:
 
@@ -209,7 +212,7 @@ H-L1-05, verified 2026-09-14 against the real database, with a Codex saved task 
   Fixed by `setDefaultAutoSelectFamilyAttemptTimeout(2500)` at server startup; reproduced before and verified after with plain Node `fetch`.
 - The phone card for a task blocked by its own agent showed only "This task needs your input."
   Fixed in `taskControlRenderer.ts` to show the latest BLOCKER or DECISION_NEEDED remark, with a regression test.
-- Open: with Host access off, Claude saved-task runs are told to `curl` their context, which `acceptEdits` refuses, so they block without doing the task.
-  This predates L1; `savedPromptExecuteReachabilityProblem` does not account for Claude.
+- Fixed 2026-09-14: with Host access off, Claude saved-task runs were told to `curl` their context, which `acceptEdits` refuses, so they blocked without doing the task.
+  Claude now reports through typed progress tools (implementation.md, tenth slice).
 - Open: answers submitted from Telegram are recorded as ordinary `USER · HUMAN_RESPONSE` remarks; the task timeline does not show that they came from Telegram.
 - Open: `npm run dev` stopped reloading on source changes after repeated restarts in one session; restart it manually after pulling server changes.

@@ -1,6 +1,8 @@
 # End-to-end slice test harness plan
 
-Status: planned 2026-09-14, operator decisions recorded (section 10), not started.
+Status (2026-09-15): H0 to H6 built.
+T0, T1 and burn-in run on this machine; every T3 row is blocked until the operator's one-time live setup ([`e2e-live-setup.md`](e2e-live-setup.md)).
+H7 and H8 in progress, H9 not started.
 Related: [Engineering standards](engineering-standards.md), [Telegram engineering plan](telegram-task-control/engineering-plan.md), [human verification checklist](telegram-task-control/human-verification.md).
 
 ## 1. Goal

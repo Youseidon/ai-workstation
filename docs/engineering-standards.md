@@ -35,6 +35,11 @@ stricter rule.
 - Do not send live Telegram messages, push/fetch a real project remote, execute
   paid/provider work, mutate remote services or start another person's
   subscription-backed task without explicit setup authorization.
+  Standing authorization (2026-09-14): the harness T3 tier may message the
+  dedicated test bot's private chat through the operator's automated client, and
+  run the one real Claude and one real Codex scenario at milestone close-out
+  ([harness plan section 10](e2e-harness-plan.md#10-operator-decisions)).
+  The operator's own bot is never used by tests.
 - Keep unfinished integrations default-off. Capability responses and UI states
   must say what is disabled and why.
 - Completion reports must be evidence-based. Passing tests may support behaviour;
@@ -53,7 +58,10 @@ and outcome in the change summary.
 | Web UI or client API changes | `npm run typecheck --workspace web`, `npm run lint --workspace web`, and browser/interaction checks for the affected view. |
 | Package-wide contract or release change | `npm run typecheck`; run `npm run build` when build output or package integration is affected. |
 | Visual layout changes | Browser checks at desktop and mobile widths; verify no text overlap, horizontal overflow or broken interaction. |
-| Telegram, Git, provider or external-service integrations | Fake-provider/fake-service tests must pass. Live-service smoke tests are optional and require explicit authorization; unresolved external gates block affected production capability. |
+| Telegram, Git, provider or external-service integrations | Fake-provider/fake-service tests must pass. Live-service checks run through the harness T3 tier (below) rather than by hand; other live smoke tests require explicit authorization; unresolved external gates block affected production capability. |
+| Behaviour change in a slice the end-to-end harness covers | T0 tests above, `npm run e2e` (T1) and `node e2e/scripts/coverage-matrix.mjs --scope <slice> --tiers T1` with no must gaps; every new or changed scenario passes `npm run e2e:burn-in` (20 runs); `node e2e/scripts/coverage.mjs --base <slice base>` with each uncovered changed line in a critical file covered or explained. |
+| Web change in a harness-covered view | Additionally `npm run e2e:visual` (T2) once harness slice H7 provides it: no console errors, overflow, overlap or serious accessibility violations at both widths; screenshot diffs reviewed, new-screen baselines approved by the operator. |
+| Milestone close-out with a phone or real-provider surface | `npm run e2e:live` (T3) with every T3 row passing, the operator's phone look check (T4) recorded in the milestone's human checklist, and the mutation testing report once harness slice H9 exists. T3 rows blocked on setup are reported as blocked, never as passed. |
 | Database migrations | Migration test from an older schema fixture plus verification that pending runs, holds and history keep their meaning. |
 
 Merge is blocked by failing type checks, failing relevant tests, lint failures in
