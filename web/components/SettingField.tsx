@@ -1,6 +1,7 @@
 "use client";
 
 import type { SettingField as Field, SettingValue } from "@agent-console/shared";
+import { Fragment } from "react";
 
 interface Props {
   field: Field;
@@ -45,7 +46,15 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled }: Props
             </button>
           )}
         </div>
-        <div className="mt-0.5 font-mono text-[10px] text-fg-dim">{field.envVar}</div>
+        <div className="mt-0.5 font-mono text-[10px] text-fg-dim">
+          {/* Long names wrap at underscores rather than running into the value column. */}
+          {field.envVar.split("_").map((part, index, parts) => (
+            <Fragment key={index}>
+              {part}
+              {index < parts.length - 1 && <>_<wbr /></>}
+            </Fragment>
+          ))}
+        </div>
       </div>
 
       <div className="min-w-0">
