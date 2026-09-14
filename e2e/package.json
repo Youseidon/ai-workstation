@@ -1,0 +1,21 @@
+{
+  "name": "@agent-console/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end slice harness: real server, web and database with fakes only at process boundaries",
+  "scripts": {
+    "e2e": "playwright test --project=t1",
+    "e2e:visual": "playwright test --project=t2",
+    "e2e:live": "playwright test --project=t3",
+    "e2e:burn-in": "node scripts/burn-in.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test --test-concurrency=1 src/*.test.ts"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  }
+}

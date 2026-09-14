@@ -6,7 +6,8 @@
   "workspaces": [
     "shared",
     "server",
-    "web"
+    "web",
+    "e2e"
   ],
   "scripts": {
     "dev": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
@@ -16,9 +17,13 @@
     "start": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:start:server\" \"npm:start:web\"",
     "start:server": "npm run start --workspace server",
     "start:web": "npm run start --workspace web",
-    "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web",
+    "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web && npm run typecheck --workspace e2e",
     "verify:contrast": "node scripts/verify-contrast.mjs",
-    "verify:m4-browser": "npm run verify:m4-browser --workspace web"
+    "verify:m4-browser": "npm run verify:m4-browser --workspace web",
+    "e2e": "npm run e2e --workspace e2e",
+    "e2e:visual": "npm run e2e:visual --workspace e2e",
+    "e2e:live": "npm run e2e:live --workspace e2e",
+    "e2e:burn-in": "npm run e2e:burn-in --workspace e2e"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

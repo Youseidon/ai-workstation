@@ -60,3 +60,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# End-to-end harness outputs
+web/.next-e2e/
+e2e/selftest-results/
