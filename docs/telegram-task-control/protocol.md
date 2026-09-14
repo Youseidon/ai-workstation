@@ -251,6 +251,31 @@ possible, but every copy references the same decision and cannot duplicate work.
 Edits/deletion of chat messages never revoke or mutate an already applied record.
 Revocation/correction is an explicit new versioned action.
 
+### 7a. Personal surface routing (milestone L3, D17)
+
+Navigation callbacks.
+Callback data starting `nv_` is a navigation request for a read-only view, not an action reference.
+It carries only a view name and short identifiers, fits Telegram's 64-byte limit, and grants nothing.
+The adapter routes it before task control; the handler checks the actor, answers the callback and edits the message.
+It creates no receipt.
+Any button that changes state MUST use an action reference (`tc_`), never `nv_`.
+
+Outbox operations.
+Outbox rows carry an operation: `send`, `edit` (targets the sent message of an earlier row) or `create_thread`.
+Queued edits to one message coalesce to the latest.
+"Message is not modified" is success.
+Rows for a subject whose thread is not yet created wait for it; if creation fails they are held, never redirected to another thread.
+
+Threads.
+A thread registry maps each subject (a task, or the workstation) to a chat, an optional topic and a status message.
+Senders address a subject, not a topic.
+A reply to an incoming message goes to that message's topic.
+
+Actor scope across topics.
+An actor paired in a private chat is authorized in every topic of that chat, because a private chat has no other members.
+An actor enrolled in a group stays bound to its chat and topic.
+A reply that answers a card MUST arrive in that card's thread; otherwise it is rejected like a reply to a non-question.
+
 ## 8. Permission contract
 
 Let L be permissions explicitly configured by the receiver for this workspace,

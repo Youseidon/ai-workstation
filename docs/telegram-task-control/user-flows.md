@@ -15,6 +15,17 @@ private bot chat where supported, or a private project group containing the owne
 and bot. Unsupported topic setup must be reported, not mixed into an unstructured
 multi-task thread.
 
+Personal thread layout (D17, milestone L3):
+
+- One topic per task.
+  It is created on the task's first phone message, named with the task key and title, and holds that task's question cards, receipts and status.
+  It closes when the task completes or is skipped and reopens if the task becomes active again.
+  A topic the operator deletes is recreated once on the next message.
+- One Workstation topic for everything not about a single task: quota warnings, status commands sent outside a task topic, and help.
+- A reply always stays in the thread it answers.
+- Until topics are set up, messages go to the paired private chat as in L1, and the local setup panel reports that topics are not set up.
+  If topics in a private bot chat prove unsupported, the fallback is a private group containing only the operator and the bot.
+
 Each bot maintains its own task status message, labelled with workstation and
 role. The originating bot pins the task overview; the executing bot pins its
 execution status when taking over. Do not have bots compete to edit one another's
@@ -57,6 +68,36 @@ allow human clarification without requiring another LLM call.
 An ordinary chat message is not a task instruction. A reply submitted through the
 answer flow shows the selected question and offers the two save actions. The
 explicit action is the confirmation; do not add another generic confirmation.
+A slash command (section 9) is a read-only view request, not an instruction either.
+
+### Question card content (personal, milestone L3)
+
+A phone card must let the operator decide without opening the laptop.
+It moves from general to specific:
+
+```text
+jd-laptop · ai-workstation · Telegram L1 / Live setup · pipeline step 3/5
+Task: Add live bot credential storage
+Goal: <objective, 1-2 lines>
+So far: <top completed items> · verification 41 passed, 0 failed
+Blocked on: <each blocker needing a human, with its required action; line breaks kept>
+Agent recommends: <recommendation>
+If you wait: this task and its pipeline stay paused; other workspaces continue.
+> Details (collapsed): decisions and assumptions, important files, full completed list
+```
+
+| Field | Source |
+| --- | --- |
+| Breadcrumb | Workstation label setting (default: hostname), workspace, program/suite, pipeline position. |
+| Goal, so far, blocked on, recommends, details | The latest ready handoff brief. Without one, the latest BLOCKER or DECISION_NEEDED remark stands in for "blocked on" and the other fields are omitted. |
+| If you wait | Derived from the pipeline rule, not written by an LLM. |
+
+Rules:
+
+- The breadcrumb, the blocker and the action text are never truncated; lower-priority sections shrink first to fit Telegram's message limit.
+- Collapsed detail uses a message entity, never a parse mode, so task text cannot inject formatting.
+- The same summary backs the `/task` view, so a card and `/task` never disagree.
+- "Options and their consequences" (step 1 above) are shown only once handoff briefs carry them (brief version 2, a queued follow-up); until then the recommendation and blocker required action carry that role.
 
 ## 3. Advisory quota decision
 
@@ -218,3 +259,31 @@ automatic best guess.
 | B27 | Result already applied, compatible or conflicting | Idempotent application or explicit reconciliation. |
 | B28 | Close, cancel, supersede or reopen | Chat presentation never changes task outcome by itself. |
 | B29 | Revocation, deletion, retention or lost credentials | Stop future authority, reconcile active work and report deletion limits. |
+| B30 | Read-only status view request | Paired actor only; no state change, receipt or LLM call; show the snapshot time. |
+
+## 9. Read-only status commands
+
+Trigger: the operator wants to know what the workstation is doing ("what's running?") without walking to the laptop.
+Commands answer from current local state: no LLM call, no quota use, no state change.
+
+| Level | Command | Shows |
+| --- | --- | --- |
+| Overview | `/status` | Counts of running, blocked, needs recovery, failed and ready tasks; active pipelines with step position; quota headline. |
+| List | `/tasks [running\|blocked\|recovery\|failed\|ready\|done]` | Matching tasks grouped by workspace. `done` covers the last 24 hours. Without a filter, offers filter buttons. |
+| List | `/running`, `/blocked` | Shortcuts for the two most frequent filters. |
+| List | `/pipelines` | Active and most recent pipelines with step position and state. |
+| List | `/quota` | Each provider's windows, remaining percentage and observation age; last known figures with their age if the fetch fails. |
+| Detail | `/task <key or id>` | The task summary used by question cards. An ambiguous key shows a picker. |
+| Help | `/help` | The command list. Also the reply to unknown commands and plain text. |
+
+Behaviour:
+
+- Only the paired operator gets an answer; anyone else is ignored, as for other messages.
+- Every view shows "as of HH:MM".
+- List items and filters are buttons. A tap edits the same message to the next level, with Back and Refresh, instead of sending a new message.
+- A view that would exceed the message limit is paginated.
+- Inside a task topic, `/status` describes that task; elsewhere it describes the workstation.
+- Commands appear in Telegram's command menu; filters stay as buttons to keep the menu short.
+- Deferred: `/log` (needs its own sanitization of run events) and `/workspaces` (covered by `/status`).
+
+Later action buttons (Run, Play, Stop) may appear in these views, but they are action references with receipts and revision checks, never navigation buttons.

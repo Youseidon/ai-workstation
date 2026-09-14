@@ -442,6 +442,54 @@ Rollback/default-off behavior:
 - Task Control settings still default off. `taskControl.transport=telegram`
   remains a reserved value, not a live integration.
 
+Implemented ninth slice (L1 live personal Telegram control, RTC-17 to RTC-19, with first RTC-20 evidence):
+
+- `server/src/integrations/telegram/httpBotApi.ts` implements `TelegramBotApi` against api.telegram.org: 25s `getUpdates` long polling, `sendMessage`, `answerCallbackQuery` and `getMe`.
+  There is no webhook.
+  Errors are classified as rate limited (Telegram `retry_after`), transient, unauthorized, conflict or rejected, and every thrown error is rebuilt from a token-redacted message without the raw fetch error or its cause.
+- Raw updates are normalized before persistence to task-related fields only (callback reference, sender, chat, message, reply target, text).
+- `credentials.ts` reads `TELEGRAM_BOT_TOKEN` once at boot and deletes it from `process.env`, so spawned agent processes do not inherit it.
+  The token object redacts itself under string conversion, JSON serialization and inspection.
+  The token is not in settings, the database, API responses, DTOs or the UI.
+- `runtime.ts` supervises the live transport from server startup and on every settings change.
+  It runs only when task control is enabled, the transport is `telegram` and a token was supplied; otherwise it makes no network call.
+  It provides long polling with backoff, a durable outbox sender with per-row retry schedules and a bot-wide pause on 429, a notifier that posts each waiting task once per question revision, local-confirmed pairing, and status for the Agents panel.
+- Answer flow: the question card asks for a reply; the reply produces an answer card whose Save answer and Answer and resume buttons submit exactly that text.
+  Telegram callback data cannot carry the text, so it is bound to the action references.
+  Card actions are rebound to the real Bot API message id after sending.
+  Expired, stale or wrong-message taps are rejected with a durable receipt and the current question is reissued.
+- `TaskControlService` validation, receipts and revision binding are unchanged.
+  The adapter gained optional hooks, a retry schedule and one behaviour change: a deterministic `WorkspaceError` rejection, such as remote actions being disabled, is recorded and marked processed instead of blocking the inbox.
+- Migration 20 adds `telegram_outbox.next_attempt_at`, `telegram_outbox.sent_message_id` and `telegram_action_content`.
+- Local API: `GET /api/task-control/telegram`, pairing `POST`/`DELETE /api/task-control/telegram/pairing`, `POST /api/task-control/telegram/pairing/confirm`, and `DELETE /api/task-control/telegram/actors/:id`.
+  The Agents page adds a Live Telegram panel with status, paired chats and pairing.
+- Found and fixed during live testing: a 2500ms per-address connect attempt at startup (Node's 250ms default failed every Bot API call on a network without IPv6), and blocked-task phone cards now show the latest blocker remark.
+
+Verification on 2026-09-14:
+
+- `AGENT_CONSOLE_REPO_ROOT=<isolated tmp root> npm test --workspace server` passed 155 tests: the 141 existing tests unchanged, including the fake-transport suites, plus 14 new L1 tests.
+  A later renderer regression test was verified to fail before its fix and pass after it (22 task-control, adapter and runtime tests passing).
+- New tests were mutation-checked: removing environment scrubbing, error redaction, message-id binding, the rate-limit pause, duplicate-tap detection or unknown-actor filtering each makes a test fail.
+- `npm run typecheck` passed for shared, server and web; `npm run test:quota-ui --workspace web` passed 8 tests; `npx eslint` passed for the touched frontend files.
+- The real server and web app were run in an isolated root with only api.telegram.org routed to an in-process stub: pairing, question, reply, Save answer, Resume with saved answer and duplicate tap behaved as designed, the token was absent from logs, API responses and the database, and SIGTERM stopped the long poll and exited in 215ms.
+  Screenshots at 1440px were checked for the connected, waiting-for-code, observed-identity and paired panel states.
+- Live, with the operator's own bot and phone: connection, pairing, and a saved Codex task that blocked on an owner decision, was answered and resumed from the phone, and finished DONE using the answer.
+  Record H-L1-05 in `human-verification.md` has the timeline.
+
+L1 is not complete.
+RTC-20 still requires live Save answer then Resume with saved answer, and the offline workstation cases; see the pending rows H-L1-06 to H-L1-17 in `human-verification.md`.
+
+Known gaps:
+
+- With Host access off, Claude saved-task runs are instructed to `curl` their context, which `acceptEdits` refuses; this predates L1.
+- Telegram-originated answers are not labelled as such in the task timeline.
+- The bot token in `.env` is readable by any process running as the same user; this is the G02 isolation limit and is not addressed by L1.
+
+Rollback/default-off behavior:
+
+- Setting the transport back to Fake Telegram, disabling task control, or removing the token stops all Bot API traffic and leaves task state untouched.
+- Migration 20 is additive; older code ignores the new columns and table.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

@@ -54,6 +54,7 @@ Protocol rules take precedence over illustrative UI wording.
 | D14 | Personal-subscription execution is the first product objective. Do not silently replace it with paid API execution. |
 | D15 | Internet-connected Telegram is not evidence that a workstation is online. Never label a request accepted, running or stopped without the corresponding durable acknowledgement. |
 | D16 | Personal live Telegram control and teammate task transfer are separately enablable capabilities with separate gates. Personal single-operator control requires only that operator's own local setup and MUST NOT be blocked by the teammate-delegation gates G01-G03. A fake transport is a development tool, not a shipping state: personal control is not complete until a real bot delivers a real message. |
+| D17 | The personal phone surface (L3) gives the operator enough context to decide from the phone, one thread per task plus a Workstation thread, and read-only status commands. Status commands and navigation buttons read local state only: no LLM call, no receipt, no state change. Anything that changes state stays an action reference with receipts and revision checks. LLM free chat is not part of it. |
 
 Superseded ideas: a centrally hosted full app, a mandatory relay, Git as the human
 chat interface, automatic stopping at 5%, a mandatory second takeover approval,
