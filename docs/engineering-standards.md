@@ -58,7 +58,8 @@ and outcome in the change summary.
 
 Merge is blocked by failing type checks, failing relevant tests, lint failures in
 touched web code, migration failures, unhandled authorization/secret exposure,
-or missing tests for a newly introduced failure path. Release is also blocked by
+missing tests for a newly introduced failure path, or a must-priority scenario
+from the slice's scenario table that is missing or failing. Release is also blocked by
 any unresolved external gate for the capability being released.
 
 Known limitation: this checkout has no `.github` workflow directory. Until CI is
@@ -88,6 +89,14 @@ Definition of ready before coding:
 - Product questions, engineering choices and external release gates are separated.
 - Required fake services, isolated databases/repositories and rollback path are
   identified.
+- A scenario table for the slice exists, written by a test-design pass that did
+  not implement the slice, derived from its requirement, decision, acceptance and
+  verification IDs, and skimmed by the operator for product-facing slices (for
+  internal tooling slices, such as the test harness itself, the review pass checks
+  the table instead). See
+  [test case design and coverage ownership](e2e-harness-plan.md#12-test-case-design-and-coverage-ownership).
+  This applies once the end-to-end harness exists (slice H5 onward); until then,
+  the table is still required and its scenarios run as T0 tests.
 - Any design change has renewed approval when it changes an accepted decision,
   weakens an invariant, expands data exposure, enables external mutation, changes
   billing/provider authority or alters who can start/stop/apply work.
@@ -98,6 +107,9 @@ Required change summary:
 - List files/modules touched and any schema/API/state-machine changes.
 - Include acceptance checklist results with exact commands and whether they were
   run in isolated fixtures.
+- Include the coverage matrix result for the slice's IDs, missing should-priority
+  scenarios, explanations for uncovered branches in changed critical files, and at
+  milestone close-out the mutation testing result.
 - Name remaining risks, partial work and blocked release gates.
 - State explicitly when no live messages, paid execution or remote mutations were
   performed.
@@ -111,6 +123,9 @@ Review requirements:
   deferred only with a tracked follow-up and no misleading completion claim.
 - Reviewers must challenge claims that are not backed by code, tests, logs,
   screenshots or external provider/governance evidence.
+- Reviewers must challenge coverage gaps: in-scope IDs without a passing scenario,
+  failure paths asserted only through the UI, assertions that cannot fail, and
+  unexplained uncovered branches or surviving mutants in critical modules.
 
 Reporting rules:
 
