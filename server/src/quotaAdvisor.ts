@@ -1,4 +1,5 @@
 import type { ProviderId, ProviderUsage, QuotaWarning, UsageWindowKind } from "@agent-console/shared";
+import { harnessSeams } from "./harnessSeams.ts";
 
 export interface QuotaAdvisorOptions {
   thresholdRemainingPercent?: number;
@@ -23,7 +24,7 @@ export function quotaWarnings(
   options: QuotaAdvisorOptions = {},
 ): QuotaWarning[] {
   const threshold = options.thresholdRemainingPercent ?? DEFAULT_THRESHOLD_REMAINING;
-  const freshnessMs = options.freshnessMs ?? DEFAULT_FRESHNESS_MS;
+  const freshnessMs = options.freshnessMs ?? harnessSeams.quotaFreshnessMs ?? DEFAULT_FRESHNESS_MS;
   const now = options.now ?? new Date();
   const seen = new Set(previous.map((warning) => `${warning.provider}:${warning.windowKind}:${warning.windowIdentity}`));
   const warnings: QuotaWarning[] = [];

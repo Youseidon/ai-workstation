@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -71,4 +71,32 @@ test("S-H1-02: the server process exits with the guard code before opening a dat
   } finally {
     rmSync(empty, { recursive: true, force: true });
   }
+});
+
+test("S-H4-04/05/08, S-H3-02: seams are inert outside harness mode, default when unset, and refuse bad values", async () => {
+  const { readHarnessSeams } = await import("./harnessSeams.ts");
+  const overrides = {
+    AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: "http://127.0.0.1:9999",
+    AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: "123",
+    AGENT_CONSOLE_HARNESS_ACTION_TTL_MS: "3000",
+    AGENT_CONSOLE_HARNESS_PAIRING_TTL_MS: "3000",
+    AGENT_CONSOLE_HARNESS_QUOTA_FRESHNESS_MS: "3000",
+    AGENT_CONSOLE_HARNESS_TELEGRAM_POLL_TIMEOUT_SECONDS: "2",
+  };
+  const none = { telegramApiBaseUrl: null, forbiddenBotIds: null, actionTtlMs: null, pairingTtlMs: null, quotaFreshnessMs: null, telegramPollTimeoutSeconds: null };
+  assert.deepEqual(readHarnessSeams({ ...overrides }), none);
+  assert.deepEqual(readHarnessSeams({ ...overrides, AGENT_CONSOLE_HARNESS: "true" }), none);
+  assert.deepEqual(readHarnessSeams({ AGENT_CONSOLE_HARNESS: "1" }), none);
+  assert.deepEqual(readHarnessSeams({ ...overrides, AGENT_CONSOLE_HARNESS: "1" }), { telegramApiBaseUrl: "http://127.0.0.1:9999", forbiddenBotIds: "123", actionTtlMs: 3000, pairingTtlMs: 3000, quotaFreshnessMs: 3000, telegramPollTimeoutSeconds: 2 });
+  for (const bad of ["0", "-5", "abc", "1.5", "999999999999"]) {
+    refuses(() => readHarnessSeams({ AGENT_CONSOLE_HARNESS: "1", AGENT_CONSOLE_HARNESS_ACTION_TTL_MS: bad }), "harness_invalid_override");
+  }
+  refuses(() => readHarnessSeams({ AGENT_CONSOLE_HARNESS: "1", AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: "https://api.telegram.org" }), "harness_non_loopback_url");
+});
+
+test("S-H4-04: production code paths keep their 10 minute and 25 second defaults", () => {
+  const taskControl = readFileSync(join(repoRoot, "server/src/taskControl.ts"), "utf8");
+  assert.equal(taskControl.match(/harnessSeams\.(pairingTtlMs|actionTtlMs) \?\? 10 \* 60 \* 1000/g)?.length, 2);
+  assert.match(readFileSync(join(repoRoot, "server/src/quotaAdvisor.ts"), "utf8"), /DEFAULT_FRESHNESS_MS = 10 \* 60 \* 1000/);
+  assert.match(readFileSync(join(repoRoot, "server/src/integrations/telegram/httpBotApi.ts"), "utf8"), /TELEGRAM_POLL_TIMEOUT_SECONDS = 25;/);
 });

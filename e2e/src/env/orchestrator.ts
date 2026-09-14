@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { fileHashes, HARNESS_ROOT_PREFIX, realDatabaseHarnessRows, repoRoot } from "../realState.ts";
+import { randomBytes } from "node:crypto";
 import { FakeProvider } from "../drivers/fakeProvider.ts";
+import { FakePhone } from "../drivers/phone.ts";
+import { FakeTelegramServer, type FakeBot } from "../fakes/telegramServer.ts";
 import { ManagedProcess, isPortOpen, waitFor } from "./processes.ts";
 import { describeFindings, sweep, type Secret } from "./sweep.ts";
 import { WEB_DIST_DIR, ensureWebBuild, harnessWebEnv } from "./webBuild.ts";
@@ -33,7 +36,11 @@ export interface EnvironmentOptions {
   secrets?: Secret[];
   /** Route Grok to the scripted fake agent, on the live Progress API path or the inline path. */
   fakeProvider?: "live" | "inline";
+  /** Telegram backend for task control. Absent means task control stays off. */
+  telegram?: { backend: "fake"; remoteActions?: boolean; notifications?: boolean; botId?: number };
 }
+
+export const FAKE_OPERATOR = { id: 5_550_001, firstName: "Operator", username: "harness_operator" };
 
 function dotenv(values: Record<string, string>): string {
   return Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
@@ -54,6 +61,18 @@ function knownSecrets(): Secret[] {
   return secrets;
 }
 
+/** The operator's own bot id (never the token), so the server guard can refuse it. */
+function operatorBotId(): string | null {
+  const live = join(process.env.HOME ?? "", ".config/ai-workstation/e2e-live.env");
+  if (existsSync(live)) {
+    const match = readFileSync(live, "utf8").match(/^E2E_TELEGRAM_OPERATOR_BOT_ID=(\d+)\s*$/m);
+    if (match) return match[1]!;
+  }
+  const repoEnv = join(repoRoot, ".env");
+  if (!existsSync(repoEnv)) return null;
+  return readFileSync(repoEnv, "utf8").match(/^\s*TELEGRAM_BOT_TOKEN\s*=\s*["']?(\d+):/m)?.[1] ?? null;
+}
+
 export class HarnessEnvironment {
   readonly root: string;
   readonly logsDir: string;
@@ -61,6 +80,10 @@ export class HarnessEnvironment {
   readonly server: ManagedProcess;
   readonly web: ManagedProcess;
   readonly fakeProvider: FakeProvider;
+  telegramServer: FakeTelegramServer | null = null;
+  telegramBot: FakeBot | null = null;
+  phone: FakePhone | null = null;
+  private readonly serverSpecEnv: NodeJS.ProcessEnv;
   private readonly realBefore = fileHashes();
   private readonly secrets: Secret[];
   private readonly operatorPortsBefore: Promise<{ api: boolean; web: boolean }>;
@@ -78,27 +101,31 @@ export class HarnessEnvironment {
       dotenv({ HOST: "127.0.0.1", PORT: String(SERVER_PORT), AGENT_API_BASE_URL: serverUrl, ALLOWED_ORIGINS: webUrl, ...options.env }),
     );
     this.fakeProvider = new FakeProvider(this.root);
-    const settings = { ...(options.fakeProvider ? FakeProvider.settings(options.fakeProvider) : {}), ...options.settings };
+    const telegramSettings = options.telegram
+      ? { "taskControl.enabled": true, "taskControl.transport": "telegram", "taskControl.notificationsEnabled": options.telegram.notifications ?? true, "taskControl.remoteActionsEnabled": options.telegram.remoteActions ?? true }
+      : {};
+    const settings = { ...(options.fakeProvider ? FakeProvider.settings(options.fakeProvider) : {}), ...telegramSettings, ...options.settings };
     writeFileSync(join(this.root, ".agent-console/settings.json"), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
     this.secrets = [...knownSecrets(), ...(options.secrets ?? [])];
 
+    // Explicit environment: nothing from the operator's shell (such as an exported
+    // TELEGRAM_BOT_TOKEN) reaches the harness server, because dotenv never
+    // overrides variables that are already set.
+    this.serverSpecEnv = {
+      PATH: process.env.PATH,
+      HOME: options.realHome ? process.env.HOME : this.homeDir,
+      LANG: "en_US.UTF-8",
+      TZ: "UTC",
+      AGENT_CONSOLE_HARNESS: "1",
+      AGENT_CONSOLE_REPO_ROOT: this.root,
+      ...FakeProvider.serverEnv(this.root),
+      ...options.serverEnv,
+    };
     this.server = new ManagedProcess("server", {
       command: process.execPath,
       args: ["--import", "tsx", "src/index.ts"],
       cwd: join(repoRoot, "server"),
-      // Explicit environment: nothing from the operator's shell (such as an exported
-      // TELEGRAM_BOT_TOKEN) reaches the harness server, because dotenv never
-      // overrides variables that are already set.
-      env: {
-        PATH: process.env.PATH,
-        HOME: options.realHome ? process.env.HOME : this.homeDir,
-        LANG: "en_US.UTF-8",
-        TZ: "UTC",
-        AGENT_CONSOLE_HARNESS: "1",
-        AGENT_CONSOLE_REPO_ROOT: this.root,
-        ...FakeProvider.serverEnv(this.root),
-        ...options.serverEnv,
-      },
+      env: this.serverSpecEnv,
       logFile: join(this.logsDir, "server.log"),
     });
     this.web = new ManagedProcess("web", {
@@ -119,9 +146,30 @@ export class HarnessEnvironment {
       if (await isPortOpen(port)) throw new Error(`harness port ${port} is already in use; stop whatever is listening there (the harness never uses 4000/3000 instead)`);
     }
     ensureWebBuild(serverUrl, join(this.logsDir, "web-build.log"));
+    if (this.options.telegram?.backend === "fake") await this.startFakeTelegram();
     await this.startServer();
     this.web.start();
     await waitFor("harness web", async () => (await fetch(webUrl)).ok, 60_000, this.web.whenExited());
+  }
+
+  private async startFakeTelegram(): Promise<void> {
+    const server = new FakeTelegramServer();
+    await server.listen();
+    const botId = this.options.telegram?.botId ?? 700_000_000 + Math.floor(Math.random() * 99_999);
+    const bot: FakeBot = { id: botId, username: "harness_fake_bot", token: `${botId}:${randomBytes(27).toString("base64url")}` };
+    server.addBot(bot);
+    this.telegramServer = server;
+    this.telegramBot = bot;
+    this.phone = new FakePhone(server, bot, FAKE_OPERATOR, { id: FAKE_OPERATOR.id, type: "private" });
+    this.addSecret({ label: "harness:fake-bot-token", value: bot.token });
+    appendFileSync(join(this.root, ".env"), dotenv({ TELEGRAM_BOT_TOKEN: bot.token }));
+    Object.assign(this.serverSpecEnv, {
+      AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: server.url,
+      // A short long-poll window keeps fake-backend scenarios fast; real-backend runs keep the production 25s.
+      AGENT_CONSOLE_HARNESS_TELEGRAM_POLL_TIMEOUT_SECONDS: "2",
+      ...(operatorBotId() ? { AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: operatorBotId()! } : {}),
+      ...this.options.serverEnv,
+    });
   }
 
   async startServer(): Promise<void> {
@@ -189,6 +237,7 @@ export class HarnessEnvironment {
   async dispose(artifactDirs: string[] = []): Promise<void> {
     await this.web.stop();
     await this.server.stop();
+    await this.telegramServer?.close();
     const problems: string[] = [];
 
     const snapshot = join(this.logsDir, "final-console.sqlite");

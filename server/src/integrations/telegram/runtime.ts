@@ -1,6 +1,8 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ProviderId, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
 import { isProviderId } from "@agent-console/shared";
+import { assertNotOperatorBot, isHarnessMode } from "../../harnessGuard.ts";
+import { harnessSeams } from "../../harnessSeams.ts";
 import { createLogger, type Logger } from "../../lib/logger.ts";
 import { runHub } from "../../runHub.ts";
 import { settings as appSettings } from "../../settings.ts";
@@ -32,6 +34,9 @@ export interface TelegramRuntimeOptions {
   /** Pause between consecutive sends; Telegram allows roughly one message per second per chat. */
   sendSpacingMs?: number;
   pairingTtlMs?: number;
+  /** Refuses a bot before polling it; the harness uses this to never touch the operator's own bot. */
+  assertBot?: (botId: string) => void;
+  pollTimeoutSeconds?: number;
 }
 
 interface Session {
@@ -90,6 +95,7 @@ export class TelegramLiveRuntime {
   private readonly notifyIntervalMs: number;
   private readonly sendSpacingMs: number;
   private readonly pairingTtlMs: number;
+  private readonly pollTimeoutSeconds: number;
 
   private session: Session | null = null;
   private transition: Promise<void> = Promise.resolve();
@@ -112,6 +118,7 @@ export class TelegramLiveRuntime {
     this.notifyIntervalMs = options.notifyIntervalMs ?? 5000;
     this.sendSpacingMs = options.sendSpacingMs ?? 1000;
     this.pairingTtlMs = options.pairingTtlMs ?? 10 * 60_000;
+    this.pollTimeoutSeconds = options.pollTimeoutSeconds ?? TELEGRAM_POLL_TIMEOUT_SECONDS;
     this.refreshIdleState();
   }
 
@@ -275,6 +282,13 @@ export class TelegramLiveRuntime {
     while (!signal.aborted) {
       try {
         const me = await session.api.getMe({ signal });
+        try {
+          this.options.assertBot?.(me.id);
+        } catch (error) {
+          this.setState("auth_failed", error instanceof Error ? error.message : String(error));
+          this.log.error(this.safe(`refusing bot ${me.id}: ${this.reason}`));
+          return;
+        }
         this.bot = { id: me.id, username: me.username };
         break;
       } catch (error) {
@@ -285,7 +299,7 @@ export class TelegramLiveRuntime {
     if (signal.aborted) return;
     this.lastError = null;
     this.nextRetryAt = null;
-    this.setState("polling", `Long polling Telegram (${TELEGRAM_POLL_TIMEOUT_SECONDS}s window).`);
+    this.setState("polling", `Long polling Telegram (${this.pollTimeoutSeconds}s window).`);
     this.log.info(`connected as @${this.bot?.username ?? "unknown"}`);
     await Promise.all([this.pollLoop(session), this.deliverLoop(session)]);
   }
@@ -305,7 +319,7 @@ export class TelegramLiveRuntime {
         this.lastPollAt = new Date(this.now()).toISOString();
         if (this.state !== "polling") {
           this.log.info("polling recovered");
-          this.setState("polling", `Long polling Telegram (${TELEGRAM_POLL_TIMEOUT_SECONDS}s window).`);
+          this.setState("polling", `Long polling Telegram (${this.pollTimeoutSeconds}s window).`);
         }
         this.lastError = null;
         this.nextRetryAt = null;
@@ -523,4 +537,17 @@ export class TelegramLiveRuntime {
 export const telegramRuntime = new TelegramLiveRuntime({
   settings: () => appSettings.taskControl,
   credential: bootTelegramCredential,
+  ...(harnessSeams.telegramApiBaseUrl === null && harnessSeams.telegramPollTimeoutSeconds === null
+    ? {}
+    : {
+        createApi: (token: BotToken, contentForRef: (ref: string) => string | null) => new HttpTelegramBotApi({
+          token,
+          contentForRef,
+          ...(harnessSeams.telegramApiBaseUrl === null ? {} : { baseUrl: harnessSeams.telegramApiBaseUrl }),
+          ...(harnessSeams.telegramPollTimeoutSeconds === null ? {} : { pollTimeoutSeconds: harnessSeams.telegramPollTimeoutSeconds }),
+        }),
+      }),
+  ...(harnessSeams.telegramPollTimeoutSeconds === null ? {} : { pollTimeoutSeconds: harnessSeams.telegramPollTimeoutSeconds }),
+  ...(harnessSeams.pairingTtlMs === null ? {} : { pairingTtlMs: harnessSeams.pairingTtlMs }),
+  ...(isHarnessMode() ? { assertBot: (botId: string) => assertNotOperatorBot(botId, harnessSeams.forbiddenBotIds ?? undefined) } : {}),
 });

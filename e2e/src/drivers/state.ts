@@ -129,3 +129,11 @@ export async function eventually<T>(description: string, probe: () => Promise<T 
   }
   throw new Error(`timed out waiting for ${description}${last instanceof Error ? ` (last error: ${last.message})` : ""}`);
 }
+
+/**
+ * Proves an absence ("no second card follows") by observing for a bounded window.
+ * This is the only sanctioned fixed wait: waiting *for* something must use `eventually`.
+ */
+export function observeQuietPeriod(ms: number, _whatMustNotHappen: string): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

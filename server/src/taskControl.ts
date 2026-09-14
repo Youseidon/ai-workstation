@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { ProviderId, QuotaWarning, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
+import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
@@ -107,7 +108,7 @@ export class TaskControlService {
       chatId: input.chatId,
       topicId: input.topicId ?? null,
       label: input.label,
-      expiresAt: new Date(Date.now() + (input.ttlMs ?? 10 * 60 * 1000)).toISOString(),
+      expiresAt: new Date(Date.now() + (input.ttlMs ?? harnessSeams.pairingTtlMs ?? 10 * 60 * 1000)).toISOString(),
     });
   }
 
@@ -128,7 +129,7 @@ export class TaskControlService {
     if (!this.config.notificationsEnabled) throw new WorkspaceError(409, "notifications_disabled", "Task-control notifications are disabled.");
     const actor = this.actorById(actorId);
     const humanInput = workspaces.humanInputState(promptId);
-    const expiresAt = new Date(Date.now() + (options?.ttlMs ?? 10 * 60 * 1000)).toISOString();
+    const expiresAt = new Date(Date.now() + (options?.ttlMs ?? harnessSeams.actionTtlMs ?? 10 * 60 * 1000)).toISOString();
     const actions: TaskControlQuestionCard["actions"] = [
       { ref: this.createRef(), action: "save_human_response" },
       { ref: this.createRef(), action: "answer_and_resume" },

@@ -12,7 +12,7 @@ export const HARNESS_GUARD_EXIT_CODE = 78;
 
 export class HarnessGuardError extends Error {
   constructor(
-    readonly code: "harness_real_root" | "harness_settings_outside_root" | "harness_non_loopback_url" | "harness_operator_bot",
+    readonly code: "harness_real_root" | "harness_settings_outside_root" | "harness_non_loopback_url" | "harness_operator_bot" | "harness_invalid_override",
     message: string,
   ) {
     super(message);
