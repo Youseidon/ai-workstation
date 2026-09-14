@@ -549,8 +549,8 @@ tracker), and a final "publish a release report" step duplicating
     Operator decisions:
 
     - Commit the L1 work in reviewable pieces: the L1 change (server, shared, web, tests, `.env.example`), the unrelated env-var wrapping fix in `web/components/SettingField.tsx` as its own commit, and the documentation updates.
-    - Decide whether the Live Telegram panel should appear as soon as the transport is Telegram, instead of only after task control is enabled and saved.
-      Today the page gives no feedback until both are saved, which made setup look unresponsive.
+    - DONE 2026-09-15: the Live Telegram panel appears as soon as the transport is Telegram (decided by the operator 2026-09-14), with a note while Task Control changes are unsaved.
+      Before, the page gave no feedback until both were saved, which made setup look unresponsive.
     - Superseded 2026-09-14: the one-off stubbed-Telegram app harness is not kept as a script; the end-to-end harness ([`docs/e2e-harness-plan.md`](../e2e-harness-plan.md)) replaces it.
 
     Live verification (completes step 7):

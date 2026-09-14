@@ -29,7 +29,7 @@ function remaining(iso: string, now: number): string {
  * in `.env` and never reaches the browser; this panel only sees whether one is
  * set and the bot identity it resolved to.
  */
-export function TelegramSetupPanel({ refreshKey }: { refreshKey: unknown }) {
+export function TelegramSetupPanel({ refreshKey, unsavedChanges = false }: { refreshKey: unknown; unsavedChanges?: boolean }) {
   const [status, setStatus] = useState<TelegramLiveStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,6 +86,7 @@ export function TelegramSetupPanel({ refreshKey }: { refreshKey: unknown }) {
         {status.bot?.username && <span className="font-mono text-[11px] text-fg-muted">@{status.bot.username}</span>}
       </div>
       <p className="mt-1 text-[11px] leading-snug text-fg-dim">{status.reason}</p>
+      {unsavedChanges && <p className="mt-1 text-[11px] leading-snug text-warning">Save the Task Control changes above to apply them.</p>}
 
       {connected && (
         <p className="mt-2 text-[11px] text-fg-muted">

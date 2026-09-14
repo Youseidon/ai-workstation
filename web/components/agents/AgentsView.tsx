@@ -116,6 +116,9 @@ export function AgentsView() {
   const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
   const taskControlFields = snapshot?.fields.filter((field) => field.group === "Task Control") ?? [];
   const taskControlDirty = dirtyKeys.filter((key) => taskControlFields.some((field) => field.key === key));
+  // The panel follows the transport the operator has chosen, saved or not, so choosing
+  // Telegram gives immediate feedback (live status, missing token) instead of nothing.
+  const taskControlTransport = drafts["taskControl.transport"] ?? taskControlFields.find((field) => field.key === "taskControl.transport")?.value;
 
   useEffect(() => {
     void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
@@ -329,7 +332,9 @@ export function AgentsView() {
                 </Button>
               </div>
             )}
-            {taskControlCapability?.transport === "telegram" && <TelegramSetupPanel refreshKey={snapshot} />}
+            {taskControlTransport === "telegram" && (
+              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+            )}
           </section>
         )}
 
