@@ -352,6 +352,83 @@ Rollback/default-off behavior:
   delivering a warning leaves runs, pipelines, tasks and callback actions
   unchanged.
 
+Implemented fifth slice (M5 local START_UNKNOWN operator classification):
+
+Note on numbering: this is the local task-control track's next slice after M4,
+continuing its own M1-M4 sequence above. It is not the plan's RTC-13-15
+"Shared Questions, Return, Apply and Further Handoff" M5 in section 3, which
+remains unimplemented.
+
+- Added `workspaces.classifyStartUnknown` and
+  `POST /api/prompts/:id/classify-start-unknown`, closing the M4 gap where
+  `START_UNKNOWN` had no path to `known stopped`/`known no spawn`. The operator
+  must pass `confirmed:true` and the `expectedStartIntentId` currently shown by
+  the DTO.
+- Classification is refused with a distinct `WorkspaceError` code if: the choice
+  is not a valid classification (`validation_error`); confirmation is missing
+  (`confirmation_required`); the prompt does not exist (`not_found`); the
+  in-memory run is still active (`run_active`); the start intent is no longer
+  `START_UNKNOWN`, or a newer start intent or run exists (`start_intent_changed`
+  / `run_changed`, stale-optimistic-concurrency).
+- A successful classification updates the `workspace_start_intent` row to
+  `KNOWN_STOPPED` or `KNOWN_NO_SPAWN`, releases it, and records an audit
+  `prompt_status_event` row with actor `USER` naming the confirmed
+  classification. `recoverPrompt` then behaves exactly as it already did for a
+  known-stopped/no-spawn intent.
+- `PromptOption.recovery` gained an optional `startIntentId` so the UI can
+  address the specific unresolved start; it still exposes no raw start-intent
+  detail, process facts, provider credentials, external IDs or secrets.
+- `TaskControlCapability` gained a `setup` field (`disabled` / `fake_only` /
+  `telegram_configured`), surfaced as a badge and reason string in Agents
+  settings in place of the previous static fake-only copy. This is a status
+  label only; it does not change `remoteActionsEnabled` or gate behavior.
+- `ContextPicker` and the Tasks work-item detail panel add "Mark known stopped"
+  / "Mark no spawn" actions next to the existing `START_UNKNOWN` warning, each
+  behind a confirm dialog that requires the operator to state they checked the
+  local provider process state outside Agent Console. No blind release/recovery
+  action is offered; recovery remains a separate, explicit action after
+  classification.
+- No new migrations; reuses the existing `workspace_start_intent` and
+  `prompt_status_event` tables from M2/M4.
+
+M5 remains local/fake-service only. It does not enable live Telegram, shared Git
+transfer, provider-paid execution, teammate delegation, production deployment,
+external integrations or automatic quota actions. Unfinished integrations remain
+default-off.
+
+Verification on 2026-09-14 in isolated roots under `/tmp`:
+
+- `AGENT_CONSOLE_REPO_ROOT=<isolated tmp root> node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts` passed (74 tests). Covered the four new classification tests (records classification, rejects stale `expectedStartIntentId`, rejects while a run is active in memory, and recovery succeeds after a known-no-spawn classification), plus existing human-input, pipeline-scheduling, operational-state and task-control/recovery regression coverage.
+- `AGENT_CONSOLE_REPO_ROOT=<isolated tmp root> npm test --workspace server` passed all 141 tests across the full server suite, confirming no regression from the `workspaces.ts` recovery-detection query change.
+- `npm run test:quota-ui --workspace web` passed (8 tests), including the updated `recovery.test.tsx` assertions for the new "Mark known stopped"/"Mark no spawn" controls and their `flex-wrap` layout.
+- `npm run typecheck --workspace shared` passed.
+- `npm run typecheck --workspace server` passed.
+- `npm run typecheck --workspace web` passed.
+- `npm run lint --workspace web -- app/page.tsx components/ContextPicker.tsx components/agents/AgentsView.tsx components/recovery.test.tsx components/tasks/TasksView.tsx components/tasks/WorkItemDetail.tsx` passed for touched frontend files.
+
+Known blockers and remaining gates outside M5 behavior:
+
+- Classification is a local, unauthenticated-by-transport server action gated
+  only by the existing local UI; it is not wired to any Telegram/remote actor
+  and inherits no new authorization model.
+- Live browser screenshot coverage is still blocked by the missing
+  Playwright/Chromium dependency noted under M4; the new buttons are covered by
+  the React-render tests above, not a live browser check.
+- There is still no live Telegram Bot API setup, Git transfer, subscription
+  delegation, teammate takeover, provider-paid execution or external deployment
+  approval. G01-G04 remain production/external gates.
+- The plan's formal RTC-13-15 M5 (shared questions, return, apply, further
+  handoff) is unimplemented; this slice does not address it.
+
+Rollback/default-off behavior:
+
+- Reverting M5 removes the classification endpoint/method, the additive
+  `startIntentId`/`setup` fields, the new UI actions and their tests. No schema
+  rollback is required; `START_UNKNOWN` simply stays server-blocked as it was
+  after M4.
+- Task Control settings still default off. `taskControl.transport=telegram`
+  remains a reserved value, not a live integration.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

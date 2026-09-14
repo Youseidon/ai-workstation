@@ -1,9 +1,15 @@
-# M1/M2/M3 human verification checklist
+# M1/M2/M3/M5 human verification checklist
 
 Scope: M1 personal task-control foundation, M2 local execution safety/quota
-advisor and M3 local task-control robustness with fake services only. Do not use
-a live Telegram bot, private Git remote, paid/provider execution, teammate
-subscription delegation or automatic quota actions for these checks.
+advisor, M3 local task-control robustness and M5 local START_UNKNOWN operator
+classification, all with fake services only. Do not use a live Telegram bot,
+private Git remote, paid/provider execution, teammate subscription delegation
+or automatic quota actions for these checks.
+
+Note: M4 (local start-unknown recovery UX, the read-only warning surface) has
+no rows in this checklist; it was recorded only in `implementation.md`. That
+gap predates this update and is not backfilled here to avoid claiming human
+verification that was never actually recorded.
 
 Expected commit topics:
 
@@ -15,6 +21,8 @@ Expected commit topics:
   warnings.
 - M3 fake Telegram quota-warning invariants, Agents quota-warning UI checks and
   stronger ownership/recovery edge-case coverage.
+- M5 local START_UNKNOWN operator classification (known stopped/no spawn),
+  classification API/UI and task-control setup status badge.
 
 ## Preconditions
 
@@ -51,6 +59,12 @@ fake-service verification sign-off on 2026-09-13.
 | H-M3-02 | Fake Telegram quota warning | Run `server/src/taskControl.test.ts`. | Warning payload is sanitized, queued in fake outbox only, creates no callback action and does not mutate task/run/pipeline state on queue or delivery. | PASS | Pending |
 | H-M3-03 | Ownership classification edges | Run `server/src/startIntent.test.ts`. | Start-before-spawn and start-after-spawn remain `START_UNKNOWN`; known no-spawn and known stopped release ownership; recovery refuses `START_UNKNOWN` and succeeds only after explicit known-stopped classification. | PASS | Pending |
 | H-M3-04 | START_UNKNOWN UI gate | Inspect `implementation.md` M3 remaining gates. | No blind release UI was invented; future UI must say ownership is unknown and require provider process confirmation before recovery. | PASS | Pending |
+| H-M5-01 | Operator classifies known stopped | Run `server/src/startIntent.test.ts`. | Classification API records the confirmed classification, releases the start intent as `KNOWN_STOPPED` and writes an audited `prompt_status_event`; recovery then succeeds. | PASS | Pending |
+| H-M5-02 | Stale/active classification refused | Run `server/src/startIntent.test.ts`. | A stale `expectedStartIntentId` is rejected with `start_intent_changed`; classification is refused while the run is still active in memory (`run_active`). | PASS | Pending |
+| H-M5-03 | Known no-spawn unblocks recovery | Run `server/src/startIntent.test.ts`. | After a `known_no_spawn` classification, `recoverPrompt` succeeds where it previously refused with `start_unknown`. | PASS | Pending |
+| H-M5-04 | Classification UI controls | Run `npm run test:quota-ui --workspace web`. | ContextPicker and Tasks work-item detail show "Mark known stopped"/"Mark no spawn" next to the existing START_UNKNOWN warning, behind a confirm dialog; no blind release action is offered. | PASS | Pending |
+| H-M5-05 | Task Control setup status | Run `server/src/taskControl.test.ts`. | Capability response exposes `setup` (`disabled`/`fake_only`/`telegram_configured`) without leaking bot token/chat identifiers; Agents settings render it as a badge/reason string. | PASS | Pending |
+| H-M5-06 | No regression across server suite | Run `npm test --workspace server`. | All server test files pass (141 tests), confirming the `workspaces.ts` recovery-detection query change did not affect unrelated suites. | PASS | Pending |
 
 ## Command evidence
 
@@ -77,9 +91,16 @@ npm run typecheck --workspace shared
 npm run typecheck --workspace server
 npm run typecheck --workspace web
 npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/usage.test.tsx
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m5-verify node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
+AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m5-full npm test --workspace server
+npm run test:quota-ui --workspace web
+npm run typecheck --workspace shared
+npm run typecheck --workspace server
+npm run typecheck --workspace web
+npm run lint --workspace web -- app/page.tsx components/ContextPicker.tsx components/agents/AgentsView.tsx components/recovery.test.tsx components/tasks/TasksView.tsx components/tasks/WorkItemDetail.tsx
 ```
 
-Known blockers outside M1/M2/M3 fake/local behavior:
+Known blockers outside M1/M2/M3/M5 fake/local behavior:
 
 - `npm run lint --workspace web` currently fails on pre-existing React lint
   findings outside the M1/M2 touched-file slice.
@@ -88,8 +109,10 @@ Known blockers outside M1/M2/M3 fake/local behavior:
 - No system Chromium/Chrome binary is available in this environment. M3 uses a
   scripted React-render UI check for the passive Agents quota warning surface;
   a future browser harness should add visual screenshot checks.
-- `START_UNKNOWN` has no existing UI data path/pattern. M3 documents this as a
-  remaining UI gate rather than adding blind release/recovery controls.
+- `START_UNKNOWN` has no existing UI data path/pattern before M5. M3 documents
+  this as a remaining UI gate rather than adding blind release/recovery
+  controls; M5 adds the classification controls but is still local-only, as
+  its rows above record.
 
 ## Stop conditions
 
@@ -103,7 +126,7 @@ Stop verification and report blocked if a check requires any of the following:
 - credential/secret isolation certification;
 - enterprise governance, retention or data-audience approval.
 
-M1/M2/M3 are verified only for local fake-service personal task control, local
-execution ownership and advisory quota warnings. This is not evidence that live
-Telegram setup, teammate takeover, shared Git transfer or production delegation
-is ready.
+M1/M2/M3/M5 are verified only for local fake-service personal task control,
+local execution ownership, advisory quota warnings and local START_UNKNOWN
+operator classification. This is not evidence that live Telegram setup,
+teammate takeover, shared Git transfer or production delegation is ready.

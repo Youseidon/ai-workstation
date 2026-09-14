@@ -284,6 +284,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/classify-start-unknown$/);
+    if(match&&method==="POST"){json(res,200,workspaces.classifyStartUnknown(id(match[1]!),await body(req)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);const input=await body(req);const handoffProvider=input.handoffProvider;const successorProvider=input.successorProvider;

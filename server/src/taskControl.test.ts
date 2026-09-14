@@ -49,6 +49,7 @@ test("task-control capability is disabled by default with production gates visib
   }).capability();
   assert.equal(capability.enabled, false);
   assert.equal(capability.transport, "disabled");
+  assert.equal(capability.setup, "disabled");
   assert.equal(capability.gates.length, 4);
   assert(capability.gates.every(gate => gate.status === "blocked"));
 });
@@ -69,8 +70,33 @@ test("task-control capability follows its dynamic settings source while producti
   assert.equal(capability.notificationsEnabled, true);
   assert.equal(capability.remoteActionsEnabled, false);
   assert.equal(capability.transport, "fake_telegram");
+  assert.equal(capability.setup, "fake_only");
   assert.equal(capability.status, "blocked");
   assert(capability.gates.every(gate => gate.status === "blocked"));
+});
+
+test("task-control capability exposes local Telegram setup state without secrets", () => {
+  const fakeOnly = new TaskControlService({
+    enabled: true,
+    notificationsEnabled: true,
+    remoteActionsEnabled: true,
+    transport: "fake_telegram",
+    botId: "local-fake-bot",
+  }).capability();
+  assert.equal(fakeOnly.setup, "fake_only");
+  assert.equal(fakeOnly.transport, "fake_telegram");
+
+  const telegramConfigured = new TaskControlService({
+    enabled: true,
+    notificationsEnabled: true,
+    remoteActionsEnabled: true,
+    transport: "telegram",
+    botId: "local-telegram-bot",
+  }).capability();
+  assert.equal(telegramConfigured.setup, "telegram_configured");
+  assert.equal(telegramConfigured.transport, "telegram");
+  assert.equal(JSON.stringify(telegramConfigured).includes("token"), false);
+  assert.equal(JSON.stringify(telegramConfigured).includes("chat"), false);
 });
 
 test("fake pairing is single-use, context-bound, and expires", async () => {

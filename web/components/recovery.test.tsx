@@ -33,6 +33,7 @@ function prompt(overrides: Partial<PromptOption> = {}): PromptOption {
     recovery: {
       kind: "start_unknown",
       message: "Ownership is unknown after restart. Confirm provider process state before recovery; recovery stays blocked until the server knows the previous start is stopped or no spawn.",
+      startIntentId: "run_unknown_owner",
     },
     ...overrides,
   };
@@ -124,6 +125,7 @@ test("ContextPicker shows START_UNKNOWN guidance without blind recovery or relea
         updatedAt: "2026-09-13T09:00:00.000Z",
       }}
       onRecover={() => {}}
+      onClassifyStartUnknown={() => {}}
     />,
   );
 
@@ -131,10 +133,13 @@ test("ContextPicker shows START_UNKNOWN guidance without blind recovery or relea
   assert.match(html, /Ownership unknown/);
   assert.match(html, /Confirm provider process state before recovery/);
   assert.match(html, /server knows the previous start is stopped or no spawn/);
+  assert.match(html, /Mark known stopped/);
+  assert.match(html, /Mark no spawn/);
   assert.doesNotMatch(html, /Recover interrupted run|blind release|release ownership/i);
   assert.equal(/<(button|a)\b[^>]*>\s*(Recover|Release)/i.test(html), false);
   assert.match(html, /min-w-0/);
   assert.match(html, /break-words/);
+  assert.match(html, /flex-wrap/);
 });
 
 test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidance", () => {
@@ -153,6 +158,7 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
       onRun={() => {}}
       onStop={() => {}}
       onRecover={() => {}}
+      onClassifyStartUnknown={() => {}}
       onRespond={() => {}}
       onVerifyItem={() => {}}
     />,
@@ -161,5 +167,8 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
   assert.match(html, /data-testid="start-unknown-warning"/);
   assert.match(html, /Ownership unknown/);
   assert.match(html, /Recovery blocked/);
+  assert.match(html, /Mark known stopped/);
+  assert.match(html, /Mark no spawn/);
   assert.doesNotMatch(html, /Recover and resume|blind release|release ownership/i);
+  assert.match(html, /flex-wrap/);
 });

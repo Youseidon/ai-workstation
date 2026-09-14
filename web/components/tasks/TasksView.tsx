@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { OperationsPrompt, OperationsSnapshot } from "@agent-console/shared";
+import type { OperationsPrompt, OperationsSnapshot, StartUnknownClassification } from "@agent-console/shared";
 import { PageChrome } from "@/components/shell/chrome";
 import { VerificationPanel } from "@/components/VerificationPanel";
 import { Button } from "@/components/ui/Button";
@@ -52,13 +52,26 @@ export function TasksView() {
   const [inputItem, setInputItem] = useState<OperationsPrompt | null>(null);
   const [pane, setPane] = useState<Pane>("list");
   const [focusRecordId, setFocusRecordId] = useState<number | null>(null);
-  const [detailHeight, setDetailHeight] = useState(DETAIL_HEIGHT_DEFAULT);
-  const [detailCollapsed, setDetailCollapsed] = useState(false);
+  const [detailHeight, setDetailHeight] = useState(() => {
+    if (typeof window === "undefined") return DETAIL_HEIGHT_DEFAULT;
+    try {
+      const parsed = Number(window.localStorage.getItem(DETAIL_HEIGHT_KEY));
+      return Number.isFinite(parsed) ? clampDetailHeight(parsed) : DETAIL_HEIGHT_DEFAULT;
+    } catch {
+      return DETAIL_HEIGHT_DEFAULT;
+    }
+  });
+  const [detailCollapsed, setDetailCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(DETAIL_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [resizing, setResizing] = useState(false);
-  const [dockReady, setDockReady] = useState(false);
   const detailHeightRef = useRef(detailHeight);
   const resizeActiveRef = useRef(false);
-  detailHeightRef.current = detailHeight;
 
   // Deep-link parameters seed the initial selection; after that the user's
   // clicks win. Reading them here rather than in an effect is what lets every
@@ -104,37 +117,26 @@ export function TasksView() {
   }, [refresh, operationsRevision]);
 
   useEffect(() => {
-    // Restore dock preferences after mount (SSR has no localStorage).
-    try {
-      const rawHeight = window.localStorage.getItem(DETAIL_HEIGHT_KEY);
-      if (rawHeight !== null) {
-        const parsed = Number(rawHeight);
-        if (Number.isFinite(parsed)) setDetailHeight(clampDetailHeight(parsed));
-      }
-      setDetailCollapsed(window.localStorage.getItem(DETAIL_COLLAPSED_KEY) === "1");
-    } catch {
-      // Ignore storage failures (private mode, quota, etc.).
-    }
-    setDockReady(true);
-  }, []);
+    detailHeightRef.current = detailHeight;
+  }, [detailHeight]);
 
   useEffect(() => {
-    if (!dockReady) return;
+    if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(DETAIL_HEIGHT_KEY, String(detailHeight));
     } catch {
       // Ignore storage failures.
     }
-  }, [detailHeight, dockReady]);
+  }, [detailHeight]);
 
   useEffect(() => {
-    if (!dockReady) return;
+    if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(DETAIL_COLLAPSED_KEY, detailCollapsed ? "1" : "0");
     } catch {
       // Ignore storage failures.
     }
-  }, [detailCollapsed, dockReady]);
+  }, [detailCollapsed]);
 
   const beginResize = useCallback((event: { button: number; clientY: number; preventDefault(): void }) => {
     if (event.button !== 0 || resizeActiveRef.current) return;
@@ -298,6 +300,26 @@ export function TasksView() {
       setFilter("all");
     }, "Recovered and resumed");
 
+  const classifyStartUnknown = async (classification: StartUnknownClassification, target: OperationsPrompt | null = listItem) => {
+    if (target === null || target.prompt.recovery.startIntentId == null) return;
+    const label = classification === "known_no_spawn" ? "no spawn" : "known stopped";
+    const confirmed = await dialogs.confirm({
+      title: `Mark previous start as ${label}?`,
+      description:
+        "Confirm only after checking the local provider process state. This records your classification and keeps recovery as a separate action.",
+      confirmLabel: `Mark ${label}`,
+        tone: "primary",
+    });
+    if (!confirmed) return;
+    await act(async () => {
+      await workspaceApi.classifyStartUnknown(SERVER_URL, target.prompt.id, {
+        classification,
+        expectedStartIntentId: target.prompt.recovery.startIntentId!,
+        confirmed: true,
+      });
+    }, "Start classified");
+  };
+
   const stopAgent = async (target: OperationsPrompt | null = listItem) => {
     if (target?.prompt.currentRun == null) return;
     const confirmed = await dialogs.confirm({
@@ -420,6 +442,10 @@ export function TasksView() {
     onRun: () => start(),
     onStop: () => void stopAgent(),
     onRecover: () => recoverAndResume(),
+    onClassifyStartUnknown: (classification: StartUnknownClassification, expectedStartIntentId: string) => {
+      if (listItem === null || listItem.prompt.recovery.startIntentId !== expectedStartIntentId) return;
+      void classifyStartUnknown(classification);
+    },
     onRespond: () => setInputItem(listItem),
     onVerifyItem: () => void verifyWorkItem(),
   } as const;

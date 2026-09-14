@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type StartUnknownClassification, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -1042,7 +1042,8 @@ export const workspaces = {
     const result = db.prepare("SELECT result FROM prompt WHERE id=?");
     const dependency = db.prepare(`SELECT prerequisite.external_key FROM prompt_dependency d JOIN prompt prerequisite ON prerequisite.id=d.depends_on_prompt_id WHERE d.prompt_id=? AND prerequisite.status<>'DONE' ORDER BY prerequisite.external_key`);
     const hold = db.prepare("SELECT 1 FROM human_response_hold WHERE prompt_id=?");
-    const activeIntent = db.prepare("SELECT state FROM workspace_start_intent WHERE id=? AND released_at IS NULL");
+    const activeIntent = db.prepare("SELECT state,id FROM workspace_start_intent WHERE id=? AND released_at IS NULL");
+    const latestUnknownIntent = db.prepare("SELECT id,state FROM workspace_start_intent WHERE prompt_id=? AND released_at IS NULL AND state='START_UNKNOWN' ORDER BY created_at DESC LIMIT 1");
     return rows.map(row => {
       const blockedBy = (dependency.all(row.id) as Array<{ external_key: string }>).map(x => x.external_key);
       const run = latest.get(row.id) as { id: string; provider: string; model: string | null; role: RunRole; state: string; startedAt: string; endedAt: string | null } | undefined;
@@ -1052,7 +1053,9 @@ export const workspaces = {
       const promptResult = (result.get(row.id) as { result: string }).result;
       const systemInterrupted = row.status === "BLOCKED" && interrupted && (promptResult.startsWith("Agent process ended") || promptResult.startsWith("No active agent run"));
       const humanResponseHeld = !!hold.get(row.id);
-      const intent = run === undefined ? undefined : activeIntent.get(run.id) as { state: StartIntentState } | undefined;
+      const intent = run === undefined
+        ? latestUnknownIntent.get(row.id) as { id: string; state: StartIntentState } | undefined
+        : activeIntent.get(run.id) as { id: string; state: StartIntentState } | undefined;
       const startUnknown = intent?.state === "START_UNKNOWN";
       const recoverable = !startUnknown && blockedBy.length === 0 && (abandoned || systemInterrupted);
       return {
@@ -1066,6 +1069,7 @@ export const workspaces = {
           ? {
               kind: "start_unknown",
               message: "Ownership is unknown after restart. Confirm the provider process state outside Agent Console before recovery; recovery stays blocked until the server classifies the previous start as known stopped or no spawn.",
+              startIntentId: intent.id,
             }
           : recoverable
             ? {
@@ -1403,6 +1407,30 @@ export const workspaces = {
   recoveryRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_recover","This prompt has no prior run to recover");return run.id; },
   latestExecuteRunId(promptId:number):string { const run=db.prepare("SELECT id FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string}|undefined;if(!run)throw new WorkspaceError(409,"nothing_to_handoff","This work item has no prior developer run");return run.id; },
   runSummary(runId:string):{id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string} { const run=db.prepare("SELECT id,workspace_id workspaceId,prompt_id promptId,provider,model,state FROM agent_run WHERE id=?").get(runId) as {id:string;workspaceId:number;promptId:number|null;provider:ProviderId;model:string|null;state:string}|undefined;if(!run)throw new WorkspaceError(404,"not_found","Run not found");return run; },
+  classifyStartUnknown(promptId:number,input:Record<string,unknown>):{classified:true;classification:StartUnknownClassification;startIntentId:string} { return sqliteGuard(()=>db.transaction(()=>{
+    const requested=input.classification;
+    if(requested!=="known_stopped"&&requested!=="known_no_spawn")throw new WorkspaceError(422,"validation_error","Choose a valid START_UNKNOWN classification.");
+    const classification:StartUnknownClassification=requested;
+    if(input.confirmed!==true)throw new WorkspaceError(422,"confirmation_required","Confirm that you checked the local provider process state before classifying this start.");
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+    if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+    const latestRun=db.prepare("SELECT id,state FROM agent_run WHERE prompt_id=? AND role='execute' ORDER BY started_at DESC LIMIT 1").get(promptId) as {id:string;state:string}|undefined;
+    if(latestRun&&activeRuns.has(latestRun.id))throw new WorkspaceError(409,"run_active","The agent process is still active; stop it before classifying the previous start.");
+    const intent=db.prepare("SELECT id,state FROM workspace_start_intent WHERE prompt_id=? AND released_at IS NULL ORDER BY created_at DESC LIMIT 1").get(promptId) as {id:string;state:StartIntentState}|undefined;
+    if(!intent||intent.state!=="START_UNKNOWN")throw new WorkspaceError(409,"start_intent_changed","The latest start is no longer START_UNKNOWN; refresh before classifying.");
+    const expected=input.expectedStartIntentId;
+    if(typeof expected!=="string"||expected!==intent.id)throw new WorkspaceError(409,"start_intent_changed","A newer start intent exists; refresh before classifying.");
+    if(latestRun&&latestRun.id!==intent.id)throw new WorkspaceError(409,"run_changed","A newer run exists; refresh before classifying.");
+    if(activeRuns.has(intent.id))throw new WorkspaceError(409,"run_active","The agent process is still active; stop it before classifying the previous start.");
+    const state=classification==="known_no_spawn"?"KNOWN_NO_SPAWN":"KNOWN_STOPPED";
+    const label=classification==="known_no_spawn"?"known no spawn":"known stopped";
+    const now=new Date().toISOString();
+    db.prepare("UPDATE workspace_start_intent SET state=?,detail=?,updated_at=?,released_at=? WHERE id=? AND released_at IS NULL AND state='START_UNKNOWN'")
+      .run(state,`Operator confirmed START_UNKNOWN classification: ${label}.`,now,now,intent.id);
+    db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,?,?,?,?,'USER',?)")
+      .run(promptId,latestRun?.id??null,prompt.status,prompt.status,`Operator confirmed previous start is ${label}; recovery gate released.`,now);
+    return{classified:true as const,classification,startIntentId:intent.id};
+  })()); },
   recoverPrompt(promptId:number,expectedRunId:string):void { sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status,result FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"];result:string}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");

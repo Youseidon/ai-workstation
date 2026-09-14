@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   formatElapsed,
   formatTokens,
@@ -14,6 +14,7 @@ import {
   type QuotaWarning,
   type SettingField,
   type SettingValue,
+  type TaskControlCapability,
 } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AskChip } from "@/components/AgentDock";
@@ -32,6 +33,7 @@ import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { useProviderUsage } from "@/lib/providerUsage";
 import { useSettings } from "@/lib/useSettings";
+import { workspaceApi } from "@/lib/workspacesApi";
 import { UsageBlock } from "./usage";
 
 const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
@@ -79,6 +81,7 @@ export function AgentsView() {
   const [savingEnabled, setSavingEnabled] = useState<ProviderId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<ProviderId | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [taskControlCapability, setTaskControlCapability] = useState<TaskControlCapability | null>(null);
 
   const agents = providers.map((provider) => agentState(provider, runs, items, lastRun));
   const writing = runs.filter((run) => run.role === "execute").length;
@@ -112,6 +115,10 @@ export function AgentsView() {
   const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
   const taskControlFields = snapshot?.fields.filter((field) => field.group === "Task Control") ?? [];
   const taskControlDirty = dirtyKeys.filter((key) => taskControlFields.some((field) => field.key === key));
+
+  useEffect(() => {
+    void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
+  }, [snapshot]);
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -263,9 +270,16 @@ export function AgentsView() {
 
         {taskControlFields.length > 0 && (
           <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
-            <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
+              {taskControlCapability !== null && (
+                <Badge tone={taskControlCapability.setup === "telegram_configured" ? "success" : taskControlCapability.setup === "fake_only" ? "info" : "neutral"}>
+                  {taskControlCapability.setup === "telegram_configured" ? "Telegram configured" : taskControlCapability.setup === "fake_only" ? "fake-only" : "disabled"}
+                </Badge>
+              )}
+            </div>
             <p className="mt-1 text-[11px] text-fg-dim">
-              Personal task controls stay local and fake-only until live setup is explicitly implemented.
+              {taskControlCapability?.reason ?? "Personal task controls stay local and fake-only until live setup is explicitly configured."}
             </p>
             {taskControlFields.map((field) => (
               <SettingRow

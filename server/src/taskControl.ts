@@ -51,6 +51,7 @@ export class TaskControlService {
         remoteActionsEnabled: false,
         transport: "disabled",
         status: "disabled",
+        setup: "disabled",
         reason: "Telegram task control is default-off until local setup enables a fake or real transport.",
         gates: [
           { id: "G01", status: "blocked", reason: "Provider subscription delegation is not evidenced." },
@@ -66,8 +67,13 @@ export class TaskControlService {
       remoteActionsEnabled: this.config.remoteActionsEnabled,
       transport: this.config.transport,
       status: this.config.remoteActionsEnabled ? "ready" : "blocked",
+      setup: this.config.transport === "telegram" && this.config.notificationsEnabled && this.config.remoteActionsEnabled
+        ? "telegram_configured"
+        : "fake_only",
       reason: this.config.remoteActionsEnabled
-        ? "Personal task-control actions are enabled for the configured local transport."
+        ? this.config.transport === "telegram"
+          ? "Local Telegram setup is configured and gated for personal task-control actions."
+          : "Fake Telegram task-control actions are enabled for local tests and development."
         : "Notifications are enabled, but remote execution controls are off.",
       gates: [
         { id: "G01", status: "blocked", reason: "Teammate-sponsored execution remains disabled." },

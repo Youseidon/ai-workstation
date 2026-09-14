@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import Database from "better-sqlite3";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { runContexts } from "./runContext.ts";
 import { TaskControlService } from "./taskControl.ts";
+import { runHub } from "./runHub.ts";
+import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 let seq = 0;
@@ -33,6 +37,26 @@ function fixture() {
   };
 }
 
+async function postApi(path: string, value: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const req = Readable.from([JSON.stringify(value)]) as unknown as import("node:http").IncomingMessage;
+  req.method = "POST";
+  req.url = path;
+  const chunks: string[] = [];
+  const res = new EventEmitter() as import("node:http").ServerResponse;
+  res.writeHead = ((status: number) => {
+    res.statusCode = status;
+    return res;
+  }) as typeof res.writeHead;
+  res.end = ((chunk?: unknown) => {
+    if (typeof chunk === "string") chunks.push(chunk);
+    res.emit("finish");
+    return res;
+  }) as typeof res.end;
+  const handled = await handleWorkspaceApi(req, res, new URL(path, "http://127.0.0.1"));
+  assert.equal(handled, true);
+  return { status: res.statusCode, body: JSON.parse(chunks.join("") || "{}") as Record<string, unknown> };
+}
+
 test("aliased workspace paths produce exactly one durable start intent", () => {
   const ctx = fixture();
   const link = `${ctx.dir}-link`;
@@ -47,7 +71,7 @@ test("aliased workspace paths produce exactly one durable start intent", () => {
       () => workspaces.reserveStartIntent({ runId: "run_alias_two", workspaceId: aliasId, promptId: null, provider: "claude", model: null, source: "test" }),
       (error: unknown) => error instanceof WorkspaceError && error.code === "workspace_busy",
     );
-    const rows = db.prepare("SELECT * FROM workspace_start_intent WHERE released_at IS NULL").all();
+    const rows = db.prepare("SELECT * FROM workspace_start_intent WHERE released_at IS NULL AND effective_directory=?").all(realpathSync(ctx.dir));
     assert.equal(rows.length, 1);
   } finally {
     db.close();
@@ -159,6 +183,108 @@ test("recovery refuses START_UNKNOWN and allows explicit recovery after known st
     assert.notEqual(row.releasedAt, null);
   } finally {
     db.close();
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
+test("classification API records operator-confirmed START_UNKNOWN classification", async () => {
+  const ctx = fixture();
+  const runId = unique("run_api_classify_unknown");
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  const db = new Database(workspaces.databasePath);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+    const response = await postApi(`/api/prompts/${ctx.prompt.id}/classify-start-unknown`, {
+      classification: "known_stopped",
+      expectedStartIntentId: runId,
+      confirmed: true,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { classified: true, classification: "known_stopped", startIntentId: runId });
+    const intent = db.prepare("SELECT state,released_at releasedAt,detail FROM workspace_start_intent WHERE id=?").get(runId) as {state:string;releasedAt:string|null;detail:string|null};
+    assert.equal(intent.state, "KNOWN_STOPPED");
+    assert.notEqual(intent.releasedAt, null);
+    assert.match(intent.detail ?? "", /Operator confirmed START_UNKNOWN classification/);
+    const event = db.prepare("SELECT reason,actor_type actorType FROM prompt_status_event WHERE prompt_id=? ORDER BY id DESC LIMIT 1").get(ctx.prompt.id) as {reason:string;actorType:string};
+    assert.equal(event.actorType, "USER");
+    assert.match(event.reason, /Operator confirmed previous start is known stopped/);
+  } finally {
+    db.close();
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
+test("classification rejects stale expected start intent mismatches", () => {
+  const ctx = fixture();
+  const runId = unique("run_stale_classify_unknown");
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+    assert.throws(
+      () => workspaces.classifyStartUnknown(ctx.prompt.id, { classification: "known_stopped", expectedStartIntentId: "run_stale_old", confirmed: true }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "start_intent_changed",
+    );
+  } finally {
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
+test("classification rejects while an in-memory active process is known", () => {
+  const ctx = fixture();
+  const runId = unique("run_active_classify_unknown");
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+    runHub.start({
+      handle: {
+        runId,
+        provider: "claude",
+        model: null,
+        role: "execute",
+        permissionMode: null,
+        interrupt: async () => {},
+        done: new Promise(() => {}),
+      },
+      workspace: { id: ctx.workspace.id, name: ctx.workspace.name, workDirectory: ctx.workspace.workDirectory },
+      source: { type: "saved", promptId: ctx.prompt.id, promptKey: ctx.prompt.externalKey, title: ctx.prompt.title, programName: "Program", suiteName: "Suite" },
+      role: "execute",
+    });
+    assert.throws(
+      () => workspaces.classifyStartUnknown(ctx.prompt.id, { classification: "known_stopped", expectedStartIntentId: runId, confirmed: true }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "run_active",
+    );
+  } finally {
+    runHub.end(runId, "interrupted");
+    runContexts.revoke(runId);
+    ctx.cleanup();
+  }
+});
+
+test("recovery works after operator confirms known no-spawn classification", () => {
+  const ctx = fixture();
+  const runId = unique("run_no_spawn_classify_recover");
+  const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+  try {
+    workspaces.reserveStartIntent({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, source: "test" });
+    workspaces.beginAgentRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.reconcileStartIntentsForRestart();
+    assert.throws(
+      () => workspaces.recoverPrompt(ctx.prompt.id, runId),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "start_unknown",
+    );
+    workspaces.classifyStartUnknown(ctx.prompt.id, { classification: "known_no_spawn", expectedStartIntentId: runId, confirmed: true });
+    workspaces.recoverPrompt(ctx.prompt.id, runId);
+    assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "TODO");
+  } finally {
     runContexts.revoke(runId);
     ctx.cleanup();
   }

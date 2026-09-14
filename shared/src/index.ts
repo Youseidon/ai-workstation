@@ -673,6 +673,7 @@ export type PromptRecoveryKind = "none" | "recoverable" | "start_unknown";
 export interface PromptRecoveryState {
   kind: PromptRecoveryKind;
   message: string | null;
+  startIntentId?: string | null;
 }
 
 export interface PromptDependency {
@@ -1011,9 +1012,12 @@ export interface TaskControlCapability {
   remoteActionsEnabled: boolean;
   transport: "disabled" | "fake_telegram" | "telegram";
   status: "disabled" | "ready" | "blocked";
+  setup: "disabled" | "fake_only" | "telegram_configured";
   reason: string;
   gates: Array<{ id: string; status: "open" | "blocked"; reason: string }>;
 }
+
+export type StartUnknownClassification = "known_stopped" | "known_no_spawn";
 
 export interface TaskControlActionReference {
   ref: string;

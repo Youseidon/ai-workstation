@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { PromptOption, WorkspaceRecord } from "@agent-console/shared";
+import type { PromptOption, StartUnknownClassification, WorkspaceRecord } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { Badge, type Tone } from "./ui/Badge";
 import { Button } from "./ui/Button";
@@ -30,6 +30,7 @@ interface Props {
   disabled: boolean;
   activeWorkspace: WorkspaceRecord | null;
   onRecover(): void;
+  onClassifyStartUnknown?(classification: StartUnknownClassification, expectedStartIntentId: string): void;
 }
 
 /**
@@ -44,6 +45,7 @@ export function ContextPicker({
   disabled,
   activeWorkspace,
   onRecover,
+  onClassifyStartUnknown,
 }: Props) {
   const promptItems: ComboboxItem<number>[] = prompts.map((prompt) => {
     const state = promptState(prompt);
@@ -128,6 +130,16 @@ export function ContextPicker({
             <span className="break-words text-fg-muted">
               Confirm provider process state before recovery. Recovery stays blocked until the server knows the previous start is stopped or no spawn.
             </span>
+            {savedPrompt.recovery.startIntentId !== undefined && savedPrompt.recovery.startIntentId !== null && onClassifyStartUnknown !== undefined && (
+              <span className="mt-2 flex flex-wrap gap-1.5">
+                <Button size="sm" variant="secondary" onClick={() => onClassifyStartUnknown("known_stopped", savedPrompt.recovery.startIntentId!)}>
+                  Mark known stopped
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => onClassifyStartUnknown("known_no_spawn", savedPrompt.recovery.startIntentId!)}>
+                  Mark no spawn
+                </Button>
+              </span>
+            )}
           </div>
         )}
         {savedPrompt?.status === "IN_PROGRESS" &&

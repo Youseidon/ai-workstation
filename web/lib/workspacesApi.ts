@@ -1,4 +1,4 @@
-import type { AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, TaskControlCapability, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+import type { AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, StartUnknownClassification, SuitePipelineRun, SuitePipelineView, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, TaskControlCapability, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -49,6 +49,7 @@ export const workspaceApi = {
   saveHumanResponse(serverUrl:string,id:number,value:{content:string;expectedRevision:string}){return request<{responseId:number;started:boolean;runId:string|null;revision:string}>(serverUrl,`/api/prompts/${id}/save-human-response`,{method:"POST",...json(value)});},
   respondAndContinue(serverUrl:string,id:number,value:{content?:string;responseId?:number;provider:ProviderId;model:string|null;expectedRevision?:string}){return request<{responseId:number;started:boolean;runId:string|null;revision:string;error?:string}>(serverUrl,`/api/prompts/${id}/respond-and-continue`,{method:"POST",...json(value)});},
   clarify(serverUrl:string,id:number,value:{question:string;provider:ProviderId;model:string|null}){return request<{runId:string}>(serverUrl,`/api/prompts/${id}/clarify`,{method:"POST",...json(value)});},
+  classifyStartUnknown(serverUrl:string,id:number,value:{classification:StartUnknownClassification;expectedStartIntentId:string;confirmed:true}){return request<{classified:true;classification:StartUnknownClassification;startIntentId:string}>(serverUrl,`/api/prompts/${id}/classify-start-unknown`,{method:"POST",...json(value)});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
   startHandoff(serverUrl:string,id:number,value:{handoffProvider:ProviderId;handoffModel?:string|null;successorProvider:ProviderId;successorModel?:string|null;pipelineId?:number}){return request<{started:boolean;handoffId:string;runId:string|null;reusedReady:boolean}>(serverUrl,`/api/prompts/${id}/handoff`,{method:"POST",...json(value)});},
   pipeline(serverUrl:string,suiteId:number){return request<SuitePipelineView>(serverUrl,`/api/suites/${suiteId}/pipeline`);},

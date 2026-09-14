@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { PromptOption } from "@agent-console/shared";
+import type { PromptOption, StartUnknownClassification } from "@agent-console/shared";
 import { Composer } from "@/components/Composer";
 import { ConsultBriefing } from "@/components/ConsultBriefing";
 import { ContextPicker } from "@/components/ContextPicker";
@@ -154,6 +154,30 @@ export default function Page() {
     }
   };
 
+  const classifyStartUnknown = async (classification: StartUnknownClassification, expectedStartIntentId: string) => {
+    if (savedPrompt === null || workspaceId === null) return;
+    const label = classification === "known_no_spawn" ? "no spawn" : "known stopped";
+    const confirmed = await dialogs.confirm({
+      title: `Mark previous start as ${label}?`,
+      description:
+        "Confirm only after checking the local provider process state. This records your classification and keeps recovery as a separate action.",
+      confirmLabel: `Mark ${label}`,
+      tone: "primary",
+    });
+    if (!confirmed) return;
+    try {
+      await workspaceApi.classifyStartUnknown(SERVER_URL, savedPrompt.id, {
+        classification,
+        expectedStartIntentId,
+        confirmed: true,
+      });
+      await refreshPrompts(workspaceId);
+      toast.success("Start classified", "Recovery is now available if the work item still needs it.");
+    } catch (error) {
+      toast.error("Classification failed", error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const send = (prompt: string) => {
     if (workspaceId === null) return;
     const started = console_.startRun(
@@ -186,6 +210,7 @@ export default function Page() {
       disabled={false}
       activeWorkspace={activeWorkspace}
       onRecover={() => void recover()}
+      onClassifyStartUnknown={(classification, expectedStartIntentId) => void classifyStartUnknown(classification, expectedStartIntentId)}
     />
   );
 

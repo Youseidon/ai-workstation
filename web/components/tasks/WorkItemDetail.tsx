@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import type { OperationsPrompt, OperationsSuite } from "@agent-console/shared";
+import type { OperationsPrompt, OperationsSuite, StartUnknownClassification } from "@agent-console/shared";
 import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
@@ -27,6 +27,7 @@ export function WorkItemDetail({
   onRun,
   onStop,
   onRecover,
+  onClassifyStartUnknown,
   onRespond,
   onVerifyItem,
   onClose,
@@ -43,6 +44,7 @@ export function WorkItemDetail({
   onRun(): void;
   onStop(): void;
   onRecover(): void;
+  onClassifyStartUnknown(classification: StartUnknownClassification, expectedStartIntentId: string): void;
   onRespond(): void;
   onVerifyItem(): void;
   onClose?(): void;
@@ -189,6 +191,16 @@ export function WorkItemDetail({
                 <p className="break-words text-xs leading-5 text-fg-muted">
                   Confirm provider process state before recovery. Recovery stays blocked until the server knows the previous start is stopped or no spawn.
                 </p>
+                {item.prompt.recovery.startIntentId !== undefined && item.prompt.recovery.startIntentId !== null && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => onClassifyStartUnknown("known_stopped", item.prompt.recovery.startIntentId!)}>
+                      Mark known stopped
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => onClassifyStartUnknown("known_no_spawn", item.prompt.recovery.startIntentId!)}>
+                      Mark no spawn
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
             <div className="flex flex-wrap gap-2">
