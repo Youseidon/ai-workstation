@@ -571,7 +571,7 @@ tracker), and a final "publish a release report" step duplicating
 
     Defects found during L1, to fix or explicitly defer:
 
-    - With Host access off, Claude saved-task runs are told to `curl` their context, which the `acceptEdits` permission mode refuses, so they block without doing the task.
+    - FIXED 2026-09-14 (implementation.md tenth slice; T3 scenarios pending harness H6). With Host access off, Claude saved-task runs are told to `curl` their context, which the `acceptEdits` permission mode refuses, so they block without doing the task.
       `savedPromptExecuteReachabilityProblem` does not account for Claude.
       This predates L1 but makes phone-driven resume unusable with Claude, so fix it before any enhancement that starts work remotely.
       Fix design, decided 2026-09-14: give Claude typed in-process tools instead of a `curl` instruction.
@@ -596,8 +596,8 @@ tracker), and a final "publish a release report" step duplicating
 
     Build sequence for this step and the next, as one list (the harness plan's slice order, merged):
 
-    1. Commit the L1 work in reviewable pieces (above).
-    2. Fix the Claude defect with typed SDK tools (above).
+    1. Commit the L1 work in reviewable pieces (above). DONE 2026-09-14.
+    2. Fix the Claude defect with typed SDK tools (above). DONE 2026-09-14.
     3. Harness slices H0 to H4 (foundations, orchestrator and guard, fake provider CLI, fake Telegram, time seams).
     4. Harness slice H5: test-design pass for L1, then L1 scenarios on the fake backend.
     5. Harness slice H6: real Telegram backend, test bot, real Claude and Codex scenarios.

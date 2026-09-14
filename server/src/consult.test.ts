@@ -6,6 +6,7 @@ import test from "node:test";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import type { RunHandle } from "./runner.ts";
 import { runHub } from "./runHub.ts";
+import { postAgentRemark, postAgentStatus, readAgentContext } from "./agentProgressApi.ts";
 import { runContexts } from "./runContext.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -236,11 +237,27 @@ test("custom consults persist without a prompt and show as research", () => {
 });
 
 test("agent API consult path forbids mutation and omits the Progress API appendix", () => {
-  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  const agentApi = source.slice(source.indexOf("const agentMatch"), source.indexOf('url.pathname === "/api/sessions"'));
-  assert.match(agentApi, /consult_read_only/);
-  assert.match(agentApi, /persisted\.role==="consult"/);
-  const consultGet = agentApi.slice(agentApi.indexOf("operation===\"context\""), agentApi.indexOf("Progress API"));
-  assert.match(consultGet, /consultContextText/);
-  assert.doesNotMatch(consultGet, /## Progress API/);
+  const ctx = fixture();
+  try {
+    const runId = unique("run");
+    const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id, undefined, "why?");
+    workspaces.beginConsultRun({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: future() });
+    workspaces.markAgentRunRunning(runId);
+    const context = readAgentContext(runId, credential.token, "http");
+    assert.equal(context.purpose, "consult");
+    assert.doesNotMatch(context.markdown, /## Progress API|curl/);
+    for (const post of [postAgentRemark, postAgentStatus]) {
+      assert.throws(
+        () => post(runId, credential.token, { requestId: "r1", kind: "PROGRESS", content: "x" }),
+        (error: unknown) => error instanceof WorkspaceError && error.status === 403 && error.code === "consult_read_only",
+      );
+    }
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const agentApi = source.slice(source.indexOf("const agentMatch"), source.indexOf('url.pathname === "/api/sessions"'));
+    assert.match(agentApi, /readAgentContext\(runId,token,"http"\)/);
+    assert.match(agentApi, /postAgentRemark\(runId,token,body\)/);
+    assert.match(agentApi, /postAgentStatus\(runId,token,body\)/);
+  } finally {
+    ctx.cleanup();
+  }
 });

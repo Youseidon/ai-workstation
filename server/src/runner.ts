@@ -12,7 +12,7 @@ import { isMeaningfulUsage, mergeUsage } from "@agent-console/shared";
 import { permissionForRun, settings } from "./settings.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
-import type { AgentAdapter, PermissionOverride } from "./adapters/types.ts";
+import type { AgentAdapter, AgentProgressTools, PermissionOverride } from "./adapters/types.ts";
 
 /** How long a provider gets to stop cleanly before the run is hard-aborted. */
 const INTERRUPT_GRACE_MS = 2000;
@@ -39,6 +39,7 @@ export interface StartRunArgs {
   model?: string | null;
   role?: RunRole;
   permissionOverride?: PermissionOverride;
+  progressTools?: AgentProgressTools;
   onEvent(event: NormalizedEvent): void;
   onEnd(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">): void;
 }
@@ -151,6 +152,7 @@ export function startRun(args: StartRunArgs): RunHandle {
         signal: abortController.signal,
         log,
         permissionOverride,
+        ...(args.progressTools === undefined ? {} : { progressTools: args.progressTools }),
       })) {
         if (event.type === "result") {
           sawResult = true;

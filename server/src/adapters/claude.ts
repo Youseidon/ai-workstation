@@ -14,6 +14,7 @@ import {
 import { buildCanUseTool } from "../lib/claudePermissions.ts";
 import { fetchJson, parseClaudeUsage, providerUsageOk, providerUsageUnavailable, writeJsonAtomic } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
+import { CLAUDE_PROGRESS_SERVER_NAME, claudeProgressMcpServer } from "./claudeProgressTools.ts";
 
 export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "WebFetch",
@@ -149,11 +150,62 @@ function summarizeToolInput(name: string, input: unknown): string {
   }
 }
 
+/** SDK options for one run; exported so the per-run wiring is testable without a live session. */
+export function claudeQueryOptions(opts: RunOptions, abortController: AbortController): Options {
+  const permission = claudePermissionConfig(opts.permissionOverride);
+  const options: Options = {
+    cwd: opts.cwd,
+    abortController,
+    includePartialMessages: true,
+    permissionMode: permission.permissionMode as Options["permissionMode"],
+    settingSources: settings.claude.settingSources as Options["settingSources"],
+    stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
+  };
+  if (permission.allowDangerouslySkipPermissions) {
+    options.allowDangerouslySkipPermissions = true;
+  } else {
+    // Project settings.json's permissions.allow/deny/ask are read by the interactive
+    // CLI, not by the SDK's own headless approval path — without this callback every
+    // non-trivial tool call is denied regardless of what settings.json says.
+    options.canUseTool = buildCanUseTool(opts.cwd, permission.permissionMode);
+  }
+  if (permission.disallowedTools !== undefined) {
+    (options as Options & { disallowedTools?: string[] }).disallowedTools = permission.disallowedTools;
+  }
+  if (permission.disableSandboxForHostAccess) {
+    const sockets = hostUnixSockets();
+    options.sandbox = {
+      enabled: false,
+      allowUnsandboxedCommands: true,
+      network: {
+        allowUnixSockets: sockets,
+        allowAllUnixSockets: true,
+      },
+    };
+  }
+  if (opts.progressTools !== undefined) {
+    options.mcpServers = { [CLAUDE_PROGRESS_SERVER_NAME]: claudeProgressMcpServer(opts.progressTools) };
+  }
+  const model = opts.model ?? settings.claude.model;
+  if (model !== null) options.model = model;
+  if (settings.claude.maxTurns !== null) options.maxTurns = settings.claude.maxTurns;
+  if (settings.claude.apiKey !== null) {
+    options.env = { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey };
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    // Without this, a key inherited from the parent shell would still reach the
+    // spawned process even after the app-level setting is cleared to use OAuth.
+    options.env = { ...process.env };
+    delete options.env.ANTHROPIC_API_KEY;
+  }
+  return options;
+}
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = "claude" as const;
   readonly label = "Claude Code";
   readonly transport = "sdk" as const;
   readonly reportsTokens = true;
+  readonly supportsProgressTools = true;
   // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(effectiveClaudePermissionMode());
@@ -244,48 +296,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.signal.aborted) abortController.abort();
     opts.signal.addEventListener("abort", onAbort, { once: true });
 
-    const permission = claudePermissionConfig(opts.permissionOverride);
-    const options: Options = {
-      cwd: opts.cwd,
-      abortController,
-      includePartialMessages: true,
-      permissionMode: permission.permissionMode as Options["permissionMode"],
-      settingSources: settings.claude.settingSources as Options["settingSources"],
-      stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
-    };
-    if (permission.allowDangerouslySkipPermissions) {
-      options.allowDangerouslySkipPermissions = true;
-    } else {
-      // Project settings.json's permissions.allow/deny/ask are read by the interactive
-      // CLI, not by the SDK's own headless approval path — without this callback every
-      // non-trivial tool call is denied regardless of what settings.json says.
-      options.canUseTool = buildCanUseTool(opts.cwd, permission.permissionMode);
-    }
-    if (permission.disallowedTools !== undefined) {
-      (options as Options & { disallowedTools?: string[] }).disallowedTools = permission.disallowedTools;
-    }
-    if (permission.disableSandboxForHostAccess) {
-      const sockets = hostUnixSockets();
-      options.sandbox = {
-        enabled: false,
-        allowUnsandboxedCommands: true,
-        network: {
-          allowUnixSockets: sockets,
-          allowAllUnixSockets: true,
-        },
-      };
-    }
-    const model = opts.model ?? settings.claude.model;
-    if (model !== null) options.model = model;
-    if (settings.claude.maxTurns !== null) options.maxTurns = settings.claude.maxTurns;
-    if (settings.claude.apiKey !== null) {
-      options.env = { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey };
-    } else if (process.env.ANTHROPIC_API_KEY) {
-      // Without this, a key inherited from the parent shell would still reach the
-      // spawned process even after the app-level setting is cleared to use OAuth.
-      options.env = { ...process.env };
-      delete options.env.ANTHROPIC_API_KEY;
-    }
+    const options = claudeQueryOptions(opts, abortController);
 
     // Streaming input mode: one message, then the iterable ends and the turn runs.
     async function* promptStream(): AsyncGenerator<SDKUserMessage> {

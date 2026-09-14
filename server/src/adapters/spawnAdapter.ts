@@ -37,6 +37,8 @@ export abstract class SpawnAdapter implements AgentAdapter {
   abstract readonly id: ProviderId;
   abstract readonly label: string;
   abstract readonly reportsTokens: boolean;
+  /** Spawned CLIs run out of process and reach the Progress API over HTTP. */
+  readonly supportsProgressTools = false;
   abstract readonly permissionMode: string;
   abstract readonly model: string | null;
   readonly transport = "spawn" as const;

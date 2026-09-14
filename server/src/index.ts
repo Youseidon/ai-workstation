@@ -10,11 +10,9 @@ import { createLogger } from "./lib/logger.ts";
 import { runRoleStartError } from "./runner.ts";
 import { handleWorkspaceApi } from "./workspaceApi.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
-import { runContexts } from "./runContext.ts";
-import { contextMarkdown } from "./agentContext.ts";
-import { hashRunToken } from "./runContext.ts";
+import { authorizeAgentCredential, postAgentRemark, postAgentStatus, readAgentContext, readAgentState } from "./agentProgressApi.ts";
 import { runHub } from "./runHub.ts";
-import { ProviderUnavailableError, agentApiUrl, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { ProviderUnavailableError, startConsult, startExecute, startVerifySuite } from "./runService.ts";
 import { quotaWarnings } from "./quotaAdvisor.ts";
 import { telegramRuntime } from "./integrations/telegram/runtime.ts";
 
@@ -97,10 +95,6 @@ async function broadcastSettingsChange(): Promise<void> {
   }
 }
 
-function progressApiMarkdown(runId: string, token: string): string {
-  return `## Progress API\n\nThis run is already marked IN_PROGRESS. Use only these endpoints for orchestration records; never open or modify SQLite directly.\n\nPost a remark with:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "remarks")} -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"What changed or was discovered"}'\n\`\`\`\n\nAllowed remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.\n\nBefore finishing, post exactly one terminal prompt status. For success:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "status")} -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}'\n\`\`\`\n\nBLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, provide observed evidence in reason and put the exact action only the human can take in verificationSummary:\n\n\`\`\`bash\ncurl -fsS -X POST -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' ${agentApiUrl(runId, "status")} -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"Observed evidence showing why execution cannot continue","verificationSummary":"Exact action only the human can take"}'\n\`\`\`\n\nEvery requestId must be unique for this run.\n\n`;
-}
-
 const httpServer = createServer((req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") {
@@ -115,32 +109,22 @@ const httpServer = createServer((req, res) => {
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
-      const memory=runContexts.authenticate(runId,token);if(!memory)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");
-      const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
-      if(persisted.role!=="execute"&&(operation==="remarks"||operation==="status"))throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks or status.");
       if(operation==="context"&&req.method==="GET"){
-        if(persisted.role==="consult"){
-          const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question);
-          if(req.headers.accept?.includes("application/json"))sendJson(res,200,{purpose:"consult",markdown});
-          else{res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(markdown);}
-          return;
-        }
-        if(memory.promptId===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
-        const context=workspaces.agentContext(memory.workspaceId,memory.promptId);
-        if(req.headers.accept?.includes("application/json"))sendJson(res,200,context);else{const api=progressApiMarkdown(runId,token);res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(`${contextMarkdown(context)}\n\n${api}`);}return;
+        const result=readAgentContext(runId,token,"http");const wantsJson=req.headers.accept?.includes("application/json");
+        if(wantsJson)sendJson(res,200,result.purpose==="consult"?{purpose:"consult",markdown:result.markdown}:result.context);
+        else{res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(result.markdown);}
+        return;
       }
-      if(operation==="state"&&req.method==="GET"){
-        if(memory.promptId===null){sendJson(res,200,{events:[],remarks:[],runs:[]});return;}
-        sendJson(res,200,workspaces.promptHistory(memory.promptId));return;
-      }
+      if(operation==="state"&&req.method==="GET"){sendJson(res,200,readAgentState(runId,token));return;}
       if((operation==="remarks"||operation==="status")&&req.method==="POST"){
+        authorizeAgentCredential(runId,token);
         void readJsonBody(req).then(body=>{
-          const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):workspaces.updateAgentStatus(runId,body);
+          const result=operation==="remarks"?postAgentRemark(runId,token,body):postAgentStatus(runId,token,body);
           sendJson(res,200,result);
-          runHub.operationsChanged();
         }).catch(error=>sendJson(res,error instanceof WorkspaceError?error.status:400,{error:{code:error instanceof WorkspaceError?error.code:"invalid_request",message:error instanceof Error?error.message:String(error)}}));return;
       }
+      authorizeAgentCredential(runId,token);
       sendJson(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
     }catch(error){sendJson(res,error instanceof WorkspaceError?error.status:500,{error:{code:error instanceof WorkspaceError?error.code:"internal_error",message:error instanceof Error?error.message:"Agent API failed"}});}
     return;

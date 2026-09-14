@@ -22,6 +22,23 @@ export interface RunOptions {
   /** Server-side log; adapter stderr goes here, never to the browser. */
   log: Logger;
   permissionOverride: PermissionOverride;
+  /**
+   * Progress API handlers bound to this run's credential. Present only for
+   * saved-task execute runs on adapters with `supportsProgressTools`; the
+   * adapter exposes them to the agent as tools instead of an HTTP instruction.
+   */
+  progressTools?: AgentProgressTools;
+}
+
+/**
+ * The agent Progress API as in-process calls. Each handler enforces the same
+ * credential, scope, expiry and role rules as the HTTP endpoints and throws on
+ * refusal; results are JSON-serializable.
+ */
+export interface AgentProgressTools {
+  getContext(): string;
+  postRemark(input: Record<string, unknown>): unknown;
+  postStatus(input: Record<string, unknown>): unknown;
 }
 
 export interface AvailabilityReport {
@@ -43,6 +60,11 @@ export interface AgentAdapter {
   readonly permissionMode: string;
   /** The model configured in settings — the fallback when a run sends none. */
   readonly model: string | null;
+  /**
+   * True when the agent runs in-process and can call `RunOptions.progressTools`
+   * directly, so saved-task runs need no network path to the local API.
+   */
+  readonly supportsProgressTools: boolean;
 
   /** Full detection result, cached by the registry. */
   checkAvailability(): Promise<AvailabilityReport>;

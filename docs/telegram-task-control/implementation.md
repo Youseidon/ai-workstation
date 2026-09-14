@@ -490,6 +490,29 @@ Rollback/default-off behavior:
 - Setting the transport back to Fake Telegram, disabling task control, or removing the token stops all Bot API traffic and leaves task state untouched.
 - Migration 20 is additive; older code ignores the new columns and table.
 
+Implemented tenth slice (step 7a defect: Claude saved-task runs through typed progress tools):
+
+- Scenario table: [`scenarios/claude-sdk-tools.md`](scenarios/claude-sdk-tools.md), 31 rows written by a separate test-design pass before implementation.
+- `server/src/agentProgressApi.ts` now owns the agent Progress API rules: credential authentication, scope match, read-only role refusal, context, state, remarks and status.
+  The HTTP route in `index.ts` and the new tools both call it, so the rules cannot drift apart.
+- `server/src/adapters/claudeProgressTools.ts` defines `get_context`, `post_remark` and `post_status` with `tool()` and `createSdkMcpServer()`; refusals come back as readable tool errors carrying the same code as HTTP.
+- Adapters declare `supportsProgressTools`; only Claude does. `startExecute` binds the tools to the run credential for saved-task execute runs on such adapters and passes them through `startRun` to the adapter.
+  Consult, clarify and handoff runs get no tools.
+- The Claude run prompt carries the reporting contract and names the tools; it contains no `curl`, bearer token or API URL. `get_context` returns the work item only.
+  A first live smoke showed why: when reporting instructions arrived only inside a tool result, Claude Haiku treated them as a possible prompt injection and stopped.
+- Permission mode, sandbox and Bash rules are unchanged; the tool path is used with Host access on or off. Codex, Grok and Cursor keep the HTTP or inline path.
+- `zod` is a direct server dependency (installed with npm 11 to match the lockfile format).
+
+Verification on 2026-09-14:
+
+- `AGENT_CONSOLE_REPO_ROOT=<isolated tmp root> npm test --workspace server` passed 169 tests, including 13 new tool tests and a consult test rewritten from a source-text check into a behaviour check.
+- A targeted mutation check removed MCP registration, the read-only role check, the tools-only context form, the request id schema and credential authentication; each made a test fail.
+  One surviving mutant exposed a dead branch, which was removed.
+- `npm run typecheck` passed.
+- Real Claude (Haiku 4.5) through `ClaudeAdapter` with `acceptEdits`, Host access off, an isolated database and real tool bindings: a small file task called `get_context`, posted PROGRESS and VERIFICATION remarks and DONE, with no Bash call, no permission denial and no run token in the stored history.
+  A second task that needed owner credentials also reported through the tools, but Haiku judged it DONE after writing the draft rather than BLOCKED; that is model judgement, not transport, and BLOCKED through the tool is covered deterministically in T0.
+- Not yet run: the T3 harness scenarios S-CLT-02, S-CLT-03, S-CLT-27 and S-CLT-29 (real Claude with the phone), which run in harness slice H6.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

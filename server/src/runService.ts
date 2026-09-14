@@ -1,7 +1,8 @@
 import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
-import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner } from "./agentContext.ts";
-import { config } from "./config.ts";
+import { contextMarkdown, liveTreeBanner } from "./agentContext.ts";
+import type { AgentProgressTools } from "./adapters/types.ts";
+import { PROGRESS_TOOL_NAMES, agentApiUrl, bindAgentProgressTools, consultContextText, progressToolsMarkdown } from "./agentProgressApi.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { runHub } from "./runHub.ts";
@@ -15,12 +16,29 @@ const CONSULT_LIMIT = 3;
 
 const log = createLogger("run");
 
-export function agentApiUrl(runId: string, operation: "context" | "remarks" | "status" | "state"): string {
-  return `${config.agentApiBaseUrl}/api/agent/runs/${runId}/${operation}`;
-}
+export { agentApiUrl, consultContextText } from "./agentProgressApi.ts";
 
 export function agentApiReachabilityProblem(provider: ProviderId): string | null {
   return savedPromptExecuteReachabilityProblem(provider);
+}
+
+/**
+ * The instruction that starts a saved-task execute run. In-process providers
+ * get tools bound to the run credential, so the prompt carries no token and
+ * the agent needs no shell or network permission to reach the local API.
+ */
+export function savedTaskExecutePrompt(args: {
+  taskLabel: string;
+  runId: string;
+  token: string;
+  progress: "tools" | "http";
+}): string {
+  const preamble = `Execute saved work item ${args.taskLabel}.`;
+  const rules = "The database is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly.";
+  if (args.progress === "tools") {
+    return `${preamble} Before doing anything else, call the \`${PROGRESS_TOOL_NAMES.getContext}\` tool to retrieve its authoritative context: the task, its dependencies, prior remarks and any human answers.\n\n${rules} Do the work the context describes, record remarks with the \`${PROGRESS_TOOL_NAMES.postRemark}\` tool, and record a final DONE or BLOCKED status with the \`${PROGRESS_TOOL_NAMES.postStatus}\` tool before finishing.\n\n${progressToolsMarkdown()}`;
+  }
+  return `${preamble} Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${args.token}' ${agentApiUrl(args.runId, "context")}\n\n${rules} Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
 }
 
 export interface OfflineAgentStatus {
@@ -200,6 +218,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let customDisplay = "";
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
+  let progressTools: AgentProgressTools | undefined;
   if (promptId !== undefined) {
     const record = workspaces.resolvePrompt(workspaceId, promptId);
     savedPrompt = record;
@@ -238,9 +257,12 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         throw error;
       }
       activeContextRunId = plannedRunId;
-      if (reachabilityProblem === null) {
-        const contextUrl = agentApiUrl(plannedRunId, "context");
-        resolvedPrompt = `Execute saved work item ${record.externalKey ?? record.title}. Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nThe database endpoint is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly. Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
+      const taskLabel = record.externalKey ?? record.title;
+      if (getAdapter(provider).supportsProgressTools) {
+        progressTools = bindAgentProgressTools(plannedRunId, credential.token);
+        resolvedPrompt = savedTaskExecutePrompt({ taskLabel, runId: plannedRunId, token: credential.token, progress: "tools" });
+      } else if (reachabilityProblem === null) {
+        resolvedPrompt = savedTaskExecutePrompt({ taskLabel, runId: plannedRunId, token: credential.token, progress: "http" });
       } else {
         resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId))}\n\n${offlineCompletionProtocol(reachabilityProblem)}`;
       }
@@ -268,6 +290,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       model,
       role: "execute",
       permissionOverride: "inherit",
+      ...(progressTools === undefined ? {} : { progressTools }),
       onEvent: (event) => {
         if (event.type === "assistant_text" && event.payload.kind === "message") {
           if (clarificationId !== null) clarificationAnswer += event.payload.text;
@@ -507,20 +530,6 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
   });
   void handle.done.catch((error: unknown) => log.error("verification failed", error));
   return { runId: handle.runId };
-}
-
-export function consultContextText(workspaceId: number, promptId: number | null, question: string): string {
-  const writer = runHub.activeExecuteForWorkspace(workspaceId);
-  const liveWriter = writer === undefined ? null : { provider: writer.provider, model: writer.model };
-  if (promptId === null) {
-    const workspace = workspaces.get(workspaceId);
-    return consultWorkspaceMarkdown({
-      workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
-      question,
-      liveWriter,
-    });
-  }
-  return contextMarkdown(workspaces.agentContext(workspaceId, promptId), "consult", { liveWriter, question });
 }
 
 async function requireAvailableProvider(providerId: string): Promise<ProviderId> {
