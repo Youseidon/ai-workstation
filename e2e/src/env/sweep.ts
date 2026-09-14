@@ -35,9 +35,22 @@ function scanBuffer(buffer: Buffer, secrets: Secret[], file: string, entry?: str
   return findings;
 }
 
+/**
+ * The forms a secret can take on disk: as is, URL-encoded (a token in a
+ * request path or query), and for a bot token its secret half alone.
+ */
+export function secretForms(secret: Secret): Secret[] {
+  const forms = [secret];
+  const encoded = encodeURIComponent(secret.value);
+  if (encoded !== secret.value) forms.push({ label: `${secret.label} (url-encoded)`, value: encoded });
+  const botToken = /^\d+:([A-Za-z0-9_-]{30,})$/.exec(secret.value);
+  if (botToken) forms.push({ label: `${secret.label} (secret half)`, value: botToken[1]! });
+  return forms;
+}
+
 /** Scans files and directories; zip archives (Playwright traces) are scanned entry by entry. */
 export function sweep(paths: string[], secrets: Secret[]): SweepFinding[] {
-  const usable = secrets.filter((secret) => secret.value.length >= 8);
+  const usable = secrets.flatMap(secretForms).filter((secret) => secret.value.length >= 8);
   if (usable.length === 0) return [];
   const findings: SweepFinding[] = [];
   for (const file of paths.flatMap(walk)) {

@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ProviderId, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
 import { isProviderId } from "@agent-console/shared";
-import { assertNotOperatorBot, isHarnessMode } from "../../harnessGuard.ts";
+import { assertHarnessBot, isHarnessMode } from "../../harnessGuard.ts";
 import { harnessSeams } from "../../harnessSeams.ts";
 import { createLogger, type Logger } from "../../lib/logger.ts";
 import { runHub } from "../../runHub.ts";
@@ -564,5 +564,5 @@ export const telegramRuntime = new TelegramLiveRuntime({
       }),
   ...(harnessSeams.telegramPollTimeoutSeconds === null ? {} : { pollTimeoutSeconds: harnessSeams.telegramPollTimeoutSeconds }),
   ...(harnessSeams.pairingTtlMs === null ? {} : { pairingTtlMs: harnessSeams.pairingTtlMs }),
-  ...(isHarnessMode() ? { assertBot: (botId: string) => assertNotOperatorBot(botId, harnessSeams.forbiddenBotIds ?? undefined) } : {}),
+  ...(isHarnessMode() ? { assertBot: (botId: string) => assertHarnessBot(botId, { forbidden: harnessSeams.forbiddenBotIds ?? undefined, testBots: harnessSeams.testBotIds ?? undefined }) } : {}),
 });

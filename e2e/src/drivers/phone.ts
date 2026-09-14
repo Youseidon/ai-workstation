@@ -17,6 +17,13 @@ export interface PhoneMessage {
   topicId: number | null;
 }
 
+/**
+ * How long a tap waits for the bot's callback answer before resolving with no
+ * toast, on both backends. Real Telegram stops waiting on its own after about
+ * 15 seconds; the callback itself still reaches the bot when it polls later.
+ */
+export const TAP_ANSWER_WAIT_MS = 12_000;
+
 export interface PhoneDriver {
   readonly backend: "fake" | "real";
   readonly userId: string;
@@ -24,6 +31,7 @@ export interface PhoneDriver {
   send(text: string, options?: { replyTo?: PhoneMessage }): Promise<PhoneMessage>;
   /** Taps a button by label; resolves with the toast the bot answered, or null if none arrived in time. */
   tap(message: PhoneMessage, button: string): Promise<{ toast: string | null }>;
+  /** Messages of this run only: anything already in the chat when the driver was created is left out. */
   messages(): Promise<PhoneMessage[]>;
   /** Waits for a bot message matching `predicate` whose id is greater than `afterId`. */
   waitForBotMessage(description: string, predicate: (message: PhoneMessage) => boolean, options?: { afterId?: number; timeoutMs?: number }): Promise<PhoneMessage>;
@@ -55,6 +63,7 @@ function toPhoneMessage(message: StoredMessage): PhoneMessage {
 
 export class FakePhone implements PhoneDriver {
   readonly backend = "fake" as const;
+  private readonly floorId: number;
 
   constructor(
     private readonly server: FakeTelegramServer,
@@ -63,6 +72,7 @@ export class FakePhone implements PhoneDriver {
     readonly chat: FakeChat,
   ) {
     server.registerChat(chat);
+    this.floorId = server.transcript(chat.id).at(-1)?.message_id ?? 0;
   }
 
   get userId(): string {
@@ -83,7 +93,7 @@ export class FakePhone implements PhoneDriver {
     if (!data) throw new Error(`phone: message ${message.id} has no button "${button}" (has: ${toPhoneMessage(stored!).buttons.join(", ")})`);
     const queryId = this.server.userTapsButton(this.bot, this.user, this.chat, message.id, data);
     try {
-      const answer = await pollUntil("the callback answer", async () => this.server.callbackAnswer(queryId), 15_000);
+      const answer = await pollUntil("the callback answer", async () => this.server.callbackAnswer(queryId), TAP_ANSWER_WAIT_MS);
       return { toast: answer.text };
     } catch {
       return { toast: null };
@@ -91,11 +101,11 @@ export class FakePhone implements PhoneDriver {
   }
 
   async messages(): Promise<PhoneMessage[]> {
-    return this.server.transcript(this.chat.id).map(toPhoneMessage);
+    return this.server.transcript(this.chat.id).filter((message) => message.message_id > this.floorId).map(toPhoneMessage);
   }
 
   async cursor(): Promise<number> {
-    return this.server.transcript(this.chat.id).at(-1)?.message_id ?? 0;
+    return this.server.transcript(this.chat.id).at(-1)?.message_id ?? this.floorId;
   }
 
   waitForBotMessage(description: string, predicate: (message: PhoneMessage) => boolean, options: { afterId?: number; timeoutMs?: number } = {}): Promise<PhoneMessage> {

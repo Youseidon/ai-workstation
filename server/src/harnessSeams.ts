@@ -11,13 +11,15 @@ export interface HarnessSeams {
   telegramApiBaseUrl: string | null;
   /** Bot ids the harness must never poll: the operator's own bot. */
   forbiddenBotIds: string | null;
+  /** The only bot ids the harness may poll: the registered test bot (or the fake's bot). */
+  testBotIds: string | null;
   actionTtlMs: number | null;
   pairingTtlMs: number | null;
   quotaFreshnessMs: number | null;
   telegramPollTimeoutSeconds: number | null;
 }
 
-const NONE: HarnessSeams = { telegramApiBaseUrl: null, forbiddenBotIds: null, actionTtlMs: null, pairingTtlMs: null, quotaFreshnessMs: null, telegramPollTimeoutSeconds: null };
+const NONE: HarnessSeams = { telegramApiBaseUrl: null, forbiddenBotIds: null, testBotIds: null, actionTtlMs: null, pairingTtlMs: null, quotaFreshnessMs: null, telegramPollTimeoutSeconds: null };
 
 function bounded(env: NodeJS.ProcessEnv, name: string, min: number, max: number): number | null {
   const raw = env[name];
@@ -35,6 +37,7 @@ export function readHarnessSeams(env: NodeJS.ProcessEnv = process.env): HarnessS
   return {
     telegramApiBaseUrl: baseUrl ? assertLoopbackUrl("AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL", baseUrl).toString().replace(/\/+$/, "") : null,
     forbiddenBotIds: env.AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS?.trim() || null,
+    testBotIds: env.AGENT_CONSOLE_HARNESS_TEST_BOT_IDS?.trim() || null,
     actionTtlMs: bounded(env, "AGENT_CONSOLE_HARNESS_ACTION_TTL_MS", 500, 24 * 60 * 60_000),
     pairingTtlMs: bounded(env, "AGENT_CONSOLE_HARNESS_PAIRING_TTL_MS", 500, 24 * 60 * 60_000),
     quotaFreshnessMs: bounded(env, "AGENT_CONSOLE_HARNESS_QUOTA_FRESHNESS_MS", 500, 24 * 60 * 60_000),

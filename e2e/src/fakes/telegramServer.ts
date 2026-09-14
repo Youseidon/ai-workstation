@@ -181,9 +181,12 @@ export class FakeTelegramServer {
       ...(options.topicId === undefined ? {} : { message_thread_id: options.topicId, is_topic_message: true }),
     });
     const { history: _history, ...wire } = message;
+    // Telegram embeds the whole replied-to message (one level deep), not just its id.
+    const repliedTo = options.replyToMessageId === undefined ? undefined : this.find(chat.id, options.replyToMessageId);
     this.pushUpdate(bot.id, {
       message: {
         ...wire,
+        ...(repliedTo ? { reply_to_message: (({ reply_to_message: _nested, ...inner }) => inner)(wireMessage(repliedTo) as Json & { reply_to_message?: unknown }) } : {}),
         from: { id: user.id, is_bot: false, first_name: user.firstName, ...(user.lastName ? { last_name: user.lastName } : {}), ...(user.username ? { username: user.username } : {}) },
         chat: this.wireChat(chat, user),
       },
@@ -269,6 +272,12 @@ export class FakeTelegramServer {
         return { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username, can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false };
       case "getUpdates":
         return this.getUpdates(bot, body);
+      case "getWebhookInfo":
+        // Bots here only long poll, so the webhook is always unset.
+        return { url: "", has_custom_certificate: false, pending_update_count: this.updates.get(bot.id)!.length };
+      case "deleteWebhook":
+        if (body.drop_pending_updates === true) this.updates.set(bot.id, []);
+        return true;
       case "sendMessage":
         return this.sendMessage(bot, body);
       case "editMessageText":

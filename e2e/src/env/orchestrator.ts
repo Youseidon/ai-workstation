@@ -5,8 +5,11 @@ import Database from "better-sqlite3";
 import { fileHashes, HARNESS_ROOT_PREFIX, realDatabaseHarnessRows, repoRoot } from "../realState.ts";
 import { randomBytes } from "node:crypto";
 import { FakeProvider } from "../drivers/fakeProvider.ts";
-import { FakePhone } from "../drivers/phone.ts";
-import { FakeTelegramServer, type FakeBot } from "../fakes/telegramServer.ts";
+import { FakePhone, type PhoneDriver } from "../drivers/phone.ts";
+import { FakeTelegramServer, type ApiCall, type FakeBot } from "../fakes/telegramServer.ts";
+import { LIVE_ENV_PATH, LiveSetupError, loadLiveConfig } from "./liveConfig.ts";
+import { PreflightError, preflightBot } from "./telegramPreflight.ts";
+import { TelegramRouteProxy, type ProxiedCall, type RouteCut } from "./telegramRouteProxy.ts";
 import { ManagedProcess, isPortOpen, waitFor } from "./processes.ts";
 import { describeFindings, sweep, type Secret } from "./sweep.ts";
 import { WEB_DIST_DIR, ensureWebBuild, harnessWebEnv } from "./webBuild.ts";
@@ -36,9 +39,23 @@ export interface EnvironmentOptions {
   secrets?: Secret[];
   /** Route Grok to the scripted fake agent, on the live Progress API path or the inline path. */
   fakeProvider?: "live" | "inline";
-  /** Telegram backend for task control. Absent means task control stays off. */
-  telegram?: { backend: "fake"; remoteActions?: boolean; notifications?: boolean; botId?: number };
+  /**
+   * Telegram backend for task control. Absent means task control stays off.
+   * The real backend (T3) always runs through the route proxy; the fake one
+   * does when `proxy` is set, so network cuts run on both backends.
+   */
+  telegram?: {
+    backend: "fake" | "real";
+    remoteActions?: boolean;
+    notifications?: boolean;
+    botId?: number;
+    proxy?: boolean;
+    /** Fake only: the chat and the bot's update queue start with what an earlier run left behind (S-H6-21). */
+    leftoversFromEarlierRun?: boolean;
+  };
 }
+
+const REAL_TELEGRAM = "https://api.telegram.org";
 
 export const FAKE_OPERATOR = { id: 5_550_001, firstName: "Operator", username: "harness_operator" };
 
@@ -46,8 +63,11 @@ function dotenv(values: Record<string, string>): string {
   return Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
 }
 
-/** Secrets the harness runner can see: the operator's token (read only for the sweep) and live test credentials. */
-function knownSecrets(): Secret[] {
+/**
+ * Secrets the harness runner can see: the operator's token (read only for the sweep) and live test
+ * credentials. Ids (api_id, bot ids, user ids) are identities, not secrets, and are not swept.
+ */
+export function knownSecrets(livePath = LIVE_ENV_PATH, repoEnvPath = join(repoRoot, ".env")): Secret[] {
   const secrets: Secret[] = [];
   const read = (path: string, keys: string[], label: string) => {
     if (!existsSync(path)) return;
@@ -56,21 +76,35 @@ function knownSecrets(): Secret[] {
       if (match && keys.includes(match[1]!)) secrets.push({ label: `${label}:${match[1]}`, value: match[2]!.replace(/^["']|["']$/g, "") });
     }
   };
-  read(join(repoRoot, ".env"), ["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"], "operator");
-  read(join(process.env.HOME ?? "", ".config/ai-workstation/e2e-live.env"), ["E2E_TELEGRAM_TEST_BOT_TOKEN", "E2E_TELEGRAM_API_HASH", "E2E_TELEGRAM_USER_SESSION"], "live");
+  read(repoEnvPath, ["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"], "operator");
+  read(livePath, ["E2E_TELEGRAM_TEST_BOT_TOKEN", "E2E_TELEGRAM_API_HASH", "E2E_TELEGRAM_USER_SESSION"], "live");
   return secrets;
 }
 
 /** The operator's own bot id (never the token), so the server guard can refuse it. */
 function operatorBotId(): string | null {
-  const live = join(process.env.HOME ?? "", ".config/ai-workstation/e2e-live.env");
-  if (existsSync(live)) {
-    const match = readFileSync(live, "utf8").match(/^E2E_TELEGRAM_OPERATOR_BOT_ID=(\d+)\s*$/m);
+  if (existsSync(LIVE_ENV_PATH)) {
+    const match = readFileSync(LIVE_ENV_PATH, "utf8").match(/^E2E_TELEGRAM_OPERATOR_BOT_ID=(\d+)\s*$/m);
     if (match) return match[1]!;
   }
   const repoEnv = join(repoRoot, ".env");
   if (!existsSync(repoEnv)) return null;
   return readFileSync(repoEnv, "utf8").match(/^\s*TELEGRAM_BOT_TOKEN\s*=\s*["']?(\d+):/m)?.[1] ?? null;
+}
+
+/**
+ * What a shared test bot carries from an earlier run: its question and answer cards with live
+ * buttons, and pending updates for a plain message, a reply, a tap and an old /start code.
+ */
+async function seedLeftovers(server: FakeTelegramServer, bot: FakeBot, chat: { id: number; type: "private" }): Promise<void> {
+  server.registerChat(chat);
+  const send = async (body: Record<string, unknown>) => ((await (await fetch(`${server.url}/bot${bot.token}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chat.id, ...body }) })).json()) as { result: { message_id: number } }).result.message_id;
+  const question = await send({ text: "Task needs input: Earlier run task\n\nBlocked on: an earlier run.\n\nReply to this message with your answer." });
+  const answer = await send({ text: "Your answer:\nOld answer", reply_markup: { inline_keyboard: [[{ text: "Save answer", callback_data: `tc_${"A".repeat(24)}` }, { text: "Answer and resume", callback_data: `tc_${"B".repeat(24)}` }]] } });
+  server.userSendsMessage(bot, FAKE_OPERATOR, chat, "hello from an earlier run");
+  server.userSendsMessage(bot, FAKE_OPERATOR, chat, "Old reply", { replyToMessageId: question });
+  server.userTapsButton(bot, FAKE_OPERATOR, chat, answer, `tc_${"B".repeat(24)}`);
+  server.userSendsMessage(bot, FAKE_OPERATOR, chat, "/start oldpairingcode1234");
 }
 
 export class HarnessEnvironment {
@@ -82,7 +116,10 @@ export class HarnessEnvironment {
   readonly fakeProvider: FakeProvider;
   telegramServer: FakeTelegramServer | null = null;
   telegramBot: FakeBot | null = null;
-  phone: FakePhone | null = null;
+  telegramProxy: TelegramRouteProxy | null = null;
+  phone: PhoneDriver | null = null;
+  private telegram: { id: string; username: string; token: string } | null = null;
+  private realPhone: import("../drivers/telegramUserPhone.ts").TelegramUserPhone | null = null;
   private readonly serverSpecEnv: NodeJS.ProcessEnv;
   private readonly realBefore = fileHashes();
   private readonly secrets: Secret[];
@@ -149,6 +186,7 @@ export class HarnessEnvironment {
     }
     ensureWebBuild(serverUrl, join(this.logsDir, "web-build.log"));
     if (this.options.telegram?.backend === "fake") await this.startFakeTelegram();
+    if (this.options.telegram?.backend === "real") await this.startRealTelegram();
     await this.startServer();
     this.web.start();
     await waitFor("harness web", async () => (await fetch(webUrl)).ok, 60_000, this.web.whenExited());
@@ -162,16 +200,78 @@ export class HarnessEnvironment {
     server.addBot(bot);
     this.telegramServer = server;
     this.telegramBot = bot;
-    this.phone = new FakePhone(server, bot, FAKE_OPERATOR, { id: FAKE_OPERATOR.id, type: "private" });
+    const chat = { id: FAKE_OPERATOR.id, type: "private" as const };
+    if (this.options.telegram?.leftoversFromEarlierRun) await seedLeftovers(server, bot, chat);
+    this.phone = new FakePhone(server, bot, FAKE_OPERATOR, chat);
     this.addSecret({ label: "harness:fake-bot-token", value: bot.token });
-    appendFileSync(join(this.root, ".env"), dotenv({ TELEGRAM_BOT_TOKEN: bot.token }));
+    await this.connectTelegram({ upstream: server.url, token: bot.token, botId: String(bot.id), forbidden: operatorBotId(), useProxy: this.options.telegram?.proxy === true, pollTimeoutSeconds: "2" });
+    // The preflight is the harness's own traffic; `calls` records what the harness server does.
+    server.calls.splice(0);
+  }
+
+  /** Real Telegram (T3): the registered test bot, the operator's automated client and the route proxy. */
+  private async startRealTelegram(): Promise<void> {
+    const config = loadLiveConfig();
+    const { TelegramUserPhone } = await import("../drivers/telegramUserPhone.ts");
+    const phone = new TelegramUserPhone(config);
+    await phone.connect();
+    this.realPhone = phone;
+    this.phone = phone;
+    await this.connectTelegram({ upstream: REAL_TELEGRAM, token: config.testBotToken, botId: config.testBotId, forbidden: config.operatorBotId || null, useProxy: true, operatorChatId: config.operatorUserId });
+  }
+
+  private async connectTelegram(args: { upstream: string; token: string; botId: string; forbidden: string | null; useProxy: boolean; pollTimeoutSeconds?: string; operatorChatId?: string }): Promise<void> {
+    const real = args.upstream === REAL_TELEGRAM;
+    try {
+      const identity = await preflightBot({ baseUrl: args.upstream, token: args.token, expectedBotId: args.botId, ...(args.operatorChatId === undefined ? {} : { operatorChatId: args.operatorChatId }) });
+      this.telegram = { ...identity, token: args.token };
+    } catch (error) {
+      if (real && error instanceof PreflightError) throw new LiveSetupError(error.message);
+      throw error;
+    }
+    if (args.useProxy) {
+      this.telegramProxy = new TelegramRouteProxy(args.upstream, join(this.logsDir, "telegram-proxy.log"));
+      await this.telegramProxy.listen();
+    }
+    appendFileSync(join(this.root, ".env"), dotenv({ TELEGRAM_BOT_TOKEN: args.token }));
     Object.assign(this.serverSpecEnv, {
-      AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: server.url,
+      ...(this.telegramProxy ? { AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: this.telegramProxy.url } : { AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: args.upstream }),
       // A short long-poll window keeps fake-backend scenarios fast; real-backend runs keep the production 25s.
-      AGENT_CONSOLE_HARNESS_TELEGRAM_POLL_TIMEOUT_SECONDS: "2",
-      ...(operatorBotId() ? { AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: operatorBotId()! } : {}),
+      ...(args.pollTimeoutSeconds ? { AGENT_CONSOLE_HARNESS_TELEGRAM_POLL_TIMEOUT_SECONDS: args.pollTimeoutSeconds } : {}),
+      AGENT_CONSOLE_HARNESS_TEST_BOT_IDS: args.botId,
+      ...(args.forbidden ? { AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: args.forbidden } : {}),
       ...this.options.serverEnv,
     });
+  }
+
+  /** The bot the harness server polls, on either backend. */
+  telegramIdentity(): { id: string; username: string } {
+    if (!this.telegram) throw new Error("this environment has no Telegram backend");
+    return { id: this.telegram.id, username: this.telegram.username };
+  }
+
+  /** The harness bot's token, for leak assertions only. */
+  telegramToken(): string {
+    if (!this.telegram) throw new Error("this environment has no Telegram backend");
+    return this.telegram.token;
+  }
+
+  /** Bot API calls the harness server made, by method and body: from the proxy when present, else from the fake server. */
+  telegramCalls(): Array<Pick<ApiCall, "method" | "body" | "at"> | ProxiedCall> {
+    if (this.telegramProxy) return this.telegramProxy.calls;
+    if (this.telegramServer) return this.telegramServer.calls;
+    throw new Error("this environment has no Telegram backend");
+  }
+
+  /** Cuts and restores only the harness server's route to Telegram; the phone stays connected (plan 4.2). */
+  readonly network = {
+    cutTelegram: (mode: RouteCut = "refuse") => this.requireProxy().cutRoute(mode),
+    restoreTelegram: () => this.requireProxy().restoreRoute(),
+  };
+
+  private requireProxy(): TelegramRouteProxy {
+    if (!this.telegramProxy) throw new Error("network cuts need the Telegram route proxy: set telegram.proxy (always on for the real backend)");
+    return this.telegramProxy;
   }
 
   async startServer(): Promise<void> {
@@ -229,7 +329,7 @@ export class HarnessEnvironment {
   /** Copies logs and a database snapshot into a scenario's output directory. */
   collectArtifacts(outputDir: string): void {
     mkdirSync(outputDir, { recursive: true });
-    for (const [name, source] of [["server.log", join(this.logsDir, "server.log")], ["web.log", join(this.logsDir, "web.log")], ["web-build.log", join(this.logsDir, "web-build.log")], ["fake-provider.log", join(this.fakeProvider.dir, "fake-provider.log")]] as const) {
+    for (const [name, source] of [["server.log", join(this.logsDir, "server.log")], ["web.log", join(this.logsDir, "web.log")], ["web-build.log", join(this.logsDir, "web-build.log")], ["telegram-proxy.log", join(this.logsDir, "telegram-proxy.log")], ["fake-provider.log", join(this.fakeProvider.dir, "fake-provider.log")]] as const) {
       if (existsSync(source)) copyFileSync(source, join(outputDir, name));
     }
     this.databaseCopy(join(outputDir, "console.sqlite"));
@@ -239,7 +339,9 @@ export class HarnessEnvironment {
   async dispose(artifactDirs: string[] = []): Promise<void> {
     await this.web.stop();
     await this.server.stop();
+    await this.telegramProxy?.close();
     await this.telegramServer?.close();
+    await this.realPhone?.disconnect().catch(() => undefined);
     const problems: string[] = [];
 
     const snapshot = join(this.logsDir, "final-console.sqlite");

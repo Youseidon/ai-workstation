@@ -71,6 +71,16 @@ for (const file of t0Reports) {
   }
 }
 
+/* T3 rows the live wrapper reported blocked on setup (scripts/live.ts), shown as blocked rather than missing. */
+const blockedPath = join(e2eDir, "test-results/t3-blocked.json");
+const blockedT3 = existsSync(blockedPath) ? new Set(JSON.parse(readFileSync(blockedPath, "utf8")).rows) : new Set();
+/* The run-level T3 row (S-H6-36) is decided by the live wrapper, not by a single test. */
+const runPath = join(e2eDir, "test-results/t3-run.json");
+if (existsSync(runPath)) {
+  const run = JSON.parse(readFileSync(runPath, "utf8"));
+  addResult([run.row], { tier: "T3", title: `e2e:live run (${run.minutes} min)`, passed: run.passed, status: run.passed ? "passed" : "failed" });
+}
+
 /* Gate */
 const inScope = [...scenarios.values()].filter((scenario) => scopes.length === 0 || scopes.some((scope) => scenario.id.startsWith(`${scope}-`)));
 const runnableIn = (scenario) => tiers.filter((tier) => scenario.tier.toUpperCase().includes(tier));
@@ -79,7 +89,7 @@ const rows = inScope.map((scenario) => {
   const wanted = runnableIn(scenario);
   const byTier = Object.fromEntries(["T0", "T1", "T2", "T3"].map((tier) => {
     const results = scenario.results.filter((result) => result.tier === tier);
-    if (results.length === 0) return [tier, scenario.tier.toUpperCase().includes(tier) ? "missing" : ""];
+    if (results.length === 0) return [tier, !scenario.tier.toUpperCase().includes(tier) ? "" : tier === "T3" && blockedT3.has(scenario.id) ? "blocked (setup)" : "missing"];
     return [tier, results.every((result) => result.passed) ? `pass (${results.length})` : `FAIL (${results.filter((result) => !result.passed).length}/${results.length})`];
   }));
   for (const tier of wanted) {

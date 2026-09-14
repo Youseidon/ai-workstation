@@ -12,7 +12,7 @@ export const HARNESS_GUARD_EXIT_CODE = 78;
 
 export class HarnessGuardError extends Error {
   constructor(
-    readonly code: "harness_real_root" | "harness_settings_outside_root" | "harness_non_loopback_url" | "harness_operator_bot" | "harness_invalid_override",
+    readonly code: "harness_real_root" | "harness_settings_outside_root" | "harness_non_loopback_url" | "harness_operator_bot" | "harness_unregistered_bot" | "harness_invalid_override",
     message: string,
   ) {
     super(message);
@@ -71,10 +71,18 @@ export function assertLoopbackUrl(name: string, value: string): URL {
   return url;
 }
 
-/** The harness may only ever poll a registered test bot, never the operator's own bot. */
-export function assertNotOperatorBot(botId: number | string, forbiddenIds: string | undefined): void {
-  const forbidden = (forbiddenIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-  if (forbidden.includes(String(botId))) {
+/**
+ * The harness may only ever poll a registered test bot, never the operator's
+ * own bot. Both lists hold bot ids from getMe, never tokens; an empty test
+ * bot list refuses every bot, so a harness server started without one cannot
+ * poll whatever token happens to be configured.
+ */
+export function assertHarnessBot(botId: number | string, ids: { forbidden: string | undefined; testBots: string | undefined }): void {
+  const list = (value: string | undefined) => (value ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  if (list(ids.forbidden).includes(String(botId))) {
     throw new HarnessGuardError("harness_operator_bot", `Harness mode refuses bot ${String(botId)}: it is registered as the operator's own bot.`);
+  }
+  if (!list(ids.testBots).includes(String(botId))) {
+    throw new HarnessGuardError("harness_unregistered_bot", `Harness mode refuses bot ${String(botId)}: it is not the registered test bot.`);
   }
 }

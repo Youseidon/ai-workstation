@@ -599,8 +599,10 @@ tracker), and a final "publish a release report" step duplicating
     1. Commit the L1 work in reviewable pieces (above). DONE 2026-09-14.
     2. Fix the Claude defect with typed SDK tools (above). DONE 2026-09-14.
     3. Harness slices H0 to H4 (foundations, orchestrator and guard, fake provider CLI, fake Telegram, time seams). DONE 2026-09-15.
-    4. Harness slice H5: test-design pass for L1, then L1 scenarios on the fake backend. DONE 2026-09-15 except: merged code coverage script has a known merge bug (see `e2e/scripts/coverage.mjs`), should rows S-L1-20 and S-L1-26 not implemented, burn-in not yet run. T1: 62 passing; L1 matrix gate passes with no must gaps.
+    4. Harness slice H5: test-design pass for L1, then L1 scenarios on the fake backend. DONE 2026-09-15 except: should rows S-L1-20 and S-L1-26 not implemented. T1: 62 passing; L1 matrix gate passes with no must gaps. The merged coverage bug was fixed 2026-09-15 (Playwright was deleting T0's raw data); burn-in runs with H6's T1 changes.
     5. Harness slice H6: real Telegram backend, test bot, real Claude and Codex scenarios.
+       Code DONE 2026-09-15 with scenario table [`docs/e2e-scenarios/h6.md`](../e2e-scenarios/h6.md): route proxy, `TelegramUserPhone`, test-bot allowlist guard, boot preflight that drops stale updates, live setup ([`docs/e2e-live-setup.md`](../e2e-live-setup.md)), contract recording, and T3 specs for every T3 row of l1.md, h6.md and the Claude tool table.
+       T0 and T1 rows pass. Every T3 row is blocked on the operator's one-time setup (test bot, API credentials, client sign-in); `npm run e2e:live` lists them.
     6. Run the L1 rows through the harness (T1 and T3) plus the phone look check; finish the remaining close-out items above; mark steps 6 and 7 DONE.
     7. Harness slices H7 (UI coverage) and H8 (workflow integration). H7 may run in parallel with L3.
     8. Step 7b (L3).

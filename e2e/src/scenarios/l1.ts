@@ -458,7 +458,7 @@ export async function strangersCannotAct({ harness, phone }: L1Context): Promise
 
 /** S-L1-28: no token in DTOs, settings, operations, logs, database or the agent process environment. */
 export async function tokenNeverExposed({ harness, phone }: L1Context): Promise<void> {
-  const token = harness.telegramBot!.token;
+  const token = harness.telegramToken();
   await blockTask(harness, phone, { title: title("Sweep fixture") });
   for (const path of ["/api/task-control/telegram", "/api/task-control/capability", "/api/settings", "/api/operations", "/api/sessions"]) {
     const body = JSON.stringify(await state.get(path));
@@ -467,7 +467,7 @@ export async function tokenNeverExposed({ harness, phone }: L1Context): Promise<
   }
   const status = await telegramStatus();
   expect(status.tokenConfigured).toBe(true);
-  expect(status.bot?.id).toBe(String(harness.telegramBot!.id));
+  expect(status.bot?.id).toBe(harness.telegramIdentity().id);
   const starts = harness.fakeProvider.log().filter((entry) => entry.event === "start");
   expect(starts.length).toBeGreaterThan(0);
   for (const start of starts) expect(start.inheritedSecrets as string[]).not.toContain("TELEGRAM_BOT_TOKEN");

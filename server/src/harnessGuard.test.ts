@@ -4,9 +4,9 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { HARNESS_GUARD_EXIT_CODE, HarnessGuardError, assertHarnessRoot, assertLoopbackUrl, assertNotOperatorBot } from "./harnessGuard.ts";
+import { HARNESS_GUARD_EXIT_CODE, HarnessGuardError, assertHarnessRoot, assertHarnessBot, assertLoopbackUrl } from "./harnessGuard.ts";
 
-// Scenario IDs refer to docs/e2e-scenarios/h0-h4.md.
+// Scenario IDs refer to docs/e2e-scenarios/h0-h4.md and h6.md.
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -42,19 +42,24 @@ test("S-H3-01: fake URLs must be literal loopback", () => {
   assert.equal(assertLoopbackUrl("X", "http://[::1]:4555").hostname, "[::1]");
 });
 
-test("S-H1-04 (guard part): the operator's bot id is refused, the test bot is accepted", () => {
-  refuses(() => assertNotOperatorBot(12345, "999, 12345"), "harness_operator_bot");
-  assert.doesNotThrow(() => assertNotOperatorBot(777, "999,12345"));
-  assert.doesNotThrow(() => assertNotOperatorBot(777, undefined));
-  const error = (() => {
-    try {
-      assertNotOperatorBot("12345", "12345");
-    } catch (caught) {
-      return caught as Error;
-    }
-    return null;
-  })();
-  assert.match(error?.message ?? "", /12345/);
+test("S-H1-04 (guard part), S-H6-17/18: the operator's bot and any unregistered bot are refused by id; the registered test bot is accepted", () => {
+  refuses(() => assertHarnessBot(12345, { forbidden: "999, 12345", testBots: "12345" }), "harness_operator_bot");
+  refuses(() => assertHarnessBot(777, { forbidden: "999,12345", testBots: "778" }), "harness_unregistered_bot");
+  refuses(() => assertHarnessBot(777, { forbidden: undefined, testBots: undefined }), "harness_unregistered_bot");
+  refuses(() => assertHarnessBot(777, { forbidden: undefined, testBots: " , " }), "harness_unregistered_bot");
+  assert.doesNotThrow(() => assertHarnessBot(777, { forbidden: "999,12345", testBots: "1, 777" }));
+  assert.doesNotThrow(() => assertHarnessBot("777", { forbidden: undefined, testBots: "777" }));
+  for (const [botId, ids, id] of [["12345", { forbidden: "12345", testBots: "12345" }, "12345"], ["4242", { forbidden: "1", testBots: "7" }, "4242"]] as const) {
+    const error = (() => {
+      try {
+        assertHarnessBot(botId, ids);
+      } catch (caught) {
+        return caught as Error;
+      }
+      return null;
+    })();
+    assert.match(error?.message ?? "", new RegExp(id));
+  }
 });
 
 test("S-H1-02: the server process exits with the guard code before opening a database or port", () => {
@@ -73,21 +78,22 @@ test("S-H1-02: the server process exits with the guard code before opening a dat
   }
 });
 
-test("S-H4-04/05/08, S-H3-02: seams are inert outside harness mode, default when unset, and refuse bad values", async () => {
+test("S-H4-04/05/08, S-H3-02, S-H6-15 (server part): seams are inert outside harness mode, default when unset, and refuse bad values", async () => {
   const { readHarnessSeams } = await import("./harnessSeams.ts");
   const overrides = {
     AGENT_CONSOLE_HARNESS_TELEGRAM_API_BASE_URL: "http://127.0.0.1:9999",
     AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: "123",
+    AGENT_CONSOLE_HARNESS_TEST_BOT_IDS: "456",
     AGENT_CONSOLE_HARNESS_ACTION_TTL_MS: "3000",
     AGENT_CONSOLE_HARNESS_PAIRING_TTL_MS: "3000",
     AGENT_CONSOLE_HARNESS_QUOTA_FRESHNESS_MS: "3000",
     AGENT_CONSOLE_HARNESS_TELEGRAM_POLL_TIMEOUT_SECONDS: "2",
   };
-  const none = { telegramApiBaseUrl: null, forbiddenBotIds: null, actionTtlMs: null, pairingTtlMs: null, quotaFreshnessMs: null, telegramPollTimeoutSeconds: null };
+  const none = { telegramApiBaseUrl: null, forbiddenBotIds: null, testBotIds: null, actionTtlMs: null, pairingTtlMs: null, quotaFreshnessMs: null, telegramPollTimeoutSeconds: null };
   assert.deepEqual(readHarnessSeams({ ...overrides }), none);
   assert.deepEqual(readHarnessSeams({ ...overrides, AGENT_CONSOLE_HARNESS: "true" }), none);
   assert.deepEqual(readHarnessSeams({ AGENT_CONSOLE_HARNESS: "1" }), none);
-  assert.deepEqual(readHarnessSeams({ ...overrides, AGENT_CONSOLE_HARNESS: "1" }), { telegramApiBaseUrl: "http://127.0.0.1:9999", forbiddenBotIds: "123", actionTtlMs: 3000, pairingTtlMs: 3000, quotaFreshnessMs: 3000, telegramPollTimeoutSeconds: 2 });
+  assert.deepEqual(readHarnessSeams({ ...overrides, AGENT_CONSOLE_HARNESS: "1" }), { telegramApiBaseUrl: "http://127.0.0.1:9999", forbiddenBotIds: "123", testBotIds: "456", actionTtlMs: 3000, pairingTtlMs: 3000, quotaFreshnessMs: 3000, telegramPollTimeoutSeconds: 2 });
   for (const bad of ["0", "-5", "abc", "1.5", "999999999999"]) {
     refuses(() => readHarnessSeams({ AGENT_CONSOLE_HARNESS: "1", AGENT_CONSOLE_HARNESS_ACTION_TTL_MS: bad }), "harness_invalid_override");
   }
