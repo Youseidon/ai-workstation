@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import type { PromptPipelineRule, ProviderId, ProviderInfo } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
@@ -73,8 +73,8 @@ export function RuleChip({
   fallbackProvider: ProviderId;
   onChange(patch: RulePatch): void;
 }) {
-  const ref = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
+  // The anchor is captured on click so render never reads a ref.
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
 
   const label =
     kind === "done" ? onDoneChip(rule.onDone) : kind === "blocked" ? onBlockedChip(rule) : overrideChip(rule) ?? "inherit";
@@ -85,19 +85,19 @@ export function RuleChip({
       ? providerTheme[rule.recoverProvider]
       : null;
 
-  const close = useCallback(() => setOpen(false), []);
+  const close = useCallback(() => setAnchor(null), []);
 
   return (
     <>
       <button
-        ref={ref}
         type="button"
         disabled={disabled}
         title={disabled ? "Rules lock while this station is running" : `Edit ${kind} rule`}
         onClick={(event) => {
           event.stopPropagation();
           if (disabled) return;
-          setOpen((current) => !current);
+          const rect = event.currentTarget.getBoundingClientRect();
+          setAnchor((current) => (current === null ? rect : null));
         }}
         className={cn(
           "rounded-full px-1.5 py-px text-[10px] uppercase tracking-wider ring-1 ring-inset transition-colors",
@@ -112,14 +112,14 @@ export function RuleChip({
       >
         {label}
       </button>
-      {open && ref.current !== null && (
+      {anchor !== null && (
         <RulePopover
           kind={kind}
           rule={rule}
           providers={providers}
           models={models}
           fallbackProvider={fallbackProvider}
-          anchor={ref.current.getBoundingClientRect()}
+          anchor={anchor}
           onChange={(patch) => {
             onChange(patch);
           }}

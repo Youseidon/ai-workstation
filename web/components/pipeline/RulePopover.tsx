@@ -13,7 +13,7 @@ import { onBlockedChip, onDoneChip } from "./status";
 
 export type RuleKind = "done" | "blocked" | "provider";
 
-export interface RulePatch extends Partial<Omit<PromptPipelineRule, "promptId">> {}
+export type RulePatch = Partial<Omit<PromptPipelineRule, "promptId">>;
 
 interface Props {
   kind: RuleKind;
