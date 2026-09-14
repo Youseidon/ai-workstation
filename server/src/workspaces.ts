@@ -1093,8 +1093,20 @@ export const workspaces = {
     db.prepare("DELETE FROM task_control_actor WHERE id=?").run(id);
   },
   /** Revokes an actor without deleting the actions and receipts that reference it. */
+  /**
+   * Unpairing stops future authority (user-flows B29). Actor ids are stable per
+   * user and chat, so pairing again re-enables the same actor; its outstanding
+   * buttons must not come back to life with it, so they are ended here.
+   */
   disableTaskControlActor(id: string): boolean {
-    return db.prepare("UPDATE task_control_actor SET enabled=0 WHERE id=? AND enabled=1").run(id).changes > 0;
+    return db.transaction(() => {
+      const now = new Date().toISOString();
+      const disabled = db.prepare("UPDATE task_control_actor SET enabled=0 WHERE id=? AND enabled=1").run(id).changes > 0;
+      if (disabled) {
+        db.prepare("UPDATE task_control_action SET expires_at=? WHERE actor_id=? AND expires_at>? AND ref NOT IN (SELECT action_ref FROM task_control_receipt)").run(now, id, now);
+      }
+      return disabled;
+    })();
   },
   removeTelegramRecordsForBot(botId: string): void {
     db.transaction(() => {

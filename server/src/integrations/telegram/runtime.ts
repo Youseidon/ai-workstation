@@ -445,7 +445,14 @@ export class TelegramLiveRuntime {
     workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId: null, payload: textPayload(text) });
   }
 
-  private isAwaiting(promptId: number): boolean {
+  /** The question revision a card's buttons were issued for, or null when it has none. */
+  private cardRevision(payload: unknown): string | null {
+    const actions = (payload as { actions?: Array<{ ref?: unknown }> } | undefined)?.actions;
+    const ref = Array.isArray(actions) ? actions.find(action => typeof action.ref === "string")?.ref : undefined;
+    return typeof ref === "string" ? workspaces.taskControlAction(ref)?.expected_revision ?? null : null;
+  }
+
+    private isAwaiting(promptId: number): boolean {
     return workspaces.promptsAwaitingResponse().some(prompt => prompt.id === promptId);
   }
 
@@ -472,6 +479,14 @@ export class TelegramLiveRuntime {
       }
       if (!this.isAwaiting(payload.promptId)) {
         this.enqueueText(session, message.chatId, "This task no longer needs input. Review it in the local app.");
+        return;
+      }
+      // Answers bind to the question they were written for (user-flows 5, B12):
+      // a reply to a superseded card is refused, never rebound to the new question.
+      const revision = workspaces.humanInputState(payload.promptId).revision;
+      if (this.cardRevision(card?.payload) !== revision) {
+        this.enqueueText(session, message.chatId, "Not recorded: that question has changed since this message. Reply to the latest question for this task.");
+        if (!workspaces.hasTaskControlActionForRevision({ promptId: payload.promptId, actorId: actor.id, botId: session.botId, revision })) this.postQuestion(session, payload.promptId, actor.id);
         return;
       }
       this.postQuestion(session, payload.promptId, actor.id, text);

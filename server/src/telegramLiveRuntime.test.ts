@@ -484,3 +484,49 @@ test("remote actions disabled: a live tap is answered with a rejection, marked p
     f.cleanup();
   }
 });
+
+test("a reply to a superseded question card is refused, never rebound to the new question", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    await f.askQuestion();
+    const first = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "first question card");
+    // The question changes (a newer handoff question), so the first card is superseded.
+    await f.askQuestion();
+    await waitFor(() => h.stub.messages.filter(message => message.text.includes(f.title)).length >= 2, "second question card");
+    const sentBefore = h.stub.messages.length;
+    h.stub.send(operator, operatorChat, "Answer written for the old question", first.messageId);
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Not recorded: that question has changed")), "changed-question notice");
+    assert.equal(h.stub.messages.slice(sentBefore).some(message => message.buttons.length > 0), false, "no answer card for the old reply");
+    assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("unpairing ends the chat's outstanding buttons, and pairing again does not revive them", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    const actorId = await pair(h);
+    await f.askQuestion();
+    const question = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    h.stub.send(operator, operatorChat, "Keep the old list", question.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Save answer")), "answer card");
+    h.runtime.removeActor(actorId);
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("This chat was unpaired")), "unpaired notice");
+    await pair(h);
+    h.stub.tap(operator, answerCard, "Save answer");
+    await waitFor(() => h.stub.answered.find(entry => /^Not applied/.test(entry.text)), "rejection of the pre-unpair button");
+    assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null, "a button issued before unpairing changes nothing");
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
