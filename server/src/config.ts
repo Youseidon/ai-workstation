@@ -1,12 +1,24 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
+import { HARNESS_GUARD_EXIT_CODE, HarnessGuardError, assertHarnessRoot, isHarnessMode } from "./harnessGuard.ts";
 
 /** Repo root, derived from this file rather than from the cwd of the process. */
 const defaultRepoRoot = resolve(fileURLToPath(import.meta.url), "../../..");
 const repoRoot = process.env.AGENT_CONSOLE_REPO_ROOT?.trim()
   ? resolve(process.env.AGENT_CONSOLE_REPO_ROOT.trim())
   : defaultRepoRoot;
+
+export const harnessMode = isHarnessMode();
+if (harnessMode) {
+  try {
+    assertHarnessRoot({ envRoot: process.env.AGENT_CONSOLE_REPO_ROOT, repoRoot: defaultRepoRoot, settingsFile: process.env.SETTINGS_FILE });
+  } catch (error) {
+    // Exit before anything opens SQLite or binds a port.
+    console.error(`${error instanceof HarnessGuardError ? error.code : "harness_guard"}: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(HARNESS_GUARD_EXIT_CODE);
+  }
+}
 
 // Load .env from the repo root first, then server/.env (the latter wins).
 loadDotenv({ path: resolve(repoRoot, ".env"), quiet: true });
