@@ -6,12 +6,13 @@
  *
  *   node scripts/coverage.mjs [--base <git-ref>] [--skip-t0] [--skip-t1] [-- <playwright args>]
  *
- * KNOWN ISSUE (2026-09-15): the per-line T0/T1 intersection reports lines as uncovered that T0 alone
- * covers (for example harnessGuard.ts). Do not rely on the merged gap list until this is fixed;
- * the per-tier HTML reports under test-results/coverage/{t0,t1} are correct individually.
+ * Everything lives under e2e/coverage/, not test-results/: Playwright empties its output directory
+ * when a run starts, which used to delete T0's raw data before it was reported. A skipped tier
+ * reuses the raw data of its last run; a tier with no report fails the script rather than letting
+ * the merged gap list silently become one tier's list.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,9 +25,12 @@ const playwrightArgs = split === -1 ? [] : args.slice(split + 1);
 const base = own.includes("--base") ? own[own.indexOf("--base") + 1] : "HEAD~1";
 // Raw V8 data from different processes remaps to different branch maps, so T0 and T1 are reported
 // separately and merged by line: a changed line is uncovered only when neither tier ran it.
-const rawT0 = join(e2eDir, "test-results/v8-coverage-t0");
-const rawT1 = join(e2eDir, "test-results/v8-coverage-t1");
-const out = join(e2eDir, "test-results/coverage");
+const coverageDir = join(e2eDir, "coverage");
+const rawT0 = join(coverageDir, "raw-t0");
+const rawT1 = join(coverageDir, "raw-t1");
+const out = join(coverageDir, "reports");
+const skipT0 = own.includes("--skip-t0");
+const skipT1 = own.includes("--skip-t1");
 
 const CRITICAL = [
   "server/src/taskControl.ts",
@@ -38,7 +42,7 @@ const CRITICAL = [
   "server/src/integrations/telegram/",
 ];
 
-for (const dir of [rawT0, rawT1, out]) rmSync(dir, { recursive: true, force: true });
+for (const dir of [out, ...(skipT0 ? [] : [rawT0]), ...(skipT1 ? [] : [rawT1])]) rmSync(dir, { recursive: true, force: true });
 mkdirSync(rawT0, { recursive: true });
 mkdirSync(rawT1, { recursive: true });
 
@@ -48,30 +52,34 @@ function run(label, command, commandArgs, options) {
   if (result.status !== 0) console.warn(`${label} exited ${result.status}; coverage still reported for what ran`);
 }
 
-if (!own.includes("--skip-t0")) {
-  const root = join(e2eDir, "test-results/coverage-t0-root");
+if (!skipT0) {
+  const root = join(coverageDir, "t0-root");
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
   run("T0 server tests", "npm", ["test"], { cwd: join(repoRoot, "server"), env: { ...process.env, NODE_V8_COVERAGE: rawT0, AGENT_CONSOLE_REPO_ROOT: root } });
 }
-if (!own.includes("--skip-t1")) {
+if (!skipT1) {
   run("T1 harness scenarios", "npx", ["playwright", "test", "--project=t1", ...playwrightArgs], { cwd: e2eDir, env: { ...process.env, E2E_COVERAGE_DIR: rawT1 } });
 }
 
 const reports = [];
 for (const [tier, raw] of [["t0", rawT0], ["t1", rawT1]]) {
   const dir = join(out, tier);
+  if (readdirSync(raw).length === 0) {
+    console.error(`no ${tier} coverage data in ${raw} (run without --skip-${tier} first)`);
+    process.exit(1);
+  }
   run(`c8 report (${tier})`, "npx", ["c8", "report", "--temp-directory", raw, "--reports-dir", dir, "--src", repoRoot, "--include", "server/src/**/*.ts", "--exclude", "server/src/**/*.test.ts", "--reporter", "json", "--reporter", "text-summary", "--reporter", "html", "--exclude-after-remap"], { cwd: repoRoot });
   const finalPath = join(dir, "coverage-final.json");
-  if (existsSync(finalPath)) reports.push(JSON.parse(readFileSync(finalPath, "utf8")));
+  if (!existsSync(finalPath)) {
+    console.error(`c8 produced no ${tier} coverage report from ${raw}`);
+    process.exit(1);
+  }
+  reports.push(JSON.parse(readFileSync(finalPath, "utf8")));
 }
 
 const changed = spawnSync("git", ["diff", "--name-only", base, "--", "server/src"], { cwd: repoRoot, encoding: "utf8" }).stdout.split("\n").filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"));
 const critical = changed.filter((file) => CRITICAL.some((prefix) => file === prefix || (prefix.endsWith("/") && file.startsWith(prefix))));
-if (reports.length === 0) {
-  console.error("no coverage report was produced");
-  process.exit(1);
-}
 console.log(`\n== Uncovered code in changed critical files (base ${base})`);
 if (critical.length === 0) console.log("No critical server files changed.");
 /** Line numbers added or modified since `base`, from the zero-context diff hunks. */
