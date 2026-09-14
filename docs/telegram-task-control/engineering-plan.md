@@ -19,11 +19,11 @@ current source and tests support the claimed behaviour.
 | Pipeline resume preservation after local answer | Implemented and verified by code/test inspection | The scheduler resumes owning suite/named pipelines and preserves saved holds on failed resume. This does not establish cross-workstation delegation or crash-safe orphan-process reconciliation. |
 | Provider detection, settings and account usage telemetry | Partially implemented | Existing adapters expose availability, permission display and usage where providers support it. There is no capability contract for billing attribution, subscription delegation, quota-window applicability, process supervision or secret isolation. |
 | Local handoff brief/successor workflow | Partially implemented | `handoffCoordinator.ts` can run an LLM handoff and start a local successor. It is not Task Transfer: it lacks factual no-LLM package capture, shared Git records, named teammate acceptance and return/apply review. |
-| Workspace/run concurrency | Partially implemented | `runHub` and pipeline queues prevent many local concurrent starts by workspace ID. `runService.ts` checks `runHub` after provider detection and has no durable effective-directory reservation shared by all start paths. |
-| Startup recovery | Partially implemented | Startup marks DB rows interrupted and handoffs failed. It does not prove managed subprocesses stopped, locate exact attempts after crash or protect delegation holds. |
+| Workspace/run concurrency | Implemented (M2) | Migration 19 adds `workspace_start_intent` with a unique active index on effective directory; `reserveStartIntent` runs before awaited provider detection and is shared by all start paths. Verified by aliased-path race tests. |
+| Startup recovery | Implemented for ownership (M2/M2d); process proof still absent | `reconcileStartIntentsForRestart` classifies unreleased intents as `START_UNKNOWN`, recovery refuses them, and `classifyStartUnknown` lets an operator record known-stopped/no-spawn to release the gate. The app still cannot itself prove an OS subprocess stopped; that remains an operator confirmation, not a machine fact. |
 | Telegram enrollment, polling, inbox/outbox and rendering | M1 complete with fakes | Shared task-control contracts, SQLite migrations 16-18, settings-backed capability, fake pairing, durable fake inbox/cursor records, sanitized rendering and a durable outbox queue exist. No live Telegram client, real long-poll daemon, real setup/pairing UX or real device enrollment is implemented. |
 | Remote actor authorization and command receipts | M1 complete with fakes | Opaque action references, fake callback validation, adapter-side fake callback dispatch and idempotent receipts exist for personal Save answer and Answer and resume. Real Bot API callback receipting and shared-command publication are not implemented. |
-| Quota advisor | Not implemented | Usage polling exists, but no 5% advisor, freshness model, deduplication, action choices or non-mutating warning state exists. |
+| Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. Delivery to a phone is still fake-outbox only, pending L1. |
 | Shared Git control history and package/result refs | Not implemented | No administrative checkout, roster validation, signed control branches, package manifests, result application or force-rewrite detection exist. |
 | Named teammate transfer | Not implemented | No offer, claim, receiver-local policy comparison, isolated checkout, return/apply or further-handoff lifecycle is implemented. |
 | Personal-subscription teammate execution | Blocked by external evidence | Gate G01 requires provider-supported delegation and quota/billing evidence. Development may use fixtures, but affected production execution must remain disabled. |
@@ -65,7 +65,11 @@ Observed discrepancies:
 | RTC-13 | Mid-run shared questions | The requester can answer the executor bot while the source workstation is offline. | D13, I07, B09-B12, B22 | Shared question/answer records, executor bot rendering and resume validation. Depends on RTC-10/11. | Offline source test with current executor receiving answer and resuming once. | M5 |
 | RTC-14 | Return, review and apply | Returned work is inspected and applied once by requester, without overwriting divergence. | D12, I06-I09, protocol section 10 | Add result refs, apply intent, manifest comparison, integration checkout and pipeline hold reconciliation. | Apply, apply-twice, divergence and crash-mid-apply tests. | M5 |
 | RTC-15 | Further handoff, cancel and close | One task conversation survives blockers, revisions, cancellation and later takeovers. | D13, I02, B25-B29 | Epoch advancement, approval invalidation, topic close best-effort reporting and lifecycle recovery. | Further-handoff, cancel-race, closed-topic and revocation tests. | M5 |
-| RTC-16 | Operational release evidence | Development can progress with fixtures, while production capabilities remain blocked until gates pass. | G01-G04 | Add release checklist, threat model, backup/restore and governance records. | Evidence file references provider docs/tests; unresolved gates shown as disabled capabilities. | M6 |
+| RTC-16 | Backup, restore and rollback | A local SQLite database holding all task history can be recovered after corruption, bad migration or failed upgrade. | D01 | Add a documented and exercised backup/restore path for the app database, plus per-migration rollback notes. | Restore a backup into an isolated root and confirm task/run history survives a simulated bad migration. | M6 |
+| RTC-17 | Live Telegram Bot API client | Messages actually reach the operator's phone instead of an in-memory fake. | D02, D15, protocol section 7 | Implement `TelegramBotApi` against real `getUpdates` long-poll and `sendMessage`; persist updates before advancing the offset, durable retry with server-specified backoff, never log tokens embedded in Bot API URLs. | Live smoke test against a real bot; rate-limit/429 and network-failure handling; duplicate update rejection. | L1 |
+| RTC-18 | Live bot credential and pairing setup | An operator can enrol their own bot without pasting a secret into a UI label field or a committed file. | D01, D02, G02 | Add real token storage outside the settings label field and outside git; real pairing/enrolment against a live chat ID reusing existing challenge validation. | Token never appears in API responses, logs, DTOs or the database dump; pairing rejects a wrong chat/actor live. | L1 |
+| RTC-19 | Live adapter runtime wiring | The adapter actually runs: today `TelegramAdapter` is instantiated nowhere outside its own test. | I03, D15 | Instantiate and supervise the adapter in server startup when transport is live and a token is configured; reconnect/backoff lifecycle and visible transport status; default-off preserved. | Server start/stop with transport live and disabled; reconnect after forced network failure; no polling when unconfigured. | L1 |
+| RTC-20 | Live personal operation evidence | The capability is judged by a real delivered message, not a fixture. | D16 | Record a real end-to-end operation: question posted to the operator's phone, button tap, local state change. | One live run evidencing Save answer and Answer and resume from the phone, plus the observed failure behaviour when the workstation is offline. | L1 |
 
 Product questions to keep separate from engineering defaults:
 
@@ -230,35 +234,100 @@ Definition of done: requester reviews and applies a returned result once; partia
 or failed results remain accurately labelled and do not advance the pipeline as
 complete.
 
-### M6: Operational Hardening and Release Gates
+### M6: Durability and Release Checks
 
-Scope: RTC-16 plus release readiness for the selected production subset.
+Scope: RTC-16 plus repeatable checks for whatever capabilities are enabled.
 
-Entry criteria: M1-M5 development evidence complete or explicitly scoped out.
+Entry criteria: the capabilities being released are implemented and evidenced.
 
 Tasks and files:
 
-- Add threat model, operational runbook, backup/restore, upgrade/rollback and
-  gate evidence documents.
-- Add CI workflows or equivalent documented manual release checklist.
-- Run provider-specific certification for any production-enabled teammate
-  execution path.
+- Add an exercised backup/restore path for the app SQLite database and
+  per-migration rollback notes.
+- Add CI workflows running the existing typecheck/lint/test commands, or record
+  why the manual equivalent is sufficient for a single-operator tool.
 
-Behaviour: unresolved gates block only affected production capabilities and are
-visible to users. Passing tests alone is not security or provider eligibility
-evidence.
+Behaviour: unresolved gates block only affected capabilities and are visible to
+users. Passing tests alone is not security or provider eligibility evidence.
 
-Tests/gates/rollback: full acceptance matrix T01-T36 for enabled capabilities,
-manual release review and documented rollback per schema/capability.
+Tests/gates/rollback: relevant T01-T36 acceptance scenarios for enabled
+capabilities; a restore drill against an isolated database root.
 
-Definition of done: selected release scope has evidence for every enabled
-capability; disabled capabilities explain their missing gate.
+Definition of done: a corrupted or bad-migrated database can be restored with
+task history intact, and the enabled capability set has repeatable checks.
+
+Removed from this milestone on 2026-09-14 as ceremony for a single-operator
+local tool: threat-model document, operational runbook, separate gate-evidence
+documents, provider-specific certification paperwork and a published release
+report. `implementation.md` already is the evidence record; G01-G04 already
+carry their own required evidence. Reinstate these only if this tool is ever
+released to people other than its operator.
+
+## 3a. Live enablement track (L)
+
+The L track carries the work that turns the fake transport into a real one. It
+is deliberately numbered separately from M1-M6 because it does not sit in that
+dependency chain: L1 depends only on M1 and M2, both complete, so it is
+buildable now, while L2 is blocked behind the transfer machinery of M3/M4.
+
+### L1: Live Personal Telegram Control
+
+Scope: RTC-17 through RTC-20, for one operator and their own bot. Exclusions:
+group topics, teammate offers, Git transfer, any second workstation.
+
+Entry criteria: M1 and M2 complete (both are); operator has created a bot and
+holds its token. No other gate applies (D16).
+
+Gates: G01-G03 do not apply, as no teammate, subscription delegation or shared
+remote is involved. G04 does not apply per D16; the data audience is the
+operator's own private chat.
+
+Tasks and files:
+
+- Implement a real `TelegramBotApi` in `server/src/integrations/telegram/`
+  alongside the existing fake, selected by configuration.
+- Add real token storage and enrolment; keep `taskControl.botId` as the label
+  field it already is and never put the secret there.
+- Wire and supervise `TelegramAdapter` in server startup, which today runs
+  nowhere outside its own test.
+
+Behaviour: the existing `TaskControlService` validation, receipts, revision
+binding and sanitisation are unchanged and already tested; only the transport
+becomes real. Default-off is preserved; an unconfigured install polls nothing.
+
+Tests/gates/rollback: existing fake-transport tests continue to run unchanged as
+the regression suite; new coverage for 429/backoff, reconnect and offset
+durability against a stubbed HTTP layer. Rollback is switching transport back to
+fake or disabled, which leaves all local task state untouched.
+
+Definition of done: a real message from the operator's own bot arrives on the
+operator's own phone; a button tap there performs Save answer and, separately,
+Answer and resume, evidenced by an actual local run. A fixture does not satisfy
+this milestone.
+
+### L2: Live Group Telegram Surface
+
+Scope: the shared group/topic surface for teammate work: offer visibility,
+receiver Accept/Decline rendering and shared status in a project topic.
+
+Entry criteria: L1 complete, plus M3 and M4, since there is no assignment to
+render and no receiver to accept until packages and claims exist.
+
+Gates: G01, G02, G03 and G04 all apply here in full.
+
+Definition of done: an offer published by M3/M4 machinery is visible in the team
+topic and a named receiver's acceptance starts exactly one linked task on their
+own workstation. Not startable until its entry criteria are met.
 
 ## 4. Critical path and feasibility experiments
 
-Critical path: RTC-01 → RTC-02 → RTC-03 → RTC-04 establishes useful personal
-control. Cross-workstation work then depends on RTC-06/07 safety before RTC-09/10
-storage, then RTC-11/12 receiver execution, then RTC-14 apply.
+Critical path: RTC-01 → RTC-02 → RTC-03 → RTC-04 establishes the personal
+control *logic*, but against a fake transport it delivers nothing to a phone and
+is therefore not yet useful to an operator. RTC-17 → RTC-19 (L1) is what makes
+that logic reachable, and it is the shortest path to the first genuinely useful
+capability. Cross-workstation work is a separate chain: RTC-06/07 safety (done)
+before RTC-09/10 storage, then RTC-11/12 receiver execution, then RTC-14 apply,
+with L2 rendering it in a group topic only once those exist.
 
 High-risk experiments to run before building broad surfaces:
 
@@ -271,15 +340,24 @@ High-risk experiments to run before building broad surfaces:
 - Process supervision: demonstrate START_UNKNOWN handling for crash before spawn,
   after spawn and parent-exit/child-mutating cases.
 
-First implementation-ready milestone: M1. It has a clear user-visible workflow,
-can be built entirely with fakes plus local task records, and does not require
-G01-G04 approval for production teammate execution.
+Next implementation-ready milestone: L1. M1 and M2 are complete, so L1 is
+unblocked today and is the only remaining work between the current state and an
+operator actually controlling tasks from their phone. Building it requires no
+gate resolution (D16), only a bot token its operator creates.
+
+A note this plan got wrong the first time: building M1 entirely against fakes
+was reasonable for proving the ownership, revision and receipt logic, but
+leaving the live transport unscheduled meant the feature could not reach a user
+at all. Fake-first is a testing strategy; it is not a delivery milestone. Future
+milestones that stub an external dependency must schedule the real one in the
+same plan revision.
 
 ## 5. Execution steps to completion
 
-Use this sequence to take the plan from approved design to release. Stop at each
-approval or evidence gate; do not silently continue into the next production
-capability when its gate is unresolved.
+Use this sequence to take the design to a working, released capability. Stop at
+each evidence gate; do not silently continue into the next production capability
+when its gate is unresolved. A step is not complete because its code exists: it
+is complete when its stated evidence exists.
 
 Commit discipline for this plan:
 
@@ -299,42 +377,50 @@ Commit discipline for this plan:
   real chat, private remote URLs, local database files or generated test
   artifacts. Production/external setup evidence belongs in redacted docs only.
 
-1. Approve this plan and standards.
-   Confirm M1 as the first implementation slice, confirm that all new
-   integrations stay default-off, and record any design changes before coding.
+Steps removed on 2026-09-14 as process ceremony that produced no artifact: a
+plan-approval step and an issue-creation step (this repository has no issue
+tracker), and a final "publish a release report" step duplicating
+`implementation.md`. Completed steps are kept for sequence, marked DONE.
 
-2. Create implementation issues from RTC-01 through RTC-16.
-   Each issue must name its user benefit, affected modules, acceptance tests,
-   external gates and rollback path. Do not combine unrelated milestones into one
-   broad implementation issue.
+1. Prepare isolated test infrastructure. DONE.
+   A repeatable way to run server tests against a temporary app database via
+   `AGENT_CONSOLE_REPO_ROOT`, plus fake Telegram/provider adapters. This is a
+   prerequisite for any claim of verified behaviour.
 
-3. Prepare isolated test infrastructure.
-   Add or document a repeatable way to run server tests against a temporary app
-   database, fake Telegram Bot API, fake Git remote and fake provider adapters.
-   This is a prerequisite for M1 and blocks claims of verified behaviour.
-
-4. Implement M1 behind disabled local settings.
+2. Implement M1 behind disabled local settings. DONE.
    Build setup state, Telegram pairing, durable inbox/outbox, personal task
    rendering and Save answer / Answer and resume routing for saved tasks only.
    Use fake Telegram tests first. Do not configure a live bot unless explicitly
    authorized.
 
-5. Verify and review M1.
-   Required evidence: wrong actor/chat/topic rejection, replay/expiry handling,
+3. Verify and review M1. DONE.
+   Evidence recorded: wrong actor/chat/topic rejection, replay/expiry handling,
    send retry recovery, save-only without provider, resume-once behaviour and no
    raw transcript/secret/localhost leakage. Passing M1 does not imply teammate
-   transfer is implemented.
+   transfer is implemented, nor that any message reaches a phone.
 
-6. Implement M2 local safety.
-   Add effective-directory reservation, durable start intent, START_UNKNOWN
-   recovery and quota advisor state. Ensure UI, pipeline, retry, recovery and
-   Telegram entry points share the same ownership checks.
+4. Implement M2 local safety. DONE, including M2b/M2c/M2d continuations.
+   Effective-directory reservation, durable start intent, START_UNKNOWN
+   classification and recovery, and quota advisor state, shared by UI, pipeline,
+   retry, recovery and Telegram entry points.
 
-7. Verify and review M2.
-   Required evidence: concurrent aliased-workspace starts produce one attempt,
+5. Verify and review M2. DONE.
+   Evidence recorded: concurrent aliased-workspace starts produce one attempt,
    crash-before/after-spawn cases are classified, parent-exit/child-running is
    not released automatically, and 5% quota warnings never pause, switch provider
    or request takeover without explicit action.
+
+6. Implement L1 live personal Telegram. NEXT.
+   Implement the real Bot API client, real token storage and enrolment, and
+   adapter startup wiring. Keep the fake transport as the regression suite. The
+   operator supplies the bot token; do not generate, request or store a live
+   credential without an explicit instruction to do so.
+
+7. Verify L1 against a real bot.
+   Required evidence: a real message received on the operator's phone, Save
+   answer and Answer and resume each driving one real local run, correct
+   behaviour when the workstation is offline, and no token in any log, API
+   response, DTO or database dump. Fixtures cannot satisfy this step.
 
 8. Run feasibility experiments for G01-G03.
    Record provider delegation/billing facts, provider/runtime secret-isolation
@@ -369,40 +455,40 @@ Commit discipline for this plan:
     revalidates, permission deltas are local to executor, and unknown enforcement
     blocks start.
 
-14. Resolve G01 and G02 before enabling production teammate execution.
+14. Implement L2 live group Telegram surface.
+    Render offers, Accept/Decline and shared status in the team topic against the
+    real Bot API built in L1. Blocked until steps 12-13 exist, since there is no
+    assignment to render before then.
+
+15. Resolve G01 and G02 before enabling production teammate execution.
     Provider-supported subscription delegation and tested credential isolation
     are release blockers. Do not use API billing, owner consent alone, shared
     credentials or warning-only sandboxing as substitutes.
 
-15. Implement M5 shared questions and return/apply.
+16. Implement M5 shared questions and return/apply.
     Add executor-bot mid-run questions, requester answers while source is
     offline, result publication, Review and apply, apply intent, manifest
     reconciliation, crash recovery, cancellation and further handoff epochs.
 
-16. Verify and review M5.
+17. Verify and review M5.
     Required evidence: offline requester answer resumes once, returned work is
     labelled full/partial/error accurately, apply refuses divergence, repeated
     apply is idempotent, crash-mid-apply does not advance the pipeline
     prematurely, and further handoff preserves task identity and decision
     ownership.
 
-17. Complete M6 operational hardening.
-    Add threat model, release checklist, runbook, backup/restore, upgrade and
-    rollback procedures, emergency controls, observability and CI or an approved
-    manual-release substitute.
+18. Complete M6 durability and release checks.
+    Add an exercised database backup/restore path, per-migration rollback notes,
+    and CI running the existing typecheck/lint/test commands.
 
-18. Obtain G04 governance approval.
+19. Obtain G04 governance approval. Team/enterprise scope only.
     Record team-approved Telegram audience, repository/storage location,
     retention/deletion expectations and operational owners before claiming an
-    enterprise or team production release.
+    enterprise or team production release. Per D16 this does not gate L1
+    personal control, which needs only its operator's own setup decision.
 
-19. Run final release verification for the enabled subset.
-    Execute the relevant T01-T36 acceptance scenarios, mandatory type/lint/build
-    checks, browser checks for changed UI and any explicitly authorized live
-    smoke tests. Record exact commands, fixture/live distinction and outcomes.
-
-20. Publish an evidence-based release report.
-    List implemented, partial, disabled and blocked capabilities; include
-    unresolved gates; state whether live messages, remote Git mutations or paid
-    provider execution occurred; and document rollback steps for the enabled
-    features.
+20. Run release verification for the enabled subset.
+    Execute the relevant T01-T36 acceptance scenarios, the required
+    type/lint/test checks, browser checks for changed UI and any explicitly
+    authorized live smoke tests. Record exact commands, the fixture/live
+    distinction and outcomes in `implementation.md`.

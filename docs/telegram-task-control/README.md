@@ -1,7 +1,10 @@
 # Telegram task control and teammate takeover
 
-Design baseline: 2026-09-13. Status: local answer-control foundation implemented;
-Telegram and teammate transfer are not implemented. See
+Design baseline: 2026-09-13. Revised 2026-09-14 to separate personal and
+teammate enablement (D16). Status: local answer-control foundation implemented
+against a fake Telegram transport; no live bot exists yet. Personal live
+Telegram control is scheduled as milestone L1 and is not blocked by any
+unresolved gate. Teammate transfer remains unimplemented and gated. See
 [implementation status](implementation.md#0-current-implementation-status).
 
 This enhancement lets a person control their own workstation tasks through
@@ -50,6 +53,7 @@ Protocol rules take precedence over illustrative UI wording.
 | D13 | Keep the same shared conversation across blockers, revisions and subsequent takeovers. Preserve the original requester and task identity. |
 | D14 | Personal-subscription execution is the first product objective. Do not silently replace it with paid API execution. |
 | D15 | Internet-connected Telegram is not evidence that a workstation is online. Never label a request accepted, running or stopped without the corresponding durable acknowledgement. |
+| D16 | Personal live Telegram control and teammate task transfer are separately enablable capabilities with separate gates. Personal single-operator control requires only that operator's own local setup and MUST NOT be blocked by the teammate-delegation gates G01-G03. A fake transport is a development tool, not a shipping state: personal control is not complete until a real bot delivers a real message. |
 
 Superseded ideas: a centrally hosted full app, a mandatory relay, Git as the human
 chat interface, automatic stopping at 5%, a mandatory second takeover approval,
@@ -104,8 +108,10 @@ linked task, not a copied pipeline or a second authoritative task database.
   is a later feature, not a hidden second approval in the named-receiver path.
 - One bot per registered workstation. Multiple devices for one person need
   explicit IDs and routing; do not clone bot tokens or workstation identities.
-- Personal use requires no Git remote. Cross-workstation tasks require an
-  enrolled private remote and published packages.
+- Personal control and teammate transfer enable independently (D16). Personal
+  use requires only a bot token and a chat with its operator: no Git remote, no
+  roster, no second workstation, and no resolution of G01-G03. Cross-workstation
+  tasks require an enrolled private remote, published packages and those gates.
 - Workstations use outbound Telegram polling and Git fetch/push. Do not expose
   the current unauthenticated local HTTP/WebSocket interface to the internet.
 - Handoffs preserve an approved checkpoint, not every live keystroke, process
@@ -148,7 +154,7 @@ are deliberately not invented:
 | G01: subscription delegation | Provider-supported way for an owner-operated worker to perform another teammate's task under the applicable subscription; identify actual quota/billing bucket. | Disable that provider's teammate-sponsored execution. Personal notifications and same-owner control can still be built and tested. |
 | G02: permissions and secrets | Selected provider/runtime can enforce required local limits and protect control-plane credentials from task tools. | Disable unattended team execution for an uncertified adapter/configuration; do not bypass controls or substitute API billing. |
 | G03: remote integrity | Git host protects control refs from force updates/deletion; device identities and signatures are verified. | Disable cross-workstation execution; retain personal use and local package preview. |
-| G04: governance | Team chooses acceptable data audience, storage location, retention and operational owner. | Use conservative previews during development; do not claim enterprise deployment readiness. |
+| G04: team governance | Team chooses acceptable data audience, storage location, retention and operational owner. Applies to team/enterprise scope only. | Use conservative previews during development; do not claim enterprise deployment readiness. Per D16 this gate does NOT apply to personal single-operator control: one operator sending their own task titles/summaries to their own private chat is that operator's own setup decision, and requires no team governance record. |
 
 Claude is the initial feasibility candidate because it motivated the request;
 this does not establish Claude subscription delegation as supported. Anthropic's
