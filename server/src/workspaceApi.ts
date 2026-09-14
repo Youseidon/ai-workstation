@@ -8,7 +8,7 @@ import { isProviderId } from "@agent-console/shared";
 import { startExecute } from "./runService.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
-import { taskControl } from "./taskControl.ts";
+import { taskControl, withLiveTokenState } from "./taskControl.ts";
 import { telegramRuntime } from "./integrations/telegram/runtime.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
@@ -65,7 +65,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     if(url.pathname==="/api/task-control/capability"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{capability:taskControl.capability()});
+      else json(res,200,{capability:withLiveTokenState(taskControl.capability(),telegramRuntime.status().tokenConfigured)});
       return true;
     }
     // Live Telegram setup (L1). Local-only like every route here; responses carry

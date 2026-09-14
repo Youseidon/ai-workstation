@@ -312,3 +312,14 @@ test("task-control rejects remote callbacks while controls are disabled", async 
     (error: unknown) => error instanceof WorkspaceError && error.code === "remote_actions_disabled",
   );
 });
+
+test("capability reports a missing live token instead of 'Telegram configured'", async () => {
+  const { withLiveTokenState } = await import("./taskControl.ts");
+  const configured = { enabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram" as const, status: "ready" as const, setup: "telegram_configured" as const, reason: "Local Telegram setup is configured and gated for personal task-control actions.", gates: [] };
+  assert.deepEqual(withLiveTokenState(configured, true), configured);
+  const missing = withLiveTokenState(configured, false);
+  assert.equal(missing.setup, "telegram_missing_token");
+  assert.match(missing.reason, /TELEGRAM_BOT_TOKEN/);
+  const fake = { ...configured, transport: "fake_telegram" as const, setup: "fake_only" as const };
+  assert.deepEqual(withLiveTokenState(fake, false), fake);
+});

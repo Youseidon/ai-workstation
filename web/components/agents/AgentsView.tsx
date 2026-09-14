@@ -37,6 +37,13 @@ import { workspaceApi } from "@/lib/workspacesApi";
 import { TelegramSetupPanel } from "./TelegramSetupPanel";
 import { UsageBlock } from "./usage";
 
+const CAPABILITY_BADGE: Record<TaskControlCapability["setup"], { label: string; tone: Tone }> = {
+  disabled: { label: "disabled", tone: "neutral" },
+  fake_only: { label: "fake-only", tone: "info" },
+  telegram_missing_token: { label: "Telegram token missing", tone: "warning" },
+  telegram_configured: { label: "Telegram configured", tone: "success" },
+};
+
 const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
   offline: "neutral",
   idle: "neutral",
@@ -277,8 +284,8 @@ export function AgentsView() {
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
               {taskControlCapability !== null && (
-                <Badge tone={taskControlCapability.setup === "telegram_configured" ? "success" : taskControlCapability.setup === "fake_only" ? "info" : "neutral"}>
-                  {taskControlCapability.setup === "telegram_configured" ? "Telegram configured" : taskControlCapability.setup === "fake_only" ? "fake-only" : "disabled"}
+                <Badge tone={CAPABILITY_BADGE[taskControlCapability.setup].tone}>
+                  {CAPABILITY_BADGE[taskControlCapability.setup].label}
                 </Badge>
               )}
             </div>

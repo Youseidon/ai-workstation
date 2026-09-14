@@ -37,6 +37,16 @@ export interface TaskControlQuestionCard {
   actions: Array<{ ref: string; action: TaskControlAction }>;
 }
 
+/**
+ * Settings alone cannot say the live transport is configured: the bot token is
+ * read at boot and never stored in settings. The capability reported to the UI
+ * therefore reflects whether a token was actually loaded.
+ */
+export function withLiveTokenState(capability: TaskControlCapability, tokenConfigured: boolean): TaskControlCapability {
+  if (capability.transport !== "telegram" || tokenConfigured) return capability;
+  return { ...capability, setup: "telegram_missing_token", reason: "Set TELEGRAM_BOT_TOKEN in .env and restart the server." };
+}
+
 export class TaskControlService {
   constructor(private readonly configSource: TaskControlConfig | (() => TaskControlConfig)) {}
 

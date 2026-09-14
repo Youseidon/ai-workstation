@@ -1012,7 +1012,7 @@ export interface TaskControlCapability {
   remoteActionsEnabled: boolean;
   transport: "disabled" | "fake_telegram" | "telegram";
   status: "disabled" | "ready" | "blocked";
-  setup: "disabled" | "fake_only" | "telegram_configured";
+  setup: "disabled" | "fake_only" | "telegram_missing_token" | "telegram_configured";
   reason: string;
   gates: Array<{ id: string; status: "open" | "blocked"; reason: string }>;
 }
