@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { fileHashes, HARNESS_ROOT_PREFIX, realDatabaseHarnessRows, repoRoot } from "../realState.ts";
+import { FakeProvider } from "../drivers/fakeProvider.ts";
 import { ManagedProcess, isPortOpen, waitFor } from "./processes.ts";
 import { describeFindings, sweep, type Secret } from "./sweep.ts";
 import { WEB_DIST_DIR, ensureWebBuild, harnessWebEnv } from "./webBuild.ts";
@@ -30,6 +31,8 @@ export interface EnvironmentOptions {
   realHome?: boolean;
   /** Secrets that must never appear in artifacts, beyond the ones the harness finds itself. */
   secrets?: Secret[];
+  /** Route Grok to the scripted fake agent, on the live Progress API path or the inline path. */
+  fakeProvider?: "live" | "inline";
 }
 
 function dotenv(values: Record<string, string>): string {
@@ -57,6 +60,7 @@ export class HarnessEnvironment {
   readonly homeDir: string;
   readonly server: ManagedProcess;
   readonly web: ManagedProcess;
+  readonly fakeProvider: FakeProvider;
   private readonly realBefore = fileHashes();
   private readonly secrets: Secret[];
   private readonly operatorPortsBefore: Promise<{ api: boolean; web: boolean }>;
@@ -73,7 +77,9 @@ export class HarnessEnvironment {
       join(this.root, ".env"),
       dotenv({ HOST: "127.0.0.1", PORT: String(SERVER_PORT), AGENT_API_BASE_URL: serverUrl, ALLOWED_ORIGINS: webUrl, ...options.env }),
     );
-    writeFileSync(join(this.root, ".agent-console/settings.json"), `${JSON.stringify(options.settings ?? {}, null, 2)}\n`, { mode: 0o600 });
+    this.fakeProvider = new FakeProvider(this.root);
+    const settings = { ...(options.fakeProvider ? FakeProvider.settings(options.fakeProvider) : {}), ...options.settings };
+    writeFileSync(join(this.root, ".agent-console/settings.json"), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
     this.secrets = [...knownSecrets(), ...(options.secrets ?? [])];
 
     this.server = new ManagedProcess("server", {
@@ -90,6 +96,7 @@ export class HarnessEnvironment {
         TZ: "UTC",
         AGENT_CONSOLE_HARNESS: "1",
         AGENT_CONSOLE_REPO_ROOT: this.root,
+        ...FakeProvider.serverEnv(this.root),
         ...options.serverEnv,
       },
       logFile: join(this.logsDir, "server.log"),
@@ -147,6 +154,16 @@ export class HarnessEnvironment {
     return dir;
   }
 
+  /** Read-only query against the harness database, for durable-state assertions. */
+  query<T>(sql: string, ...params: unknown[]): T[] {
+    const db = new Database(join(this.root, ".agent-console/console.sqlite"), { readonly: true, fileMustExist: true });
+    try {
+      return db.prepare(sql).all(...params) as T[];
+    } finally {
+      db.close();
+    }
+  }
+
   /** A consistent single-file copy of the harness database (no WAL), for artifacts and the sweep. */
   databaseCopy(target: string): void {
     const source = join(this.root, ".agent-console/console.sqlite");
@@ -162,8 +179,7 @@ export class HarnessEnvironment {
   /** Copies logs and a database snapshot into a scenario's output directory. */
   collectArtifacts(outputDir: string): void {
     mkdirSync(outputDir, { recursive: true });
-    for (const name of ["server.log", "web.log", "web-build.log"]) {
-      const source = join(this.logsDir, name);
+    for (const [name, source] of [["server.log", join(this.logsDir, "server.log")], ["web.log", join(this.logsDir, "web.log")], ["web-build.log", join(this.logsDir, "web-build.log")], ["fake-provider.log", join(this.fakeProvider.dir, "fake-provider.log")]] as const) {
       if (existsSync(source)) copyFileSync(source, join(outputDir, name));
     }
     this.databaseCopy(join(outputDir, "console.sqlite"));
@@ -177,7 +193,7 @@ export class HarnessEnvironment {
 
     const snapshot = join(this.logsDir, "final-console.sqlite");
     this.databaseCopy(snapshot);
-    const findings = sweep([this.logsDir, ...artifactDirs], this.secrets);
+    const findings = sweep([this.logsDir, this.fakeProvider.dir, ...artifactDirs], this.secrets);
     if (findings.length > 0) problems.push(`token sweep failed:\n${describeFindings(findings)}`);
 
     const pollution = realDatabaseHarnessRows();
