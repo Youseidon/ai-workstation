@@ -115,7 +115,9 @@ async function run() {
   const live = livePath(prompt);
   const inline = prompt.includes("## Offline completion reporting");
   const path = live ? "live" : inline ? "inline" : "custom";
-  log({ event: "start", behavior: scenario.behavior, path, cwd: flags["--cwd"], permissionMode: flags["--permission-mode"], sandbox: flags["--sandbox"] });
+  // Names only, never values: proves which secrets an agent process could have read.
+  const inheritedSecrets = Object.keys(process.env).filter((name) => /TOKEN|SECRET|API_KEY|PASSWORD/i.test(name));
+  log({ event: "start", behavior: scenario.behavior, path, cwd: flags["--cwd"], permissionMode: flags["--permission-mode"], sandbox: flags["--sandbox"], inheritedSecrets });
 
   emit({ type: "system", subtype: "init", sessionId: `fake-${process.pid}` });
   emit({ type: "thought", data: `Fake agent running scenario ${scenario.behavior} on the ${path} path.` });

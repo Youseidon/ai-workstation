@@ -118,6 +118,8 @@ export class HarnessEnvironment {
       TZ: "UTC",
       AGENT_CONSOLE_HARNESS: "1",
       AGENT_CONSOLE_REPO_ROOT: this.root,
+      // Code coverage (plan 12.4): V8 writes the server's coverage here when a coverage run asks for it.
+      ...(process.env.E2E_COVERAGE_DIR ? { NODE_V8_COVERAGE: process.env.E2E_COVERAGE_DIR } : {}),
       ...FakeProvider.serverEnv(this.root),
       ...options.serverEnv,
     };

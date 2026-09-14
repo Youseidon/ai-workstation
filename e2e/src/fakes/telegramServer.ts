@@ -109,6 +109,7 @@ export class FakeTelegramServer {
   private nextTopicId = 1000;
   private outage: "refuse" | "hang" | null = null;
   private duplicateNext = false;
+  private readonly dropResponses = new Map<string, number>();
   /** Real Telegram ignores answers to queries older than about 15 minutes. */
   callbackAnswerWindowMs = 15 * 60_000;
   /** Upper bound on a held getUpdates, so harness teardown never waits 25s. */
@@ -162,6 +163,11 @@ export class FakeTelegramServer {
     if (mode !== null) for (const socket of this.sockets) socket.destroy();
   }
 
+  /** Performs the next `count` calls of `method` but drops the response, as a lost network reply would. */
+  dropNextResponse(method: string, count = 1): void {
+    this.dropResponses.set(method, (this.dropResponses.get(method) ?? 0) + count);
+  }
+
   /** The next getUpdates response is delivered twice (the client's next poll sees it again). */
   duplicateNextDelivery(): void {
     this.duplicateNext = true;
@@ -186,9 +192,11 @@ export class FakeTelegramServer {
   }
 
   /** Taps an inline button; resolves with the toast once the bot answers the callback query, or null. */
-  userTapsButton(bot: FakeBot, user: FakeUser, chat: FakeChat, messageId: number, callbackData: string): string {
-    const message = this.find(chat.id, messageId);
-    if (!message) throw new Error(`message ${messageId} not in chat ${chat.id}`);
+  userTapsButton(bot: FakeBot, user: FakeUser, chat: FakeChat, messageId: number, callbackData: string, options: { messageChatId?: number } = {}): string {
+    // `messageChatId` locates a message in one chat while the update claims another: a forged
+    // callback no Telegram client can send, which the server must still refuse.
+    const message = this.find(options.messageChatId ?? chat.id, messageId);
+    if (!message) throw new Error(`message ${messageId} not in chat ${options.messageChatId ?? chat.id}`);
     const callbackQueryId = `${bot.id}${this.nextCallbackId++}`;
     this.openCallbacks.set(callbackQueryId, { botId: bot.id, createdAt: Date.now() });
     const { history: _history, ...wire } = message;
@@ -241,6 +249,12 @@ export class FakeTelegramServer {
 
     try {
       const result = await this.dispatch(bot, method, body);
+      const drops = this.dropResponses.get(method) ?? 0;
+      if (drops > 0) {
+        this.dropResponses.set(method, drops - 1);
+        req.socket.destroy();
+        return;
+      }
       send(res, 200, { ok: true, result });
     } catch (error) {
       const failure = error as { code?: number; description?: string };
