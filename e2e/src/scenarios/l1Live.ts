@@ -98,8 +98,10 @@ async function blockWithRealProvider({ harness, phone }: L1Context, provider: "c
   const started = await state.startSavedTask(task, provider);
   if ("error" in started) throw new Error(`${provider} run did not start: ${started.error}`);
   const first = await waitForRunEnd(task, started.runId, REAL_PROVIDER_RUN_TIMEOUT_MS);
-  const prompt = await state.prompt(task);
-  expect(prompt.status, `the ${provider} run ended ${first.state} without blocking`).toBe("BLOCKED");
+  const blocked = (await state.history(task)).events.find((event) => event.newStatus === "BLOCKED");
+  const lastError = first.events.filter((event) => event.type === "error").map((event) => JSON.stringify(event.payload)).at(-1);
+  // The SYSTEM fallback also marks a failed run BLOCKED; only a block the agent posted proves the scenario.
+  expect(blocked?.actorType, `the ${provider} run ended ${first.state} without posting a block${lastError ? `; last error ${lastError}` : ""}`).toBe("AGENT");
   const card = await questionCard(phone, name, before, 60_000);
   return { task, card };
 }

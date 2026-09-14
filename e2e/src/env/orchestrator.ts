@@ -8,6 +8,7 @@ import { FakeProvider } from "../drivers/fakeProvider.ts";
 import { FakePhone, type PhoneDriver } from "../drivers/phone.ts";
 import { FakeTelegramServer, type ApiCall, type FakeBot } from "../fakes/telegramServer.ts";
 import { LIVE_ENV_PATH, LiveSetupError, loadLiveConfig } from "./liveConfig.ts";
+import { forgetCodexTrust } from "./providerState.ts";
 import { PreflightError, preflightBot } from "./telegramPreflight.ts";
 import { TelegramRouteProxy, type ProxiedCall, type RouteCut } from "./telegramRouteProxy.ts";
 import { ManagedProcess, isPortOpen, waitFor } from "./processes.ts";
@@ -342,6 +343,7 @@ export class HarnessEnvironment {
     await this.telegramProxy?.close();
     await this.telegramServer?.close();
     await this.realPhone?.disconnect().catch(() => undefined);
+    if (this.options.realHome) forgetCodexTrust(this.root);
     const problems: string[] = [];
 
     const snapshot = join(this.logsDir, "final-console.sqlite");

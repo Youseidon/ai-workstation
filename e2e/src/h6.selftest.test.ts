@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LiveSetupError, loadLiveConfig } from "./env/liveConfig.ts";
 import { knownSecrets } from "./env/orchestrator.ts";
+import { forgetCodexTrust } from "./env/providerState.ts";
 import { sweep } from "./env/sweep.ts";
 import { PreflightError, preflightBot } from "./env/telegramPreflight.ts";
 import { FakeTelegramServer } from "./fakes/telegramServer.ts";
@@ -250,5 +251,19 @@ test("S-H6-25: the sweep catches live secrets in every artifact kind and form; i
     assert.equal(zipped.status, 0);
     rmSync(join(traceDir, "resources"), { recursive: true });
     assert.ok(sweep([traceDir], secrets).some((finding) => finding.entry === "resources/network.txt" && finding.secretLabel === "live:E2E_TELEGRAM_USER_SESSION"));
+  });
+});
+
+test("real-provider hygiene: the harness removes only the Codex trust entries under its own root", () => {
+  withDirs(({ home }) => {
+    const config = join(home, "config.toml");
+    const root = "/tmp/ai-workstation-e2e-Ab12Cd";
+    const operator = 'model = "gpt-5.5"\n[projects."/home/op/project"]\ntrust_level = "trusted"\n\n';
+    const other = '[projects."/tmp/ai-workstation-e2e-Zz99Yy/workspaces/real-codex-1"]\ntrust_level = "trusted"\n\n';
+    writeFileSync(config, `${operator}[projects."${root}/workspaces/real-codex-1"]\ntrust_level = "trusted"\n\n${other}[tui.model_availability_nux]\n"gpt-5.5" = 4\n`);
+    assert.equal(forgetCodexTrust(root, config), 1);
+    assert.equal(readFileSync(config, "utf8"), `${operator}${other}[tui.model_availability_nux]\n"gpt-5.5" = 4\n`);
+    assert.equal(forgetCodexTrust(root, config), 0);
+    assert.equal(forgetCodexTrust(root, join(home, "missing.toml")), 0);
   });
 });

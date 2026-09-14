@@ -9,7 +9,7 @@ test.use({
   harnessOptions: {
     realHome: true,
     telegram: { backend: "real" },
-    settings: { "codex.enabled": true, "codex.model": "gpt-5.4-mini", "claude.enabled": false, "cursor.enabled": false, "grok.enabled": false, hostAccess: true },
+    settings: { "codex.enabled": true, "codex.model": "gpt-5.5", "claude.enabled": false, "cursor.enabled": false, "grok.enabled": false, hostAccess: true },
   },
 });
 test.beforeAll(async ({ harness }) => pairThroughApi(harness.phone!));

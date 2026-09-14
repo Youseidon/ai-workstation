@@ -314,6 +314,8 @@ Decided 2026-09-14:
 5. **Browser: Playwright-managed Chromium in WSL** (agent default, not objected to). The operator runs the one-time `sudo` library install in H0.
 
 Provider availability checked 2026-09-14 on the operator's machine: Claude and Codex available; Cursor and Grok not installed.
+Models checked 2026-09-15 by dry runs of the T3 real-provider scenarios on the fake Telegram: Claude uses `claude-haiku-4-5`; Codex uses `gpt-5.5`, because the ChatGPT account refuses `gpt-5.4-mini` and the installed Codex CLI (0.128.0) is too old for `gpt-5.6-luna`.
+The Codex CLI marks each directory it runs in as trusted in `~/.codex/config.toml`; the harness removes the entries under its own temporary root when a real-provider environment is disposed.
 The fake provider CLI does not need Grok installed, but it must answer the adapter's detection call (version check) the way the real binary does.
 
 ## 11. Risks
