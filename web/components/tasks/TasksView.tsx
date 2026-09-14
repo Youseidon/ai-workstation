@@ -308,7 +308,7 @@ export function TasksView() {
       description:
         "Confirm only after checking the local provider process state. This records your classification and keeps recovery as a separate action.",
       confirmLabel: `Mark ${label}`,
-        tone: "primary",
+      tone: "primary",
     });
     if (!confirmed) return;
     await act(async () => {
