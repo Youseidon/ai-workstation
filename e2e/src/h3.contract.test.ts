@@ -131,3 +131,17 @@ test("S-H3-15: the fake's shapes match the Bot API shapes the server's own clien
     assert.equal(typeof response.result[0]!.update_id, "number");
   });
 });
+
+test("the fake drops a tap its bot has not confirmed after the callback retention, fetched or not, and keeps messages", async () => {
+  await withServer(async (server, bot, api) => {
+    server.registerChat(chat);
+    server.callbackUpdateRetentionMs = 300;
+    const sent = await api.sendMessage({ chatId: "42", topicId: null, payload: { kind: "personal_question", title: "Name", execution: "blocked", decision: "awaiting_response", question: "Which?", actions: [{ ref: "tc_abc", action: "save_human_response" }] } });
+    server.userTapsButton(bot, user, chat, Number(sent.messageId), "tc_abc");
+    server.userSendsMessage(bot, user, chat, "still here");
+    assert.deepEqual((await api.getUpdates(0)).map((update) => update.payload.kind), ["callback", "message"]);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual((await api.getUpdates(0)).map((update) => update.payload.kind), ["message"]);
+    assert.equal(server.pendingUpdateCount(bot.id), 1);
+  });
+});

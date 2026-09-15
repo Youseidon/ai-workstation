@@ -111,6 +111,7 @@ export class FakeTelegramServer {
   private outage: "refuse" | "hang" | null = null;
   private duplicateNext = false;
   private readonly dropResponses = new Map<string, number>();
+  private readonly pushedAt = new WeakMap<Json, number>();
   private readonly delayedResponses: Array<{ method: string; ms: number }> = [];
   /**
    * Real Telegram refuses answers to a callback query about 15s after the tap, the time the app waits for a toast
@@ -118,6 +119,12 @@ export class FakeTelegramServer {
    * 14s refused (S-H6-09).
    */
   callbackAnswerWindowMs = 15_000;
+  /**
+   * Real Telegram drops a tap's callback_query update that the bot has not confirmed about two and a half minutes
+   * after the tap, even if it was fetched; messages stay. Measured on the test bot 2026-09-15: pending 141s after
+   * the tap, gone at 151s. So a tap made while the workstation is offline longer than that never arrives.
+   */
+  callbackUpdateRetentionMs = 145_000;
   /** Upper bound on a held getUpdates, so harness teardown never waits 25s. */
   maxPollHoldMs = 60_000;
 
@@ -239,7 +246,8 @@ export class FakeTelegramServer {
   }
 
   pendingUpdateCount(botId: number): number {
-    return this.updates.get(botId)?.length ?? 0;
+    if (!this.updates.has(botId)) return 0;
+    return this.pending(botId).length;
   }
 
   /* ------------------------------ bot side -------------------------------- */
@@ -294,7 +302,7 @@ export class FakeTelegramServer {
         return this.getUpdates(bot, body);
       case "getWebhookInfo":
         // Bots here only long poll, so the webhook is always unset.
-        return { url: "", has_custom_certificate: false, pending_update_count: this.updates.get(bot.id)!.length };
+        return { url: "", has_custom_certificate: false, pending_update_count: this.pending(bot.id).length };
       case "deleteWebhook":
         if (body.drop_pending_updates === true) this.updates.set(bot.id, []);
         return true;
@@ -325,6 +333,7 @@ export class FakeTelegramServer {
     const queue = this.updates.get(bot.id)!;
     // Telegram confirms (forgets) every update below the requested offset.
     this.updates.set(bot.id, queue.filter((update) => (update.update_id as number) >= offset));
+    this.pending(bot.id);
     const existing = this.polls.get(bot.id);
     if (existing) {
       clearTimeout(existing.timer);
@@ -354,10 +363,20 @@ export class FakeTelegramServer {
     return batch;
   }
 
+  /** The bot's unconfirmed updates, after Telegram has dropped taps older than the retention (S-L1-15). */
+  private pending(botId: number): Json[] {
+    const queue = this.updates.get(botId)!;
+    const kept = queue.filter((update) => !(update.callback_query && Date.now() - (this.pushedAt.get(update) ?? Date.now()) > this.callbackUpdateRetentionMs));
+    if (kept.length !== queue.length) this.updates.set(botId, kept);
+    return kept;
+  }
+
   private pushUpdate(botId: number, update: Json): void {
     const queue = this.updates.get(botId);
     if (!queue) throw new Error(`unknown bot ${botId}`);
-    queue.push({ update_id: this.nextUpdateId++, ...update });
+    const stored = { update_id: this.nextUpdateId++, ...update };
+    this.pushedAt.set(stored, Date.now());
+    queue.push(stored);
     const poll = this.polls.get(botId);
     if (poll) {
       clearTimeout(poll.timer);

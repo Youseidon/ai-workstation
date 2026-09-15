@@ -18,6 +18,9 @@ export interface L1Context {
   page: Page;
 }
 
+/** S-L1-15: how long before its actions expire the workstation goes offline; well inside Telegram's tap retention. */
+const OFFLINE_BEFORE_EXPIRY_MS = 45_000;
+
 let titles = 0;
 const title = (base: string) => `${base} ${++titles}`;
 
@@ -298,6 +301,10 @@ export async function offlineLongGap({ harness, phone }: L1Context, ttlMs: numbe
   const { task, card } = await blockTask(harness, phone, { title: name, later: [{ behavior: "consume-answer", expectInContext: "Freeze" }] });
   const answerCard = await replyWithAnswer(phone, card, "Freeze");
   const refs = harness.query<{ expires_at: string }>("SELECT expires_at FROM task_control_action WHERE prompt_id = ?", task.promptId);
+  // Telegram drops a tap the bot has not collected about 2.5 minutes after it is made (callbackUpdateRetentionMs), so
+  // the workstation goes offline shortly before the actions expire: the tap still arrives, but after the TTL.
+  const lastExpiry = Math.max(...refs.map((ref) => Date.parse(ref.expires_at)));
+  await eventually("the actions to be about to expire", async () => Date.now() >= lastExpiry - OFFLINE_BEFORE_EXPIRY_MS, ttlMs + 60_000);
   await harness.stopServer();
   const before = await phone.cursor();
   await phone.tap(answerCard, "Answer and resume");
