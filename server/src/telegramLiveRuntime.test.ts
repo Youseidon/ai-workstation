@@ -33,6 +33,8 @@ class StubTelegram {
   private nextCallbackId = 1;
   private readonly scripts = new Map<string, Scripted[]>();
   private wake: Array<() => void> = [];
+  /** Runs after a sendMessage is recorded and before its response returns, as when Telegram shows the message first. */
+  holdSendResponse: ((message: RecordedMessage) => Promise<void>) | null = null;
 
   constructor(readonly botUserId: number) {
     this.rawToken = `${botUserId}:${randomBytes(27).toString("base64url")}`;
@@ -89,6 +91,8 @@ class StubTelegram {
         const markup = body.reply_markup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined;
         const message = { chatId: String(body.chat_id), topicId: typeof body.message_thread_id === "number" ? body.message_thread_id : null, text: String(body.text), buttons: (markup?.inline_keyboard ?? []).flat().map(button => ({ text: button.text, data: button.callback_data })), messageId: this.nextMessageId++ };
         this.messages.push(message);
+        const hold = this.holdSendResponse;
+        if (hold !== null) await hold(message);
         return json(200, { ok: true, result: { message_id: message.messageId, chat: { id: Number(body.chat_id) }, date: 1, text: body.text } });
       }
       case "answerCallbackQuery":
@@ -503,6 +507,33 @@ test("a reply to a superseded question card is refused, never rebound to the new
     await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Not recorded: that question has changed")), "changed-question notice");
     assert.equal(h.stub.messages.slice(sentBefore).some(message => message.buttons.length > 0), false, "no answer card for the old reply");
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("S-L1-33 (T0): a reply polled before the card's sendMessage response still answers that card", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    h.stub.holdSendResponse = async (message) => {
+      if (!message.text.includes(f.title)) return;
+      h.stub.holdSendResponse = null;
+      // The phone already shows the card: the reply is polled while this response is still on its way.
+      const cursor = workspaces.telegramCursor(h.botId);
+      h.stub.send(operator, operatorChat, "Use the March list", message.messageId);
+      await waitFor(() => workspaces.telegramCursor(h.botId) > cursor, "the reply to be polled");
+      // Give the poll loop time to hand the saved reply to the runtime before this response returns.
+      await new Promise(resolve => setTimeout(resolve, 100));
+    };
+    await f.askQuestion();
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.length > 0 && message.text.includes("Use the March list")), "answer card");
+    assert.ok(answerCard);
+    assert.equal(h.stub.messages.some(message => message.text.startsWith("That message is not a task question")), false);
   } finally {
     await h.cleanup();
     f.cleanup();

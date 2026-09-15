@@ -49,6 +49,8 @@ interface Session {
   adapter: TelegramAdapter;
   control: TaskControlService;
   done: Promise<void>;
+  /** The outbox delivery in progress, if any: its message may already be on the phone before its id is recorded. */
+  delivering: Promise<unknown> | null;
 }
 
 interface PairingSession {
@@ -257,7 +259,7 @@ export class TelegramLiveRuntime {
       return { enabled: current.enabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
     });
     const controller = new AbortController();
-    const session: Session = { controller, botId, api, control, adapter: undefined as unknown as TelegramAdapter, done: Promise.resolve() };
+    const session: Session = { controller, botId, api, control, adapter: undefined as unknown as TelegramAdapter, done: Promise.resolve(), delivering: null };
     session.adapter = new TelegramAdapter(botId, api, control, {
       bindSentMessageIds: true,
       callbackContent: contentForRef,
@@ -400,7 +402,11 @@ export class TelegramLiveRuntime {
     if (this.now() < this.sendPausedUntil) return;
     for (const row of workspaces.dueTelegramOutbox(session.botId, new Date(this.now()))) {
       if (signal.aborted) return;
-      const delivery = await session.adapter.deliverOutbox(row.id);
+      const pending = session.adapter.deliverOutbox(row.id);
+      session.delivering = pending;
+      const delivery = await pending.finally(() => {
+        if (session.delivering === pending) session.delivering = null;
+      });
       if (delivery.state === "FAILED") {
         const failed = workspaces.telegramOutbox().find(entry => entry.id === row.id);
         const retry = delivery.retryAt === null ? "not retrying" : `retry at ${delivery.retryAt.toISOString()}`;
@@ -498,7 +504,7 @@ export class TelegramLiveRuntime {
     try {
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null });
       if (!actor || actor.enabled !== 1) return answer("");
-      const target = !callback.messageId ? null : workspaces.telegramOutboxBySentMessage(session.botId, callback.chatId, callback.messageId);
+      const target = !callback.messageId ? null : await this.sentMessage(session, callback.chatId, callback.messageId);
       const request = decodeNav(callback.ref);
       if (target === null || (target.payload as { kind?: unknown } | null)?.kind !== "view" || request === null) return answer("That button does not open a view.");
       workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: target.id, payload: renderView(request, this.viewContext()) });
@@ -507,6 +513,18 @@ export class TelegramLiveRuntime {
       this.log.warn(this.safe(`navigation failed: ${error instanceof Error ? error.message : String(error)}`));
       answer("");
     }
+  }
+
+  /**
+   * The sent message a reply or tap points at. Telegram shows a message to the chat as soon as it processes
+   * sendMessage, so a quick reply can arrive here before the response carrying that message's id has been
+   * recorded. A miss while a delivery is in progress waits for that delivery and looks again.
+   */
+  private async sentMessage(session: Session, chatId: string, messageId: string): Promise<ReturnType<typeof workspaces.telegramOutboxBySentMessage>> {
+    const found = workspaces.telegramOutboxBySentMessage(session.botId, chatId, messageId);
+    if (found !== null || session.delivering === null) return found;
+    await session.delivering.catch(() => undefined);
+    return workspaces.telegramOutboxBySentMessage(session.botId, chatId, messageId);
   }
 
   /** Queues a plain reply in the chat and topic it answers (RTC-21), so it never lands in General or another topic. */
@@ -548,7 +566,7 @@ export class TelegramLiveRuntime {
         this.enqueueView(session, message.chatId, message.topicId, { view: "help" });
         return;
       }
-      const card = workspaces.telegramOutboxBySentMessage(session.botId, message.chatId, message.replyToMessageId);
+      const card = await this.sentMessage(session, message.chatId, message.replyToMessageId);
       const payload = card?.payload as { kind?: unknown; promptId?: unknown } | undefined;
       if (payload?.kind !== "personal_question" || typeof payload.promptId !== "number") {
         this.enqueueText(session, message.chatId, message.topicId, "That message is not a task question. Reply to a question message to answer it.");

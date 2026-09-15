@@ -161,6 +161,24 @@ export async function strayMessagesRecordNothing({ harness, phone }: L1Context):
   expect((await state.prompt(task)).status).toBe("BLOCKED");
 }
 
+/**
+ * S-L1-33: a reply that reaches the server before the card's sendMessage response (so before the server knows the
+ * card's message id) still answers that card. Fake only: real Telegram shows this race by chance, not on demand.
+ */
+export async function replyBeforeCardSendReturns({ harness, phone }: L1Context): Promise<void> {
+  const name = title("Answer the card in flight");
+  harness.telegramServer!.delayNextResponse("sendMessage", 4_000);
+  const { task, card } = await blockTask(harness, phone, { title: name, later: [{ behavior: "consume-answer", expectInContext: "Teal" }] });
+  const before = await phone.cursor();
+  const answerCard = await replyWithAnswer(phone, card, "Teal");
+  const replies = (await phone.messages()).filter((message) => message.fromBot && message.id > before);
+  expect(replies.map((message) => message.text).filter((text) => text.startsWith("That message is not a task question"))).toEqual([]);
+  await tapAndReport(phone, answerCard, "Answer and resume", /^Done: Answer saved and resume requested\./);
+  await waitForPromptStatus(task, "DONE");
+  expect(await humanResponses(task)).toEqual(["Teal"]);
+  expect(await executeRuns(task)).toHaveLength(2);
+}
+
 /** S-L1-13: once the task is done locally, the old card and reply change nothing. */
 export async function doneTaskIgnoresOldCards({ harness, phone }: L1Context): Promise<void> {
   const name = title("Pick the font");

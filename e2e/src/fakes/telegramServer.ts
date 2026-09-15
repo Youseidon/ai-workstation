@@ -110,6 +110,7 @@ export class FakeTelegramServer {
   private outage: "refuse" | "hang" | null = null;
   private duplicateNext = false;
   private readonly dropResponses = new Map<string, number>();
+  private readonly delayedResponses: Array<{ method: string; ms: number }> = [];
   /**
    * Real Telegram refuses answers to a callback query about 15s after the tap, the time the app waits for a toast
    * ("query is too old"). Measured on the test bot 2026-09-15: sent 13s after the bot received the update accepted,
@@ -170,6 +171,15 @@ export class FakeTelegramServer {
   /** Performs the next `count` calls of `method` but drops the response, as a lost network reply would. */
   dropNextResponse(method: string, count = 1): void {
     this.dropResponses.set(method, (this.dropResponses.get(method) ?? 0) + count);
+  }
+
+  /**
+   * Performs the next `count` calls of `method` at once but holds each response for `ms`. Real Telegram shows a sent
+   * message to the chat as soon as it processes the call, so a quick reply can reach the bot's poll before the
+   * sendMessage response with that message's id reaches the bot (found by S-L1-32 on real Telegram).
+   */
+  delayNextResponse(method: string, ms: number, count = 1): void {
+    for (let index = 0; index < count; index++) this.delayedResponses.push({ method, ms });
   }
 
   /** The next getUpdates response is delivered twice (the client's next poll sees it again). */
@@ -261,6 +271,11 @@ export class FakeTelegramServer {
         this.dropResponses.set(method, drops - 1);
         req.socket.destroy();
         return;
+      }
+      const delayed = this.delayedResponses.findIndex((entry) => entry.method === method);
+      if (delayed >= 0) {
+        const { ms } = this.delayedResponses.splice(delayed, 1)[0]!;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
       }
       send(res, 200, { ok: true, result });
     } catch (error) {
