@@ -32,6 +32,13 @@ function phoneError(action: string, error: unknown): Error {
   return new Error(`phone: Telegram refused ${action}: ${rpc.errorMessage ?? (error instanceof Error ? error.name : "unknown error")}`);
 }
 
+/** MTProto entity classes mapped to Bot API entity type names, so both backends report the same types. */
+function entityType(entity: Api.TypeMessageEntity): string {
+  if (entity instanceof Api.MessageEntityBlockquote) return entity.collapsed ? "expandable_blockquote" : "blockquote";
+  const names: Array<[new (...args: never[]) => Api.TypeMessageEntity, string]> = [[Api.MessageEntityUrl, "url"], [Api.MessageEntityMention, "mention"], [Api.MessageEntityHashtag, "hashtag"], [Api.MessageEntityBotCommand, "bot_command"], [Api.MessageEntityBold, "bold"], [Api.MessageEntityItalic, "italic"], [Api.MessageEntityCode, "code"], [Api.MessageEntityPre, "pre"], [Api.MessageEntityTextUrl, "text_link"], [Api.MessageEntitySpoiler, "spoiler"]];
+  return names.find(([type]) => entity instanceof type)?.[1] ?? entity.className;
+}
+
 function toPhoneMessage(message: Api.Message): PhoneMessage {
   const markup = message.replyMarkup instanceof Api.ReplyInlineMarkup ? message.replyMarkup : null;
   const replyTo = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo : null;
@@ -43,6 +50,7 @@ function toPhoneMessage(message: Api.Message): PhoneMessage {
     edited: message.editDate !== undefined && message.editDate !== null,
     replyToId: replyTo?.replyToMsgId ?? null,
     topicId: replyTo?.forumTopic ? (replyTo.replyToTopId ?? replyTo.replyToMsgId ?? null) : null,
+    entities: (message.entities ?? []).map((entity) => ({ type: entityType(entity), offset: entity.offset, length: entity.length })),
   };
 }
 

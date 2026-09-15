@@ -45,7 +45,7 @@ test("S-H3-03: getMe, sendMessage, message and callback updates parse through th
     assert.equal(card.reply_markup?.inline_keyboard[0]?.[0]?.text, "Save answer");
 
     const phone = new FakePhone(server, bot, user, chat);
-    await phone.send("Aurora", { replyTo: { id: Number(sent.messageId), text: "", buttons: [], fromBot: true, edited: false, replyToId: null, topicId: null } });
+    await phone.send("Aurora", { replyTo: { id: Number(sent.messageId), text: "", buttons: [], fromBot: true, edited: false, replyToId: null, topicId: null, entities: [] } });
     const tapId = server.userTapsButton(bot, user, chat, Number(sent.messageId), "tc_abc");
     const updates = await api.getUpdates(0);
     assert.equal(updates.length, 2);

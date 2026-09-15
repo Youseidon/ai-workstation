@@ -16,6 +16,8 @@ export interface FakeScenario {
   verificationSummary?: string;
   ignoreSigint?: boolean;
   skipStatus?: boolean;
+  /** Live path: the kind of the remark posted before the status (default DECISION_NEEDED when blocking). */
+  remarkKind?: "BLOCKER" | "DECISION_NEEDED" | "PROGRESS";
   malformedStatus?: boolean;
   text?: string;
 }

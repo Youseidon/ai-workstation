@@ -557,6 +557,24 @@ Implemented twelfth slice (L3 F3, RTC-22: task summary model):
 - Tests: 10 server tests (F3-01 to F3-13 T0), one T1 spec for the label on the Agents page (burn-in 20 of 20), full T1 85 of 85 with L1 unchanged (S-L3-F3-15).
 - Found and fixed on the way, in their own commits: the Agents page showed no error for a refused setting save, and web lint failed on the harness build directory.
 
+Implemented thirteenth slice (L3 A, RTC-23: context-rich question cards):
+
+- Scenario table: [`l3-f3-a.md`](../e2e-scenarios/l3-f3-a.md) (A rows).
+  Operator questions answered with the table's recommendations, pending review:
+  - never shortened: breadcrumb, title, "If you wait" and the reply hint;
+  - blockers are kept whole up to a per-item cap, listed while they fit (the first always), and the rest declared;
+  - the answer on answer cards is shown in full above the recommendation, and shortened last with a note that the buttons submit it in full;
+  - the L1 card locators became one helper (`isCardFor`), with no assertion weakened;
+  - a message whose entities Telegram rejects is resent once without them;
+  - no real-provider handoff (S-L3-A-20) until close-out.
+- `server/src/integrations/telegram/card.ts` renders the F3 summary general to specific within 4096 UTF-16 units. Details (decisions, important files, full completed list) go in one `expandable_blockquote` entity with UTF-16 offsets. When too long, the card shrinks in the spec's order and says what it shortened. Cuts never split surrogate pairs, ZWJ sequences or combining marks.
+- Card payloads carry the summary taken when the card was queued; rows queued by L1 keep the L1 layout.
+- Harness: `PhoneMessage.entities` on both drivers; the fake Telegram server enforces the text length and entity bounds; the fake agent can post a BLOCKER-kind remark and returns handoff briefs as plain output.
+- Tests: 8 formatter tests (T0), 10 T1 scenarios (burn-in 200 of 200), a T3 spec for A's live rows, full T1 95 of 95 with L1 unchanged.
+- Findings for the operator:
+  - the handoff parser caps each brief list at 30 items, so a card reports "30 passed" for a brief with more checks;
+  - every blocked task records a BLOCKER remark (from the status reason), so a title-only card cannot occur today (S-L3-A-03 is T0 only).
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

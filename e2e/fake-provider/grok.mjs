@@ -172,7 +172,7 @@ async function run() {
 
   if (live) {
     const base = live.contextUrl.replace(/\/context$/, "");
-    const remarkKind = status.status === "BLOCKED" ? "DECISION_NEEDED" : "PROGRESS";
+    const remarkKind = scenario.remarkKind ?? (status.status === "BLOCKED" ? "DECISION_NEEDED" : "PROGRESS");
     const remark = scenario.remark ?? (status.status === "BLOCKED" ? status.reason : "Fake agent made progress.");
     await http("POST", `${base}/remarks`, live.token, { requestId: `fake-remark-${process.pid}`, kind: remarkKind, content: remark });
     if (!scenario.skipStatus) await http("POST", `${base}/status`, live.token, status);

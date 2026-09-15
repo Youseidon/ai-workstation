@@ -1,6 +1,7 @@
 import { expect, test } from "../../src/fixtures.ts";
 import { FAKE_OPERATOR } from "../../src/env/orchestrator.ts";
 import { FakePhone } from "../../src/drivers/phone.ts";
+import { isCardFor } from "../../src/scenarios/l1Flows.ts";
 import { eventually, observeQuietPeriod, state } from "../../src/drivers/state.ts";
 import { runSavedTask, waitForRunEnd } from "../../src/scenarios.ts";
 import { outboxRows, pairThroughAgentsPage, telegramStatus, waitForTelegramState } from "../../src/telegramFlows.ts";
@@ -39,10 +40,10 @@ test("S-H3-13: a blocked task produces exactly one question card in the phone tr
   const before = await phone.cursor();
   const { task, runId } = await runSavedTask(harness, { title: "Choose the release name", scenarios: [{ behavior: "block-on-decision", reason: "Two names fit.", humanAction: "Pick Aurora or Borealis." }] });
   await waitForRunEnd(task, runId);
-  const card = await phone.waitForBotMessage("the question card", (message) => message.text.startsWith("Task needs input: Choose the release name"), { afterId: before });
+  const card = await phone.waitForBotMessage("the question card", (message) => isCardFor(message, "Choose the release name"), { afterId: before });
   expect(card.text).toContain("Reply to this message with your answer.");
   await observeQuietPeriod(6_000, "a second card for the same question revision (notify interval is 5s)");
-  const cards = (await phone.messages()).filter((message) => message.fromBot && message.text.startsWith("Task needs input: Choose the release name"));
+  const cards = (await phone.messages()).filter((message) => message.fromBot && isCardFor(message, "Choose the release name"));
   expect(cards).toHaveLength(1);
   const rows = outboxRows(harness).filter((row) => row.payload_json.includes("personal_question"));
   expect(rows.filter((row) => row.state === "SENT")).toHaveLength(1);

@@ -15,6 +15,8 @@ export interface PhoneMessage {
   edited: boolean;
   replyToId: number | null;
   topicId: number | null;
+  /** Formatting entities Telegram shows, with UTF-16 offsets; the app only ever sends expandable blockquotes. */
+  entities: Array<{ type: string; offset: number; length: number }>;
 }
 
 /**
@@ -60,6 +62,7 @@ function toPhoneMessage(message: StoredMessage): PhoneMessage {
     edited: message.history.length > 1,
     replyToId: message.reply_to_message?.message_id ?? null,
     topicId: message.message_thread_id ?? null,
+    entities: ((message.entities ?? []) as Array<{ type: string; offset: number; length: number }>).map(({ type, offset, length }) => ({ type, offset, length })),
   };
 }
 

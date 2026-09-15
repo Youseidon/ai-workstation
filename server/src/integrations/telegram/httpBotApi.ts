@@ -138,7 +138,8 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     };
     if (request.topicId !== null) body.message_thread_id = Number(request.topicId);
     if (message.replyMarkup !== null) body.reply_markup = message.replyMarkup;
-    const messageId = id(record(await this.call("sendMessage", body))?.message_id);
+    if (message.entities.length > 0) body.entities = message.entities;
+    const messageId = id(record(await this.withoutRejectedEntities("sendMessage", body))?.message_id);
     if (!messageId) throw new TelegramApiError("transient", "Telegram sendMessage returned no message id.");
     return { messageId };
   }
@@ -154,13 +155,28 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
       link_preview_options: { is_disabled: true },
     };
     if (message.replyMarkup !== null) body.reply_markup = message.replyMarkup;
+    if (message.entities.length > 0) body.entities = message.entities;
     try {
-      await this.call("editMessageText", body);
+      await this.withoutRejectedEntities("editMessageText", body);
       return { modified: true };
     } catch (error) {
       // Telegram refuses an edit that changes nothing; the message already shows this content.
       if (error instanceof TelegramApiError && error.kind === "rejected" && /\(400\): Bad Request: message is not modified/.test(error.message)) return { modified: false };
       throw error;
+    }
+  }
+
+  /**
+   * If Telegram refuses a message only because of its entities, the same text is sent once more
+   * without them, so the operator still gets the question (operator question 8 in l3-f3-a.md).
+   */
+  private async withoutRejectedEntities(method: string, body: Json): Promise<unknown> {
+    try {
+      return await this.call(method, body);
+    } catch (error) {
+      if (!("entities" in body) || !(error instanceof TelegramApiError) || error.kind !== "rejected" || !/entit/i.test(error.message)) throw error;
+      const { entities: _entities, ...plain } = body;
+      return this.call(method, plain);
     }
   }
 

@@ -5,6 +5,7 @@ import type { HarnessEnvironment } from "./env/orchestrator.ts";
 import { webUrl } from "./env/orchestrator.ts";
 import type { PhoneDriver } from "./drivers/phone.ts";
 import { eventually, state } from "./drivers/state.ts";
+import { isCardFor } from "./scenarios/l1Flows.ts";
 
 export const telegramStatus = async () => (await state.get<{ status: TelegramLiveStatus }>("/api/task-control/telegram")).status;
 
@@ -54,6 +55,6 @@ export async function blockedTaskCard(harness: HarnessEnvironment, phone: PhoneD
   const before = await phone.cursor();
   const { task, runId } = await runSavedTask(harness, { title, scenarios: [{ behavior: "block-on-decision", reason: extra.reason ?? "Two names fit.", humanAction: extra.humanAction ?? "Pick Aurora or Borealis." }] });
   await waitForRunEnd(task, runId);
-  const card = await phone.waitForBotMessage(`the question card for ${title}`, (message) => message.text.startsWith(`Task needs input: ${title}`), { afterId: before });
+  const card = await phone.waitForBotMessage(`the question card for ${title}`, (message) => isCardFor(message, title), { afterId: before });
   return { task, card };
 }

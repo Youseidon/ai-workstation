@@ -1,5 +1,6 @@
 import { expect, test } from "../../src/fixtures.ts";
 import { eventually, state } from "../../src/drivers/state.ts";
+import { isCardFor } from "../../src/scenarios/l1Flows.ts";
 import { blockedTaskCard, pairThroughApi, telegramStatus, waitForTelegramState } from "../../src/telegramFlows.ts";
 
 // Scenario IDs refer to docs/e2e-scenarios/h0-h4.md. Short TTLs through harness-only overrides.
@@ -58,7 +59,7 @@ test("S-H4-01: after the action TTL a tap is answered 'expired', a fresh card is
   const { toast } = await phone.tap(answerCard, "Save answer");
   expect(toast).toMatch(/^Not applied: .*expired/i);
   await phone.waitForBotMessage("the rejection notice", (message) => /^Not applied: .*expired/i.test(message.text), { afterId: afterTap });
-  const reissued = await phone.waitForBotMessage("the reissued question card", (message) => message.text.startsWith("Task needs input: Pick a licence"), { afterId: afterTap });
+  const reissued = await phone.waitForBotMessage("the reissued question card", (message) => isCardFor(message, "Pick a licence"), { afterId: afterTap });
   expect(reissued.id).toBeGreaterThan(answerCard.id);
   expect((await state.prompt(task)).status).toBe("BLOCKED");
   expect((await state.history(task)).remarks.length).toBe(remarksBefore);

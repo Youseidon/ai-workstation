@@ -6,7 +6,12 @@ import { runSavedTask, waitForRunEnd } from "../scenarios.ts";
 
 /* Phone and durable-state steps shared by the L1 scenarios on every backend. */
 
-export const QUESTION_PREFIX = "Task needs input: ";
+/**
+ * Question, answer and saved-answer cards name their task on the line after the breadcrumb
+ * (L3 slice A, user-flows section 2). The only locator the scenarios use for a card.
+ */
+export const isCardFor = (message: PhoneMessage, title: string): boolean => message.text.split("\n")[1] === `Task: ${title}`;
+export const isTaskCard = (message: PhoneMessage): boolean => (message.text.split("\n")[1] ?? "").startsWith("Task: ");
 
 export interface Receipt {
   command_id: string;
@@ -49,7 +54,7 @@ export async function blockTask(harness: HarnessEnvironment, phone: PhoneDriver,
 }
 
 export function questionCard(phone: PhoneDriver, title: string, afterId: number, timeoutMs = 30_000): Promise<PhoneMessage> {
-  return phone.waitForBotMessage(`the question card for "${title}"`, (message) => message.text.startsWith(`${QUESTION_PREFIX}${title}`), { afterId, timeoutMs });
+  return phone.waitForBotMessage(`the question card for "${title}"`, (message) => isCardFor(message, title), { afterId, timeoutMs });
 }
 
 /** Replies to a question card and waits for the answer card that binds that text to buttons. */

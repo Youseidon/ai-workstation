@@ -3,7 +3,7 @@ import type { PhoneMessage } from "../drivers/phone.ts";
 import { eventually, observeQuietPeriod, state } from "../drivers/state.ts";
 import { telegramStatus, waitForTelegramState } from "../telegramFlows.ts";
 import type { L1Context } from "./l1.ts";
-import { blockTask, executeRuns, humanResponses, inboxDrained, outboxFor, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus } from "./l1Flows.ts";
+import { blockTask, executeRuns, isCardFor, humanResponses, inboxDrained, outboxFor, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus } from "./l1Flows.ts";
 
 /*
  * L3 slice F1 scenarios (docs/e2e-scenarios/l3-f1-f2.md): the outbox edit operation, driven through the
@@ -87,8 +87,10 @@ export async function editCardsKeepReplyMapping(ctx: L1Context): Promise<void> {
   const name = label("Pick the edited colour");
   const { task, card } = await blockTask(harness, phone, { title: name, later: [{ behavior: "consume-answer", expectInContext: "Green" }] });
   const questionRow = outboxFor(harness, task).find((row) => row.payload_json.includes("personal_question") && row.sent_message_id !== null)!;
-  const payload = JSON.parse(questionRow.payload_json) as { question: string };
-  await queueEdit(questionRow.id, { ...payload, question: `${payload.question} (edited)` });
+  // Cards render from the task summary (slice A), so an edit changes the summary it carries.
+  const payload = JSON.parse(questionRow.payload_json) as { summary: { ifYouWait: string } };
+  const withWait = (suffix: string) => ({ ...payload, summary: { ...payload.summary, ifYouWait: `${payload.summary.ifYouWait} ${suffix}` } });
+  await queueEdit(questionRow.id, withWait("(edited)"));
   const editedCard = await eventually("the question card to be edited", async () => (await phone.messages()).find((item) => item.id === card.id && item.edited && item.text.includes("(edited)")));
   expect(editedCard.buttons).toEqual(card.buttons);
   expect(receipts(harness, task)).toEqual([]);
@@ -106,7 +108,7 @@ export async function editCardsKeepReplyMapping(ctx: L1Context): Promise<void> {
   await waitForPromptStatus(task, "DONE");
   expect(receipts(harness, task).filter((receipt) => receipt.state === "APPLIED")).toHaveLength(1);
   expect(await executeRuns(task)).toHaveLength(2);
-  await queueEdit(questionRow.id, { ...payload, question: `${payload.question} (edited after applying)` });
+  await queueEdit(questionRow.id, withWait("(edited after applying)"));
   await eventually("the late edit to be delivered", async () => (await phone.messages()).some((item) => item.id === card.id && item.text.includes("edited after applying")));
   expect(receipts(harness, task).filter((receipt) => receipt.state === "APPLIED")).toHaveLength(1);
   expect(await humanResponses(task)).toEqual(["Green"]);
@@ -267,7 +269,7 @@ export async function editsThroughFaults(ctx: L1Context, fault: "refuse" | "5xx"
   await waitForTelegramState("polling", 90_000);
   await showsText(phone, message, `${base} 2`, 90_000);
   await outboxClear();
-  expect((await phone.messages()).filter((item) => item.fromBot && item.id > before && item.text.startsWith(`Task needs input: ${name}`))).toEqual([card]);
+  expect((await phone.messages()).filter((item) => item.fromBot && item.id > before && isCardFor(item, name))).toEqual([card]);
   expect(harness.telegramCalls().filter((call) => call.method === "editMessageText" && String(call.body.text).startsWith(base)).map((call) => call.body.text).filter((value) => value === `${base} 1`).length).toBeLessThanOrEqual(1);
 }
 

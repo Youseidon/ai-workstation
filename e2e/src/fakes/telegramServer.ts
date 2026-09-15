@@ -350,8 +350,7 @@ export class FakeTelegramServer {
     const chatId = Number(body.chat_id);
     const chat = this.knownChat(chatId);
     if (!chat) throw apiError(400, "Bad Request: chat not found");
-    if (typeof body.text !== "string" || body.text.trim() === "") throw apiError(400, "Bad Request: message text is empty");
-    if (body.text.length > 4096) throw apiError(400, "Bad Request: message is too long");
+    this.validateText(body);
     const threadId = typeof body.message_thread_id === "number" ? body.message_thread_id : undefined;
     if (threadId !== undefined) {
       const topic = this.topics.get(`${chatId}:${threadId}`);
@@ -366,10 +365,25 @@ export class FakeTelegramServer {
     return wireMessage(message);
   }
 
+  /** Telegram's limits: 4096 UTF-16 units of text, and entities that fit inside it. */
+  private validateText(body: Json): asserts body is Json & { text: string } {
+    if (typeof body.text !== "string" || body.text.trim() === "") throw apiError(400, "Bad Request: message text is empty");
+    if (body.text.length > 4096) throw apiError(400, "Bad Request: message is too long");
+    if (body.parse_mode !== undefined) throw apiError(400, "Bad Request: the harness fake does not model parse_mode");
+    if (body.entities === undefined) return;
+    if (!Array.isArray(body.entities)) throw apiError(400, "Bad Request: can't parse entities: entities must be an array");
+    for (const entity of body.entities as Array<Record<string, unknown>>) {
+      const offset = entity.offset;
+      const length = entity.length;
+      if (typeof entity.type !== "string" || !KNOWN_ENTITY_TYPES.has(entity.type)) throw apiError(400, `Bad Request: can't parse entities: unsupported entity type "${String(entity.type)}"`);
+      if (typeof offset !== "number" || typeof length !== "number" || offset < 0 || length <= 0 || offset + length > body.text.length) throw apiError(400, "Bad Request: can't parse entities: entity is out of the text bounds");
+    }
+  }
+
   private editMessageText(body: Json): Json {
     const message = this.find(Number(body.chat_id), Number(body.message_id));
     if (!message) throw apiError(400, "Bad Request: message to edit not found");
-    if (typeof body.text !== "string" || body.text.trim() === "") throw apiError(400, "Bad Request: message text is empty");
+    this.validateText(body);
     const markup = isKeyboard(body.reply_markup) ? body.reply_markup : undefined;
     if (message.text === body.text && JSON.stringify(message.reply_markup) === JSON.stringify(markup)) {
       throw apiError(400, "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message");
@@ -471,6 +485,8 @@ export class FakeTelegramServer {
 function isKeyboard(value: unknown): value is { inline_keyboard: InlineButton[][] } {
   return value !== null && typeof value === "object" && Array.isArray((value as Json).inline_keyboard);
 }
+
+const KNOWN_ENTITY_TYPES = new Set(["mention", "hashtag", "cashtag", "bot_command", "url", "email", "phone_number", "bold", "italic", "underline", "strikethrough", "spoiler", "blockquote", "expandable_blockquote", "code", "pre", "text_link", "text_mention", "custom_emoji"]);
 
 function wireMessage(message: StoredMessage): Json {
   const { history: _history, chat, ...rest } = message;

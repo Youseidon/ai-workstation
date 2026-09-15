@@ -5,7 +5,7 @@ import type { HarnessEnvironment } from "../env/orchestrator.ts";
 import { webUrl } from "../env/orchestrator.ts";
 import { telegramStatus, waitForTelegramState } from "../telegramFlows.ts";
 import { waitForRunEnd } from "../scenarios.ts";
-import { activityRevision, blockTask, executeRuns, humanResponses, inboxDrained, outboxFor, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus, waitForRuns } from "./l1Flows.ts";
+import { activityRevision, blockTask, isCardFor, isTaskCard, executeRuns, humanResponses, inboxDrained, outboxFor, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus, waitForRuns } from "./l1Flows.ts";
 
 /*
  * L1 scenarios from docs/e2e-scenarios/l1.md, written once against PhoneDriver
@@ -49,7 +49,7 @@ export async function saveThenResume({ harness, phone }: L1Context): Promise<voi
   const answerCard = await replyWithAnswer(phone, card, "Blue");
   const saved = await tapAndReport(phone, answerCard, "Save answer", /^Done: Answer saved; task remains waiting\./);
   if (phone.backend === "fake") expect(saved.toast).toBe("Answer saved; task remains waiting.");
-  const resumeCard = await phone.waitForBotMessage("the saved-answer card", (message) => message.text.startsWith(`Task needs input: ${name}`) && message.buttons.includes("Resume with saved answer"), { afterId: saved.before });
+  const resumeCard = await phone.waitForBotMessage("the saved-answer card", (message) => isCardFor(message, name) && message.buttons.includes("Resume with saved answer"), { afterId: saved.before });
   expect(resumeCard.text).toContain("Saved answer:\nBlue");
   // A saved answer holds the task: it is no longer blocked, but nothing runs until Resume.
   expect(await state.prompt(task)).toMatchObject({ status: "TODO", humanResponseHeld: true });
@@ -76,7 +76,7 @@ export async function doubleTap({ harness, phone }: L1Context): Promise<void> {
   if (phone.backend === "fake") expect(second.toast).toBe("Already applied.");
   await inboxDrained(harness);
   await observeQuietPeriod(3_000, "a second result message for the replayed tap");
-  expect((await phone.messages()).filter((message) => message.fromBot && message.id > afterFirst && !message.text.startsWith("Task needs input"))).toEqual([]);
+  expect((await phone.messages()).filter((message) => message.fromBot && message.id > afterFirst && !isTaskCard(message))).toEqual([]);
   await waitForPromptStatus(task, "DONE");
   expect(await executeRuns(task)).toHaveLength(2);
   expect(receipts(harness, task).filter((receipt) => receipt.state === "APPLIED")).toHaveLength(1);
@@ -127,7 +127,7 @@ export async function newQuestionMakesOldCardsStale({ harness, phone }: L1Contex
   await state.post(`/api/prompts/${task.promptId}/respond-and-continue`, { content: "Postgres", expectedRevision, provider: "grok", model: null });
   await waitForRuns(task, 2);
   await waitForRunEnd(task, (await executeRuns(task)).at(-1)!.id);
-  const second = await phone.waitForBotMessage("the question 2 card", (message) => message.text.startsWith(`Task needs input: ${name}`) && message.text.includes("Which region hosts it?"), { afterId: before });
+  const second = await phone.waitForBotMessage("the question 2 card", (message) => isCardFor(message, name) && message.text.includes("Which region hosts it?"), { afterId: before });
   await tapAndReport(phone, oldAnswer, "Answer and resume", /^Not applied: /);
   const beforeReply = await phone.cursor();
   await phone.send("Paris", { replyTo: card });
@@ -424,7 +424,7 @@ export async function faultsWhileQueued({ harness, phone }: L1Context, fault: "o
   await waitForTelegramState("polling", 90_000);
   const card = await questionCard(phone, name, before, 90_000);
   await observeQuietPeriod(3_000, "the queued card being delivered twice");
-  expect((await phone.messages()).filter((message) => message.fromBot && message.text.startsWith(`Task needs input: ${name}`))).toEqual([card]);
+  expect((await phone.messages()).filter((message) => message.fromBot && isCardFor(message, name))).toEqual([card]);
   await eventually("outbox counts to clear", async () => {
     const { outbox } = await telegramStatus();
     return outbox.queued + outbox.retrying + outbox.failed === 0 ? true : undefined;
@@ -498,7 +498,7 @@ export async function lostSendResponse({ harness, phone }: L1Context): Promise<v
   const { task, runId } = await runSavedTask(harness, { title: name, scenarios: [{ behavior: "block-on-decision" }, { behavior: "consume-answer", expectInContext: "eu-west" }] });
   await waitForRunEnd(task, runId);
   await eventually("the card to be delivered after the lost response", async () => (outboxFor(harness, task).some((row) => row.state === "SENT") ? true : undefined), 60_000);
-  const copies = (await phone.messages()).filter((message) => message.fromBot && message.id > before && message.text.startsWith(`Task needs input: ${name}`));
+  const copies = (await phone.messages()).filter((message) => message.fromBot && message.id > before && isCardFor(message, name));
   expect(copies.length).toBeGreaterThanOrEqual(1);
   expect(copies.length).toBeLessThanOrEqual(2);
   expect(outboxFor(harness, task).filter((row) => row.payload_json.includes("personal_question"))).toHaveLength(1);

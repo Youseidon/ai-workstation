@@ -1,5 +1,6 @@
 import type { QuotaWarning, TaskControlActionReference } from "@agent-console/shared";
-import { redactPhoneText } from "./telegramSummary.ts";
+import { settings as appSettings } from "./settings.ts";
+import { redactPhoneText, taskSummary, type TaskSummary } from "./telegramSummary.ts";
 import { workspaces } from "./workspaces.ts";
 
 
@@ -12,6 +13,8 @@ export interface RenderedTaskControlQuestion {
   receipt: string;
   question: string;
   actions: Array<Pick<TaskControlActionReference, "ref" | "action">>;
+  /** The structured facts the phone card is rendered from (L3 slice A); absent on rows queued before it. */
+  summary?: TaskSummary;
 }
 
 export interface RenderedQuotaWarning {
@@ -48,6 +51,7 @@ export function renderPersonalQuestion(promptId: number, actions: Array<Pick<Tas
     receipt: "waiting for action",
     question: sanitizeTelegramText(question),
     actions,
+    summary: taskSummary(promptId, "owner", { workstationLabel: appSettings.taskControl.workstationLabel }),
   };
 }
 

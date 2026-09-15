@@ -141,7 +141,7 @@ test("S-H6-24 (real): a token Telegram rejects and an unauthorized session are b
 
 test("S-H6-16 (real), S-H6-26: the proxy to api.telegram.org and forced driver failures leave no live secret in logs, errors, attachments or test-results", async () => {
   const errors: string[] = [];
-  errors.push(await phone.send("never sent", { replyTo: { id: 2_000_000_000, text: "", buttons: [], fromBot: true, edited: false, replyToId: null, topicId: null } }).then(() => "", (error: Error) => error.message));
+  errors.push(await phone.send("never sent", { replyTo: { id: 2_000_000_000, text: "", buttons: [], fromBot: true, edited: false, replyToId: null, topicId: null, entities: [] } }).then(() => "", (error: Error) => error.message));
   const proxy = new TelegramRouteProxy(REAL, join(test.info().outputDir, "telegram-proxy.log"));
   await proxy.listen();
   const through = await fetch(`${proxy.url}/bot${config.testBotToken}/getMe`).then((response) => response.json() as Promise<{ ok: boolean }>);

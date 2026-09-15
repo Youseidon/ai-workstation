@@ -1,5 +1,7 @@
 import type { TaskControlAction } from "@agent-console/shared";
+import type { TaskSummary } from "../../telegramSummary.ts";
 import { TelegramApiError } from "./botApi.ts";
+import { formatCard, type CardEntity } from "./card.ts";
 
 export interface TelegramInlineButton {
   text: string;
@@ -9,6 +11,8 @@ export interface TelegramInlineButton {
 export interface FormattedTelegramMessage {
   text: string;
   replyMarkup: { inline_keyboard: TelegramInlineButton[][] } | null;
+  /** Message entities with UTF-16 offsets; never a parse_mode. */
+  entities: CardEntity[];
 }
 
 /** Plain text notice enqueued by the live runtime (receipts, pairing, help). */
@@ -59,17 +63,38 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
   const data = record(payload);
   switch (data?.kind) {
     case "text":
-      return { text: clip(str(data.text), MAX_TEXT), replyMarkup: null };
+      return { text: clip(str(data.text), MAX_TEXT), replyMarkup: null, entities: [] };
     case "quota_warning": {
       const choices = Array.isArray(data.choices) ? data.choices.filter((choice): choice is string => typeof choice === "string") : [];
       const lines = [`Quota warning (${str(data.provider)}, ${str(data.window)})`, "", str(data.message)];
       if (choices.length > 0) lines.push("", `Choices in the local app: ${choices.join(", ")}.`, "Nothing changes until you act.");
-      return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: null };
+      return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: null, entities: [] };
     }
     case "personal_question": {
       const bound = actions(data.actions).map(entry => ({ ...entry, content: contentForRef(entry.ref) }));
       const draft = bound.find(entry => entry.action === "save_human_response" && entry.content !== null)?.content ?? null;
       const saved = draft === null ? bound.find(entry => entry.action === "answer_and_resume" && entry.content !== null)?.content ?? null : null;
+      const buttons: TelegramInlineButton[] = [];
+      if (draft !== null) {
+        for (const entry of bound) {
+          if (entry.content === null) continue;
+          buttons.push({ text: entry.action === "save_human_response" ? "Save answer" : "Answer and resume", callback_data: entry.ref });
+        }
+      } else if (saved !== null) {
+        const resume = bound.find(entry => entry.action === "answer_and_resume" && entry.content !== null);
+        if (resume) buttons.push({ text: "Resume with saved answer", callback_data: resume.ref });
+      }
+      const replyMarkup = buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null;
+      // L3 cards carry the task summary (slice A); rows queued by the L1 code keep the L1 layout.
+      const summary = record(data.summary) as TaskSummary | null;
+      if (summary !== null) {
+        const card = formatCard(summary, draft !== null
+          ? { answer: { label: "Your answer", text: draft }, hint: "Save answer keeps the task waiting. Answer and resume continues it." }
+          : saved !== null
+            ? { answer: { label: "Saved answer", text: saved }, hint: "Reply to this message to change it." }
+            : { hint: "Reply to this message with your answer." });
+        return { ...card, replyMarkup };
+      }
       const lines = [
         `Task needs input: ${str(data.title)}`,
         `Status: ${humanize(str(data.execution))} · ${humanize(str(data.decision))}`,
@@ -77,24 +102,14 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
         str(data.question),
         "",
       ];
-      const buttons: TelegramInlineButton[] = [];
       if (draft !== null) {
         lines.push("Your answer:", clip(draft, MAX_ANSWER_PREVIEW), "", "Save answer keeps the task waiting. Answer and resume continues it.");
-        for (const entry of bound) {
-          if (entry.content === null) continue;
-          buttons.push({ text: entry.action === "save_human_response" ? "Save answer" : "Answer and resume", callback_data: entry.ref });
-        }
       } else if (saved !== null) {
         lines.push("Saved answer:", clip(saved, MAX_ANSWER_PREVIEW), "", "Reply to this message to change it.");
-        const resume = bound.find(entry => entry.action === "answer_and_resume" && entry.content !== null);
-        if (resume) buttons.push({ text: "Resume with saved answer", callback_data: resume.ref });
       } else {
         lines.push("Reply to this message with your answer.");
       }
-      return {
-        text: clip(lines.join("\n"), MAX_TEXT),
-        replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null,
-      };
+      return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup, entities: [] };
     }
     default:
       throw new TelegramApiError("rejected", `Unsupported Telegram outbox payload kind: ${String(data?.kind ?? "none")}.`);

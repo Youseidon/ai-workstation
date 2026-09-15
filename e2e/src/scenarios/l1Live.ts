@@ -6,7 +6,7 @@ import { openApp } from "../fixtures.ts";
 import { runSavedTask, waitForRunEnd } from "../scenarios.ts";
 import { telegramStatus, waitForTelegramState } from "../telegramFlows.ts";
 import type { L1Context } from "./l1.ts";
-import { executeRuns, humanResponses, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus } from "./l1Flows.ts";
+import { executeRuns, humanResponses, isCardFor, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus } from "./l1Flows.ts";
 
 /*
  * L1 scenarios that need more than PhoneDriver: the route proxy (S-L1-17),
@@ -68,7 +68,7 @@ export async function routeCutWhileQueued({ harness, phone, page }: L1Context, h
     return outbox.queued + outbox.retrying + outbox.failed === 0 ? true : undefined;
   }, 60_000);
   await observeQuietPeriod(5_000, "the queued card being delivered twice");
-  expect((await phone.messages()).filter((message) => message.fromBot && message.text.startsWith(`Task needs input: ${name}`))).toEqual([card]);
+  expect((await phone.messages()).filter((message) => message.fromBot && isCardFor(message, name))).toEqual([card]);
   const answerCard = await replyWithAnswer(phone, card, "Roll back");
   await tapAndReport(phone, answerCard, "Answer and resume", /^Done: Answer saved and resume requested\./);
   await waitForPromptStatus(task, "DONE");
@@ -198,7 +198,7 @@ export async function realCodexSaveThenResume(ctx: L1Context, outputDir: string)
   try {
     const answerCard = await replyWithAnswer(ctx.phone, card, "Red");
     const saved = await tapAndReport(ctx.phone, answerCard, "Save answer", /^Done: Answer saved; task remains waiting\./);
-    const resumeCard = await ctx.phone.waitForBotMessage("the saved-answer card", (message) => message.text.startsWith(`Task needs input: ${name}`) && message.buttons.includes("Resume with saved answer"), { afterId: saved.before, timeoutMs: 60_000 });
+    const resumeCard = await ctx.phone.waitForBotMessage("the saved-answer card", (message) => isCardFor(message, name) && message.buttons.includes("Resume with saved answer"), { afterId: saved.before, timeoutMs: 60_000 });
     await observeQuietPeriod(5_000, "a run starting after Save answer");
     expect(await executeRuns(task)).toHaveLength(1);
     expect(colourFile(task)).toBeNull();
