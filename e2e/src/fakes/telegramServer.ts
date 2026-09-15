@@ -110,8 +110,12 @@ export class FakeTelegramServer {
   private outage: "refuse" | "hang" | null = null;
   private duplicateNext = false;
   private readonly dropResponses = new Map<string, number>();
-  /** Real Telegram ignores answers to queries older than about 15 minutes. */
-  callbackAnswerWindowMs = 15 * 60_000;
+  /**
+   * Real Telegram refuses answers to a callback query about 15s after the tap, the time the app waits for a toast
+   * ("query is too old"). Measured on the test bot 2026-09-15: sent 13s after the bot received the update accepted,
+   * 14s refused (S-H6-09).
+   */
+  callbackAnswerWindowMs = 15_000;
   /** Upper bound on a held getUpdates, so harness teardown never waits 25s. */
   maxPollHoldMs = 60_000;
 

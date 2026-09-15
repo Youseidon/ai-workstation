@@ -188,7 +188,9 @@ test("S-H6-09: the real callback-answer window matches the fake's at 5s, 15s, 60
     await tapped;
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, delaySeconds * 1000 - (Date.now() - tappedAt))));
     const answer = await bot("answerCallbackQuery", { callback_query_id: update!.callback_query!.id, text: "Late." });
-    outcomes.push({ delaySeconds, real: answer.ok ? "accepted" : (answer.description ?? "rejected"), fake: delaySeconds * 1000 <= fake.callbackAnswerWindowMs ? "accepted" : "Bad Request: query is too old and response timeout expired or query ID is invalid" });
+    // The delay counts from the bot's receipt, which is later than the tap where the fake's window starts, so an answer
+    // at exactly the window is already too old on the fake: strictly less.
+    outcomes.push({ delaySeconds, real: answer.ok ? "accepted" : (answer.description ?? "rejected"), fake: delaySeconds * 1000 < fake.callbackAnswerWindowMs ? "accepted" : "Bad Request: query is too old and response timeout expired or query ID is invalid" });
   }
   test.info().annotations.push({ type: "callback window", description: JSON.stringify(outcomes) });
   expect(outcomes.map(({ delaySeconds, real, fake: modelled }) => `${delaySeconds}s real=${real} fake=${modelled}`)).toEqual(outcomes.map(({ delaySeconds, real }) => `${delaySeconds}s real=${real} fake=${real}`));
