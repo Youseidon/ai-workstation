@@ -7,12 +7,15 @@ import { createLogger, type Logger } from "../../lib/logger.ts";
 import { runHub } from "../../runHub.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
+import { taskSummary } from "../../telegramSummary.ts";
+import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { WorkspaceError, workspaces } from "../../workspaces.ts";
 import { TelegramAdapter } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
 import { HttpTelegramBotApi, TELEGRAM_POLL_TIMEOUT_SECONDS } from "./httpBotApi.ts";
 import type { TelegramTextPayload } from "./liveFormat.ts";
+import { COMMANDS, decodeNav, parseCommand, renderView, type ViewContext, type ViewRequest } from "./views.ts";
 
 export interface TelegramRuntimeSettings {
   enabled: boolean;
@@ -260,6 +263,7 @@ export class TelegramLiveRuntime {
       callbackContent: contentForRef,
       onMessage: message => this.handleMessage(session, message),
       onCallbackResult: (callback, receipt) => this.handleCallbackResult(session, callback, receipt),
+      onNavigation: callback => this.handleNavigation(session, callback),
       now: this.now,
     });
     this.session = session;
@@ -319,6 +323,8 @@ export class TelegramLiveRuntime {
     this.nextRetryAt = null;
     this.setState("polling", `Long polling Telegram (${this.pollTimeoutSeconds}s window).`);
     this.log.info(`connected as @${this.bot?.username ?? "unknown"}`);
+    // The command menu is cosmetic: commands typed without it still answer, so a failure only logs.
+    void session.api.setMyCommands(COMMANDS).catch(error => this.log.warn(this.safe(`setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`)));
     await Promise.all([this.pollLoop(session), this.deliverLoop(session)]);
   }
 
@@ -459,6 +465,50 @@ export class TelegramLiveRuntime {
     return { provider: defaults.defaultProvider, model: defaults.defaultModel };
   }
 
+  private viewContext(): ViewContext {
+    return {
+      snapshot: workspaces.operations(),
+      summary: promptId => {
+        try {
+          return taskSummary(promptId, "owner", { workstationLabel: appSettings.taskControl.workstationLabel });
+        } catch {
+          return null;
+        }
+      },
+      usage: cachedAccountUsage(),
+      now: new Date(this.now()),
+      workstation: appSettings.taskControl.workstationLabel || "workstation",
+    };
+  }
+
+  private enqueueView(session: Session, chatId: string, topicId: string | null, request: ViewRequest): void {
+    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: renderView(request, this.viewContext()) });
+  }
+
+  /**
+   * A navigation tap edits the view message it came from into the requested view, through the outbox
+   * edit path (F1). Only paired chats navigate, and only messages the bot sent as views are edited
+   * (operator question 7): a crafted nv_ tap on a question card changes nothing.
+   */
+  private async handleNavigation(session: Session, callback: { ref: string; transportUserId: string; chatId: string; topicId?: string | null; messageId?: string | null; callbackQueryId?: string }): Promise<void> {
+    const answer = (text: string) => {
+      if (callback.callbackQueryId === undefined) return;
+      void session.api.answerCallbackQuery(callback.callbackQueryId, text).catch(error => this.log.warn(this.safe(`answerCallbackQuery failed: ${error instanceof Error ? error.message : String(error)}`)));
+    };
+    try {
+      const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null });
+      if (!actor || actor.enabled !== 1) return answer("");
+      const target = !callback.messageId ? null : workspaces.telegramOutboxBySentMessage(session.botId, callback.chatId, callback.messageId);
+      const request = decodeNav(callback.ref);
+      if (target === null || (target.payload as { kind?: unknown } | null)?.kind !== "view" || request === null) return answer("That button does not open a view.");
+      workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: target.id, payload: renderView(request, this.viewContext()) });
+      answer("");
+    } catch (error) {
+      this.log.warn(this.safe(`navigation failed: ${error instanceof Error ? error.message : String(error)}`));
+      answer("");
+    }
+  }
+
   /** Queues a plain reply in the chat and topic it answers (RTC-21), so it never lands in General or another topic. */
   private enqueueText(session: Session, chatId: string, topicId: string | null, text: string): void {
     workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: textPayload(text) });
@@ -486,8 +536,16 @@ export class TelegramLiveRuntime {
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId, topicId: message.topicId });
       // Unknown users and chats are ignored without a reply (protocol section 7).
       if (!actor || actor.enabled !== 1) return;
+      // Registered commands are read-only view requests, checked before the reply-to check so a
+      // command sent as a reply still answers; any other text starting with "/" can be an answer.
+      const command = parseCommand(text, this.bot?.username ?? null);
+      if (command.kind === "other_bot") return;
+      if (command.kind === "view") {
+        this.enqueueView(session, message.chatId, message.topicId, command.request);
+        return;
+      }
       if (message.replyToMessageId === null) {
-        this.enqueueText(session, message.chatId, message.topicId, "To answer a task, reply to its question message. Ordinary messages are not task instructions.");
+        this.enqueueView(session, message.chatId, message.topicId, { view: "help" });
         return;
       }
       const card = workspaces.telegramOutboxBySentMessage(session.botId, message.chatId, message.replyToMessageId);

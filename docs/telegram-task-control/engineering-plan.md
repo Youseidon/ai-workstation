@@ -607,7 +607,8 @@ tracker), and a final "publish a release report" step duplicating
     7. Harness slices H7 (UI coverage) and H8 (workflow integration). H7 may run in parallel with L3.
        H8 workflow changes DONE 2026-09-15: harness tiers are required checks in `docs/engineering-standards.md`, the L1 checklist names each row's harness scenario and tier, and L3 slices each get a test-design pass before implementation.
        H8 is complete when the L1 close-out runs through T3, which is blocked on the operator's live setup.
-    8. Step 7b (L3).
+    8. Step 7b (L3). F1, F2, F3, A and B implemented 2026-09-15 with T0 and T1 evidence (implementation.md, slices eleven to fourteen); their T3 rows are blocked on the live setup.
+       Stopped before C0, which needs the operator to enable topics for the test bot in BotFather and the live setup to exist.
     9. Harness slice H9 (mutation testing) before L3 close-out.
 
 7b. Implement L3 personal Telegram surface.

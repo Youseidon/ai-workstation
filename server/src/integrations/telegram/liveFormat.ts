@@ -70,6 +70,16 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
       if (choices.length > 0) lines.push("", `Choices in the local app: ${choices.join(", ")}.`, "Nothing changes until you act.");
       return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: null, entities: [] };
     }
+    case "view": {
+      // Read-only status views (slice B): navigation buttons carry nv_ data, never an action reference.
+      const rows = Array.isArray(data.buttons) ? data.buttons : [];
+      const keyboard = rows.map(row => (Array.isArray(row) ? row : []).flatMap(button => {
+        const item = record(button);
+        return item && typeof item.text === "string" && typeof item.data === "string" && item.data.startsWith("nv_") ? [{ text: item.text, callback_data: item.data }] : [];
+      })).filter(row => row.length > 0);
+      const entities = Array.isArray(data.entities) ? data.entities as CardEntity[] : [];
+      return { text: str(data.text), replyMarkup: keyboard.length > 0 ? { inline_keyboard: keyboard } : null, entities };
+    }
     case "personal_question": {
       const bound = actions(data.actions).map(entry => ({ ...entry, content: contentForRef(entry.ref) }));
       const draft = bound.find(entry => entry.action === "save_human_response" && entry.content !== null)?.content ?? null;

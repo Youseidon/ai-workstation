@@ -67,6 +67,11 @@ const USAGE_TTL_MS = 60_000;
 let usageCache: { at: number; usage: ProviderUsage[] } | null = null;
 let usageInflight: Promise<ProviderUsage[]> | null = null;
 
+/** The last figures collectAccountUsage fetched, without ever fetching (phone views must not spend quota). */
+export function cachedAccountUsage(): { at: number; usage: ProviderUsage[] } | null {
+  return usageCache;
+}
+
 export async function collectAccountUsage(force = false): Promise<ProviderUsage[]> {
   if (!force && usageCache !== null && Date.now() - usageCache.at < USAGE_TTL_MS) {
     return usageCache.usage;

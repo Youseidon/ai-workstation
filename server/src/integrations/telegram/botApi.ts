@@ -61,6 +61,8 @@ export interface TelegramBotApi {
 export interface LiveTelegramBotApi extends TelegramBotApi {
   getMe(options?: { signal?: AbortSignal }): Promise<{ id: string; username: string | null }>;
   answerCallbackQuery(callbackQueryId: string, text: string): Promise<void>;
+  /** Registers the bot's command menu. */
+  setMyCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void>;
 }
 
 export type TelegramApiErrorKind =

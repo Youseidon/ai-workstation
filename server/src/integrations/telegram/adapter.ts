@@ -81,6 +81,8 @@ export interface TelegramAdapterOptions {
   onMessage?: (message: TelegramMessagePayload) => void | Promise<void>;
   /** Reports a callback's receipt before the update is marked processed. Must not throw. */
   onCallbackResult?: (callback: CallbackPayload, receipt: TaskControlReceipt) => void | Promise<void>;
+  /** Navigation taps (`nv_` data, slice B) go here and never reach task control, so they cannot create a receipt. */
+  onNavigation?: (callback: CallbackPayload & { callbackQueryId?: string }) => void | Promise<void>;
   now?: () => number;
 }
 
@@ -159,6 +161,12 @@ export class TelegramAdapter {
         continue;
       }
       const callback = callbackPayload(update.payload);
+      if (callback !== null && callback.ref.startsWith("nv_")) {
+        if (this.options.onNavigation) await this.options.onNavigation(callback);
+        processed++;
+        workspaces.markTelegramUpdateProcessed(this.botId, update.updateId);
+        continue;
+      }
       if (callback === null || this.taskControl === undefined) {
         ignored++;
         workspaces.markTelegramUpdateProcessed(this.botId, update.updateId);

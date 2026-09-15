@@ -180,6 +180,10 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     }
   }
 
+  async setMyCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void> {
+    await this.call("setMyCommands", { commands });
+  }
+
   async answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {
     await this.call("answerCallbackQuery", { callback_query_id: callbackQueryId, text: text.slice(0, 200) });
   }

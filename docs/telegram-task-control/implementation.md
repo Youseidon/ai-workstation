@@ -575,6 +575,27 @@ Implemented thirteenth slice (L3 A, RTC-23: context-rich question cards):
   - the handoff parser caps each brief list at 30 items, so a card reports "30 passed" for a brief with more checks;
   - every blocked task records a BLOCKER remark (from the status reason), so a title-only card cannot occur today (S-L3-A-03 is T0 only).
 
+Implemented fourteenth slice (L3 B, RTC-24: read-only status commands):
+
+- Scenario table: [`l3-b.md`](../e2e-scenarios/l3-b.md) (42 rows).
+  Operator questions answered with defaults pending review:
+  - `/quota` shows the last cached usage and never fetches;
+  - `done` means COMPLETE with last activity in the past 24 hours (the snapshot has no completion time);
+  - `blocked` is AWAITING_RESPONSE only, and WAITING_DEPENDENCY and SKIPPED appear in no list;
+  - plain text keeps its L1 first sentence as the start of `/help`, with no buttons, so no L1 test changed;
+  - only registered commands take priority over a card reply, so `/usr/local is fine` is still an answer;
+  - an unknown `/tasks` filter shows the filter buttons, a bare `/task` shows help, commands are case-insensitive, and a command for another bot is ignored;
+  - navigation edits only messages the bot sent as views;
+  - `/task` uses the card budget;
+  - views answer whatever Remote actions and Notifications are set to;
+  - "as of" is local time, with the date when not today;
+  - views show workspace names only.
+- `server/src/integrations/telegram/views.ts`: a registry of pure views over the operations snapshot, F3 summaries and cached usage. It covers `/status`, `/tasks [filter]`, `/running`, `/blocked`, `/pipelines`, `/quota`, `/task <key or id>` (with a picker for ambiguous keys) and `/help`, paginated at 10 items. The same list feeds `setMyCommands`.
+- Navigation buttons carry `nv_` data of at most 64 bytes that encodes the target view, so they work after a restart. Taps are routed before task control (never a receipt) and edit the view message through the F1 edit path, so bursts coalesce.
+- The runtime parses registered commands after the actor check and before the reply check. Unpaired chats and strangers get nothing.
+- Tests: 7 registry tests (T0), 11 T1 scenarios (a mutation that sends views instead of editing them is caught), and a T3 spec for B's live rows.
+- Not implemented from the table: rows needing a usage seam (S-L3-B-08), completion-time seams (S-L3-B-06), recorded Bot API limits (S-L3-B-30), fault-injection variants for navigation (S-L3-B-19, 31, 34), topics (S-L3-B-40, blocked on C2), and several should rows.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
