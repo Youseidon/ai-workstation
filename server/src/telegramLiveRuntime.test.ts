@@ -540,6 +540,34 @@ test("S-L1-33 (T0): a reply polled before the card's sendMessage response still 
   }
 });
 
+test("S-L1-33 (T0): a tap polled before the answer card's sendMessage response still applies to that card", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    await f.askQuestion();
+    const card = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    h.stub.holdSendResponse = async (message) => {
+      if (!message.buttons.some(button => button.text === "Save answer")) return;
+      h.stub.holdSendResponse = null;
+      // The answer card's buttons are not bound to its message id until this response returns.
+      const cursor = workspaces.telegramCursor(h.botId);
+      h.stub.tap(operator, message, "Save answer");
+      await waitFor(() => workspaces.telegramCursor(h.botId) > cursor, "the tap to be polled");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    };
+    h.stub.send(operator, operatorChat, "Use the April list", card.messageId);
+    await waitFor(() => h.stub.messages.find(message => /^(Done|Not applied): /.test(message.text)), "tap result");
+    assert.deepEqual(h.stub.messages.filter(message => /^(Done|Not applied): /.test(message.text)).map(message => message.text.split("\n")[0]), ["Done: Answer saved; task remains waiting."]);
+    assert.notEqual(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
 test("unpairing ends the chat's outstanding buttons, and pairing again does not revive them", async () => {
   const h = harness();
   const f = fixture();

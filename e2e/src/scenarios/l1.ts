@@ -165,18 +165,23 @@ export async function strayMessagesRecordNothing({ harness, phone }: L1Context):
 }
 
 /**
- * S-L1-33: a reply that reaches the server before the card's sendMessage response (so before the server knows the
- * card's message id) still answers that card. Fake only: real Telegram shows this race by chance, not on demand.
+ * S-L1-33: a reply or tap that reaches the server before its card's sendMessage response (so before the server knows
+ * the card's message id and has bound the card's buttons to it) still acts on that card. Fake only: real Telegram
+ * shows this race by chance (S-L1-32 and S-L1-31 hit it), not on demand.
  */
-export async function replyBeforeCardSendReturns({ harness, phone }: L1Context): Promise<void> {
+export async function actBeforeCardSendReturns({ harness, phone }: L1Context): Promise<void> {
   const name = title("Answer the card in flight");
-  harness.telegramServer!.delayNextResponse("sendMessage", 4_000);
+  const server = harness.telegramServer!;
+  server.delayNextResponse("sendMessage", 4_000);
   const { task, card } = await blockTask(harness, phone, { title: name, later: [{ behavior: "consume-answer", expectInContext: "Teal" }] });
   const before = await phone.cursor();
+  // The reply goes out while the question card's response is still held; then the answer card's response is held too.
+  server.delayNextResponse("sendMessage", 4_000);
   const answerCard = await replyWithAnswer(phone, card, "Teal");
+  const { result } = await tapAndReport(phone, answerCard, "Answer and resume", /^(Done|Not applied): /);
   const replies = (await phone.messages()).filter((message) => message.fromBot && message.id > before);
   expect(replies.map((message) => message.text).filter((text) => text.startsWith("That message is not a task question"))).toEqual([]);
-  await tapAndReport(phone, answerCard, "Answer and resume", /^Done: Answer saved and resume requested\./);
+  expect(result.text).toMatch(/^Done: Answer saved and resume requested\./);
   await waitForPromptStatus(task, "DONE");
   expect(await humanResponses(task)).toEqual(["Teal"]);
   expect(await executeRuns(task)).toHaveLength(2);
