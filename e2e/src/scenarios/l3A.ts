@@ -160,7 +160,8 @@ export async function literalAndRedactedCard(ctx: L1Context): Promise<void> {
   const request = sendCallFor(ctx.harness, title).at(-1)!;
   expect(request.body.parse_mode).toBeUndefined();
   expect((request.body.entities as Array<{ type: string }>).map((entity) => entity.type)).toEqual(["expandable_blockquote"]);
-  const [entity] = card.entities;
+  // Telegram adds its own link, command, mention and hashtag entities for the literal markup, so pick the details.
+  const entity = card.entities.find((item) => item.type === "expandable_blockquote");
   expect(card.text.slice(entity!.offset, entity!.offset + entity!.length)).toContain("- [redacted] and [redacted] [redacted]");
 }
 

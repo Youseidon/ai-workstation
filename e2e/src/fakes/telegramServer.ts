@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
+import { messageEntities, type Entity } from "./telegramEntities.ts";
 
 /*
  * Fake Telegram Bot API (docs/e2e-harness-plan.md 4.2): a loopback HTTP server
@@ -378,7 +379,7 @@ export class FakeTelegramServer {
     }
     const message = this.store(chat, { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username }, body.text, {
       ...(isKeyboard(body.reply_markup) ? { reply_markup: body.reply_markup } : {}),
-      ...(Array.isArray(body.entities) ? { entities: body.entities } : {}),
+      ...entitiesField(body),
       ...(threadId === undefined ? {} : { message_thread_id: threadId, is_topic_message: true }),
     });
     return wireMessage(message);
@@ -412,7 +413,9 @@ export class FakeTelegramServer {
     message.edit_date = Math.floor(Date.now() / 1000);
     if (markup) message.reply_markup = markup;
     else delete message.reply_markup;
-    if (Array.isArray(body.entities)) message.entities = body.entities;
+    // An edit replaces the entities too: the ones it passes plus what Telegram detects in the new text.
+    delete message.entities;
+    Object.assign(message, entitiesField(body));
     return wireMessage(message);
   }
 
@@ -499,6 +502,12 @@ export class FakeTelegramServer {
   private find(chatId: number, messageId: number): StoredMessage | undefined {
     return this.messages.get(chatId)?.find((message) => message.message_id === messageId);
   }
+}
+
+/** A bot message's `entities` field as real Telegram returns it: absent when there are none. */
+function entitiesField(body: Json & { text: string }): { entities?: Entity[] } {
+  const entities = messageEntities(body.text, Array.isArray(body.entities) ? (body.entities as Entity[]) : undefined);
+  return entities.length > 0 ? { entities } : {};
 }
 
 function isKeyboard(value: unknown): value is { inline_keyboard: InlineButton[][] } {
