@@ -82,7 +82,7 @@ export function AgentsView() {
   const { providers, runs, items, lastRun, connection, interrupt, refreshProviders } =
     useAgentConsole();
   const credits = useProviderUsage(true);
-  const { snapshot, saving, save, reset } = useSettings(SERVER_URL);
+  const { snapshot, saving, errors: saveErrors, save, reset } = useSettings(SERVER_URL);
   const models = useModelSelection(providers);
   const dialogs = useDialogs();
   const [drafts, setDrafts] = useState<Record<string, SettingValue>>({});
@@ -221,6 +221,13 @@ export function AgentsView() {
             {credits.error !== null ? ` · ${credits.error}` : ""}
             {notice !== null ? ` · ${notice}` : ""}
           </p>
+          {saveErrors.length > 0 && (
+            <ul role="alert" className="mt-1 space-y-0.5 text-xs text-danger">
+              {saveErrors.map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          )}
         </header>
 
         {generalFields.length > 0 && (
