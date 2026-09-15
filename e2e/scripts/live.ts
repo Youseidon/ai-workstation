@@ -25,7 +25,7 @@ function reportedIds(): Set<string> {
   const report = join(e2eDir, "test-results/report.json");
   if (!existsSync(report)) return ids;
   const text = readFileSync(report, "utf8");
-  for (const match of text.matchAll(/S-[A-Z0-9]+-\d+(?:\/\d+)*/g)) {
+  for (const match of text.matchAll(/S-(?:[A-Z0-9]+-)+\d+(?:\/\d+)*/g)) {
     const [first, ...rest] = match[0].split("/");
     ids.add(first!);
     const prefix = first!.slice(0, first!.lastIndexOf("-") + 1);

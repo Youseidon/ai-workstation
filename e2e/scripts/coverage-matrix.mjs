@@ -36,14 +36,14 @@ const scenarios = new Map();
 for (const file of walk(join(repoRoot, "docs")).filter((path) => path.endsWith(".md") && (path.includes("e2e-scenarios") || path.includes(`${"/"}scenarios${"/"}`)))) {
   for (const line of readFileSync(file, "utf8").split("\n")) {
     const cells = line.split("|").map((cell) => cell.trim());
-    if (cells.length < 8 || !/^S-[A-Z0-9]+-\d+$/.test(cells[1])) continue;
+    if (cells.length < 8 || !/^S-(?:[A-Z0-9]+-)+\d+$/.test(cells[1])) continue;
     const [, id, covers, kind, , tier, priority] = cells;
     scenarios.set(id, { id, covers, kind, tier, priority: /must/i.test(priority) ? "must" : "should", file: file.slice(repoRoot.length + 1), results: [] });
   }
 }
 
 /* Results */
-const idsIn = (text) => [...new Set(text.match(/S-[A-Z0-9]+-\d+/g) ?? [])];
+const idsIn = (text) => [...new Set(text.match(/S-(?:[A-Z0-9]+-)+\d+/g) ?? [])];
 function addResult(ids, result) {
   for (const id of ids) scenarios.get(id)?.results.push(result);
 }

@@ -22,7 +22,7 @@ export function t3Rows(docs = DOCS): string[] {
   for (const file of tableFiles(docs)) {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       const cells = line.split("|").map((cell) => cell.trim());
-      if (!/^S-[A-Z0-9]+-\d+$/.test(cells[1] ?? "")) continue;
+      if (!/^S-(?:[A-Z0-9]+-)+\d+$/.test(cells[1] ?? "")) continue;
       if (cells.some((cell) => /\bT3\b/.test(cell) && /\breal\b/.test(cell))) rows.push(cells[1]!);
     }
   }
