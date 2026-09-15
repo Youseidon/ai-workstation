@@ -554,6 +554,19 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(20,?)").run(new Date().toISOString());
   }
+  if (version < 21) {
+    // L3 F1 (RTC-21): an outbox row either sends a new message or edits the
+    // message an earlier send row delivered. Queued edits of one message
+    // coalesce into a single row; payload_version lets a delivery that raced a
+    // newer edit leave the row queued instead of marking the newer text sent.
+    db.exec(`
+      ALTER TABLE telegram_outbox ADD COLUMN operation TEXT NOT NULL DEFAULT 'send' CHECK(operation IN ('send','edit'));
+      ALTER TABLE telegram_outbox ADD COLUMN target_outbox_id INTEGER REFERENCES telegram_outbox(id) ON DELETE CASCADE;
+      ALTER TABLE telegram_outbox ADD COLUMN payload_version INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX telegram_outbox_target_idx ON telegram_outbox(target_outbox_id, state);
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(21,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -992,16 +1005,66 @@ export const workspaces = {
       .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), input.topicId ?? null, JSON.stringify(input.payload), now, now).lastInsertRowid);
   }); },
   /**
+   * Queues an edit of the message a SENT-or-pending send row delivers. A queued
+   * or retrying edit of the same message is replaced rather than stacked, so
+   * only the latest content is ever sent. The chat, topic and bot come from the
+   * target row, so an edit can never address another chat's message.
+   */
+  enqueueTelegramEdit(input: { botId: string; targetOutboxId: number; payload: unknown }): number { return sqliteGuard(() => db.transaction(() => {
+    const target = db.prepare("SELECT id,bot_id botId,chat_id chatId,topic_id topicId,operation FROM telegram_outbox WHERE id=?").get(input.targetOutboxId) as { id: number; botId: string; chatId: string; topicId: string | null; operation: string } | undefined;
+    if (!target || target.botId !== input.botId || target.operation !== "send") throw new WorkspaceError(404, "outbox_target_not_found", "That Telegram message was not sent by this bot.");
+    const now = new Date().toISOString();
+    const payload = JSON.stringify(input.payload);
+    const pending = db.prepare("SELECT id FROM telegram_outbox WHERE target_outbox_id=? AND operation='edit' AND (state='QUEUED' OR (state='FAILED' AND next_attempt_at IS NOT NULL)) ORDER BY id DESC LIMIT 1").get(target.id) as { id: number } | undefined;
+    if (pending) {
+      // A retrying edit keeps its schedule, so a 429 wait is still honoured.
+      db.prepare("UPDATE telegram_outbox SET payload_json=?,payload_version=payload_version+1,updated_at=? WHERE id=?").run(payload, now, pending.id);
+      return pending.id;
+    }
+    return Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at,operation,target_outbox_id) VALUES(?,?,?,?,'QUEUED',?,?,'edit',?)")
+      .run(target.botId, target.chatId, target.topicId, payload, now, now, target.id).lastInsertRowid);
+  })()); },
+  /**
    * `nextAttemptAt` schedules a durable retry of a FAILED row; null leaves it
    * failed for good. `sentMessageId` records the Bot API message id of a SENT row.
+   * With `ifPayloadVersion`, a SENT mark applies only if no newer edit replaced
+   * the payload meanwhile; otherwise the row stays queued for the newer content.
    */
-  markTelegramOutbox(id: number, state: "SENT" | "FAILED", error: string | null = null, delivery: { nextAttemptAt?: string | null; sentMessageId?: string | null } = {}): void {
+  markTelegramOutbox(id: number, state: "SENT" | "FAILED", error: string | null = null, delivery: { nextAttemptAt?: string | null; sentMessageId?: string | null; ifPayloadVersion?: number } = {}): void {
+    const now = new Date().toISOString();
+    if (delivery.ifPayloadVersion !== undefined) {
+      const changed = db.prepare("UPDATE telegram_outbox SET state='QUEUED',attempt_count=attempt_count+1,last_error=NULL,updated_at=?,next_attempt_at=NULL WHERE id=? AND payload_version<>?").run(now, id, delivery.ifPayloadVersion).changes;
+      if (changed > 0) return;
+    }
     db.prepare("UPDATE telegram_outbox SET state=?,attempt_count=attempt_count+1,last_error=?,updated_at=?,next_attempt_at=?,sent_message_id=COALESCE(?,sent_message_id) WHERE id=?")
-      .run(state, error, new Date().toISOString(), state === "FAILED" ? delivery.nextAttemptAt ?? null : null, delivery.sentMessageId ?? null, id);
+      .run(state, error, now, state === "FAILED" ? delivery.nextAttemptAt ?? null : null, delivery.sentMessageId ?? null, id);
   },
-  /** Rows a live sender should attempt now: never-sent rows, and failed rows whose retry is due. */
+  /** An unpaired chat must not receive queued edits, which could restore working buttons there. */
+  dropQueuedTelegramEdits(botId: string, chatId: string): number {
+    return db.prepare("DELETE FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND operation='edit' AND (state='QUEUED' OR (state='FAILED' AND next_attempt_at IS NOT NULL))").run(botId, chatId).changes;
+  },
+  /** One outbox row with what a sender needs, including an edit's target message id once its send has one. */
+  telegramOutboxRow(id: number): { id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; operation: "send" | "edit"; payloadVersion: number; target: { state: "QUEUED" | "SENT" | "FAILED"; sentMessageId: string | null; retrying: boolean } | null } | null {
+    const row = db.prepare(`SELECT o.id,o.bot_id botId,o.chat_id chatId,o.topic_id topicId,o.payload_json payload,o.state,o.attempt_count attemptCount,o.operation,o.payload_version payloadVersion,
+      t.state targetState,t.sent_message_id targetMessageId,t.next_attempt_at targetNextAttempt
+      FROM telegram_outbox o LEFT JOIN telegram_outbox t ON t.id=o.target_outbox_id WHERE o.id=?`).get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: row.id as number, botId: row.botId as string, chatId: row.chatId as string, topicId: row.topicId as string | null, payload: JSON.parse(row.payload as string) as unknown,
+      state: row.state as "QUEUED" | "SENT" | "FAILED", attemptCount: row.attemptCount as number, operation: row.operation as "send" | "edit", payloadVersion: row.payloadVersion as number,
+      target: row.operation === "edit" ? { state: row.targetState as "QUEUED" | "SENT" | "FAILED", sentMessageId: row.targetMessageId as string | null, retrying: row.targetNextAttempt !== null } : null,
+    };
+  },
+  /**
+   * Rows a live sender should attempt now: never-sent rows, and failed rows whose retry is due.
+   * An edit waits until its target send has a message id; an edit whose send failed for good is due
+   * so the sender can record it failed without a Bot API call.
+   */
   dueTelegramOutbox(botId: string, now: Date, limit = 20): Array<{ id: number; chatId: string; attemptCount: number }> {
-    return db.prepare("SELECT id,chat_id chatId,attempt_count attemptCount FROM telegram_outbox WHERE bot_id=? AND (state='QUEUED' OR (state='FAILED' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?)) ORDER BY id LIMIT ?")
+    return db.prepare(`SELECT o.id,o.chat_id chatId,o.attempt_count attemptCount FROM telegram_outbox o LEFT JOIN telegram_outbox t ON t.id=o.target_outbox_id
+      WHERE o.bot_id=? AND (o.state='QUEUED' OR (o.state='FAILED' AND o.next_attempt_at IS NOT NULL AND o.next_attempt_at<=?))
+        AND (o.operation='send' OR (t.state='SENT' AND t.sent_message_id IS NOT NULL) OR (t.state='FAILED' AND t.next_attempt_at IS NULL))
+      ORDER BY o.id LIMIT ?`)
       .all(botId, now.toISOString(), limit) as Array<{ id: number; chatId: string; attemptCount: number }>;
   },
   telegramOutboxCounts(botId: string): { queued: number; retrying: number; failed: number } {
@@ -1014,7 +1077,7 @@ export const workspaces = {
   },
   /** The payload of the card a Telegram message id belongs to, for mapping replies. */
   telegramOutboxBySentMessage(botId: string, chatId: string, sentMessageId: string): { id: number; topicId: string | null; payload: unknown } | null {
-    const row = db.prepare("SELECT id,topic_id topicId,payload_json payload FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND sent_message_id=? AND state='SENT' ORDER BY id DESC LIMIT 1")
+    const row = db.prepare("SELECT id,topic_id topicId,payload_json payload FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND sent_message_id=? AND state='SENT' AND operation='send' ORDER BY id DESC LIMIT 1")
       .get(botId, chatId, sentMessageId) as { id: number; topicId: string | null; payload: string } | undefined;
     return row ? { ...row, payload: JSON.parse(row.payload) as unknown } : null;
   },

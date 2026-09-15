@@ -421,6 +421,12 @@ export class FakeTelegramServer {
   }
 
   /** Test control: the operator deletes a topic from their phone. */
+  /** The user deletes a message for everyone in a private chat; later edits of it are "message to edit not found". */
+  userDeletesMessage(chatId: number, messageId: number): void {
+    const list = this.messages.get(chatId) ?? [];
+    this.messages.set(chatId, list.filter((message) => message.message_id !== messageId));
+  }
+
   userDeletesTopic(chatId: number, threadId: number): void {
     const topic = this.topics.get(`${chatId}:${threadId}`);
     if (topic) topic.deleted = true;

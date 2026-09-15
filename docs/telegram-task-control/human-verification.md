@@ -216,3 +216,18 @@ H-L1-05, verified 2026-09-14 against the real database, with a Codex saved task 
   Claude now reports through typed progress tools (implementation.md, tenth slice).
 - Open: answers submitted from Telegram are recorded as ordinary `USER · HUMAN_RESPONSE` remarks; the task timeline does not show that they came from Telegram.
 - Open: `npm run dev` stopped reloading on source changes after repeated restarts in one session; restart it manually after pulling server changes.
+
+## L3 personal Telegram surface checklist
+
+Scope: milestone L3 (RTC-21 to RTC-26), one operator in their own private chat.
+Rows are added as each slice lands; the scenarios behind them are in the L3 tables under [`docs/e2e-scenarios`](../e2e-scenarios/).
+Live status is satisfied by the T3 scenarios named plus the phone look check.
+
+| ID | Case | Steps | Expected result | Harness scenario (tier) | Automated status | Live status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-L3-01 | Message updates in place | Trigger a status update of a message already on the phone, twice. | The same message changes text in place; no new message stacks; buttons that should remain still work. | S-L3-F1-05, S-L3-F1-10 (T1, T3) | PASS (T1) | Pending |
+| H-L3-02 | Edit of a deleted message | Delete a bot message on the phone, then trigger an edit of it. | Nothing reappears; the edit is recorded failed once and not retried; other messages keep arriving. | S-L3-F1-12 (T1, T3) | PASS (T1) | Pending |
+| H-L3-03 | Edits during a network drop | Cut the workstation's route to Telegram, trigger several updates of one message, restore. | The message ends showing the latest update, delivered once; the panel shows retrying, then connected. | S-L3-F1-15 (T1); S-L3-F1-16 (T3) | PASS (T1) | Pending |
+| H-L3-04 | Reply stays in its topic | In a chat with topics, send a message in a topic that the bot answers. | The reply appears in the same topic, never in General or another topic. | S-L3-F2-02, 04 (T0); S-L3-F2-14 (T3, blocked on C0) | PASS (T0) | Blocked on C0 |
+| H-L3-05 | Upgrade keeps the L1 chat working | Upgrade a workstation with an L1 paired chat and a pending card; reply to and tap the pre-upgrade card. | No duplicate or lost message; the pre-upgrade card still answers and resumes once. | S-L3-F1-04 (T0) | PASS (T0) | Pending |
+

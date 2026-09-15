@@ -178,7 +178,7 @@ export class TelegramLiveRuntime {
     if (pairing === null || typeof code !== "string" || !sameSecret(code, pairing.code)) throw new WorkspaceError(404, "pairing_not_found", "No active pairing matches this code. Start pairing again.");
     if (pairing.observed === null || pairing.challenge === null) throw new WorkspaceError(409, "pairing_not_observed", "Send the code to the bot from Telegram before confirming.");
     const actor = session.control.confirmPairing({ challenge: pairing.challenge, transportUserId: pairing.observed.transportUserId, chatId: pairing.observed.chatId, topicId: null });
-    this.enqueueText(session, pairing.observed.chatId, "Paired with this workstation. Task questions will arrive in this chat.");
+    this.enqueueText(session, pairing.observed.chatId, null, "Paired with this workstation. Task questions will arrive in this chat.");
     this.pairing = null;
     return actor;
   }
@@ -187,7 +187,25 @@ export class TelegramLiveRuntime {
     const actor = workspaces.taskControlActorById(actorId);
     if (!actor || actor.transport !== "telegram" || actor.enabled !== 1) throw new WorkspaceError(404, "actor_not_found", "No enrolled Telegram actor has this id.");
     workspaces.disableTaskControlActor(actorId);
-    if (this.session !== null) this.enqueueText(this.session, actor.chat_id, "This chat was unpaired from the workstation. Its buttons no longer work.");
+    if (this.session !== null) {
+      workspaces.dropQueuedTelegramEdits(this.session.botId, actor.chat_id);
+      this.enqueueText(this.session, actor.chat_id, actor.topic_id, "This chat was unpaired from the workstation. Its buttons no longer work.");
+    }
+  }
+
+  /** Harness seam only (workspaceApi gates it on harness mode): queues a plain message to an enrolled chat. */
+  harnessQueueText(chatId: unknown, text: unknown): number {
+    const session = this.requireSession();
+    if (typeof chatId !== "string" || !workspaces.taskControlActors("telegram").some(actor => actor.chat_id === chatId)) throw new WorkspaceError(404, "actor_not_found", "No enrolled Telegram chat has this id.");
+    if (typeof text !== "string" || text.trim() === "") throw new WorkspaceError(400, "invalid_text", "Text is required.");
+    return workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId: null, payload: textPayload(text) });
+  }
+
+  /** Harness seam only: queues an edit of a message this bot's outbox sent, through the same path a product edit uses. */
+  harnessQueueEdit(targetOutboxId: number, payload: unknown): number {
+    const session = this.requireSession();
+    if (payload === null || typeof payload !== "object" || typeof (payload as { kind?: unknown }).kind !== "string") throw new WorkspaceError(400, "invalid_payload", "An edit needs a message payload.");
+    return workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId, payload });
   }
 
   /* ------------------------------------------------------------------------ */
@@ -441,8 +459,9 @@ export class TelegramLiveRuntime {
     return { provider: defaults.defaultProvider, model: defaults.defaultModel };
   }
 
-  private enqueueText(session: Session, chatId: string, text: string): void {
-    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId: null, payload: textPayload(text) });
+  /** Queues a plain reply in the chat and topic it answers (RTC-21), so it never lands in General or another topic. */
+  private enqueueText(session: Session, chatId: string, topicId: string | null, text: string): void {
+    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: textPayload(text) });
   }
 
   /** The question revision a card's buttons were issued for, or null when it has none. */
@@ -468,24 +487,24 @@ export class TelegramLiveRuntime {
       // Unknown users and chats are ignored without a reply (protocol section 7).
       if (!actor || actor.enabled !== 1) return;
       if (message.replyToMessageId === null) {
-        this.enqueueText(session, message.chatId, "To answer a task, reply to its question message. Ordinary messages are not task instructions.");
+        this.enqueueText(session, message.chatId, message.topicId, "To answer a task, reply to its question message. Ordinary messages are not task instructions.");
         return;
       }
       const card = workspaces.telegramOutboxBySentMessage(session.botId, message.chatId, message.replyToMessageId);
       const payload = card?.payload as { kind?: unknown; promptId?: unknown } | undefined;
       if (payload?.kind !== "personal_question" || typeof payload.promptId !== "number") {
-        this.enqueueText(session, message.chatId, "That message is not a task question. Reply to a question message to answer it.");
+        this.enqueueText(session, message.chatId, message.topicId, "That message is not a task question. Reply to a question message to answer it.");
         return;
       }
       if (!this.isAwaiting(payload.promptId)) {
-        this.enqueueText(session, message.chatId, "This task no longer needs input. Review it in the local app.");
+        this.enqueueText(session, message.chatId, message.topicId, "This task no longer needs input. Review it in the local app.");
         return;
       }
       // Answers bind to the question they were written for (user-flows 5, B12):
       // a reply to a superseded card is refused, never rebound to the new question.
       const revision = workspaces.humanInputState(payload.promptId).revision;
       if (this.cardRevision(card?.payload) !== revision) {
-        this.enqueueText(session, message.chatId, "Not recorded: that question has changed since this message. Reply to the latest question for this task.");
+        this.enqueueText(session, message.chatId, message.topicId, "Not recorded: that question has changed since this message. Reply to the latest question for this task.");
         if (!workspaces.hasTaskControlActionForRevision({ promptId: payload.promptId, actorId: actor.id, botId: session.botId, revision })) this.postQuestion(session, payload.promptId, actor.id);
         return;
       }
@@ -494,7 +513,7 @@ export class TelegramLiveRuntime {
       const detail = error instanceof WorkspaceError ? error.message : "The answer could not be prepared.";
       this.log.warn(this.safe(`message handling failed: ${error instanceof Error ? error.message : String(error)}`));
       if (workspaces.taskControlActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId, topicId: message.topicId })?.enabled === 1) {
-        this.enqueueText(session, message.chatId, `Not recorded: ${detail}`);
+        this.enqueueText(session, message.chatId, message.topicId, `Not recorded: ${detail}`);
       }
     }
   }
@@ -505,17 +524,17 @@ export class TelegramLiveRuntime {
     // A wrong or stale code gets no reply, so the bot cannot be used to probe codes.
     if (pairing === null || !sameSecret(code, pairing.code)) return;
     if (pairing.observed !== null) {
-      this.enqueueText(session, message.chatId, "This pairing code was already used. Start pairing again from the local app.");
+      this.enqueueText(session, message.chatId, message.topicId, "This pairing code was already used. Start pairing again from the local app.");
       return;
     }
     if (message.chatType !== "private" || message.topicId !== null) {
-      this.enqueueText(session, message.chatId, "Pair from a private chat with this bot, not a group.");
+      this.enqueueText(session, message.chatId, message.topicId, "Pair from a private chat with this bot, not a group.");
       return;
     }
     const challenge = session.control.createPairingChallenge({ chatId: message.chatId, topicId: null, label: message.label, ttlMs: Math.max(1000, pairing.expiresAt - this.now()) });
     pairing.challenge = challenge.challenge;
     pairing.observed = { transportUserId: message.transportUserId, chatId: message.chatId, label: message.label, username: message.username, observedAt: new Date(this.now()).toISOString() };
-    this.enqueueText(session, message.chatId, "Pairing requested. Confirm it in the local app to finish.");
+    this.enqueueText(session, message.chatId, message.topicId, "Pairing requested. Confirm it in the local app to finish.");
   }
 
   private async handleCallbackResult(session: Session, callback: { ref: string; transportUserId: string; chatId: string; topicId?: string | null; commandId: string; callbackQueryId?: string }, receipt: TaskControlReceipt): Promise<void> {
@@ -531,11 +550,11 @@ export class TelegramLiveRuntime {
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null });
       if (!actor || actor.enabled !== 1 || replay) return;
       if (receipt.state === "APPLIED") {
-        this.enqueueText(session, callback.chatId, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`);
+        this.enqueueText(session, callback.chatId, callback.topicId ?? null, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`);
         runHub.operationsChanged();
         return;
       }
-      this.enqueueText(session, callback.chatId, `Not applied: ${receipt.message}`);
+      this.enqueueText(session, callback.chatId, callback.topicId ?? null, `Not applied: ${receipt.message}`);
       if (receipt.errorCode !== null && REISSUE_CODES.has(receipt.errorCode) && receipt.promptId > 0 && this.isAwaiting(receipt.promptId)) {
         // An expired action shares its revision with the dead card, so it always
         // needs a fresh one; a changed question may already have been reposted.

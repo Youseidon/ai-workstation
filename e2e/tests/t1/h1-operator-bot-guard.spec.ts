@@ -6,7 +6,7 @@ import { telegramStatus } from "../../src/telegramFlows.ts";
 const OPERATOR_BOT_ID = 700_424_242;
 test.use({ harnessOptions: { telegram: { backend: "fake", botId: OPERATOR_BOT_ID }, serverEnv: { AGENT_CONSOLE_HARNESS_FORBIDDEN_BOT_IDS: `123,${OPERATOR_BOT_ID}` } } });
 
-test("S-H1-04: the harness server refuses to poll the operator's bot", async ({ harness }) => {
+test("S-H1-04, S-H6-17 (fake): the harness server refuses to poll the operator's bot", async ({ harness }) => {
   const status = await eventually("the guard to refuse the bot", async () => {
     const current = await telegramStatus();
     return current.state === "auth_failed" ? current : undefined;

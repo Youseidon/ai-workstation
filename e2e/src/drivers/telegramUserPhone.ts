@@ -152,6 +152,16 @@ export class TelegramUserPhone implements PhoneDriver {
     return this.visible();
   }
 
+  async deleteMessage(message: PhoneMessage): Promise<void> {
+    await this.ensureConnected();
+    try {
+      await this.client.deleteMessages(this.peer(), [message.id], { revoke: true });
+    } catch (error) {
+      throw phoneError("deleting the message", error);
+    }
+    this.cache.delete(message.id);
+  }
+
   async cursor(): Promise<number> {
     await this.resync();
     return Math.max(this.floorId, ...this.cache.keys());
@@ -205,6 +215,9 @@ export class TelegramUserPhone implements PhoneDriver {
     const history = await this.client.getMessages(this.peer(), { limit: HISTORY_WINDOW }).catch((error: unknown) => {
       throw phoneError("reading the chat", error);
     });
+    const oldest = Math.min(...history.map((message) => message.id));
+    // Anything inside the fetched window that Telegram no longer returns was deleted.
+    if (history.length > 0) for (const id of [...this.cache.keys()]) if (id >= oldest && !history.some((message) => message.id === id)) this.cache.delete(id);
     for (const message of history) this.remember(message);
     this.lastSync = Date.now();
   }

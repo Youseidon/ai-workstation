@@ -106,8 +106,9 @@ export class TelegramAdapter {
   }
 
   async deliverOutbox(outboxId: number): Promise<TelegramDelivery> {
-    const row = workspaces.telegramOutbox().find(entry => entry.id === outboxId);
+    const row = workspaces.telegramOutboxRow(outboxId);
     if (!row) throw new Error("Telegram outbox row was not found.");
+    if (row.operation === "edit") return this.deliverEdit(row);
     try {
       const sent = await this.api.sendMessage({ chatId: row.chatId, topicId: row.topicId, payload: row.payload });
       workspaces.markTelegramOutbox(outboxId, "SENT", null, { sentMessageId: sent.messageId });
@@ -121,6 +122,27 @@ export class TelegramAdapter {
       const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
       const message = redactBotToken(error instanceof Error ? error.message : String(error));
       workspaces.markTelegramOutbox(outboxId, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
+      return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
+    }
+  }
+
+  /** Edits the message the target send row delivered; a delivery that raced a newer edit leaves the row queued for it. */
+  private async deliverEdit(row: NonNullable<ReturnType<typeof workspaces.telegramOutboxRow>>): Promise<TelegramDelivery> {
+    const target = row.target!;
+    if (target.sentMessageId === null) {
+      // The send it would edit failed for good, so there is no message to change.
+      workspaces.markTelegramOutbox(row.id, "FAILED", "The message to edit was never delivered.");
+      return { state: "FAILED", retryAt: null, rateLimited: false };
+    }
+    try {
+      await this.api.editMessageText({ chatId: row.chatId, messageId: target.sentMessageId, payload: row.payload });
+      workspaces.markTelegramOutbox(row.id, "SENT", null, { ifPayloadVersion: row.payloadVersion });
+      return { state: "SENT", retryAt: null, rateLimited: false };
+    } catch (error) {
+      const delay = telegramRetryDelayMs(error, row.attemptCount);
+      const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
+      const message = redactBotToken(error instanceof Error ? error.message : String(error));
+      workspaces.markTelegramOutbox(row.id, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
       return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
     }
   }

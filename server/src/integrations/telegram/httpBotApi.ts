@@ -1,4 +1,4 @@
-import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramCallbackPayload, type TelegramMessagePayload, type TelegramSendRequest, type TelegramUnsupportedPayload, type TelegramUpdate } from "./botApi.ts";
+import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramCallbackPayload, type TelegramEditRequest, type TelegramMessagePayload, type TelegramSendRequest, type TelegramUnsupportedPayload, type TelegramUpdate } from "./botApi.ts";
 import type { BotToken } from "./credentials.ts";
 import { formatTelegramMessage } from "./liveFormat.ts";
 
@@ -141,6 +141,27 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     const messageId = id(record(await this.call("sendMessage", body))?.message_id);
     if (!messageId) throw new TelegramApiError("transient", "Telegram sendMessage returned no message id.");
     return { messageId };
+  }
+
+  async editMessageText(request: TelegramEditRequest): Promise<{ modified: boolean }> {
+    const messageId = Number(request.messageId);
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new TelegramApiError("rejected", "Telegram editMessageText needs a sent message id.");
+    const message = formatTelegramMessage(request.payload, this.options.contentForRef ?? (() => null));
+    const body: Json = {
+      chat_id: request.chatId,
+      message_id: messageId,
+      text: message.text,
+      link_preview_options: { is_disabled: true },
+    };
+    if (message.replyMarkup !== null) body.reply_markup = message.replyMarkup;
+    try {
+      await this.call("editMessageText", body);
+      return { modified: true };
+    } catch (error) {
+      // Telegram refuses an edit that changes nothing; the message already shows this content.
+      if (error instanceof TelegramApiError && error.kind === "rejected" && /\(400\): Bad Request: message is not modified/.test(error.message)) return { modified: false };
+      throw error;
+    }
   }
 
   async answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {

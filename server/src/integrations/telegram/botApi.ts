@@ -40,9 +40,21 @@ export interface TelegramUnsupportedPayload {
   type: string;
 }
 
+export interface TelegramEditRequest {
+  chatId: string;
+  messageId: string;
+  payload: unknown;
+}
+
 export interface TelegramBotApi {
   getUpdates(offset: number, options?: { signal?: AbortSignal }): Promise<TelegramUpdate[]>;
   sendMessage(request: TelegramSendRequest): Promise<{ messageId: string }>;
+  /**
+   * Replaces a sent message's text and buttons. `modified` is false when
+   * Telegram already shows exactly this content, which counts as success.
+   * Omitting buttons in the payload removes the message's buttons.
+   */
+  editMessageText(request: TelegramEditRequest): Promise<{ modified: boolean }>;
 }
 
 /** Operations only the live Bot API needs; the fake transport has no use for them. */

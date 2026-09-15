@@ -10,6 +10,7 @@ import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 import { taskControl, withLiveTokenState } from "./taskControl.ts";
 import { telegramRuntime } from "./integrations/telegram/runtime.ts";
+import { isHarnessMode } from "./harnessGuard.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -84,6 +85,20 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if(url.pathname==="/api/task-control/telegram/pairing/confirm"){
       if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else{const input=await body(req);json(res,200,{actor:telegramRuntime.confirmPairing(input.code),status:telegramRuntime.status()});}
+      return true;
+    }
+    // Harness seam (docs/e2e-scenarios/l3-f1-f2.md question 1): until a product path issues edits
+    // (slice B), end-to-end scenarios queue a send and edits of it through the real outbox. These
+    // routes do not exist outside AGENT_CONSOLE_HARNESS=1.
+    if(isHarnessMode()&&url.pathname==="/api/task-control/telegram/harness/outbox"){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else{const input=await body(req);json(res,201,{outboxId:telegramRuntime.harnessQueueText(input.chatId,input.text)});}
+      return true;
+    }
+    const harnessEditMatch=isHarnessMode()?url.pathname.match(/^\/api\/task-control\/telegram\/harness\/outbox\/(\d+)\/edit$/):null;
+    if(harnessEditMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else{const input=await body(req);json(res,201,{outboxId:telegramRuntime.harnessQueueEdit(id(harnessEditMatch[1]!),input.payload)});}
       return true;
     }
     const telegramActorMatch=url.pathname.match(/^\/api\/task-control\/telegram\/actors\/([^/]+)$/);

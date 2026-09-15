@@ -20,7 +20,7 @@ import { workspaces } from "./workspaces.ts";
 
 type Scripted = { status: number; body: Record<string, unknown> } | Error;
 type User = { id: number; first_name: string; username?: string };
-type RecordedMessage = { chatId: string; text: string; buttons: Array<{ text: string; data: string }>; messageId: number };
+type RecordedMessage = { chatId: string; topicId: number | null; text: string; buttons: Array<{ text: string; data: string }>; messageId: number };
 
 class StubTelegram {
   readonly rawToken: string;
@@ -47,14 +47,15 @@ class StubTelegram {
     for (const resolve of this.wake.splice(0)) resolve();
   }
 
-  send(from: User, chat: { id: number; type: string }, text: string, replyTo?: number): void {
-    this.push({ message: { message_id: this.nextMessageId++, from: { ...from, is_bot: false }, chat, date: 1, text, ...(replyTo === undefined ? {} : { reply_to_message: { message_id: replyTo, chat, date: 1 } }) } });
+  send(from: User, chat: { id: number; type: string }, text: string, replyTo?: number, topic?: number): void {
+    this.push({ message: { message_id: this.nextMessageId++, from: { ...from, is_bot: false }, chat, date: 1, text, ...(replyTo === undefined ? {} : { reply_to_message: { message_id: replyTo, chat, date: 1 } }), ...(topic === undefined ? {} : { message_thread_id: topic, is_topic_message: true }) } });
   }
 
   tap(from: User, message: RecordedMessage, buttonText: string): void {
     const button = message.buttons.find(entry => entry.text === buttonText);
     assert.ok(button, `button ${buttonText} is not on message ${message.messageId}`);
-    this.push({ callback_query: { id: `cbq-${this.nextCallbackId++}`, from: { ...from, is_bot: false }, message: { message_id: message.messageId, chat: { id: Number(message.chatId), type: "private" }, date: 1 }, chat_instance: "i", data: button.data } });
+    const chatType = Number(message.chatId) < 0 ? "supergroup" : "private";
+    this.push({ callback_query: { id: `cbq-${this.nextCallbackId++}`, from: { ...from, is_bot: false }, message: { message_id: message.messageId, chat: { id: Number(message.chatId), type: chatType }, date: 1, ...(message.topicId === null ? {} : { message_thread_id: message.topicId, is_topic_message: true }) }, chat_instance: "i", data: button.data } });
   }
 
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -86,7 +87,7 @@ class StubTelegram {
       }
       case "sendMessage": {
         const markup = body.reply_markup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined;
-        const message = { chatId: String(body.chat_id), text: String(body.text), buttons: (markup?.inline_keyboard ?? []).flat().map(button => ({ text: button.text, data: button.callback_data })), messageId: this.nextMessageId++ };
+        const message = { chatId: String(body.chat_id), topicId: typeof body.message_thread_id === "number" ? body.message_thread_id : null, text: String(body.text), buttons: (markup?.inline_keyboard ?? []).flat().map(button => ({ text: button.text, data: button.callback_data })), messageId: this.nextMessageId++ };
         this.messages.push(message);
         return json(200, { ok: true, result: { message_id: message.messageId, chat: { id: Number(body.chat_id) }, date: 1, text: body.text } });
       }
@@ -528,5 +529,122 @@ test("unpairing ends the chat's outstanding buttons, and pairing again does not 
   } finally {
     await h.cleanup();
     f.cleanup();
+  }
+});
+
+/* ------------------------ L3 F2: topic-aware replies ----------------------- */
+// Scenario IDs refer to docs/e2e-scenarios/l3-f1-f2.md. Topic-bound actors are created directly here
+// (operator question 3): pairing cannot create one until C2 authorizes private-chat topics.
+
+test("S-L3-F2-01 (T0): in a chat without topics every reply is sent without a thread id", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    await f.askQuestion();
+    const question = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    h.stub.send(operator, operatorChat, "just chatting");
+    h.stub.send(operator, operatorChat, "Use the list", question.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Save answer")), "answer card");
+    h.stub.tap(operator, answerCard, "Save answer");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done:")), "tap result");
+    const sends = h.stub.calls.filter(call => call.method === "sendMessage");
+    assert.ok(sends.length >= 5);
+    assert.deepEqual(sends.filter(call => "message_thread_id" in call.body), []);
+    assert.deepEqual(workspaces.telegramOutbox().filter(row => row.botId === h.botId && row.topicId !== null), []);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("S-L3-F2-02/03 (T0): pairing refusals go to the topic the code was sent in, and General replies carry no thread id", async () => {
+  const h = harness();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    const forum = { id: -100777, type: "supergroup" };
+    const code = h.runtime.startPairing().code;
+    h.stub.send(operator, forum, `/start ${code}`, undefined, 11);
+    const refusal = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Pair from a private chat")), "topic refusal");
+    assert.equal(refusal.topicId, 11);
+    h.stub.send(operator, forum, `/start ${code}`);
+    await waitFor(() => h.stub.messages.filter(message => message.text.startsWith("Pair from a private chat")).length === 2, "General refusal");
+    assert.equal(h.stub.messages.filter(message => message.text.startsWith("Pair from a private chat"))[1]!.topicId, null);
+    assert.equal(h.runtime.status().pairing?.observed, null);
+    assert.deepEqual(h.runtime.status().actors, []);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S-L3-F2-04/06 (T0): a topic-bound actor gets every reply in its topic; a reply from another topic records nothing and sends nothing", async () => {
+  const h = harness();
+  const f = fixture();
+  const forum = { id: -100888, type: "supergroup" };
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    workspaces.upsertTaskControlActor({ id: `telegram-${operator.id}-${forum.id}-7`, transport: "telegram", transportUserId: String(operator.id), chatId: String(forum.id), topicId: "7", label: "Operator" });
+    await f.askQuestion();
+    const question = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    assert.equal(question.topicId, 7);
+
+    h.stub.send(operator, forum, "just chatting", undefined, 7);
+    const hint = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("To answer a task")), "hint");
+    assert.equal(hint.topicId, 7);
+
+    const before = h.stub.messages.length;
+    h.stub.send(operator, forum, "From the wrong topic", question.messageId, 8);
+    h.stub.send(operator, forum, "Use the list", question.messageId, 7);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Save answer")), "answer card");
+    assert.equal(answerCard.topicId, 7);
+    assert.match(answerCard.text, /Use the list/);
+    assert.equal(h.stub.messages.slice(before).some(message => message.topicId !== 7), false, "nothing is sent outside topic 7");
+    assert.equal(h.stub.messages.some(message => message.text.includes("From the wrong topic")), false);
+
+    h.stub.tap(operator, answerCard, "Save answer");
+    const result = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done:")), "tap result");
+    assert.equal(result.topicId, 7);
+    assert.equal(workspaces.promptActivity(f.prompt.id).remarks.filter(remark => remark.kind === "HUMAN_RESPONSE" && remark.content === "Use the list").length, 1);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("S-L3-F2-08 (T0): only true topic messages carry a topic id", async () => {
+  const { normalizeTelegramUpdate } = await import("./integrations/telegram/httpBotApi.ts");
+  const message = (extra: Record<string, unknown>) => normalizeTelegramUpdate({ update_id: 1, message: { message_id: 5, from: { id: 1, first_name: "A" }, chat: { id: -1001, type: "supergroup" }, text: "hi", ...extra } })!.payload as { topicId: string | null };
+  assert.equal(message({ message_thread_id: 44 }).topicId, null, "a reply thread in a group without topics");
+  assert.equal(message({ message_thread_id: 44, is_topic_message: true }).topicId, "44");
+  assert.equal(message({}).topicId, null);
+  const callback = normalizeTelegramUpdate({ update_id: 2, callback_query: { id: "q", from: { id: 1 }, data: "tc_x", message: { message_id: 5, chat: { id: -1001, type: "supergroup" }, message_thread_id: 9, is_topic_message: true } } })!.payload as { topicId: string | null };
+  assert.equal(callback.topicId, "9");
+});
+
+test("S-L3-F2-09 (T0): a reply whose topic was closed or deleted is recorded failed once and never redirected", async () => {
+  const h = harness();
+  const forum = { id: -100999, type: "supergroup" };
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    workspaces.upsertTaskControlActor({ id: `telegram-${operator.id}-${forum.id}-5`, transport: "telegram", transportUserId: String(operator.id), chatId: String(forum.id), topicId: "5", label: "Operator" });
+    for (const description of ["Bad Request: TOPIC_CLOSED", "Bad Request: message thread not found"]) {
+      h.stub.script("sendMessage", { status: 400, body: { ok: false, error_code: 400, description } });
+      const sendsBefore = h.stub.calls.filter(call => call.method === "sendMessage").length;
+      h.stub.send(operator, forum, `hello ${description}`, undefined, 5);
+      const failed = await waitFor(() => workspaces.telegramOutbox().find(row => row.botId === h.botId && row.state === "FAILED" && row.lastError?.includes(description.split(": ")[1]!)), "failed reply");
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const sends = h.stub.calls.filter(call => call.method === "sendMessage").slice(sendsBefore);
+      assert.equal(sends.length, 1, "one attempt, no redirect to General");
+      assert.equal(sends[0]!.body.message_thread_id, 5);
+      assert.equal(failed.attemptCount, 1);
+      assert.equal(h.runtime.status().state, "polling");
+    }
+  } finally {
+    await h.cleanup();
   }
 });

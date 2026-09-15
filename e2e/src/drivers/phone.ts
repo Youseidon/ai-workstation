@@ -33,6 +33,8 @@ export interface PhoneDriver {
   tap(message: PhoneMessage, button: string): Promise<{ toast: string | null }>;
   /** Messages of this run only: anything already in the chat when the driver was created is left out. */
   messages(): Promise<PhoneMessage[]>;
+  /** Deletes a message from the chat for both sides, as the operator can on the phone. */
+  deleteMessage(message: PhoneMessage): Promise<void>;
   /** Waits for a bot message matching `predicate` whose id is greater than `afterId`. */
   waitForBotMessage(description: string, predicate: (message: PhoneMessage) => boolean, options?: { afterId?: number; timeoutMs?: number }): Promise<PhoneMessage>;
   /** The newest message id so far; pass to `waitForBotMessage` to ignore older ones. */
@@ -106,6 +108,10 @@ export class FakePhone implements PhoneDriver {
 
   async cursor(): Promise<number> {
     return this.server.transcript(this.chat.id).at(-1)?.message_id ?? this.floorId;
+  }
+
+  async deleteMessage(message: PhoneMessage): Promise<void> {
+    this.server.userDeletesMessage(this.chat.id, message.id);
   }
 
   waitForBotMessage(description: string, predicate: (message: PhoneMessage) => boolean, options: { afterId?: number; timeoutMs?: number } = {}): Promise<PhoneMessage> {

@@ -513,6 +513,34 @@ Verification on 2026-09-14:
   A second task that needed owner credentials also reported through the tools, but Haiku judged it DONE after writing the draft rather than BLOCKED; that is model judgement, not transport, and BLOCKED through the tool is covered deterministically in T0.
 - Not yet run: the T3 harness scenarios S-CLT-02, S-CLT-03, S-CLT-27 and S-CLT-29 (real Claude with the phone), which run in harness slice H6.
 
+Harness evidence for L1 (harness slices H5 and H6, [`docs/e2e-harness-plan.md`](../e2e-harness-plan.md)), 2026-09-15:
+
+- Scenario tables: [`l1.md`](../e2e-scenarios/l1.md) (32 rows) and [`h6.md`](../e2e-scenarios/h6.md) (36 rows), each from a separate test-design pass.
+- T1 (fake Telegram, fake agent): the full suite passed 68 of 68.
+  Burn-in ran every L1 and H6 T1 scenario 20 times: 820 of 820 passed.
+  `coverage-matrix.mjs --scope S-L1 --tiers T1`: no must gaps; should rows S-L1-20, S-L1-26 and S-L1-30 are not implemented.
+- T0: server 179 passed; e2e 39 passed, with S-H6-30 blocked until a real contract recording exists.
+- Real providers: dry runs of S-CLT-02, S-L1-31 (Claude Haiku 4.5) and S-L1-32 (Codex, gpt-5.5) on the fake Telegram passed.
+  They found that Codex cannot use gpt-5.4-mini on a ChatGPT account and that the block check accepted a SYSTEM fallback; both were fixed.
+- T3 (real Telegram): not run.
+  Every T3 row is blocked on the operator's one-time setup ([`e2e-live-setup.md`](../e2e-live-setup.md)); `npm run e2e:live` lists them as blocked.
+  The L1 Live column stays Pending until a T3 run and the phone look check.
+
+Implemented eleventh slice (L3 F1 and F2, RTC-21: outbox edits and topic-aware replies):
+
+- Scenario table: [`l3-f1-f2.md`](../e2e-scenarios/l3-f1-f2.md), 40 rows from a separate test-design pass.
+  Its six operator questions were answered with the table's recommendations, pending the operator's review: a harness-only edit trigger; a deleted-target edit counts as one failed row; topic-bound actor paths are T0 until C2; a reply from the wrong topic stays silent; a reply to a closed or deleted topic fails once and is never redirected; unpairing drops queued edits.
+- Migration 21 adds `operation` (`send` or `edit`), `target_outbox_id` and `payload_version` to `telegram_outbox`; existing rows become sends unchanged.
+- `enqueueTelegramEdit` addresses a send row of the same bot, so an edit cannot target another chat's or bot's message.
+  A queued or retrying edit of the same message is replaced, not stacked; a retrying edit keeps its schedule.
+  A delivery that raced a newer edit leaves the row queued, so the newest content is always sent last.
+- An edit waits until its send has a message id, and fails without a Bot API call when the send failed for good.
+- `editMessageText` exists on the live client and the fake transport; "message is not modified" is success, and the other 4xx responses are permanent.
+- Replies (hints, pairing notices, tap results, the unpair notice) go to the chat and topic they answer; replies to cards still resolve only to send rows.
+- Harness-only routes under `/api/task-control/telegram/harness/outbox` queue a send and edits of it; they do not exist outside `AGENT_CONSOLE_HARNESS=1`.
+- Tests: 9 new server tests for F1 (including a migration from a rebuilt version 20 database), 5 new runtime tests for F2, and 14 T1 scenarios for F1 through the route proxy.
+  F2's forum topic rows run at T0; the T1 topic rows (S-L3-F2-02, 03, 07, 10 to 13, 15) need a topic option on `PhoneDriver.send`, and S-L3-F2-14 is blocked on C0.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
