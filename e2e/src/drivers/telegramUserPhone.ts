@@ -92,7 +92,8 @@ export class TelegramUserPhone implements PhoneDriver {
     const bot = await this.client.getEntity(this.config.testBotUsername).catch(() => null);
     if (!(bot instanceof Api.User) || !bot.bot || String(bot.id) !== this.config.testBotId) throw new LiveSetupError("E2E_TELEGRAM_TEST_BOT_USERNAME does not resolve to the registered test bot id; run npm run e2e:live:login again");
     this.bot = bot;
-    const chats = [bot];
+    // GramJS stringifies each `chats` entry, so pass the id: an entity object would become "[object Object]".
+    const chats = [this.config.testBotId];
     this.client.addEventHandler((event) => this.remember(event.message), new NewMessage({ chats }));
     this.client.addEventHandler((event) => this.remember(event.message), new EditedMessage({ chats }));
     await this.resync();
@@ -132,6 +133,8 @@ export class TelegramUserPhone implements PhoneDriver {
     await this.ensureConnected();
     if (options.replyTo && !(await this.find(options.replyTo.id))) throw new Error(`phone: cannot reply to message ${options.replyTo.id}: it is not in the chat with the test bot`);
     try {
+      // GramJS refuses empty text itself without asking Telegram; send the raw request so Telegram's own answer is reported.
+      if (text === "") await this.client.invoke(new Api.messages.SendMessage({ peer: this.peer(), message: "" }));
       // Empty formatting entities send the text literally: GramJS would otherwise parse Markdown.
       const sent = await this.client.sendMessage(this.peer(), { message: text, formattingEntities: [], linkPreview: false, ...(options.replyTo ? { replyTo: options.replyTo.id } : {}) });
       this.remember(sent);
