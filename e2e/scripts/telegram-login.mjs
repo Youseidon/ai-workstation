@@ -63,13 +63,106 @@ const client = new TelegramClient(new StringSession(env.E2E_TELEGRAM_USER_SESSIO
   connectionRetries: 3,
 });
 client.setLogLevel("error");
-await client.start({
-  phoneNumber: async () => rl.question("Phone number (international format, e.g. +44...): "),
-  phoneCode: async () => rl.question("Login code Telegram just sent you: "),
-  password: async () => rl.question("Two-step verification password (if set): "),
-  onError: (err) => console.error("Sign-in error:", err.message),
-});
+await client.connect();
+if (!(await client.checkAuthorization())) await signIn();
 rl.close();
+
+// Where Telegram delivers a code, in the operator's words. client.start hides this, and "no SMS arrived"
+// is almost always a code sent as an in-app message from the "Telegram" account instead.
+// `type` is an auth.SentCodeType*; `nextType` (the resend method) is the shorter auth.CodeType*.
+function describeDelivery(type) {
+  switch (type?.className.replace(/^auth\.(Sent)?CodeType/, "")) {
+    case "App":
+      return 'as a message from the official "Telegram" account in your Telegram app (on a device already signed in), not by SMS';
+    case "Sms":
+    case "SmsWord":
+    case "SmsPhrase":
+      return "by SMS";
+    case "Call":
+      return "by a phone call that reads out the code";
+    case "FlashCall":
+    case "MissedCall":
+      return "as a missed call: the code is the last digits of the calling number";
+    case "EmailCode":
+      return `by email to ${type.emailPattern}`;
+    case "FragmentSms":
+      return "through Fragment (fragment.com), for an anonymous number";
+    case "FirebaseSms":
+      return "by SMS through a verification channel only official apps can use";
+    default:
+      return `by an unrecognised method (${type?.className ?? "none"})`;
+  }
+}
+
+function explainSent(sent) {
+  const digits = sent.type?.length ? `a ${sent.type.length}-digit code` : "the code";
+  console.log(`Telegram sent ${digits} ${describeDelivery(sent.type)}.`);
+  if (sent.nextType) {
+    const wait = sent.timeout ? ` after ${sent.timeout}s` : "";
+    console.log(`Not arriving? Enter r to have it resent ${describeDelivery(sent.nextType)}${wait}.`);
+  }
+}
+
+async function signIn() {
+  const apiCredentials = { apiId: Number(env.E2E_TELEGRAM_API_ID), apiHash: env.E2E_TELEGRAM_API_HASH };
+  const phoneNumber = (await rl.question("Phone number (international format, e.g. +44...): ")).replace(/[\s-]/g, "");
+  let sent;
+  try {
+    sent = await client.invoke(new Api.auth.SendCode({ phoneNumber, ...apiCredentials, settings: new Api.CodeSettings({}) }));
+  } catch (err) {
+    // FLOOD_WAIT_n / PHONE_NUMBER_FLOOD mean too many code requests: wait before retrying.
+    console.error("Telegram refused to send a code:", err.errorMessage ?? err.message, err.seconds ? `(retry in ${err.seconds}s)` : "");
+    process.exit(1);
+  }
+  if (sent instanceof Api.auth.SentCodeSuccess) return;
+  if (sent.type instanceof Api.auth.SentCodeTypeSetUpEmailRequired) {
+    console.error("Telegram requires a login email for this account before third-party sign-in. Set one up in Telegram (Settings > Privacy and Security), then rerun.");
+    process.exit(1);
+  }
+  explainSent(sent);
+
+  for (;;) {
+    const answer = (await rl.question("Login code (or r to resend): ")).trim();
+    if (answer.toLowerCase() === "r") {
+      try {
+        sent = await client.invoke(new Api.auth.ResendCode({ phoneNumber, phoneCodeHash: sent.phoneCodeHash }));
+        if (sent instanceof Api.auth.SentCodeSuccess) return;
+        explainSent(sent);
+      } catch (err) {
+        const code = err.errorMessage ?? err.message;
+        console.error(`Resend refused: ${code}${code.startsWith("FLOOD") ? " (too soon: wait for the timeout above, then try r again)" : ""}`);
+      }
+      continue;
+    }
+    if (!answer) continue;
+    try {
+      const result = await client.invoke(new Api.auth.SignIn({ phoneNumber, phoneCodeHash: sent.phoneCodeHash, phoneCode: answer }));
+      if (result instanceof Api.auth.AuthorizationSignUpRequired) {
+        console.error("This number has no Telegram account. Sign up in a Telegram app first.");
+        process.exit(1);
+      }
+      return;
+    } catch (err) {
+      const code = err.errorMessage ?? err.message;
+      if (code === "PHONE_CODE_INVALID") {
+        console.error("That code is wrong. Try again.");
+        continue;
+      }
+      if (code === "SESSION_PASSWORD_NEEDED") {
+        await client.signInWithPassword(apiCredentials, {
+          password: async (hint) => rl.question(`Two-step verification password${hint ? ` (hint: ${hint})` : ""}: `),
+          onError: async (passwordErr) => {
+            console.error("Password error:", passwordErr.errorMessage ?? passwordErr.message);
+            return (passwordErr.errorMessage ?? "") !== "PASSWORD_HASH_INVALID";
+          },
+        });
+        return;
+      }
+      console.error(`Sign-in error: ${code}${code === "PHONE_CODE_EXPIRED" ? " (rerun npm run e2e:live:login for a new code)" : ""}`);
+      process.exit(1);
+    }
+  }
+}
 
 const self = await client.getMe();
 await client.sendMessage(testBotUsername, { message: "/start" });
