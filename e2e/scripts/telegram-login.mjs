@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
+import QRCode from "qrcode";
 import { TelegramClient, Api } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 
@@ -64,8 +65,30 @@ const client = new TelegramClient(new StringSession(env.E2E_TELEGRAM_USER_SESSIO
 });
 client.setLogLevel("error");
 await client.connect();
-if (!(await client.checkAuthorization())) await signIn();
+if (!(await client.checkAuthorization())) {
+  const method = (await rl.question("Sign in by (q) scanning a QR code with the Telegram app on your phone, or (c) a login code? [q]: ")).trim().toLowerCase();
+  if (method === "c") await signIn();
+  else await signInWithQr();
+}
 rl.close();
+
+// QR login needs no code delivery: the phone's Telegram app, already signed in, approves this client.
+async function signInWithQr() {
+  const apiCredentials = { apiId: Number(env.E2E_TELEGRAM_API_ID), apiHash: env.E2E_TELEGRAM_API_HASH };
+  console.log("\nOn your phone: Telegram > Settings > Devices > Link Desktop Device, then scan the code below.");
+  console.log("The code renews about every 30 seconds until you scan it.\n");
+  await client.signInUserWithQrCode(apiCredentials, {
+    qrCode: async ({ token }) => {
+      const url = `tg://login?token=${Buffer.from(token).toString("base64url")}`;
+      console.log(await QRCode.toString(url, { type: "utf8", errorCorrectionLevel: "L" }));
+    },
+    password: async (hint) => rl.question(`Two-step verification password${hint ? ` (hint: ${hint})` : ""}: `),
+    onError: async (err) => {
+      console.error("Sign-in error:", err.errorMessage ?? err.message);
+      return (err.errorMessage ?? "") !== "PASSWORD_HASH_INVALID";
+    },
+  });
+}
 
 // Where Telegram delivers a code, in the operator's words. client.start hides this, and "no SMS arrived"
 // is almost always a code sent as an in-app message from the "Telegram" account instead.

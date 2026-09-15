@@ -51,7 +51,10 @@ The harness never prints these values, and every run ends with a token sweep tha
    cd ~/ai-workstation/e2e && npm run e2e:live:login
    ```
 
-   It asks for your phone number, the login code Telegram sends you, and your two-step verification password if you have one.
+   By default it shows a QR code: on your phone open Telegram > Settings > Devices > Link Desktop Device and scan it.
+   It then asks for your two-step verification password if you have one.
+   Choose `c` instead to sign in with your phone number and a login code.
+   Telegram usually sends that code as a message from the "Telegram" account in an app already signed in to your number, not by SMS, and the script prints where it went.
    It checks the token with Telegram, refuses a test bot that is your own app's bot, sends `/start` to the test bot from your account, and writes the remaining keys.
 5. Check the setup:
 
