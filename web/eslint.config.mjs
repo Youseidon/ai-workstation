@@ -9,6 +9,8 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    // The end-to-end harness production build (docs/e2e-harness-plan.md 4.1).
+    ".next-e2e/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
