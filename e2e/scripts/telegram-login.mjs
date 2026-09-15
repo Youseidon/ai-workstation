@@ -100,6 +100,8 @@ function explainSent(sent) {
   if (sent.nextType) {
     const wait = sent.timeout ? ` after ${sent.timeout}s` : "";
     console.log(`Not arriving? Enter r to have it resent ${describeDelivery(sent.nextType)}${wait}.`);
+  } else if (sent.type?.className === "auth.SentCodeTypeApp") {
+    console.log('Telegram offers no other method for this account. Look for the "Telegram" chat (check Archived chats) on any device signed in to this number.');
   }
 }
 
@@ -122,7 +124,11 @@ async function signIn() {
   explainSent(sent);
 
   for (;;) {
-    const answer = (await rl.question("Login code (or r to resend): ")).trim();
+    const answer = (await rl.question(sent.nextType ? "Login code (or r to resend): " : "Login code: ")).trim();
+    if (answer.toLowerCase() === "r" && !sent.nextType) {
+      console.error("Telegram offers no resend method for this code; enter the code from the Telegram app.");
+      continue;
+    }
     if (answer.toLowerCase() === "r") {
       try {
         sent = await client.invoke(new Api.auth.ResendCode({ phoneNumber, phoneCodeHash: sent.phoneCodeHash }));
@@ -130,7 +136,12 @@ async function signIn() {
         explainSent(sent);
       } catch (err) {
         const code = err.errorMessage ?? err.message;
-        console.error(`Resend refused: ${code}${code.startsWith("FLOOD") ? " (too soon: wait for the timeout above, then try r again)" : ""}`);
+        const hint = code.startsWith("FLOOD")
+          ? " (too soon: wait for the timeout above, then try r again)"
+          : code === "SEND_CODE_UNAVAILABLE"
+            ? " (no other delivery method; the code you already have is still valid)"
+            : "";
+        console.error(`Resend refused: ${code}${hint}`);
       }
       continue;
     }
