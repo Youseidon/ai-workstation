@@ -21,9 +21,9 @@ current source and tests support the claimed behaviour.
 | Local handoff brief/successor workflow | Partially implemented | `handoffCoordinator.ts` can run an LLM handoff and start a local successor. It is not Task Transfer: it lacks factual no-LLM package capture, shared Git records, named teammate acceptance and return/apply review. |
 | Workspace/run concurrency | Implemented (M2) | Migration 19 adds `workspace_start_intent` with a unique active index on effective directory; `reserveStartIntent` runs before awaited provider detection and is shared by all start paths. Verified by aliased-path race tests. |
 | Startup recovery | Implemented for ownership (M2/M2d); process proof still absent | `reconcileStartIntentsForRestart` classifies unreleased intents as `START_UNKNOWN`, recovery refuses them, and `classifyStartUnknown` lets an operator record known-stopped/no-spawn to release the gate. The app still cannot itself prove an OS subprocess stopped; that remains an operator confirmation, not a machine fact. |
-| Telegram enrollment, polling, inbox/outbox and rendering | M1 complete with fakes | Shared task-control contracts, SQLite migrations 16-18, settings-backed capability, fake pairing, durable fake inbox/cursor records, sanitized rendering and a durable outbox queue exist. No live Telegram client, real long-poll daemon, real setup/pairing UX or real device enrollment is implemented. |
-| Remote actor authorization and command receipts | M1 complete with fakes | Opaque action references, fake callback validation, adapter-side fake callback dispatch and idempotent receipts exist for personal Save answer and Answer and resume. Real Bot API callback receipting and shared-command publication are not implemented. |
-| Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. Delivery to a phone is still fake-outbox only, pending L1. |
+| Telegram enrollment, polling, inbox/outbox and rendering | L1 implemented; verified on real Telegram by the harness (T3), phone look check pending | L1 adds the real Bot API client, token storage, long-poll runtime with backoff, pairing with local confirmation and the Live Telegram panel over the M1 contracts. The full T3 run of 2026-09-15 passed against a dedicated test bot (implementation.md, L1 T3 close-out). Topics and teammate use are not implemented. |
+| Remote actor authorization and command receipts | L1 implemented for personal control; verified by T3 | Real callback queries are answered and receipted idempotently for Save answer, Answer and resume and Resume with saved answer, including expired and superseded actions. Shared-command publication is not implemented. |
+| Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. The L3 `/status` and `/quota` views deliver it to the phone; the `/status` quota headline passed T3 on 2026-09-15 (H-L3-40). |
 | Shared Git control history and package/result refs | Not implemented | No administrative checkout, roster validation, signed control branches, package manifests, result application or force-rewrite detection exist. |
 | Named teammate transfer | Not implemented | No offer, claim, receiver-local policy comparison, isolated checkout, return/apply or further-handoff lifecycle is implemented. |
 | Personal-subscription teammate execution | Blocked by external evidence | Gate G01 requires provider-supported delegation and quota/billing evidence. Development may use fixtures, but affected production execution must remain disabled. |
@@ -33,8 +33,8 @@ current source and tests support the claimed behaviour.
 
 Observed discrepancies:
 
-- The README correctly labels the Telegram task-control design as a planned
-  enhancement, not an available feature.
+- The README labels L1 personal Telegram control as implemented and off by
+  default, and teammate takeover and topics as planned, not available.
 - `implementation.md` says all server tests and frontend checks passed on
   2026-09-13, but this plan did not rerun DB-backed tests because current tests
   load the repository database path. Treat that as prior evidence to preserve,
@@ -541,6 +541,8 @@ tracker), and a final "publish a release report" step duplicating
    response, DTO or database dump. Fixtures cannot satisfy this step.
    Recorded so far (2026-09-14): a real message on the operator's phone, pairing, and Answer and resume driving one real local run to DONE (H-L1-05).
    Remaining rows are tracked in `human-verification.md` (H-L1-06 to H-L1-17).
+   Recorded 2026-09-15/16: the full T3 harness run passed every L1 row that has a T3 scenario (H-L1-14 needs a second account), with the proxy rows burned in (implementation.md, L1 T3 close-out).
+   Only the operator's phone look check (S-H6-33) remains; steps 6 and 7 are marked DONE once it is recorded.
 
 7a. Close out L1 before step 8.
     Do these before starting the G01-G03 feasibility experiments or any enhancement of the Telegram integration.
@@ -604,6 +606,12 @@ tracker), and a final "publish a release report" step duplicating
        Code DONE 2026-09-15 with scenario table [`docs/e2e-scenarios/h6.md`](../e2e-scenarios/h6.md): route proxy, `TelegramUserPhone`, test-bot allowlist guard, boot preflight that drops stale updates, live setup ([`docs/e2e-live-setup.md`](../e2e-live-setup.md)), contract recording, and T3 specs for every T3 row of l1.md, h6.md and the Claude tool table.
        T0 and T1 rows pass. Every T3 row is blocked on the operator's one-time setup (test bot, API credentials, client sign-in); `npm run e2e:live` lists them.
     6. Run the L1 rows through the harness (T1 and T3) plus the phone look check; finish the remaining close-out items above; mark steps 6 and 7 DONE.
+       T3 DONE 2026-09-15/16 (implementation.md, L1 T3 close-out); the phone look check is pending.
+       Split of the remaining work, decided by the operator 2026-09-16, run as two parallel sessions:
+       - Close-out: the phone look check record, then C0 (item 8) once topics are enabled for the test bot.
+       - Teammate design: review the teammate design proposal with the operator, then write the approved design as a documented revision and build plan; G01 is decided before the handover slices only.
+       Moved after or parallel to the teammate design, not before it: credential rotation for the test bot and harness client, the L1 defects above, the real-database cleanup above, L3 T3 rows without a test, C1 and C2, H7 and H9.
+       Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently (human-verification.md, known issues).
     7. Harness slices H7 (UI coverage) and H8 (workflow integration). H7 may run in parallel with L3.
        H8 workflow changes DONE 2026-09-15: harness tiers are required checks in `docs/engineering-standards.md`, the L1 checklist names each row's harness scenario and tier, and L3 slices each get a test-design pass before implementation.
        H8 is complete when the L1 close-out runs through T3, which is blocked on the operator's live setup.

@@ -596,6 +596,24 @@ Implemented fourteenth slice (L3 B, RTC-24: read-only status commands):
 - Tests: 7 registry tests (T0), 11 T1 scenarios (a mutation that sends views instead of editing them is caught), and a T3 spec for B's live rows.
 - Not implemented from the table: rows needing a usage seam (S-L3-B-08), completion-time seams (S-L3-B-06), recorded Bot API limits (S-L3-B-30), fault-injection variants for navigation (S-L3-B-19, 31, 34), topics (S-L3-B-40, blocked on C2), and several should rows.
 
+L1 T3 close-out (real Telegram through the harness test bot and the operator's signed-in client), 2026-09-15/16:
+
+- The first T3 runs found differences between the fake and real Telegram, fixed in the harness and the fake (commits cad5b04 to c1c7723):
+  - slow IPv4 connects to Telegram;
+  - the real client's chat filter, and its refusal to send empty text;
+  - Telegram's 15-second window for answering a callback;
+  - Telegram's own message entities;
+  - uncollected taps dropped about 2.5 minutes after they are made, with S-L1-15 and H-L1-08 fitted to it;
+  - the S-H6-30 fake aligned with a 25-step real recording.
+- They also found two product races, both fixed (9168074, cb74fce): a reply or tap that arrives before its card's `sendMessage` returns now waits for the delivery in progress instead of being answered "That message is not a task question".
+- Full T3 run: 61 of 61 scenarios passed in 43.4 minutes.
+  S-H6-36 still fails: the runtime is over its 25-minute target, and 24 L3 T3 rows have no test yet.
+- After cb74fce: real Claude (Haiku 4.5) and Codex (gpt-5.5) scenarios passed 3 of 3; server tests 219 of 219.
+- Burn-in on real Telegram: driver rows S-H6-01 to 08 and 10 passed 180 of 180 (20 repeats); proxy rows S-H6-11, 12, 13/14 and 16 passed 15 of 15 (3 repeats, 2026-09-16). S-H6-15 is T0 only.
+- Full T1 after cb74fce: 107 of 107 (2026-09-16).
+- `human-verification.md` records T3 PASS for 27 H-L1 and H-L3 rows. Their Live column stays Pending until the operator's phone look check (S-H6-33).
+- Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
