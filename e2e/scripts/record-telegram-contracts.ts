@@ -13,8 +13,10 @@ import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { TelegramUserPhone } from "../src/drivers/telegramUserPhone.ts";
 import { loadLiveConfig } from "../src/env/liveConfig.ts";
+import { allowSlowConnects } from "../src/env/network.ts";
 import { sanitizeRecording } from "../src/contracts/telegramShape.ts";
 
+allowSlowConnects();
 const config = loadLiveConfig();
 const out = resolve(import.meta.dirname, "../contracts/telegram-bot-api.json");
 const steps: Record<string, { status: number; body: unknown }> = {};

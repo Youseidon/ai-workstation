@@ -4,12 +4,17 @@
 // Reads ~/.config/ai-workstation/e2e-live.env, signs in interactively, writes the session
 // string and bot ids back to that file (mode 600). Never prints secrets.
 import { readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { TelegramClient, Api } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
+
+// Same slow-connect allowance as src/env/network.ts (this script is plain JS and cannot import it):
+// without it, fetch to api.telegram.org fails with ETIMEDOUT where IPv6 has no route and IPv4 connects slowly.
+setDefaultAutoSelectFamilyAttemptTimeout(2500);
 
 const envPath = join(homedir(), ".config/ai-workstation/e2e-live.env");
 const repoEnvPath = fileURLToPath(new URL("../../.env", import.meta.url));

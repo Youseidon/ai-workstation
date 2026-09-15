@@ -1,4 +1,9 @@
 import { defineConfig } from "@playwright/test";
+import { allowSlowConnects } from "./src/env/network.ts";
+
+// The config loads in the runner and in every worker, so this covers the
+// route proxy, preflight and phone driver talking to real Telegram (T3).
+allowSlowConnects();
 
 /*
  * Tiers from docs/e2e-harness-plan.md section 5. Each tier is a project so a

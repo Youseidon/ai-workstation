@@ -12,8 +12,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { LiveSetupError, loadLiveConfig, type LiveConfig } from "../src/env/liveConfig.ts";
+import { allowSlowConnects } from "../src/env/network.ts";
 import { PreflightError, preflightBot } from "../src/env/telegramPreflight.ts";
 import { t3Rows } from "../src/scenarioTables.ts";
+
+allowSlowConnects();
 
 const e2eDir = resolve(import.meta.dirname, "..");
 const blockedFile = join(e2eDir, "test-results/t3-blocked.json");
