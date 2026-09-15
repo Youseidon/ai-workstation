@@ -8,6 +8,12 @@
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
+/** Inputs shared by the recorder and the fake replay, so both run the same steps. */
+export const AUTO_ENTITIES_TEXT = "Contract recording: entities\nDetails: https://example.com /help @someone #tag";
+export const AUTO_ENTITIES_QUOTE = { type: "expandable_blockquote", offset: AUTO_ENTITIES_TEXT.indexOf("Details:"), length: AUTO_ENTITIES_TEXT.length - AUTO_ENTITIES_TEXT.indexOf("Details:") };
+/** A message id no chat reaches. */
+export const MISSING_MESSAGE_ID = 2_000_000_000;
+
 const NUMERIC_IDENTITY = new Set(["id", "message_id", "update_id", "date", "edit_date", "message_thread_id", "retry_after"]);
 const TEXT_IDENTITY = new Set(["first_name", "last_name", "username", "title", "language_code", "id", "chat_instance"]);
 

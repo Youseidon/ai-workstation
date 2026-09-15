@@ -44,6 +44,8 @@ export interface StoredMessage {
   date: number;
   text: string;
   entities?: unknown[];
+  /** Echoed only when the text holds a link, as real Telegram does. */
+  link_preview_options?: unknown;
   reply_markup?: { inline_keyboard: InlineButton[][] };
   message_thread_id?: number;
   is_topic_message?: boolean;
@@ -286,7 +288,7 @@ export class FakeTelegramServer {
         const { ms } = this.delayedResponses.splice(delayed, 1)[0]!;
         await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
       }
-      send(res, 200, { ok: true, result });
+      send(res, 200, result instanceof Described ? { ok: true, result: result.result, description: result.description } : { ok: true, result });
     } catch (error) {
       const failure = error as { code?: number; description?: string };
       const code = failure.code ?? 400;
@@ -297,7 +299,7 @@ export class FakeTelegramServer {
   private async dispatch(bot: FakeBot, method: string, body: Json): Promise<unknown> {
     switch (method) {
       case "getMe":
-        return { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username, can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false };
+        return { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username, can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, supports_guest_queries: false, can_connect_to_business: false, has_main_web_app: false, has_topics_enabled: false, allows_users_to_create_topics: false, can_manage_bots: false, supports_join_request_queries: false };
       case "getUpdates":
         return this.getUpdates(bot, body);
       case "getWebhookInfo":
@@ -305,11 +307,12 @@ export class FakeTelegramServer {
         return { url: "", has_custom_certificate: false, pending_update_count: this.pending(bot.id).length };
       case "deleteWebhook":
         if (body.drop_pending_updates === true) this.updates.set(bot.id, []);
-        return true;
+        // Bots here only long poll, so there is never a webhook to delete.
+        return new Described(true, "Webhook is already deleted");
       case "sendMessage":
         return this.sendMessage(bot, body);
       case "editMessageText":
-        return this.editMessageText(body);
+        return this.editMessageText(bot, body);
       case "answerCallbackQuery":
         return this.answerCallbackQuery(body);
       case "setMyCommands":
@@ -323,7 +326,7 @@ export class FakeTelegramServer {
       case "deleteForumTopic":
         return this.changeForumTopic(method, body);
       default:
-        throw apiError(404, "Not Found: method not found");
+        throw apiError(404, "Not Found");
     }
   }
 
@@ -419,9 +422,10 @@ export class FakeTelegramServer {
     }
   }
 
-  private editMessageText(body: Json): Json {
+  private editMessageText(bot: FakeBot, body: Json): Json {
     const message = this.find(Number(body.chat_id), Number(body.message_id));
     if (!message) throw apiError(400, "Bad Request: message to edit not found");
+    if (message.from.id !== bot.id) throw apiError(400, "Bad Request: message can't be edited");
     this.validateText(body);
     const markup = isKeyboard(body.reply_markup) ? body.reply_markup : undefined;
     if (message.text === body.text && JSON.stringify(message.reply_markup) === JSON.stringify(markup)) {
@@ -434,6 +438,7 @@ export class FakeTelegramServer {
     else delete message.reply_markup;
     // An edit replaces the entities too: the ones it passes plus what Telegram detects in the new text.
     delete message.entities;
+    delete message.link_preview_options;
     Object.assign(message, entitiesField(body));
     return wireMessage(message);
   }
@@ -442,7 +447,7 @@ export class FakeTelegramServer {
     const id = String(body.callback_query_id ?? "");
     const open = this.openCallbacks.get(id);
     if (!open || Date.now() - open.createdAt > this.callbackAnswerWindowMs) throw apiError(400, "Bad Request: query is too old and response timeout expired or query ID is invalid");
-    this.openCallbacks.delete(id);
+    // Real Telegram accepts a repeated answer while the query is open; the phone shows only the first.
     this.callbackAnswers.push({ callbackQueryId: id, text: typeof body.text === "string" ? body.text : "", answeredAt: Date.now() });
     return true;
   }
@@ -523,10 +528,22 @@ export class FakeTelegramServer {
   }
 }
 
-/** A bot message's `entities` field as real Telegram returns it: absent when there are none. */
-function entitiesField(body: Json & { text: string }): { entities?: Entity[] } {
+/** A successful result Telegram sends with a description, as deleteWebhook does. */
+class Described {
+  constructor(
+    readonly result: unknown,
+    readonly description: string,
+  ) {}
+}
+
+/**
+ * A bot message's `entities` field as real Telegram returns it (absent when there are none), and its
+ * `link_preview_options`, which Telegram echoes only when the text holds a link.
+ */
+function entitiesField(body: Json & { text: string }): { entities?: Entity[]; link_preview_options?: unknown } {
   const entities = messageEntities(body.text, Array.isArray(body.entities) ? (body.entities as Entity[]) : undefined);
-  return entities.length > 0 ? { entities } : {};
+  const preview = body.link_preview_options !== undefined && entities.some((entity) => entity.type === "url") ? { link_preview_options: body.link_preview_options } : {};
+  return { ...(entities.length > 0 ? { entities } : {}), ...preview };
 }
 
 function isKeyboard(value: unknown): value is { inline_keyboard: InlineButton[][] } {

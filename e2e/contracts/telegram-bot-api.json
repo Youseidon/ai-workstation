@@ -1,0 +1,453 @@
+{
+  "recordedAt": "2026-09-15",
+  "source": "api.telegram.org via the harness test bot",
+  "steps": {
+    "getUpdates.probe": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": []
+      }
+    },
+    "deleteWebhook.dropPending": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": true,
+        "description": "Webhook is already deleted"
+      }
+    },
+    "getMe": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": {
+          "id": 1000,
+          "is_bot": true,
+          "first_name": "first_name_1",
+          "username": "username_2",
+          "can_join_groups": true,
+          "can_read_all_group_messages": false,
+          "supports_inline_queries": false,
+          "supports_guest_queries": false,
+          "can_connect_to_business": false,
+          "has_main_web_app": false,
+          "has_topics_enabled": false,
+          "allows_users_to_create_topics": false,
+          "can_manage_bots": false,
+          "supports_join_request_queries": false
+        }
+      }
+    },
+    "sendMessage.withKeyboard": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": {
+          "message_id": 1001,
+          "from": {
+            "id": 1000,
+            "is_bot": true,
+            "first_name": "first_name_1",
+            "username": "username_2"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1003,
+          "text": "Contract recording: question card",
+          "reply_markup": {
+            "inline_keyboard": [
+              [
+                {
+                  "text": "Record tap",
+                  "callback_data": "tc_contractrecording00000"
+                }
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "sendMessage.plain": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": {
+          "message_id": 1004,
+          "from": {
+            "id": 1000,
+            "is_bot": true,
+            "first_name": "first_name_1",
+            "username": "username_2"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1005,
+          "text": "Contract recording: plain"
+        }
+      }
+    },
+    "sendMessage.autoEntities": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": {
+          "message_id": 1006,
+          "from": {
+            "id": 1000,
+            "is_bot": true,
+            "first_name": "first_name_1",
+            "username": "username_2"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1007,
+          "text": "Contract recording: entities\nDetails: https://example.com /help @someone #tag",
+          "entities": [
+            {
+              "offset": 29,
+              "length": 48,
+              "type": "expandable_blockquote"
+            },
+            {
+              "offset": 38,
+              "length": 19,
+              "type": "url"
+            },
+            {
+              "offset": 58,
+              "length": 5,
+              "type": "bot_command"
+            },
+            {
+              "offset": 64,
+              "length": 8,
+              "type": "mention"
+            },
+            {
+              "offset": 73,
+              "length": 4,
+              "type": "hashtag"
+            }
+          ],
+          "link_preview_options": {
+            "is_disabled": true
+          }
+        }
+      }
+    },
+    "getUpdates.longPoll": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": [
+          {
+            "update_id": 1008,
+            "callback_query": {
+              "id": "id_5",
+              "from": {
+                "id": 1002,
+                "is_bot": false,
+                "first_name": "first_name_3",
+                "username": "username_4",
+                "language_code": "language_code_6"
+              },
+              "message": {
+                "message_id": 1001,
+                "from": {
+                  "id": 1000,
+                  "is_bot": true,
+                  "first_name": "first_name_1",
+                  "username": "username_2"
+                },
+                "chat": {
+                  "id": 1002,
+                  "first_name": "first_name_3",
+                  "username": "username_4",
+                  "type": "private"
+                },
+                "date": 1003,
+                "text": "Contract recording: question card",
+                "reply_markup": {
+                  "inline_keyboard": [
+                    [
+                      {
+                        "text": "Record tap",
+                        "callback_data": "tc_contractrecording00000"
+                      }
+                    ]
+                  ]
+                }
+              },
+              "chat_instance": "chat_instance_7",
+              "data": "tc_contractrecording00000"
+            }
+          }
+        ]
+      }
+    },
+    "update.messageReply": {
+      "status": 200,
+      "body": {
+        "update_id": 1009,
+        "message": {
+          "message_id": 1010,
+          "from": {
+            "id": 1002,
+            "is_bot": false,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "language_code": "language_code_6"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1007,
+          "reply_to_message": {
+            "message_id": 1001,
+            "from": {
+              "id": 1000,
+              "is_bot": true,
+              "first_name": "first_name_1",
+              "username": "username_2"
+            },
+            "chat": {
+              "id": 1002,
+              "first_name": "first_name_3",
+              "username": "username_4",
+              "type": "private"
+            },
+            "date": 1003,
+            "text": "Contract recording: question card",
+            "reply_markup": {
+              "inline_keyboard": [
+                [
+                  {
+                    "text": "Record tap",
+                    "callback_data": "tc_contractrecording00000"
+                  }
+                ]
+              ]
+            }
+          },
+          "text": "Contract recording: reply"
+        }
+      }
+    },
+    "update.messagePlain": {
+      "status": 200,
+      "body": {
+        "update_id": 1011,
+        "message": {
+          "message_id": 1012,
+          "from": {
+            "id": 1002,
+            "is_bot": false,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "language_code": "language_code_6"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1007,
+          "text": "Contract recording: plain text"
+        }
+      }
+    },
+    "update.callbackQuery": {
+      "status": 200,
+      "body": {
+        "update_id": 1008,
+        "callback_query": {
+          "id": "id_5",
+          "from": {
+            "id": 1002,
+            "is_bot": false,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "language_code": "language_code_6"
+          },
+          "message": {
+            "message_id": 1001,
+            "from": {
+              "id": 1000,
+              "is_bot": true,
+              "first_name": "first_name_1",
+              "username": "username_2"
+            },
+            "chat": {
+              "id": 1002,
+              "first_name": "first_name_3",
+              "username": "username_4",
+              "type": "private"
+            },
+            "date": 1003,
+            "text": "Contract recording: question card",
+            "reply_markup": {
+              "inline_keyboard": [
+                [
+                  {
+                    "text": "Record tap",
+                    "callback_data": "tc_contractrecording00000"
+                  }
+                ]
+              ]
+            }
+          },
+          "chat_instance": "chat_instance_7",
+          "data": "tc_contractrecording00000"
+        }
+      }
+    },
+    "getUpdates.confirm": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": []
+      }
+    },
+    "getUpdates.conflict": {
+      "status": 409,
+      "body": {
+        "ok": false,
+        "error_code": 409,
+        "description": "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"
+      }
+    },
+    "getUpdates.displacing": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": []
+      }
+    },
+    "answerCallbackQuery": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": true
+      }
+    },
+    "answerCallbackQuery.twice": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": true
+      }
+    },
+    "editMessageText": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": {
+          "message_id": 1001,
+          "from": {
+            "id": 1000,
+            "is_bot": true,
+            "first_name": "first_name_1",
+            "username": "username_2"
+          },
+          "chat": {
+            "id": 1002,
+            "first_name": "first_name_3",
+            "username": "username_4",
+            "type": "private"
+          },
+          "date": 1003,
+          "edit_date": 1013,
+          "text": "Contract recording: edited"
+        }
+      }
+    },
+    "editMessageText.notModified": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"
+      }
+    },
+    "editMessageText.notBotsMessage": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: message can't be edited"
+      }
+    },
+    "editMessageText.missingMessage": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: message to edit not found"
+      }
+    },
+    "sendMessage.unknownChat": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: chat not found"
+      }
+    },
+    "sendMessage.emptyText": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: message text is empty"
+      }
+    },
+    "setMyCommands": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "result": true
+      }
+    },
+    "createForumTopic.privateChat": {
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: the chat is not a forum"
+      }
+    },
+    "getMe.badToken": {
+      "status": 401,
+      "body": {
+        "ok": false,
+        "error_code": 401,
+        "description": "Unauthorized"
+      }
+    },
+    "unknownMethod": {
+      "status": 404,
+      "body": {
+        "ok": false,
+        "error_code": 404,
+        "description": "Not Found"
+      }
+    }
+  }
+}

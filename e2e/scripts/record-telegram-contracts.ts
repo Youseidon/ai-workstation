@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { TelegramUserPhone } from "../src/drivers/telegramUserPhone.ts";
 import { loadLiveConfig } from "../src/env/liveConfig.ts";
 import { allowSlowConnects } from "../src/env/network.ts";
-import { sanitizeRecording } from "../src/contracts/telegramShape.ts";
+import { AUTO_ENTITIES_QUOTE, AUTO_ENTITIES_TEXT, MISSING_MESSAGE_ID, sanitizeRecording } from "../src/contracts/telegramShape.ts";
 
 allowSlowConnects();
 const config = loadLiveConfig();
@@ -50,6 +50,7 @@ try {
   });
   const botMessageId = (sent.body.result as { message_id: number }).message_id;
   await call("sendMessage.plain", "sendMessage", { chat_id: chatId, text: "Contract recording: plain", link_preview_options: { is_disabled: true } });
+  await call("sendMessage.autoEntities", "sendMessage", { chat_id: chatId, text: AUTO_ENTITIES_TEXT, link_preview_options: { is_disabled: true }, entities: [AUTO_ENTITIES_QUOTE] });
 
   const card = await phone.waitForBotMessage("the recording card", (message) => message.text === "Contract recording: question card");
   await phone.send("Contract recording: reply", { replyTo: card });
@@ -85,7 +86,9 @@ try {
   await call("answerCallbackQuery.twice", "answerCallbackQuery", { callback_query_id: callback.callback_query!.id, text: "Again." });
   await call("editMessageText", "editMessageText", { chat_id: chatId, message_id: botMessageId, text: "Contract recording: edited", link_preview_options: { is_disabled: true } });
   await call("editMessageText.notModified", "editMessageText", { chat_id: chatId, message_id: botMessageId, text: "Contract recording: edited", link_preview_options: { is_disabled: true } });
-  await call("editMessageText.missingMessage", "editMessageText", { chat_id: chatId, message_id: 1, text: "Contract recording: gone" });
+  // A message the bot did not send (the operator's reply), and one that does not exist.
+  await call("editMessageText.notBotsMessage", "editMessageText", { chat_id: chatId, message_id: (reply.message as { message_id: number }).message_id, text: "Contract recording: not mine" });
+  await call("editMessageText.missingMessage", "editMessageText", { chat_id: chatId, message_id: MISSING_MESSAGE_ID, text: "Contract recording: gone" });
   await call("sendMessage.unknownChat", "sendMessage", { chat_id: "1", text: "Contract recording: nobody" });
   await call("sendMessage.emptyText", "sendMessage", { chat_id: chatId, text: "" });
   await call("setMyCommands", "setMyCommands", { commands: [{ command: "help", description: "Show help" }] });
