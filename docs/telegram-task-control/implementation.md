@@ -541,6 +541,22 @@ Implemented eleventh slice (L3 F1 and F2, RTC-21: outbox edits and topic-aware r
 - Tests: 9 new server tests for F1 (including a migration from a rebuilt version 20 database), 5 new runtime tests for F2, and 14 T1 scenarios for F1 through the route proxy.
   F2's forum topic rows run at T0; the T1 topic rows (S-L3-F2-02, 03, 07, 10 to 13, 15) need a topic option on `PhoneDriver.send`, and S-L3-F2-14 is blocked on C0.
 
+Implemented twelfth slice (L3 F3, RTC-22: task summary model):
+
+- Scenario table: [`l3-f3-a.md`](../e2e-scenarios/l3-f3-a.md) (F3 rows) from a separate test-design pass.
+  F3's operator questions were answered with defaults pending review:
+  - a brief counts only if it completed after the latest execute run started;
+  - the position is the suite flowchart step, shown whether or not a pipeline run is active;
+  - "If you wait" has five fixed lines (no pipeline, waiting, paused, stopped, saved answer held);
+  - redaction was widened to `ghp_`, GitHub fine-grained tokens, bearer tokens, bot tokens and scheme-less or `0.0.0.0` local addresses;
+  - the workstation label allows up to 64 characters on one line, and empty means the hostname.
+- `server/src/telegramSummary.ts`: `taskSummary(promptId, "owner")` returns breadcrumb, title, objective, completed work, verification counts, human blockers with required actions, decisions, important files, recommendation and "If you wait", from the latest current READY brief, else the latest BLOCKER or DECISION_NEEDED remark, else the title alone.
+  It reads the operations snapshot, handoffs and prompt history only, never the all-runs session loader, and writes nothing.
+- Line and block text forms share one redaction; the L1 card sanitizer uses it too. Caps never split a surrogate pair and declare the shortening.
+- Setting `taskControl.workstationLabel` (Task Control group, default hostname).
+- Tests: 10 server tests (F3-01 to F3-13 T0), one T1 spec for the label on the Agents page (burn-in 20 of 20), full T1 85 of 85 with L1 unchanged (S-L3-F3-15).
+- Found and fixed on the way, in their own commits: the Agents page showed no error for a refused setting save, and web lint failed on the harness build directory.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

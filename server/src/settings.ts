@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import type {
   ProviderId,
@@ -109,6 +110,17 @@ const FIELDS: FieldDef[] = [
       option("fake_telegram", "Fake Telegram", "Local fake used by tests and development"),
       option("telegram", "Telegram", "Live Bot API; needs TELEGRAM_BOT_TOKEN in .env"),
     ],
+  },
+  {
+    key: "taskControl.workstationLabel",
+    label: "Workstation label",
+    group: "Task Control",
+    type: "string",
+    envVar: "TASK_CONTROL_WORKSTATION_LABEL",
+    fallback: hostname(),
+    placeholder: hostname(),
+    description:
+      "Names this machine at the start of every phone card and view, so you can tell workstations apart. Up to 64 characters on one line. Leave empty to use the hostname.",
   },
   {
     key: "taskControl.botId",
@@ -534,6 +546,10 @@ function validate(field: FieldDef, value: SettingValue): string | null {
   if (field.type === "number" && typeof value === "number" && value < 0) {
     return `${field.label} cannot be negative`;
   }
+  if (field.key === "taskControl.workstationLabel" && typeof value === "string") {
+    if (value.length > 64) return `${field.label} can be at most 64 characters`;
+    if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(value)) return `${field.label} must be a single line without control characters`;
+  }
   if (field.key === "statusIntervalMs" && typeof value === "number" && value !== 0 && value < 200) {
     return "Status heartbeat must be at least 200ms";
   }
@@ -613,6 +629,10 @@ export const settings = {
     },
     get botId(): string {
       return text("taskControl.botId") || "local-fake-bot";
+    },
+    /** Empty means the OS hostname, applied by the phone summary. */
+    get workstationLabel(): string {
+      return text("taskControl.workstationLabel").trim();
     },
   },
 

@@ -1,11 +1,7 @@
 import type { QuotaWarning, TaskControlActionReference } from "@agent-console/shared";
+import { redactPhoneText } from "./telegramSummary.ts";
 import { workspaces } from "./workspaces.ts";
 
-const SECRET_PATTERNS = [
-  /\b(?:sk|xai|ghp|glpat|sk-ant)-[A-Za-z0-9_-]{8,}\b/g,
-  /\b(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
-  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*/gi,
-];
 
 export interface RenderedTaskControlQuestion {
   kind: "personal_question";
@@ -28,9 +24,8 @@ export interface RenderedQuotaWarning {
 }
 
 export function sanitizeTelegramText(value: string): string {
-  let output = value;
-  for (const pattern of SECRET_PATTERNS) output = output.replace(pattern, "[redacted]");
-  return output.replace(/\s+/g, " ").trim().slice(0, 1200);
+  // One redaction for every phone text (F3 widened it); the card layout itself changes in slice A.
+  return redactPhoneText(value).replace(/\s+/g, " ").trim().slice(0, 1200);
 }
 
 export function renderPersonalQuestion(promptId: number, actions: Array<Pick<TaskControlActionReference, "ref" | "action">>): RenderedTaskControlQuestion {

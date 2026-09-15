@@ -1,0 +1,205 @@
+import { hostname } from "node:os";
+import type { HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptRemark } from "@agent-console/shared";
+import { workspaces } from "./workspaces.ts";
+
+/*
+ * Task summary model (L3 slice F3, RTC-22; docs/e2e-scenarios/l3-f3-a.md).
+ * Every phone surface describes a task from these structured, sanitized facts:
+ * question cards (slice A) and the /task view (slice B) render the same model,
+ * so they cannot disagree. Pure over durable state: no writes, no provider or
+ * Bot API call, and never the all-runs session loader.
+ */
+
+export type SummaryAudience = "owner";
+
+export interface TaskSummaryBlocker {
+  description: string;
+  requiredAction: string | null;
+}
+
+export interface TaskSummary {
+  promptId: number;
+  /** Where "blocked on" and the brief fields came from. */
+  source: "brief" | "remark" | "title";
+  breadcrumb: {
+    workstation: string;
+    workspace: string;
+    program: string;
+    suite: string;
+    /** Position among the enabled steps of the suite flowchart, or null when the task is not on it. */
+    step: { index: number; total: number } | null;
+  };
+  title: string;
+  /** Fields absent from the source are null, never empty strings or zero counts. */
+  objective: string | null;
+  completedWork: string[] | null;
+  verification: { passed: number; failed: number } | null;
+  blockers: TaskSummaryBlocker[] | null;
+  decisions: string[] | null;
+  importantFiles: string[] | null;
+  recommendation: string | null;
+  ifYouWait: string;
+}
+
+/* ------------------------------ sanitization ------------------------------ */
+
+/** Secret and local-address shapes removed from every phone text (I10). Widened in F3 (operator question 6). */
+const REDACTIONS: RegExp[] = [
+  /\b(?:sk-ant|sk|xai|ghp|gho|ghs|glpat)[-_][A-Za-z0-9_-]{8,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /\b(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
+  /\b(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]\S*)?/gi,
+];
+
+export function redactPhoneText(value: string): string {
+  let output = value;
+  for (const pattern of REDACTIONS) output = output.replace(pattern, "[redacted]");
+  return output;
+}
+
+/** Cuts to at most `max` UTF-16 units without splitting a surrogate pair. */
+function cut(value: string, max: number): string {
+  if (value.length <= max) return value;
+  let end = max;
+  const code = value.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return value.slice(0, end);
+}
+
+/** Line form: one line, single spaces, redacted, capped with a declared shortening. */
+export function lineText(value: string, max = 300): string {
+  const flat = redactPhoneText(value).replace(/[\s\u2028\u2029]+/g, " ").trim();
+  return flat.length <= max ? flat : `${cut(flat, max - 1).trimEnd()}…`;
+}
+
+/** Block form: line breaks kept as \n, redacted before capping, capped with a declared omission. */
+export function blockText(value: string, max = 1500): string {
+  const normalized = redactPhoneText(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u2028\u2029]/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v]+$/g, "").replace(/\t/g, "  "))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (normalized.length <= max) return normalized;
+  const marker = "\n[shortened]";
+  return `${cut(normalized, max - marker.length).trimEnd()}${marker}`;
+}
+
+/* --------------------------------- model --------------------------------- */
+
+const RECOMMENDATIONS: Record<HandoffRecommendation, string> = {
+  CONTINUE: "Continue with the next step.",
+  WAIT_FOR_HUMAN: "Wait for your decision.",
+  RETRY_LATER: "Retry later.",
+  DO_NOT_CONTINUE: "Do not continue this task.",
+};
+
+export interface SummaryOptions {
+  /** The workstation label setting; empty means the OS hostname. */
+  workstationLabel?: string;
+}
+
+export function defaultWorkstationLabel(): string {
+  return lineText(hostname(), 64) || "workstation";
+}
+
+function locate(promptId: number): { suite: OperationsSuite; item: OperationsPrompt } {
+  const workspaceId = workspaces.promptHome(promptId).workspaceId;
+  for (const suite of workspaces.operations(workspaceId).suites) {
+    const item = suite.prompts.find((entry) => entry.prompt.id === promptId);
+    if (item) return { suite, item };
+  }
+  throw new Error(`prompt ${promptId} is not in its workspace's operations snapshot`);
+}
+
+function latestExecuteStart(promptId: number): string | null {
+  const runs = workspaces.promptHistory(promptId).runs as Array<{ role: string; startedAt: string }>;
+  return runs.filter((run) => run.role === "execute").map((run) => run.startedAt).sort().at(-1) ?? null;
+}
+
+/**
+ * The brief a card may use: the latest READY handoff with a brief, and only if it
+ * completed after the latest execute run started (operator question 1), so a card
+ * never describes an earlier blocker than the one the task is waiting on (B21).
+ */
+function currentBrief(promptId: number): HandoffBrief | null {
+  const ready = workspaces.handoffsForPrompt(promptId).filter((handoff) => handoff.state === "READY" && handoff.brief !== null).sort((a, b) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt))[0];
+  if (!ready?.brief) return null;
+  const runStart = latestExecuteStart(promptId);
+  if (runStart !== null && (ready.completedAt ?? ready.createdAt) < runStart) return null;
+  return ready.brief;
+}
+
+function latestBlockerRemark(promptId: number): PromptRemark | null {
+  const remarks = workspaces.promptHistory(promptId).remarks as PromptRemark[];
+  return remarks.filter((remark) => remark.kind === "BLOCKER" || remark.kind === "DECISION_NEEDED").sort((a, b) => b.id - a.id)[0] ?? null;
+}
+
+const list = (items: string[], max = 1500): string[] | null => {
+  const kept = items.map((item) => blockText(item, max)).filter((item) => item !== "");
+  return kept.length > 0 ? kept : null;
+};
+
+/** Deterministic "If you wait" line from the pipeline rule and state, never from agent text (operator question 5). */
+function ifYouWait(suite: OperationsSuite, item: OperationsPrompt): string {
+  if (item.prompt.humanResponseHeld) return "Your saved answer is held; nothing resumes until you choose Resume.";
+  const active = suite.pipeline?.active ?? null;
+  const onFlowchart = item.pipelineRule.enabled;
+  if (!onFlowchart || active === null) {
+    const latest = suite.pipeline?.latest ?? null;
+    if (onFlowchart && latest?.state === "STOPPED" && latest.currentPromptId === item.prompt.id) return "The pipeline has stopped at this task; nothing resumes on its own. Other workspaces continue.";
+    return "Only this task waits; other tasks and workspaces continue.";
+  }
+  if (active.state === "PAUSED") return "The pipeline is paused; this task waits until you resume it. Other workspaces continue.";
+  if (active.currentPromptId === item.prompt.id) return "This task and its pipeline stay paused; other workspaces continue.";
+  return "This task waits; its pipeline continues with other steps. Other workspaces continue.";
+}
+
+export function taskSummary(promptId: number, audience: SummaryAudience = "owner", options: SummaryOptions = {}): TaskSummary {
+  // Team cards (L2) must hide account quota; until they exist only the owner audience is valid.
+  if (audience !== "owner") throw new Error(`task summaries support the owner audience only, not ${JSON.stringify(audience)}`);
+  const { suite, item } = locate(promptId);
+  const enabled = suite.prompts.filter((entry) => entry.pipelineRule.enabled).sort((a, b) => a.pipelineRule.stepOrder - b.pipelineRule.stepOrder);
+  const index = enabled.findIndex((entry) => entry.prompt.id === promptId);
+  const label = lineText(options.workstationLabel ?? "", 64) || defaultWorkstationLabel();
+  const base = {
+    promptId,
+    breadcrumb: {
+      workstation: label,
+      workspace: lineText(item.workspace.name, 120),
+      program: lineText(suite.programName, 120),
+      suite: lineText(suite.name, 120),
+      step: index === -1 ? null : { index: index + 1, total: enabled.length },
+    },
+    title: lineText(item.prompt.title, 300),
+    ifYouWait: ifYouWait(suite, item),
+  };
+  const empty = { objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null };
+
+  const brief = currentBrief(promptId);
+  if (brief) {
+    const human = brief.blockers.filter((blocker) => blocker.requiresHuman && blocker.description.trim() !== "");
+    const passed = brief.verificationPassed.length;
+    const failed = brief.verificationFailed.length;
+    return {
+      ...base,
+      source: "brief",
+      objective: brief.originalObjective.trim() === "" ? null : blockText(brief.originalObjective, 600),
+      completedWork: list(brief.completedWork),
+      verification: passed + failed > 0 ? { passed, failed } : null,
+      blockers: human.length > 0 ? human.map((blocker) => ({ description: blockText(blocker.description), requiredAction: blocker.requiredAction?.trim() ? blockText(blocker.requiredAction) : null })) : null,
+      decisions: list(brief.decisionsAndAssumptions),
+      importantFiles: list(brief.importantFiles, 300),
+      recommendation: RECOMMENDATIONS[brief.recommendation] ?? null,
+    };
+  }
+  const remark = latestBlockerRemark(promptId);
+  if (remark && remark.content.trim() !== "") {
+    return { ...base, ...empty, source: "remark", blockers: [{ description: blockText(remark.content), requiredAction: null }] };
+  }
+  return { ...base, ...empty, source: "title" };
+}
