@@ -43,7 +43,12 @@ for (const file of walk(join(repoRoot, "docs")).filter((path) => path.endsWith("
 }
 
 /* Results */
-const idsIn = (text) => [...new Set(text.match(/S-(?:[A-Z0-9]+-)+\d+/g) ?? [])];
+// A test named "S-H6-13/14" covers S-H6-13 and S-H6-14 (the same expansion as scripts/live.ts).
+const idsIn = (text) => [...new Set((text.match(/S-(?:[A-Z0-9]+-)+\d+(?:\/\d+)*/g) ?? []).flatMap((match) => {
+  const [first, ...rest] = match.split("/");
+  const prefix = first.slice(0, first.lastIndexOf("-") + 1);
+  return [first, ...rest.map((number) => `${prefix}${number}`)];
+}))];
 function addResult(ids, result) {
   for (const id of ids) scenarios.get(id)?.results.push(result);
 }
