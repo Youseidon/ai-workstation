@@ -420,10 +420,14 @@ Every enqueue resolves its destination through `threadFor(subject)` instead of c
 With topics unavailable, every subject resolves to the paired chat with no topic, which is exactly L1 behaviour, and the Live Telegram panel reports "topics not available for this bot".
 Four additions then give the flat chat what a topic would have given it:
 
-- **A task tag.** Every message about a task carries a tag built from its key, such as `#t142`, so tapping it filters the chat to that task. The tag must contain a letter: the recorded real-Telegram fixtures show `#123` is not a hashtag while `#a1` and `#tag_x` are (`e2e/src/telegramEntities.test.ts`). Telegram adds the entity itself, so no `parse_mode` and no markup.
-- **An anchor message per task.** The question card is the task's living status, edited in place through its lifecycle, which is what `status_message_id` already tracks. Nothing stacks.
+- **A task tag.** Every message about a task carries a tag scoped to its project, such as `#acme_t142`, so tapping it filters the chat to that task and two projects can never share a tag (operator decision, 2026-09-16). It is built from a hashtag-safe slug of the workspace name and the task's internal id, not its external key, because keys repeat across programs. The tag must contain a letter: the recorded real-Telegram fixtures show `#123` is not a hashtag while `#a1` and `#tag_x` are (`e2e/src/telegramEntities.test.ts`). Telegram adds the entity itself, so no `parse_mode` and no markup.
+- **An anchor message per task.** The task's first question card is its anchor, registered in `status_message_id`, and every later message for that task quotes it.
+  Amended 2026-09-16, after C1 was built: later cards do not edit the anchor.
+  A decision the operator already made must stay readable on the phone, and an edit would strip the buttons off cards that L1 proved on real Telegram (S-L1-05, S-L1-06, S-L1-09, S-L1-10, S-L1-11, S-L1-13, S-L3-A-01, S-L3-A-02, S-L3-A2-11 all depend on a new message arriving).
+  A task's live status belongs to the queued follow-up below: a status message per task, edited in place as the task runs, finishes or fails, alongside the decision cards rather than replacing them.
 - **Replies instead of threads.** Every later message for a subject is sent with `reply_to_message_id` set to its anchor, so the phone shows the quote header and can jump back. Result and receipt messages stay separate replies rather than being folded into the anchor, so the record of what was decided is not overwritten by a later edit.
-- **A pinned control panel.** The workstation subject owns one `/status` view, edited in place and pinned once. Editing rather than resending avoids pin churn.
+- **A pinned control panel.** The workstation subject owns one `/status` view, pinned once and refreshed in place afterwards, so the top of the chat always answers what is running and what is blocked.
+  Amended 2026-09-16: a `/status` command still answers with its own message. A typed command that produces no reply reads as broken, so the panel is the standing view and the reply is the answer to what was just typed.
 
 Recovery: if the operator deletes an anchor, F1 already records the edit as failed once without retrying; the registry marks the anchor gone and the next message for that subject sends and registers a new one.
 
@@ -452,7 +456,7 @@ On the operator's real phone: a blocked task's card shows workstation, workspace
 
 Plan these after L3 is done, in this order:
 
-1. Status message and Stop control in each task thread (finished, failed, needs recovery). Stop goes through receipts and revision checks and never claims a stop before the local runner confirms it (D15).
+1. Status message and Stop control in each task thread (finished, failed, needs recovery). The status message is the per-task live status C1's amendment moved here: edited in place beside the decision cards, never replacing them. Stop goes through receipts and revision checks and never claims a stop before the local runner confirms it (D15).
 2. Ask the agent: a read-only consult on a question card, showing which provider answers and capping the answer length.
 3. Starting from the phone: Run from `/tasks`, Play from `/pipelines`, quota choices as buttons. Requires an explicit provider choice on the card and the durable start-intent reservation. Requires the Claude Host-access defect (step 7a) to be fixed.
 4. Handoff brief version 2 with an optional `options` field (label and consequence per option), so cards can show choices and their consequences; needs handoff prompt changes.
