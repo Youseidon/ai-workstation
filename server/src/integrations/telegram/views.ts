@@ -301,7 +301,7 @@ export function renderView(request: ViewRequest, context: ViewContext): Rendered
       const summary = found ? context.summary(request.promptId) : null;
       const buttons = [[...(request.back ? [back(request.back)] : []), refresh(request)]];
       if (!found || !summary) return view([header("Task"), "This task no longer exists on this workstation."], request.back ? [[back(request.back)]] : []);
-      const card = formatCard(summary, { hint: `State: ${found.item.operationalState.toLowerCase().replace(/_/g, " ")} · ${asOf(context)}` });
+      const card = formatCard(summary, { hint: `State: ${found.item.operationalState.toLowerCase().replace(/_/g, " ")} · ${asOf(context)}`, now: context.now });
       return { kind: "view", text: card.text, entities: card.entities, buttons };
     }
   }

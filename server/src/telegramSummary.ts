@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import type { HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptRemark } from "@agent-console/shared";
+import type { AgentStatusOption, HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptRemark, PromptStatusEvent } from "@agent-console/shared";
 import { workspaces } from "./workspaces.ts";
 
 /*
@@ -17,8 +17,37 @@ export interface TaskSummaryBlocker {
   requiredAction: string | null;
 }
 
+/** One choice the agent offered with the blocking status, capped for the phone (A2). */
+export interface TaskSummaryOption {
+  label: string;
+  /** Capped lists; the last entry declares how many more the local app holds. */
+  advantages: string[];
+  disadvantages: string[];
+}
+
+export interface TaskSummaryRun {
+  provider: string;
+  startedAt: string;
+  state: string;
+}
+
+/** What has already happened to this task: runs, blocks and the operator's earlier answers (A2). */
+export interface TaskSummaryHistory {
+  /** Newest first, at most `HISTORY_RUNS`. */
+  runs: TaskSummaryRun[];
+  moreRuns: number;
+  /** How many times this task has blocked, including the current block. */
+  blocks: number;
+  previousAnswer: { text: string; at: string } | null;
+  morePreviousAnswers: number;
+}
+
 export interface TaskSummary {
   promptId: number;
+  /** The identifier `/task` accepts, so reading a card and asking for it later use the same word. */
+  key: string;
+  /** The chat tag for this task, scoped to its project: `#acme_t142` (A2 renders it; C1 owns the registry). */
+  tag: string;
   /** Where "blocked on" and the brief fields came from. */
   source: "brief" | "remark" | "title";
   breadcrumb: {
@@ -28,8 +57,17 @@ export interface TaskSummary {
     suite: string;
     /** Position among the enabled steps of the suite flowchart, or null when the task is not on it. */
     step: { index: number; total: number } | null;
+    /** Title of the next enabled step of the suite flowchart, null when this is the last one. */
+    nextStep: string | null;
   };
   title: string;
+  /** When the task entered its current block; null when it is not blocked. The card turns it into an age at delivery. */
+  blockedAt: string | null;
+  /** Options the agent reported with the blocking status; never generated while rendering. */
+  options: TaskSummaryOption[] | null;
+  /** How many further options the local app holds. */
+  optionsOmitted: number;
+  history: TaskSummaryHistory;
   /** Fields absent from the source are null, never empty strings or zero counts. */
   objective: string | null;
   completedWork: string[] | null;
@@ -87,6 +125,85 @@ export function blockText(value: string, max = 1500): string {
   if (normalized.length <= max) return normalized;
   const marker = "\n[shortened]";
   return `${cut(normalized, max - marker.length).trimEnd()}${marker}`;
+}
+
+/* ---------------------------------- tag ---------------------------------- */
+
+/** Documented caps: the project slug and the key part of a tag, in characters. */
+export const TAG_SLUG_MAX = 16;
+export const TAG_KEY_MAX = 24;
+
+/** Hashtag-safe form of one part of a tag: redacted, then letters, digits and underscores only. */
+function tagPart(value: string, max: number): string {
+  return redactPhoneText(value).normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+/, "").slice(0, max).replace(/_+$/, "");
+}
+
+/**
+ * The chat tag for a task: a project slug and the task key, such as `#acme_t142`.
+ * Two projects must never share a tag, so a slug another workspace also produces is
+ * disambiguated with the workspace id; the same task always produces the same tag.
+ * Telegram makes a hashtag only of letters, digits and underscores, and only when it
+ * contains a letter - `#123` is not a hashtag while `#a1` is
+ * (`e2e/src/telegramEntities.test.ts`) - so a key of digits alone gets a `t` prefix.
+ */
+export function taskTag(workspaceId: number, workspaceName: string, key: string): string {
+  const slugOf = (id: number, name: string) => tagPart(name, TAG_SLUG_MAX) || `w${id}`;
+  const slug = slugOf(workspaceId, workspaceName);
+  const shared = workspaces.list().filter((entry) => slugOf(entry.id, entry.name) === slug).length;
+  const scope = shared > 1 ? `${slug}${workspaceId}` : slug;
+  const tail = tagPart(key, TAG_KEY_MAX) || "task";
+  const tag = `${scope}_${/[A-Za-z]/.test(tail) ? tail : `t${tail}`}`;
+  return `#${/[A-Za-z]/.test(tag) ? tag : `t${tag}`}`;
+}
+
+/* -------------------------------- options -------------------------------- */
+
+/** Documented phone caps for agent-reported options (operator decision, 2026-09-16). */
+export const MAX_OPTIONS = 4;
+export const MAX_TRADE_OFFS = 3;
+export const TRADE_OFF_MAX = 200;
+
+/** Line form with the card's own shortening declaration, so a cut is never silent. */
+function optionText(value: string, max: number): string {
+  const flat = lineText(value, 20000);
+  return flat.length <= max ? flat : `${cut(flat, max - 12).trimEnd()} [shortened]`;
+}
+
+function tradeOffs(items: string[]): string[] {
+  const kept = items.map((item) => optionText(item, TRADE_OFF_MAX)).filter((item) => item !== "");
+  if (kept.length <= MAX_TRADE_OFFS) return kept;
+  return [...kept.slice(0, MAX_TRADE_OFFS), `and ${kept.length - MAX_TRADE_OFFS} more in the local app`];
+}
+
+function summaryOptions(stored: AgentStatusOption[]): { options: TaskSummaryOption[] | null; omitted: number } {
+  const usable = stored.filter((option) => typeof option?.label === "string" && option.label.trim() !== "");
+  const options = usable.slice(0, MAX_OPTIONS).map((option) => ({
+    label: optionText(option.label, TRADE_OFF_MAX),
+    advantages: tradeOffs(Array.isArray(option.advantages) ? option.advantages : []),
+    disadvantages: tradeOffs(Array.isArray(option.disadvantages) ? option.disadvantages : []),
+  }));
+  return { options: options.length > 0 ? options : null, omitted: Math.max(0, usable.length - options.length) };
+}
+
+/* -------------------------------- history -------------------------------- */
+
+/** Documented phone cap: the last three runs and the most recent previous answer (operator decision, 2026-09-16). */
+export const HISTORY_RUNS = 3;
+
+function history(promptId: number): TaskSummaryHistory {
+  const record = workspaces.promptHistory(promptId);
+  const runs = (record.runs as Array<{ provider: string; role: string; state: string; startedAt: string }>)
+    .filter((run) => run.role === "execute")
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const answers = (record.remarks as PromptRemark[]).filter((remark) => remark.kind === "HUMAN_RESPONSE" && remark.actorType === "USER").sort((a, b) => b.id - a.id);
+  const latest = answers[0];
+  return {
+    runs: runs.slice(0, HISTORY_RUNS).map((run) => ({ provider: lineText(run.provider, 40), startedAt: run.startedAt, state: run.state })),
+    moreRuns: Math.max(0, runs.length - HISTORY_RUNS),
+    blocks: (record.events as PromptStatusEvent[]).filter((event) => event.newStatus === "BLOCKED").length,
+    previousAnswer: latest ? { text: optionText(latest.content, TRADE_OFF_MAX), at: latest.createdAt } : null,
+    morePreviousAnswers: Math.max(0, answers.length - 1),
+  };
 }
 
 /* --------------------------------- model --------------------------------- */
@@ -166,16 +283,26 @@ export function taskSummary(promptId: number, audience: SummaryAudience = "owner
   const enabled = suite.prompts.filter((entry) => entry.pipelineRule.enabled).sort((a, b) => a.pipelineRule.stepOrder - b.pipelineRule.stepOrder);
   const index = enabled.findIndex((entry) => entry.prompt.id === promptId);
   const label = lineText(options.workstationLabel ?? "", 64) || defaultWorkstationLabel();
+  const key = item.prompt.externalKey ?? String(promptId);
+  const blocking = workspaces.blockingStatus(promptId);
+  const offered = summaryOptions(blocking?.options ?? []);
   const base = {
     promptId,
+    key: lineText(key, TAG_KEY_MAX * 2),
+    tag: taskTag(item.workspace.id, item.workspace.name, key),
     breadcrumb: {
       workstation: label,
       workspace: lineText(item.workspace.name, 120),
       program: lineText(suite.programName, 120),
       suite: lineText(suite.name, 120),
       step: index === -1 ? null : { index: index + 1, total: enabled.length },
+      nextStep: index === -1 ? null : enabled[index + 1] ? lineText(enabled[index + 1]!.prompt.title, 120) : null,
     },
     title: lineText(item.prompt.title, 300),
+    blockedAt: blocking?.createdAt ?? null,
+    options: offered.options,
+    optionsOmitted: offered.omitted,
+    history: history(promptId),
     ifYouWait: ifYouWait(suite, item),
   };
   const empty = { objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null };

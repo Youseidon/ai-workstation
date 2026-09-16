@@ -33,9 +33,9 @@ export const BRIEF = {
 const sendCallFor = (harness: L1Context["harness"], title: string) => harness.telegramCalls().filter((call) => call.method === "sendMessage" && String(call.body.text).split("\n")[1] === `Task: ${title}`);
 
 /** Blocks a task, then runs a read-only handoff through the fake agent so a READY brief exists, and returns the brief card. */
-export async function blockWithBrief({ harness, phone }: L1Context, title: string, brief: object = BRIEF, later: FakeScenario[] = []): Promise<{ task: SavedTask; card: PhoneMessage; firstCard: PhoneMessage }> {
+export async function blockWithBrief({ harness, phone }: L1Context, title: string, brief: object = BRIEF, later: FakeScenario[] = [], options?: FakeScenario["options"]): Promise<{ task: SavedTask; card: PhoneMessage; firstCard: PhoneMessage }> {
   const before = await phone.cursor();
-  const { task, runId } = await runSavedTask(harness, { title, scenarios: [{ behavior: "block-on-decision", reason: "The brand guide allows red or blue.", humanAction: "Pick red or blue." }] });
+  const { task, runId } = await runSavedTask(harness, { title, scenarios: [{ behavior: "block-on-decision", reason: "The brand guide allows red or blue.", humanAction: "Pick red or blue.", ...(options ? { options } : {}) }] });
   await waitForRunEnd(task, runId);
   const firstCard = await questionCard(phone, title, before);
   harness.fakeProvider.queue({ behavior: "done", text: JSON.stringify(brief) }, ...later);
@@ -56,18 +56,24 @@ export async function briefCard(ctx: L1Context): Promise<void> {
   const title = label("Choose the report colour");
   const { card } = await blockWithBrief(ctx, title);
   const lines = card.text.split("\n");
-  expect(lines[0]).toMatch(/ · .+ · .+ \/ .+$/);
-  expect(lines.slice(1, 4)).toEqual([`Task: ${title}`, "Goal: Produce the quarterly report in the brand colour.", "So far: Collected the figures; Built the charts; Drafted the summary · verification 25 passed, 0 failed"]);
-  expect(lines.slice(4, 8)).toEqual(["Blocked on:", "The brand guide allows red or blue.", "Marketing has not chosen.", "Action: Pick red or blue."]);
-  expect(lines[8]).toBe("Agent recommends: Wait for your decision.");
-  expect(lines[9]).toMatch(/^If you wait: /);
+  // A2 header: the task tag, the title, then the age and the breadcrumb.
+  expect(lines[0]).toMatch(/^#[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/);
+  expect(lines[1]).toBe(`Task: ${title}`);
+  expect(lines[2]).toMatch(/^blocked [^·]+ · .+ · .+ \/ .+$/);
+  expect(lines.slice(3, 7)).toEqual(["Blocked on:", "The brand guide allows red or blue.", "Marketing has not chosen.", "Action: Pick red or blue."]);
+  expect(lines[7]).toBe("Agent recommends: Wait for your decision.");
+  expect(lines[8]).toMatch(/^If you wait: /);
   expect(card.text).toContain("Reply to this message with your answer.");
   expect(card.text).not.toContain("CI cache is cold");
   expect(card.buttons).toEqual([]);
-  expect(card.entities).toHaveLength(1);
-  const [entity] = card.entities;
-  expect(entity!.type).toBe("expandable_blockquote");
+  // Telegram makes the A2 tag a hashtag entity of its own; the bot still sends exactly one entity.
+  expect(card.entities.map((item) => item.type)).toEqual(["hashtag", "expandable_blockquote"]);
+  const entity = card.entities.find((item) => item.type === "expandable_blockquote");
+  expect(card.text.slice(card.entities[0]!.offset, card.entities[0]!.length)).toBe(lines[0]);
   const details = card.text.slice(entity!.offset, entity!.offset + entity!.length);
+  expect(details).toContain("Goal: Produce the quarterly report in the brand colour.");
+  expect(details).toContain("So far: Collected the figures; Built the charts; Drafted the summary · verification 25 passed, 0 failed");
+  expect(details).toContain("History:");
   expect(details).toContain("Decisions and assumptions:\n- Charts use the existing palette");
   expect(details).toContain("Important files:\n- report/colours.ts");
   const request = sendCallFor(harness, title).at(-1)!;
@@ -85,9 +91,13 @@ export async function remarkCard(ctx: L1Context): Promise<void> {
   const card = await questionCard(phone, title, before);
   // A BLOCKED status records its reason and required action as the latest blocker remark.
   expect(card.text).toMatch(/Blocked on:\nStaging is down\.\nAsk ops to restart it\.\n\n?Required human action: Say when ops restarted it\./);
-  for (const labelText of ["Goal:", "So far:", "Agent recommends:"]) expect(card.text).not.toContain(labelText);
-  expect(card.entities).toEqual([]);
-  expect(sendCallFor(harness, title).at(-1)!.body.entities).toBeUndefined();
+  for (const labelText of ["Goal:", "So far:", "Agent recommends:", "Options:"]) expect(card.text).not.toContain(labelText);
+  // A2: context and history are collapsed into the one blockquote; nothing else is.
+  const quote = card.entities.find((item) => item.type === "expandable_blockquote")!;
+  expect(card.entities.map((item) => item.type)).toEqual(["hashtag", "expandable_blockquote"]);
+  const collapsed = card.text.slice(quote.offset, quote.offset + quote.length);
+  expect(collapsed).toContain("History:");
+  expect(card.text.slice(0, quote.offset)).not.toContain("History:");
   const answerCard = await replyWithAnswer(phone, card, "Restarted");
   await tapAndReport(phone, answerCard, "Answer and resume", /^Done: Answer saved and resume requested\./);
   await waitForPromptStatus(task, "DONE");
@@ -142,9 +152,11 @@ export async function entityOffsetsOnPhone(ctx: L1Context): Promise<void> {
   const { card } = await blockWithBrief(ctx, title, brief);
   const request = sendCallFor(ctx.harness, title).at(-1)!;
   expect(card.text).toBe(request.body.text);
-  expect(card.entities).toEqual(request.body.entities);
-  const [entity] = card.entities;
-  expect(card.text.slice(entity!.offset, entity!.offset + entity!.length)).toMatch(/^Decisions and assumptions:\n- Keep 😀 in the details/);
+  // The phone also shows the hashtag entity Telegram adds for the A2 tag; the bot's own entity is unchanged.
+  expect(card.entities.filter((item) => item.type === "expandable_blockquote")).toEqual(request.body.entities);
+  const entity = card.entities.find((item) => item.type === "expandable_blockquote");
+  const collapsed = card.text.slice(entity!.offset, entity!.offset + entity!.length);
+  expect(collapsed).toContain("Decisions and assumptions:\n- Keep 😀 in the details");
 }
 
 /** S-L3-A-10/11: markup characters stay literal and secrets are redacted inside and outside the details. */
@@ -209,8 +221,11 @@ export async function pipelineCard(ctx: L1Context): Promise<void> {
   const before = await phone.cursor();
   await state.post(`/api/suites/${suite.id}/play`, {});
   const card = await questionCard(phone, name, before, 90_000);
-  expect(card.text.split("\n")[0]).toMatch(/ · pipeline step 2\/3$/);
+  expect(card.text.split("\n")[2]).toMatch(/ · pipeline step 2\/3$/);
   expect(card.text).toContain("If you wait: This task and its pipeline stay paused; other workspaces continue.");
+  // S-L3-A2-08 on the phone: the collapsed context names the suite, the position and the next enabled step.
+  const fits = card.text.slice(card.entities.find((item) => item.type === "expandable_blockquote")!.offset).split("\n")[0];
+  expect(fits).toMatch(new RegExp(`^Where it fits: Suite, step 2/3; next: ${name} three$`));
   const answerCard = await replyWithAnswer(phone, card, "Staging");
   await tapAndReport(phone, answerCard, "Answer and resume", /^Done: Answer saved and resume requested\./);
   const task = (id: number) => ({ workspaceId: workspace.id, promptId: id, workDirectory });
@@ -228,7 +243,8 @@ export async function labelOnCards(ctx: L1Context): Promise<void> {
   let run = await runSavedTask(harness, { title: first, scenarios: [{ behavior: "block-on-decision" }] });
   await waitForRunEnd(run.task, run.runId);
   const defaultCard = await questionCard(phone, first, before);
-  const hostLabel = defaultCard.text.split(" · ")[0]!;
+  const crumb = (message: PhoneMessage) => message.text.split("\n")[2]!.replace(/^blocked [^·]+· /, "");
+  const hostLabel = crumb(defaultCard).split(" · ")[0]!;
   await openApp(page, "/agents");
   await page.getByLabel("Workstation label", { exact: true }).fill("bench-01");
   await page.getByRole("button", { name: /^Save \d+$/ }).click();
@@ -237,13 +253,13 @@ export async function labelOnCards(ctx: L1Context): Promise<void> {
   before = await phone.cursor();
   run = await runSavedTask(harness, { title: second, scenarios: [{ behavior: "block-on-decision" }] });
   await waitForRunEnd(run.task, run.runId);
-  expect((await questionCard(phone, second, before)).text.startsWith("bench-01 · ")).toBe(true);
+  expect(crumb(await questionCard(phone, second, before)).startsWith("bench-01 · ")).toBe(true);
   await state.post("/api/settings/reset", { keys: ["taskControl.workstationLabel"] });
   const third = label("Label reset");
   before = await phone.cursor();
   run = await runSavedTask(harness, { title: third, scenarios: [{ behavior: "block-on-decision" }] });
   await waitForRunEnd(run.task, run.runId);
-  expect((await questionCard(phone, third, before)).text.startsWith(`${hostLabel} · `)).toBe(true);
+  expect(crumb(await questionCard(phone, third, before)).startsWith(`${hostLabel} · `)).toBe(true);
   const unchanged = (await phone.messages()).find((message) => message.id === defaultCard.id)!;
   expect(unchanged.text).toBe(defaultCard.text);
   expect(harness.telegramCalls().filter((call) => call.method === "editMessageText")).toEqual([]);

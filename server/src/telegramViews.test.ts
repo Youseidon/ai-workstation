@@ -74,7 +74,7 @@ test("S-L3-B-02/04/05: counts and lists follow the filter mapping; waiting-on-de
 });
 
 test("S-L3-B-09/26: /task finds by id or key, offers a picker for ambiguity, reports unknown keys, and long lists paginate", () => {
-  const duplicate = context([suite(1, "alpha", [prompt(1, "READY", { key: "DUP-1" })]), suite(2, "beta", [prompt(2, "READY", { key: "dup-1" })])], { summary: (id) => ({ promptId: id, source: "title", breadcrumb: { workstation: "jd-laptop", workspace: "w", program: "p", suite: "s", step: null }, title: `Task ${id}`, objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null, ifYouWait: "Only this task waits; other tasks and workspaces continue." }) });
+  const duplicate = context([suite(1, "alpha", [prompt(1, "READY", { key: "DUP-1" })]), suite(2, "beta", [prompt(2, "READY", { key: "dup-1" })])], { summary: (id) => ({ promptId: id, key: String(id), tag: `#w_t${id}`, source: "title", breadcrumb: { workstation: "jd-laptop", workspace: "w", program: "p", suite: "s", step: null, nextStep: null }, title: `Task ${id}`, blockedAt: null, options: null, optionsOmitted: 0, history: { runs: [], moreRuns: 0, blocks: 0, previousAnswer: null, morePreviousAnswers: 0 }, objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null, ifYouWait: "Only this task waits; other tasks and workspaces continue." }) });
   const picker = renderView({ view: "find", ref: "DUP-1", page: 0 }, duplicate);
   assert.equal(picker.buttons.flat().length, 2);
   assert.match(renderView({ view: "find", ref: "2", page: 0 }, duplicate).text, /\nTask: Task 2\n/);

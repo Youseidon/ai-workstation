@@ -6,7 +6,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import type { HandoffBrief, ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { config } from "./config.ts";
-import { blockText, lineText, redactPhoneText, taskSummary } from "./telegramSummary.ts";
+import { blockText, HISTORY_RUNS, lineText, MAX_OPTIONS, redactPhoneText, TAG_KEY_MAX, TAG_SLUG_MAX, taskSummary, TRADE_OFF_MAX } from "./telegramSummary.ts";
 import { workspaces } from "./workspaces.ts";
 
 // Scenario IDs refer to docs/e2e-scenarios/l3-f3-a.md (slice F3, RTC-22): the task summary model.
@@ -84,7 +84,7 @@ test("S-L3-F3-01: a current READY brief supplies every field, with the breadcrum
     f.handoff("READY", fullBrief());
     const summary = taskSummary(f.prompt.id, "owner", { workstationLabel: "jd-laptop" });
     assert.equal(summary.source, "brief");
-    assert.deepEqual(summary.breadcrumb, { workstation: "jd-laptop", workspace: "ai-workstation", program: "Telegram L1", suite: "Live setup", step: { index: 1, total: 5 } });
+    assert.deepEqual(summary.breadcrumb, { workstation: "jd-laptop", workspace: "ai-workstation", program: "Telegram L1", suite: "Live setup", step: { index: 1, total: 5 }, nextStep: "Other step 1" });
     assert.equal(summary.objective, "Store the live bot token outside the repository.");
     assert.deepEqual(summary.completedWork, ["Wrote the credential loader", "Added redaction", "Documented setup"]);
     assert.deepEqual(summary.verification, { passed: 41, failed: 0 });
@@ -102,7 +102,7 @@ test("S-L3-F3-01: a current READY brief supplies every field, with the breadcrum
 test("S-L3-F3-02/03: without a usable brief the latest blocker remark stands in, else the title alone", () => {
   const f = fixture();
   try {
-    assert.deepEqual({ ...taskSummary(f.prompt.id), breadcrumb: null, ifYouWait: null }, { promptId: f.prompt.id, source: "title", breadcrumb: null, title: "Add live bot credential storage", objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null, ifYouWait: null });
+    assert.deepEqual({ ...taskSummary(f.prompt.id), breadcrumb: null, ifYouWait: null, tag: null, history: null }, { promptId: f.prompt.id, key: String(f.prompt.id), tag: null, source: "title", breadcrumb: null, title: "Add live bot credential storage", blockedAt: null, options: null, optionsOmitted: 0, history: null, objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null, ifYouWait: null });
     f.remark("PROGRESS", "just progress");
     assert.equal(taskSummary(f.prompt.id).source, "title", "progress remarks are not blockers");
     f.handoff("READY", null);
@@ -283,5 +283,183 @@ test("S-L3-F3-13 (T0): the workstation label defaults to the hostname, refuses l
     assert.equal(settings.taskControl.workstationLabel, hostname().trim());
   } finally {
     resetSettings(["taskControl.workstationLabel"]);
+  }
+});
+
+/* ---- L3 slice A2 (docs/e2e-scenarios/l3-a2.md): options, history, where it fits and the tag ---- */
+
+let statuses = 0;
+/** Blocks the task through the agent Progress API, exactly as an agent would. */
+function blockWithStatus(f: ReturnType<typeof fixture>, options?: unknown): unknown {
+  const runId = `a2-run-${f.workspace.id}-${++statuses}`;
+  workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+  try {
+    return workspaces.updateAgentStatus(runId, { requestId: `a2-status-${statuses}-${f.workspace.id}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: "The brand guide allows red or blue.", verificationSummary: "Pick red or blue.", ...(options === undefined ? {} : { options }) });
+  } finally {
+    workspaces.finishAgentRun(runId, "done");
+  }
+}
+
+test("S-L3-A2-01: options posted with a blocking status reach the summary in order, with their text preserved", () => {
+  const f = fixture();
+  try {
+    const before = taskSummary(f.prompt.id);
+    blockWithStatus(f, [
+      { label: "Ship red", advantages: ["On brand", "Ready today"], disadvantages: ["Clashes with the charts"] },
+      { label: "Ship blue", advantages: ["Matches the charts"], disadvantages: ["Needs a new palette"] },
+      { label: "Ask marketing", advantages: [], disadvantages: ["Waits a week"] },
+    ]);
+    const summary = taskSummary(f.prompt.id);
+    assert.deepEqual(summary.options, [
+      { label: "Ship red", advantages: ["On brand", "Ready today"], disadvantages: ["Clashes with the charts"] },
+      { label: "Ship blue", advantages: ["Matches the charts"], disadvantages: ["Needs a new palette"] },
+      { label: "Ask marketing", advantages: [], disadvantages: ["Waits a week"] },
+    ]);
+    assert.equal(summary.optionsOmitted, 0);
+    assert.ok(summary.blockedAt !== null, "the block time is the age at delivery");
+    // Nothing else about the summary changed: the same fields as before the options existed.
+    assert.deepEqual({ ...summary, options: null, blockedAt: null, blockers: null, history: null, source: null }, { ...before, options: null, blockedAt: null, blockers: null, history: null, source: null, optionsOmitted: 0 });
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-01/02: a later block without options replaces the earlier list rather than keeping a stale one", () => {
+  const f = fixture();
+  try {
+    blockWithStatus(f, [{ label: "Ship red", advantages: ["On brand"], disadvantages: [] }]);
+    assert.equal(taskSummary(f.prompt.id).options!.length, 1);
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "Ship red" });
+    blockWithStatus(f);
+    assert.equal(taskSummary(f.prompt.id).options, null, "a new block replaces the options");
+    assert.equal(taskSummary(f.prompt.id).optionsOmitted, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-04: a read-only run cannot post options, with the same refusal as a refused remark", () => {
+  const f = fixture();
+  try {
+    const runId = `a2-consult-${f.workspace.id}`;
+    workspaces.beginConsultRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const status = () => workspaces.updateAgentStatus(runId, { requestId: `a2-consult-status-${f.workspace.id}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: "r", verificationSummary: "v", options: [{ label: "Ship red" }] });
+    const remark = () => workspaces.addAgentRemark(runId, { requestId: `a2-consult-remark-${f.workspace.id}`, kind: "BLOCKER", content: "c" });
+    for (const call of [status, remark]) assert.throws(call, /Read-only runs cannot post remarks or status\./);
+    assert.equal(taskSummary(f.prompt.id).options, null, "no option reaches any card");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-05: option count and each field are capped by documented limits, empty labels are dropped and the cut is declared", () => {
+  const f = fixture();
+  try {
+    const many = Array.from({ length: 20 }, (_, index) => ({ label: `Option ${index}`, advantages: [`advantage ${index}`], disadvantages: [] }));
+    assert.throws(() => blockWithStatus(f, [...many, { label: "one too many" }]), /Too many options/);
+    // The run then ends without a status, so the system blocks the task itself: no options, never a stale list.
+    assert.equal(taskSummary(f.prompt.id).options, null);
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "Try again" });
+    blockWithStatus(f, [{ label: "   ", advantages: ["dropped with its option"], disadvantages: [] }, ...many.slice(0, 19)]);
+    const summary = taskSummary(f.prompt.id);
+    assert.equal(summary.options!.length, MAX_OPTIONS);
+    assert.equal(summary.optionsOmitted, 15, "the rest are declared, not silently dropped");
+    assert.ok(!JSON.stringify(summary.options).includes("dropped with its option"), "an option with an empty label is dropped");
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "Ship red" });
+    blockWithStatus(f, [{ label: "Long", advantages: ["a".repeat(4000)], disadvantages: ["d".repeat(4000)] }, { label: "Many", advantages: ["1", "2", "3", "4", "5"], disadvantages: [] }]);
+    const capped = taskSummary(f.prompt.id).options!;
+    assert.equal(capped[0]!.advantages[0]!.length, TRADE_OFF_MAX);
+    assert.ok(capped[0]!.advantages[0]!.endsWith(" [shortened]"), "a cut trade-off declares itself");
+    assert.ok(capped[0]!.disadvantages[0]!.endsWith(" [shortened]"));
+    assert.deepEqual(capped[1]!.advantages, ["1", "2", "3", "and 2 more in the local app"]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-03: options and history are redacted and flattened exactly as the other summary fields are", () => {
+  const f = fixture();
+  try {
+    const secret = "sk-live-4f9a8b7c6d5e4f3a2b1c";
+    blockWithStatus(f);
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: `Use ${secret} at http://localhost:4000/admin *bold*` });
+    blockWithStatus(f, [{ label: `Ship <b>red</b> with ${secret}`, advantages: ["See http://localhost:4000/admin\nand more"], disadvantages: [`Bearer abcdefghijklmnop`] }]);
+    const summary = taskSummary(f.prompt.id);
+    const rendered = JSON.stringify({ options: summary.options, history: summary.history });
+    assert.ok(!rendered.includes(secret) && !rendered.includes("localhost") && !rendered.includes("abcdefghijklmnop"));
+    assert.equal(summary.options![0]!.label, "Ship <b>red</b> with [redacted]", "markup characters stay literal");
+    assert.ok(!summary.options![0]!.advantages[0]!.includes("\n"), "an option is one line");
+    assert.ok(summary.history.previousAnswer!.text.includes("*bold*"));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-06/07: history carries the runs, the block count and the previous answer, and says so plainly on a first run", () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(taskSummary(f.prompt.id).history, { runs: [], moreRuns: 0, blocks: 0, previousAnswer: null, morePreviousAnswers: 0 });
+    blockWithStatus(f);
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "First answer" });
+    blockWithStatus(f);
+    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "Second answer" });
+    blockWithStatus(f);
+    const { history } = taskSummary(f.prompt.id);
+    assert.equal(history.runs.length, HISTORY_RUNS, "the phone gets the last three runs");
+    assert.deepEqual(history.runs.map((run) => run.provider), ["grok", "grok", "grok"]);
+    assert.ok(history.runs.every((run) => Date.parse(run.startedAt) > 0), "runs carry their times");
+    assert.deepEqual(history.runs.map((run) => run.startedAt), [...history.runs.map((run) => run.startedAt)].sort().reverse(), "newest first");
+    assert.equal(history.blocks, 3);
+    assert.equal(history.previousAnswer!.text, "Second answer", "the most recent previous answer");
+    assert.equal(history.morePreviousAnswers, 1, "and a count of the rest");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-08: the flowchart position carries the next enabled step, and is absent off the flowchart", () => {
+  const f = fixture({ steps: 5 });
+  try {
+    assert.equal(taskSummary(f.prompt.id).breadcrumb.nextStep, null, "no flowchart, no next step");
+    for (const prompt of f.prompts) workspaces.addPipelineStep(prompt.id, { provider: "claude" });
+    const onStep = taskSummary(f.prompt.id).breadcrumb;
+    assert.deepEqual(onStep.step, { index: 1, total: 5 });
+    assert.equal(onStep.nextStep, "Other step 1");
+    workspaces.removePipelineStep(f.prompts[1]!.id);
+    assert.equal(taskSummary(f.prompt.id).breadcrumb.nextStep, "Other step 2", "a disabled step is skipped");
+    for (const prompt of f.prompts.slice(1)) workspaces.removePipelineStep(prompt.id);
+    const last = taskSummary(f.prompt.id).breadcrumb;
+    assert.deepEqual(last.step, { index: 1, total: 1 });
+    assert.equal(last.nextStep, null, "the last enabled step has no next step");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-L3-A2-13a (T0): the tag is project-scoped, hashtag-safe and stable, and two projects never share one", () => {
+  const solo = fixture({ workspace: "Solo Project" });
+  const first = fixture({ workspace: "Acme Reports" });
+  const second = fixture({ workspace: "Acme-Reports" });
+  const digits = fixture({ workspace: "123" });
+  try {
+    assert.match(taskSummary(solo.prompt.id).tag, /^#Solo_Project_t\d+$/);
+    assert.equal(taskSummary(solo.prompt.id).tag, taskSummary(solo.prompt.id).tag, "the same task always produces the same tag");
+    // Two project names that reduce to the same slug still get different tags.
+    assert.notEqual(taskSummary(first.prompt.id).tag, taskSummary(second.prompt.id).tag);
+    for (const summary of [taskSummary(solo.prompt.id), taskSummary(first.prompt.id), taskSummary(second.prompt.id), taskSummary(digits.prompt.id)]) {
+      // Telegram only makes a hashtag of letters, digits and underscores, and only with a letter in it
+      // (#123 is not a hashtag; see e2e/src/telegramEntities.test.ts).
+      assert.match(summary.tag, /^#[A-Za-z0-9_]+$/, summary.tag);
+      assert.match(summary.tag, /[A-Za-z]/, summary.tag);
+      assert.ok(summary.tag.length <= 1 + TAG_SLUG_MAX + 10 + 1 + TAG_KEY_MAX, summary.tag);
+      assert.ok(summary.tag.endsWith(`_t${summary.promptId}`), "the task key, letter-prefixed because #123 is not a hashtag");
+    }
+    assert.equal(taskSummary(digits.prompt.id).tag.split("_")[0], "#123", "a digits-only project name keeps its digits; the key carries the letter");
+    assert.equal(taskSummary(solo.prompt.id).key, String(solo.prompt.id), "the identifier is what /task accepts");
+  } finally {
+    solo.cleanup();
+    first.cleanup();
+    second.cleanup();
+    digits.cleanup();
   }
 });
