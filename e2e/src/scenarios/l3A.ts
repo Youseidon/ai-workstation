@@ -69,7 +69,8 @@ export async function briefCard(ctx: L1Context): Promise<void> {
   // Telegram makes the A2 tag a hashtag entity of its own; the bot still sends exactly one entity.
   expect(card.entities.map((item) => item.type)).toEqual(["hashtag", "expandable_blockquote"]);
   const entity = card.entities.find((item) => item.type === "expandable_blockquote");
-  expect(card.text.slice(card.entities[0]!.offset, card.entities[0]!.length)).toBe(lines[0]);
+  const tag = card.entities[0]!;
+  expect(card.text.slice(tag.offset, tag.offset + tag.length)).toBe(lines[0]);
   const details = card.text.slice(entity!.offset, entity!.offset + entity!.length);
   expect(details).toContain("Goal: Produce the quarterly report in the brand colour.");
   expect(details).toContain("So far: Collected the figures; Built the charts; Drafted the summary · verification 25 passed, 0 failed");
