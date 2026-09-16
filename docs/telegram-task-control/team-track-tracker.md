@@ -22,7 +22,7 @@ Preconditions:
 | Id | Slice | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | T01 | TM0 | done | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` | `0781cf1..b75077c` | `H-TM-LT1` PASS; live script recorded administrator delivery to both bots; jd chose to model broad administrator delivery in design/fake; typecheck and secret sweep passed. | 2026-09-16 |
-| T02 | TM0 | pending |  |  |  | TM0 scenario table. |  |
+| T02 | TM0 | in progress | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` |  | TM0 scenario table worker started. | 2026-09-16 |
 | T03 | TM0 | pending |  |  |  | Two environments side by side. |  |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
 | T05 | TM1 | pending |  |  |  | LG-1 script: repository refs. |  |
