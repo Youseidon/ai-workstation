@@ -75,7 +75,7 @@ Observed discrepancies:
 | RTC-23 | Context-rich question cards | A phone question card carries enough context to decide without the laptop. | D17, user-flows section 2 | The card drops the stored `HandoffBrief`; `sanitizeTelegramText` flattens line breaks and cuts at 1200 characters. Render from RTC-22 with a section budget. | Formatter tests for section priority under the 4096 limit, expandable detail entity offsets (emoji, non-Latin), no markup parsing, graceful fallback without a brief. | L3 |
 | RTC-24 | Read-only status commands | The operator can ask what is running, blocked or failed and drill down, without any state change or LLM call. | D17, user-flows section 9, B30 | Only `/start <code>` and replies are handled; every callback goes to task control. Add command parsing, a view registry and a separate navigation callback route. | Command and navigation tests for each view, unpaired actor ignored, navigation never produces a receipt, pagination under the size limit, `setMyCommands` registration. | L3 |
 | RTC-25 | Thread registry | Every phone message belongs to a subject (a task or the workstation) that maps to one thread. | D17, user-flows section 1 | No subject-to-thread mapping exists. Add a registry with a no-topic mode that preserves today's behaviour. | Registry tests: subject lookup, no-topic mode unchanged from L1 behaviour, status message id tracked per subject. | L3 |
-| RTC-26 | Per-task topics | Each task has its own topic with a pinned status message; workstation-wide messages have their own topic. | D04, D17, user-flows section 1, protocol section 7 | Topic support in a private bot chat is unverified; pairing refuses topics and actor lookup matches `topic_id` exactly. Requires the C0 live check first. | Live C0 record; fake tests for lazy creation ordering, closed/reopened topics, deleted-topic recreation and private-chat actor authorization across topics. | L3 |
+| RTC-26 | Per-task topics | Each task has its own topic with a pinned status message; workstation-wide messages have their own topic. | D04, D17, user-flows section 1, protocol section 7 | Blocked 2026-09-16: Telegram offers no topics for this bot in a private chat and no forum in a two-member group, so C0 cannot record real behaviour. C1 ships the no-topic mode; C2 waits. | Live C0 record; fake tests for lazy creation ordering, closed/reopened topics, deleted-topic recreation and private-chat actor authorization across topics. | L3 |
 
 Product questions to keep separate from engineering defaults:
 
@@ -399,11 +399,14 @@ Views live in a registry (`server/src/integrations/telegram/views.ts`): each ent
 Navigation buttons use the `nv_` callback prefix (protocol section 7). The adapter routes `nv_` callbacks to a new `onNavigation` hook before task control; the hook checks the actor, answers the callback and edits the message through F1.
 `/task` renders the same F3 summary as the question card.
 
-**C0: live topic check (RTC-26). Operator involvement required for the chat setup only.**
+**C0: live topic check (RTC-26). BLOCKED on Telegram as of 2026-09-16.**
 Recorded 2026-09-16: @BotFather offers no topics or threads setting for the harness test bot, and `getMe` reports `has_topics_enabled: false` and `allows_users_to_create_topics: false`.
 Telegram gates topics in private chats to eligible bot apps, and while they are enabled Telegram Stars purchases in that bot carry a non-refundable 15% fee.
-C0 therefore runs against the fallback named in user-flows section 1, approved by the operator 2026-09-16: a private group containing only the operator and the test bot, with topics enabled and the bot an admin with Manage Topics.
-The recorded result must say that private-chat topics were unavailable, so C1/C2 keep the no-topic mode and the group mode, and a later move to private-chat topics stays a configuration change.
+The fallback of user-flows section 1, a private group holding only the operator and the test bot, was tried on 2026-09-16 and does not work either: Telegram shows the Topics switch only once a group is large enough (reported as 200 members on mobile), so a two-member group cannot become a forum.
+C0 is therefore BLOCKED on Telegram, not on the operator, and neither the bot nor a group can produce a real topic recording today.
+Decision 2026-09-16: do not fake it. The first T3 runs proved that a fake written without a real recording diverges from Telegram, which is the failure this check exists to prevent.
+C1 is built for the no-topic mode only, which is what L1 already does, so nothing on the phone changes; C2 stays unbuilt until a recording exists.
+Revisit when the bot becomes eligible for topics in private chats, or when a real forum group is available for the harness.
 Against the harness test bot (never the operator's own bot), before any C1/C2 code: the operator enables topics for the chat; the rest is scripted with the harness's real-Telegram backend: call `createForumTopic` in the private chat, send with `message_thread_id`, edit and close a topic, delete a topic, reply from the user client inside a topic, and record the exact update fields received.
 The recorded responses become contract fixtures for the fake Telegram server's topic support.
 Record the result in `implementation.md`.
@@ -623,7 +626,7 @@ tracker), and a final "publish a release report" step duplicating
     6. Run the L1 rows through the harness (T1 and T3) plus the phone look check; finish the remaining close-out items above; mark steps 6 and 7 DONE.
        T3 DONE 2026-09-15/16 (implementation.md, L1 T3 close-out); the phone look check is pending.
        Split of the remaining work, decided by the operator 2026-09-16, run as two parallel sessions:
-       - Close-out: DONE 2026-09-16, including the phone look check. C0 follows, against the fallback group (no BotFather topics setting exists for the test bot).
+       - Close-out: DONE 2026-09-16, including the phone look check. C0 is blocked on Telegram (no topics for the bot, and a two-member group cannot become a forum), so the close-out ends here.
        - Teammate design: review the teammate design proposal with the operator, then write the approved design as a documented revision and build plan; G01 is decided before the handover slices only.
        Moved after or parallel to the teammate design, not before it: credential rotation for the test bot and harness client, the L1 defects above, the real-database cleanup above, L3 T3 rows without a test, C1 and C2, H7 and H9.
        Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently (human-verification.md, known issues).
