@@ -58,13 +58,13 @@ Observed discrepancies:
 | RTC-06 | Atomic effective-directory reservation | UI, pipeline, retry, recovery and Telegram starts cannot race in aliased workspaces. | I02, I08, protocol section 6 | Add durable reservation/start-intent before async provider checks; use realpath/effective directory. | Race tests for UI versus Telegram/provider discovery; crash before/after spawn. | M2 |
 | RTC-07 | Process supervision and crash reconciliation | The app does not release ownership or retry blindly when process state is unknown. | D15, I02, I12, B13, B23 | Track process identity outside task files; classify START_UNKNOWN; operator recovery path. Depends on RTC-06. | Parent-exit/child-running and restart tests. | M2 |
 | RTC-08 | Quota advisor | Low fresh quota warns and offers choices without pausing, spending or delegating automatically. | D07, D14, I04, B06 | Build `quotaAdvisor.ts` over account usage with freshness/window identity and dedupe. | Fresh/stale/missing/reset/multi-task tests; no automatic state mutation. | M2 |
-| RTC-09 | Factual checkpoint preview | A user can freeze/review transferable files and context without using remaining LLM quota. | D05-D06, I06, protocol section 9 | Add package manifest capture preserving worktree/index; reject unstable, unsupported or secret-containing candidates. Depends on RTC-06/07. | File, binary, staged, symlink, hook, LFS/submodule and mutation-during-capture tests. | M3 |
-| RTC-10 | Shared Git enrollment and integrity | Cross-workstation state is durable, ordered, signed and protected from replay/rewrites. | D05, I03, I06, G03 | Add administrative checkout, roster pinning, signed control commits, fast-forward update/retry logic. Depends on external G03 for production. | Fake remote tests for conflict, uncertain push, rewritten history, invalid signature and old schema. | M3 |
-| RTC-11 | Named offer and receiver claim | A named teammate can accept and run on their workstation without second requester approval. | D08-D10, I01-I03, I11, B17-B20 | Add offer/claim records, receiver discovery, local policy comparison and preparation states. Depends on RTC-09/10 and provider capability model. | Two isolated installs with fake providers publish, discover, accept and start one task. | M4 |
-| RTC-12 | Provider capability and permission contract | Incoming tasks run only within enforceable local limits; unknown access remains waiting. | D09-D10, I05, I10-I11, G01-G02 | Extend adapter contracts for billing attribution, effective permissions, quota scope, process observation and secret isolation status. | Capability matrix; tests for within-limit, delta prompt, hard deny and unknown enforcement. | M4 |
-| RTC-13 | Mid-run shared questions | The requester can answer the executor bot while the source workstation is offline. | D13, I07, B09-B12, B22 | Shared question/answer records, executor bot rendering and resume validation. Depends on RTC-10/11. | Offline source test with current executor receiving answer and resuming once. | M5 |
-| RTC-14 | Return, review and apply | Returned work is inspected and applied once by requester, without overwriting divergence. | D12, I06-I09, protocol section 10 | Add result refs, apply intent, manifest comparison, integration checkout and pipeline hold reconciliation. | Apply, apply-twice, divergence and crash-mid-apply tests. | M5 |
-| RTC-15 | Further handoff, cancel and close | One task conversation survives blockers, revisions, cancellation and later takeovers. | D13, I02, B25-B29 | Epoch advancement, approval invalidation, topic close best-effort reporting and lifecycle recovery. | Further-handoff, cancel-race, closed-topic and revocation tests. | M5 |
+| RTC-09 | Factual checkpoint preview | A user can freeze/review transferable files and context without using remaining LLM quota. | D05-D06, I06, protocol section 9 | Add package manifest capture preserving worktree/index; reject unstable, unsupported or secret-containing candidates. Depends on RTC-06/07. | File, binary, staged, symlink, hook, LFS/submodule and mutation-during-capture tests. | TM4 |
+| RTC-10 | Shared Git enrollment and integrity | Cross-workstation state is durable, ordered, signed and protected from replay/rewrites. | D05, I03, I06, G03 | Add administrative checkout, roster pinning, signed control commits, fast-forward update/retry logic. Depends on external G03 for production. | Fake remote tests for conflict, uncertain push, rewritten history, invalid signature and old schema. | TM1, TM4 |
+| RTC-11 | Named offer and receiver claim | A named teammate can accept and run on their workstation without second requester approval. | D08-D10, I01-I03, I11, B17-B20 | Add offer/claim records, receiver discovery, local policy comparison and preparation states. Depends on RTC-09/10 and provider capability model. | Two isolated installs with fake providers publish, discover, accept and start one task. | TM4 |
+| RTC-12 | Provider capability and permission contract | Incoming tasks run only within enforceable local limits; unknown access remains waiting. | D09-D10, I05, I10-I11, G01-G02 | Extend adapter contracts for billing attribution, effective permissions, quota scope, process observation and secret isolation status. | Capability matrix; tests for within-limit, delta prompt, hard deny and unknown enforcement. | TM4 |
+| RTC-13 | Mid-run shared questions | The requester can answer the executor bot while the source workstation is offline. | D13, I07, B09-B12, B22 | Shared question/answer records, executor bot rendering and resume validation. Depends on RTC-10/11. | Offline source test with current executor receiving answer and resuming once. | TM4 |
+| RTC-14 | Return, review and apply | Returned work is inspected and applied once by requester, without overwriting divergence. | D12, I06-I09, protocol section 10 | Add result refs, apply intent, manifest comparison, integration checkout and pipeline hold reconciliation. | Apply, apply-twice, divergence and crash-mid-apply tests. | TM4 |
+| RTC-15 | Further handoff, cancel and close | One task conversation survives blockers, revisions, cancellation and later takeovers. | D13, I02, B25-B29 | Epoch advancement, approval invalidation, topic close best-effort reporting and lifecycle recovery. | Further-handoff, cancel-race, closed-topic and revocation tests. | TM2, TM4 |
 | RTC-16 | Backup, restore and rollback | A local SQLite database holding all task history can be recovered after corruption, bad migration or failed upgrade. | D01 | Add a documented and exercised backup/restore path for the app database, plus per-migration rollback notes. | Restore a backup into an isolated root and confirm task/run history survives a simulated bad migration. | M6 |
 | RTC-17 | Live Telegram Bot API client | Messages actually reach the operator's phone instead of an in-memory fake. | D02, D15, protocol section 7 | Implement `TelegramBotApi` against real `getUpdates` long-poll and `sendMessage`; persist updates before advancing the offset, durable retry with server-specified backoff, never log tokens embedded in Bot API URLs. | Live smoke test against a real bot; rate-limit/429 and network-failure handling; duplicate update rejection. | L1 |
 | RTC-18 | Live bot credential and pairing setup | An operator can enrol their own bot without pasting a secret into a UI label field or a committed file. | D01, D02, G02 | Add real token storage outside the settings label field and outside git; real pairing/enrolment against a live chat ID reusing existing challenge validation. | Token never appears in API responses, logs, DTOs or the database dump; pairing rejects a wrong chat/actor live. | L1 |
@@ -163,82 +163,19 @@ Definition of done: two concurrent start requests for aliased workspace paths
 produce one durable start intent; 5% fresh quota warning presents choices and
 does not mutate execution state without explicit action.
 
-### M3: Checkpoint and Shared Control Storage
+### M3 to M5: replaced on 2026-09-16
 
-Scope: RTC-09 and RTC-10. Exclusions: receiver execution and result application.
+M3 (checkpoint and shared control storage), M4 (named teammate claim and receiver
+execution) and M5 (shared questions, return, apply and further handoff) are
+replaced by the Team track in section 3b, which builds the same requirements
+(RTC-09 through RTC-15) on the design in
+[teammate-design.md](teammate-design.md): one bot per person, item threads on an
+anchor, and handover on an ordinary Git branch. Their original text is in the
+repository history at commit cb74fce.
 
-Entry criteria: M2 safety in place; private Git remote policy documented for
-fixtures; package schema approved.
-
-Tasks and files:
-
-- Add `server/src/taskTransfer/` for factual package capture, manifest hashing,
-  unsupported artifact detection and private administrative Git checkout.
-- Add shared schemas for package, task, offer, event and roster records.
-- Implement signed fast-forward control updates, fetch/validate/retry and
-  uncertain-push reconciliation.
-
-Behaviour: publish immutable package objects before OFFERED; never mutate the
-developer branch/index/remote; reject force-rewritten or unsupported histories.
-
-Tests/gates/rollback: isolated repository fixtures for worktree/index states,
-malicious paths/hooks, push races and signature/schema failures. Production
-cross-workstation use remains disabled until G03 is satisfied.
-
-Definition of done: local package preview and fixture remote OFFERED record can
-be created and validated, but no teammate starts from it yet.
-
-### M4: Named Teammate Claim and Receiver Execution
-
-Scope: RTC-11 and RTC-12. Exclusions: result apply and enterprise release.
-
-Entry criteria: M3 complete; G01/G02 status recorded for the selected provider
-or fake provider used for development.
-
-Tasks and files:
-
-- Add receiver discovery and Accept/Decline rendering through the receiver bot.
-- Implement local permission comparison, grantable delta prompts and hard-deny
-  handling.
-- Create isolated receiver checkout and start the linked task with recorded
-  effective permissions and provider capability evidence.
-
-Behaviour: named receiver acceptance is sufficient to start only when current
-offer/package/deadline/roster/local policy all validate. Busy receivers queue and
-revalidate before start.
-
-Tests/gates/rollback: two-install fixture tests with fake providers; provider
-capability tests for billing attribution and secret isolation. If G01/G02 are
-unresolved, production receiver execution stays disabled while fixtures pass.
-
-Definition of done: two isolated local installations publish, discover, accept
-and start one checkpoint under receiver-local policy. No paid/live provider run
-is used as evidence for subscription delegation.
-
-### M5: Shared Questions, Return, Apply and Further Handoff
-
-Scope: RTC-13 through RTC-15. Exclusions: enterprise deployment claims.
-
-Entry criteria: M4 complete; result schema and apply recovery design approved.
-
-Tasks and files:
-
-- Add shared question/answer records and executor-bot resume handling.
-- Implement result refs, return publication, review/apply UI, apply intent,
-  integration checkout and manifest reconciliation.
-- Add epoch advancement for further handoff, cancellation and close/reopen flows.
-
-Behaviour: requester answers bind to current question and task revision even when
-source workstation is offline. Apply is idempotent and refuses divergence rather
-than overwriting unrelated work.
-
-Tests/gates/rollback: offline source answer, partial result, apply twice,
-divergence, crash-mid-apply, further handoff and cancel-race fixtures. Rollback
-must preserve source holds and shared records.
-
-Definition of done: requester reviews and applies a returned result once; partial
-or failed results remain accurately labelled and do not advance the pipeline as
-complete.
+The parts deliberately dropped with them: package manifests and signing, device
+keys and a signed roster, permission-delta negotiation, further handoff beyond a
+return to the requester, and separate staged-state metadata.
 
 ### M6: Durability and Release Checks
 
@@ -274,8 +211,8 @@ released to people other than its operator.
 The L track carries the work that turns the fake transport into a real one. It
 is deliberately numbered separately from M1-M6 because it does not sit in that
 dependency chain: L1 depends only on M1 and M2, both complete, so it is
-buildable now, while L2 is blocked behind the transfer machinery of M3/M4.
-L3 depends only on L1 and is buildable before L2; it is numbered after L2 only because it was planned later.
+buildable now. L2 was replaced on 2026-09-16 by the Team track (section 3b).
+L3 depends only on L1.
 
 ### L1: Live Personal Telegram Control
 
@@ -312,19 +249,11 @@ operator's own phone; a button tap there performs Save answer and, separately,
 Answer and resume, evidenced by an actual local run. A fixture does not satisfy
 this milestone.
 
-### L2: Live Group Telegram Surface
+### L2: replaced on 2026-09-16
 
-Scope: the shared group/topic surface for teammate work: offer visibility,
-receiver Accept/Decline rendering and shared status in a project topic.
-
-Entry criteria: L1 complete, plus M3 and M4, since there is no assignment to
-render and no receiver to accept until packages and claims exist.
-
-Gates: G01, G02, G03 and G04 all apply here in full.
-
-Definition of done: an offer published by M3/M4 machinery is visible in the team
-topic and a named receiver's acceptance starts exactly one linked task on their
-own workstation. Not startable until its entry criteria are met.
+The live group surface is no longer an offer board rendered by two bots in a
+project topic. It is the item thread of section 3b (TM2 and TM3), and it ships
+with those slices rather than as a separate live milestone.
 
 ### L3: Personal Telegram Surface
 
@@ -462,6 +391,113 @@ Plan these after L3 is done, in this order:
 4. Handoff brief version 2 with an optional `options` field (label and consequence per option), so cards can show choices and their consequences; needs handoff prompt changes.
 
 LLM free chat was considered and dropped on 2026-09-14: the operator's need ("what's running?") is answered deterministically by section 9 commands without quota or invented answers.
+
+## 3b. Team track (TM)
+
+Planned 2026-09-16, from [teammate-design.md](teammate-design.md), which is the
+design of record and the only place the reasoning lives. This section says what
+gets built, in what order, and what proves it.
+
+Scope: RTC-09 through RTC-15, rebuilt on one bot per person, item threads on an
+anchor in one shared group, and handover on an ordinary Git branch.
+Replaces M3, M4, M5 and L2.
+
+Exclusions, deliberate: forum topics (C0 blocks them), a third team member,
+further handoff beyond a return to the requester, remote Stop across
+workstations, package signing and device keys, and any hosted relay.
+
+Gates: TM0 to TM3 need none, because nothing runs on another person's
+workstation or subscription without that person's own workstation applying it
+(D16). TM4 needs the G01 record and G02 as revised in the design; G03 applies to
+the control record; G04 is jd's one-time governance note.
+
+#### Code facts this track is built on (checked 2026-09-16)
+
+- The bot record id is `telegram-<numeric bot id>`, so two people's bots are
+  distinct records everywhere and `telegram_inbox(bot_id, update_id)` needs no
+  change.
+- The token is read from `TELEGRAM_BOT_TOKEN` at boot and needs a restart, which
+  is exactly how each person sets up their own bot. No reloadable credential is
+  needed.
+- `telegram_thread` (migration 23) already holds subjects, the anchor and the
+  ANCHOR_GONE recovery; item threads add a subject kind and reuse the rest.
+- `task_control_actor` is unique on `(transport, transport_user_id, chat_id,
+  topic_id)`, and SQLite treats NULLs as distinct, so group actors need a
+  sentinel `topic_id`.
+- `task_control_action.action` has a CHECK constraint, so widening it rebuilds
+  the table; the latest migration is 23, so this track's is 24.
+- `handleMessage` answers "That message is not a task question" to any reply it
+  cannot match, which must be suppressed in the team group.
+- `notifyWaitingTasks` posts to every enrolled actor, so group actors must never
+  be enrolled for personal notifications.
+
+#### Slices, in build order
+
+| Slice | Builds | Proven by | Done when |
+| --- | --- | --- | --- |
+| TM0 Harness | Two environments on offset ports sharing one fake Telegram with two bots and one bare repository; group membership and admin rights, invite links, privacy-mode delivery rules, `network.cutGit()` per environment. | Harness self-tests; LT-1 and LG-1 recorded first, because both decide behaviour the fake must copy. | Any team scenario can be written, and the fake's delivery rules match LT-1. |
+| TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, group actors with the sentinel topic, the one manual "ask jd to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4; TM-T1-1; then LT-3. | Two people, two bots and one group exist, with jd's workstation offline for all but the last step. |
+| TM2 Item threads | Team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor discussion dropped, no "not a task question" in the group. | TM-T0-1; TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
+| TM3 Grants | Migration 24 (action check widened by table rebuild, group actor sentinel, `item_grant`, `item_link`), grant and revoke cards, the access message, `/context`, `/answer`, `/resume`, teammate removal. | TM-T0-2, TM-T0-5; TM-T1-4, TM-T1-5; then LT-4. | R-B is usable by two people on real phones. This is the first release point. |
+| TM4 Handover | Snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, worktree run, requirement questions across workstations, return, and apply by ordinary merge. Two commits: capture through run, then return and apply. | TM-T0-6, TM-T0-7; TM-T1-H1 to TM-T1-H3; LT-5 optional. | R-A works end to end with the fake agent, behind the handover capability until the G01 record exists. |
+
+#### Tests, the crucial set
+
+T0, seven scenarios, each table-driven rather than split per case:
+
+| ID | Proves |
+| --- | --- |
+| TM-T0-1 | Group routing rules: owner answers, other silent, addressed-to-another ignored, unknown item answered once by the typer's workstation, anchor discussion reply dropped, hint never produced. |
+| TM-T0-2 | Grant matrix: every command and action against owner, other person with and without each capability, revoked, stranger, and after a handover starts. |
+| TM-T0-3 | Join code: encode, decode, expiry, tampering, wrong team, reused invite id. |
+| TM-T0-4 | Shared record compare-and-swap, roster and control: concurrent writers, uncertain push found by command id, loser re-validates and stays lost. |
+| TM-T0-5 | Migration 24 from 23, including the action table rebuild and the group actor sentinel; pre-upgrade cards still answer and resume exactly once. |
+| TM-T0-6 | Snapshot capture: HEAD, index and worktree untouched, untracked included, ignored excluded, escaping symlink and submodule refused. |
+| TM-T0-7 | Apply: clean merge completes once, conflict leaves Git's own conflict state and does not complete, second apply returns the first receipt. |
+
+The `team` summary audience and the item subject in the thread registry are new
+cases in the existing summary and registry test files, not new scenarios.
+
+T1, seven for R-B plus three for handover, all on two environments:
+
+| ID | Given, when, then |
+| --- | --- |
+| TM-T1-1 | Yousef joins with jd-laptop stopped: roster gains their person, bot and workstation, the manual bot-add step is shown, both panels agree. |
+| TM-T1-2 | Team enabled on both: each person's private-chat question and tap work on their own machine, and neither inbox ever holds the other's private-chat update. |
+| TM-T1-3 | Group routing live: a command on an anchor is answered once by the owner, an unknown item gets one error from the typer's workstation, a discussion reply gets nothing, a non-roster member gets nothing. |
+| TM-T1-4 | jd grants answer and resume; Yousef answers and resumes: exactly one run on jd-laptop, and the card names jd's allowance. |
+| TM-T1-5 | Revoke while Yousef's card is open, and a tap after the action expired with jd-laptop stopped in between: both rejected, no run, card reissued. |
+| TM-T1-6 | Thread lifecycle: anchor pinned at start, updated and unpinned at completion, grants end, old buttons rejected, reopen posts a new anchor. |
+| TM-T1-7 | Yousef starts a thread on jd's item: request card only, anchor after jd confirms, nothing shared before that. |
+| TM-T1-H1 | Full handover with the fake agent: publish, accept, worktree run, a requirement question answered while jd-laptop is stopped, return, apply, task complete. |
+| TM-T1-H2 | Receiver offline at publish accepts on return, and a withdraw racing an accept leaves exactly one winner and no orphan run. |
+| TM-T1-H3 | jd's tree diverged: apply refuses to complete, leaves Git's conflict state, and a second apply returns the first receipt. |
+
+Real checks, four plus one optional, recorded as H-TM rows in
+[human-verification.md](human-verification.md): LT-1 two bots in a group
+(before TM0), LG-1 repository refs (before TM1), LT-3 join by stopwatch (after
+TM1), LT-4 thread and grant on both phones (after TM3), LT-5 handover smoke
+(optional, after TM4). Their steps and pass criteria are in the design, section
+8.4.
+
+Burn-in is 3 repeats, the project default. Each slice keeps the existing rules:
+test-design pass first, coverage matrix gate, default-off, committed with its
+tests and an `implementation.md` entry.
+
+#### Rollback and regression
+
+`team.enabled` is off by default and every slice ships behind it. Migration 24 is
+additive apart from the `task_control_action` rebuild, which preserves rows and
+indexes. TM2 and TM3 touch the outbox, actor lookup and thread registry that L1
+and L3 exercise, so the full T1 suite must pass again after each of them; the
+harness makes that automatic rather than a manual repeat.
+
+#### Definition of done
+
+R-B is done when two people, on two machines, can discuss an item and use granted
+commands from their phones, with LT-4 recorded. R-A is done when a task moves to
+the other person's workstation, runs there, returns and applies once, with the
+G01 record in `implementation.md`.
 
 ## 4. Critical path and feasibility experiments
 
@@ -658,73 +694,37 @@ tracker), and a final "publish a release report" step duplicating
     Required evidence: the L3 definition of done observed through a T3 harness run plus the operator's phone look check, plus H-L3 rows in `human-verification.md`.
     Queued follow-ups (status and Stop, Ask the agent, starting from the phone, brief version 2) are planned only after this step.
 
-8. Run feasibility experiments for G01-G03.
-   Record provider delegation/billing facts, provider/runtime secret-isolation
-   facts and Git protected-ref/signing facts. If evidence is missing, keep the
-   affected production capability disabled and continue development only with
-   fixtures where useful.
+8. Build the Team track of section 3b.
+   Record LT-1 (two bots in a group) and LG-1 (repository refs) first, because
+   both decide behaviour the fake must copy. Then build TM0 to TM3 in order,
+   each with its test-design pass, its crucial scenarios and its
+   `implementation.md` entry, and run the full T1 suite again after TM2 and
+   TM3. Required evidence: the section 3b scenarios for those slices, LT-3 after
+   TM1 and LT-4 after TM3. R-B can then be enabled; no gate applies.
 
-9. Implement M3 package and shared-control storage.
-   Build factual checkpoint preview, manifest hashing, unsupported artifact
-   rejection, administrative Git checkout, signed control history and
-   fast-forward conflict handling. Exclude receiver execution.
+9. Record G01 for handover, then build TM4.
+   jd records whether a teammate running a handed-over task on their own login
+   and subscription, after personally accepting it, counts as ordinary use.
+   TM4 may be built behind the disabled handover capability before that record
+   exists, but handover is enabled only after it. Required evidence: TM-T0-6,
+   TM-T0-7 and TM-T1-H1 to H3, with LT-5 optional.
 
-10. Verify and review M3.
-    Required evidence: stable worktree/index capture, staged/unstaged/binary
-    coverage, path traversal and escaping symlink rejection, hook/filter safety,
-    partial upload handling, push conflict handling, rewritten history rejection
-    and unsupported schema refusal.
+10. Numbers 10 to 17 of the earlier plan (M3, M4, L2 and M5 with their G03,
+    G01 and G02 steps) are replaced by steps 8 and 9 on 2026-09-16; see the
+    repository history at commit cb74fce for their text.
 
-11. Obtain production decision for G03 before enabling cross-workstation offers.
-    The selected Git host must protect control refs from force updates/deletion
-    and support the chosen signing verification process. Without this, M3 remains
-    a local/fixture capability.
-
-12. Implement M4 named teammate claim with fake providers first.
-    Add offer discovery, receiver bot Accept/Decline, local policy comparison,
-    grantable delta prompts, hard-deny handling, isolated receiver checkout and
-    one linked receiver-local run.
-
-13. Verify and review M4.
-    Required evidence: two isolated installations publish/discover/accept/start
-    one task, only the named receiver can claim, busy receiver queues and
-    revalidates, permission deltas are local to executor, and unknown enforcement
-    blocks start.
-
-14. Implement L2 live group Telegram surface.
-    Render offers, Accept/Decline and shared status in the team topic against the
-    real Bot API built in L1. Blocked until steps 12-13 exist, since there is no
-    assignment to render before then.
-
-15. Resolve G01 and G02 before enabling production teammate execution.
-    Provider-supported subscription delegation and tested credential isolation
-    are release blockers. Do not use API billing, owner consent alone, shared
-    credentials or warning-only sandboxing as substitutes.
-
-16. Implement M5 shared questions and return/apply.
-    Add executor-bot mid-run questions, requester answers while source is
-    offline, result publication, Review and apply, apply intent, manifest
-    reconciliation, crash recovery, cancellation and further handoff epochs.
-
-17. Verify and review M5.
-    Required evidence: offline requester answer resumes once, returned work is
-    labelled full/partial/error accurately, apply refuses divergence, repeated
-    apply is idempotent, crash-mid-apply does not advance the pipeline
-    prematurely, and further handoff preserves task identity and decision
-    ownership.
-
-18. Complete M6 durability and release checks.
+11. Complete M6 durability and release checks.
     Add an exercised database backup/restore path, per-migration rollback notes,
     and CI running the existing typecheck/lint/test commands.
 
-19. Obtain G04 governance approval. Team/enterprise scope only.
+12. Obtain G04 governance approval. Team/enterprise scope only.
     Record team-approved Telegram audience, repository/storage location,
     retention/deletion expectations and operational owners before claiming an
     enterprise or team production release. Per D16 this does not gate L1
     personal control, which needs only its operator's own setup decision.
 
-20. Run release verification for the enabled subset.
-    Execute the relevant T01-T36 acceptance scenarios, the required
+13. Run release verification for the enabled subset.
+    Execute the relevant T01-T36 acceptance scenarios not replaced by section 3b, the section 3b team scenarios, the required
     type/lint/test checks, browser checks for changed UI and any explicitly
     authorized live smoke tests. Record exact commands, the fixture/live
     distinction and outcomes in `implementation.md`.
