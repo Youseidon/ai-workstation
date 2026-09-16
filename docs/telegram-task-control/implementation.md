@@ -482,7 +482,17 @@ RTC-20 still requires live Save answer then Resume with saved answer, and the of
 Known gaps:
 
 - With Host access off, Claude saved-task runs are instructed to `curl` their context, which `acceptEdits` refuses; this predates L1.
-- Telegram-originated answers are not labelled as such in the task timeline.
+- FIXED 2026-09-16: Telegram-originated answers are labelled in the task timeline.
+  Applied task-control receipts are now exposed on human-response remarks as `source: "telegram"`; ordinary local/browser human responses remain `source: "local"` and keep the `USER · HUMAN_RESPONSE` label.
+  The task activity UI renders Telegram-sourced human responses as `Telegram · HUMAN_RESPONSE`.
+  Evidence:
+  - `npx -y npm@11 install` completed: added 496 packages, audited 501 packages, 0 vulnerabilities.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-l1d1-human-input-final node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/telegramAdapter.test.ts` passed: 2 tests, 2 pass, 0 fail.
+  - `npm exec --workspace web -- node --import tsx --test components/recovery.test.tsx` passed: 1 test, 1 pass, 0 fail.
+  - `npm run typecheck --workspace shared` passed.
+  - `npm run typecheck --workspace server` passed.
+  - `npm run typecheck --workspace web` passed.
+  - `npm run lint --workspace web` passed with 0 errors and 5 pre-existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
 - The bot token in `.env` is readable by any process running as the same user; this is the G02 isolation limit and is not addressed by L1.
 
 Rollback/default-off behavior:

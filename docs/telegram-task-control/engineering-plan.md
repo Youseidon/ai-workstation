@@ -663,7 +663,7 @@ tracker), and a final "publish a release report" step duplicating
       - `zod` is currently only a transitive dependency; add it to `server/package.json` explicitly.
       - Other providers keep the HTTP Progress API or the inline path, unchanged.
       - Scenario table (product-facing, operator skims): Claude execute run on the tool path reaches DONE, reaches BLOCKED with a blocker remark that produces a phone card, a consult run is refused on `post_remark`, an expired run credential is refused, and the inline path for sandboxed providers is unchanged.
-    - Answers submitted from Telegram are not labelled as coming from Telegram in the task timeline, although receipts record the link.
+    - FIXED 2026-09-16 (implementation.md L1D1): Answers submitted from Telegram are labelled in the task timeline from their applied task-control receipt; local/browser answers remain local `USER` responses.
     - The task-control capability badge reports "Telegram configured" from settings alone, even when no token is loaded; the Live Telegram panel shows the true state.
     - FIXED 2026-09-16 (implementation.md L1D2). The Agents header sometimes renders "-0 AVAILABLE" at page load; `CountUp` now normalizes JavaScript negative zero at its display boundary while preserving meaningful negative numbers.
     - `npm run dev` stopped reloading on source changes after repeated restarts in one session; confirm whether this is reproducible.
