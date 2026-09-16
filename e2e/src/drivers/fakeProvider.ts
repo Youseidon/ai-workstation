@@ -20,6 +20,8 @@ export interface FakeScenario {
   remarkKind?: "BLOCKER" | "DECISION_NEEDED" | "PROGRESS";
   malformedStatus?: boolean;
   text?: string;
+  /** Live path, blocking scenarios: the options reported with the BLOCKED status (L3 A2). */
+  options?: Array<{ label: string; advantages?: string[]; disadvantages?: string[] }>;
 }
 
 export interface FakeLogEntry {

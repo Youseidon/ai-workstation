@@ -691,6 +691,13 @@ export interface ProgramGate {
   sortOrder: number;
 }
 
+/**
+ * One choice an agent offers with its terminal BLOCKED status (L3 slice A2, RTC-22).
+ * Options are reported by the agent, never generated while a card is rendered, and
+ * they belong to that blocking status: a later block replaces them.
+ */
+export interface AgentStatusOption { label: string; advantages: string[]; disadvantages: string[] }
+
 export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
 export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
 export interface PromptStatusEvent { id:number; promptId:number; runId:string|null; previousStatus:PromptStatus; newStatus:PromptStatus; reason:string; verificationSummary:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }

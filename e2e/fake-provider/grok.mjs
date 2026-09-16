@@ -168,6 +168,8 @@ async function run() {
     status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Completed", verificationSummary: scenario.verificationSummary ?? "Fake agent verified its work." };
   } else {
     status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: scenario.reason ?? "The task needs an owner decision the agent cannot make.", verificationSummary: scenario.humanAction ?? "Choose which option to ship." };
+    // L3 A2: options are reported by the agent with its blocking status, never generated later.
+    if (scenario.options) status.options = scenario.options;
   }
 
   if (live) {

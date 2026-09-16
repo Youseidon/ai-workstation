@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type StartUnknownClassification, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type AgentStatusOption, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type StartUnknownClassification, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -570,6 +570,13 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(21,?)").run(new Date().toISOString());
   }
+  if (pending(22)) {
+    // L3 A2 (RTC-22): the options an agent offered with one BLOCKED status. They
+    // belong to that status event, not to the task, so a later block replaces
+    // them and a stale list can never reach a later question.
+    db.exec(`ALTER TABLE prompt_status_event ADD COLUMN options_json TEXT;`);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(22,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -826,6 +833,31 @@ const agentRemarkTransaction=db.transaction((runId:string,input:Record<string,un
   const now=new Date().toISOString();const id=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?, 'AGENT',?)").run(run.prompt_id,runId,kind,content,now).lastInsertRowid);return{id,promptId:run.prompt_id,runId,kind,content,actorType:"AGENT",createdAt:now};
 }));
 
+/*
+ * Options an agent offers with a BLOCKED status (L3 A2, RTC-22). Optional: a status
+ * without them is unchanged. Bounds here are generous because the phone card, not the
+ * record, decides what fits; an option whose label is empty is dropped rather than
+ * stored, so every stored option can be rendered.
+ */
+const MAX_STORED_OPTIONS=20;
+const MAX_STORED_TRADE_OFFS=10;
+function statusOptions(value:unknown):AgentStatusOption[]|null {
+  if(value===undefined||value===null)return null;
+  if(!Array.isArray(value))throw new WorkspaceError(422,"validation_error","options must be an array of {label, advantages, disadvantages}",{options:"Required"});
+  if(value.length>MAX_STORED_OPTIONS)throw new WorkspaceError(422,"validation_error","Too many options",{options:`Maximum ${MAX_STORED_OPTIONS} options`});
+  const tradeOffs=(items:unknown,field:string):string[]=>{
+    if(items===undefined||items===null)return [];
+    if(!Array.isArray(items))throw new WorkspaceError(422,"validation_error",`${field} must be an array of strings`,{[field]:"Required"});
+    if(items.length>MAX_STORED_TRADE_OFFS)throw new WorkspaceError(422,"validation_error",`Too many ${field}`,{[field]:`Maximum ${MAX_STORED_TRADE_OFFS} entries`});
+    return items.map(item=>requireText(item,field,20000,true)).filter(item=>item!=="");
+  };
+  const options=value.map(entry=>{
+    const item=entry!==null&&typeof entry==="object"?entry as Record<string,unknown>:{};
+    return {label:requireText(item.label??"","label",20000,true),advantages:tradeOffs(item.advantages,"advantages"),disadvantages:tradeOffs(item.disadvantages,"disadvantages")};
+  }).filter(option=>option.label!=="");
+  return options.length>0?options:null;
+}
+
 const agentStatusTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"status",()=>{
   const run=requireActiveExecuteRun(runId);
   const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};const expected=input.expectedStatus;const target=input.status;
@@ -835,10 +867,11 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   if(target==="DONE"&&verification==="")throw new WorkspaceError(422,"validation_error","DONE requires a verification summary");
   if(target==="BLOCKED"&&reason==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires an evidence-based reason");
   if(target==="BLOCKED"&&verification==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires verificationSummary to state the exact action only the human can take");
+  const options=target==="BLOCKED"?statusOptions(input.options):null;
   const now=new Date().toISOString();const result=target==="DONE"?verification:`${reason}\n\nRequired human action: ${verification}`;db.prepare("UPDATE prompt SET status=?,result=?,completed_at=?,updated_at=? WHERE id=?").run(target,result,target==="DONE"?now:null,now,run.prompt_id);
-  const eventId=Number(db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,?,?,?,?,'AGENT',?)").run(run.prompt_id,runId,prompt.status,target,reason,verification,now).lastInsertRowid);
+  const eventId=Number(db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at,options_json) VALUES(?,?,?,?,?,?,'AGENT',?,?)").run(run.prompt_id,runId,prompt.status,target,reason,verification,now,options===null?null:JSON.stringify(options)).lastInsertRowid);
   db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?, 'AGENT',?)").run(run.prompt_id,runId,target==="DONE"?"COMPLETION":"BLOCKER",result,now);
-  return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:target,result,createdAt:now};
+  return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:target,result,createdAt:now,options:options??[]};
 }));
 
 const importProgramTransaction = db.transaction((workspaceId: number, pack: ImportedProgram): number => {
@@ -2075,6 +2108,20 @@ export const workspaces = {
   },
   handoffById(id:string):HandoffRecord|null { const row=db.prepare("SELECT * FROM handoff WHERE id=?").get(id) as Record<string,unknown>|undefined;return row?handoffDto(row):null; },
   handoffsForPrompt(promptId:number):HandoffRecord[] { return (db.prepare("SELECT * FROM handoff WHERE prompt_id=? ORDER BY created_at DESC").all(promptId) as Record<string,unknown>[]).map(handoffDto); },
+  /**
+   * The status event that blocked this task, with the options the agent offered
+   * with it (L3 A2). Null unless the task is BLOCKED right now, so options and the
+   * "blocked N ago" age can never survive into a later question.
+   */
+  blockingStatus(promptId:number):{createdAt:string;options:AgentStatusOption[]}|null {
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+    if(prompt?.status!=="BLOCKED")return null;
+    const row=db.prepare("SELECT created_at createdAt,options_json optionsJson FROM prompt_status_event WHERE prompt_id=? AND new_status='BLOCKED' ORDER BY id DESC LIMIT 1").get(promptId) as {createdAt:string;optionsJson:string|null}|undefined;
+    if(!row)return null;
+    let options:AgentStatusOption[]=[];
+    try{const parsed=row.optionsJson===null?[]:JSON.parse(row.optionsJson) as unknown;if(Array.isArray(parsed))options=parsed as AgentStatusOption[];}catch{options=[];}
+    return {createdAt:row.createdAt,options};
+  },
   latestReadyHandoffMarkdown(promptId:number):string { return (db.prepare("SELECT brief_markdown text FROM handoff WHERE prompt_id=? AND state='READY' ORDER BY created_at DESC LIMIT 1").get(promptId) as {text:string}|undefined)?.text??""; },
   updateHandoff(id:string,patch:{handoffRunId?:string|null;successorRunId?:string|null;state?:HandoffRecord["state"];recommendation?:HandoffRecommendation|null;brief?:HandoffBrief|null;briefMarkdown?:string;error?:string|null;completedAt?:string|null}):HandoffRecord {
     const current=this.handoffById(id);if(!current)throw new WorkspaceError(404,"not_found","Handoff not found");

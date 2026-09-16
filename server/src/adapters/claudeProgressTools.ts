@@ -18,6 +18,13 @@ const REQUEST_ID = z
 
 const REMARK_KINDS = ["PROGRESS", "FINDING", "DECISION_NEEDED", "BLOCKER", "VERIFICATION", "COMPLETION"] as const;
 
+/** One choice offered with a BLOCKED status (L3 A2): the phone shows the trade-offs the agent weighed. */
+const OPTION = z.object({
+  label: z.string().min(1).max(20000).describe("What this choice is, in a few words."),
+  advantages: z.array(z.string().max(20000)).max(10).optional().describe("Why this choice is good; one short sentence each."),
+  disadvantages: z.array(z.string().max(20000)).max(10).optional().describe("What it costs or risks; one short sentence each."),
+});
+
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 function ok(value: unknown): ToolResult {
@@ -66,6 +73,11 @@ export function claudeProgressToolDefinitions(tools: AgentProgressTools) {
         status: z.enum(["DONE", "BLOCKED"]),
         reason: z.string().max(10000).describe("For BLOCKED: observed evidence showing why execution cannot continue."),
         verificationSummary: z.string().max(20000).describe("For DONE: commands run and observable results. For BLOCKED: the exact action only the human can take."),
+        options: z
+          .array(OPTION)
+          .max(20)
+          .optional()
+          .describe("BLOCKED only: the choices you considered, so the human can decide from the question card. Only trade-offs you actually weighed; leave it out if there are none."),
       },
       async (args) => guarded(() => tools.postStatus(args)),
     ),
