@@ -33,6 +33,17 @@ const threads = (harness: L1Context["harness"], kind: string, subjectId?: string
 const sentMessageId = (harness: L1Context["harness"], outboxId: number) =>
   harness.query<{ sent: string | null }>("SELECT sent_message_id sent FROM telegram_outbox WHERE id = ?", outboxId)[0]?.sent ?? null;
 
+/**
+ * The bot and the user client number the same message differently on real Telegram: a Bot API
+ * message id belongs to the bot's view of the chat, and the client's id to the account's. Only the
+ * fake gives both the same number, so the registry is checked against the Bot API calls, which are
+ * in the bot's space, while the phone's own assertions stay in the client's.
+ */
+const lastReplyTarget = (harness: L1Context["harness"]) => {
+  const calls = harness.telegramCalls().filter((call) => call.method === "sendMessage" && call.body.reply_to_message_id !== undefined);
+  return calls.length === 0 ? null : String(calls.at(-1)!.body.reply_to_message_id);
+};
+
 /** S-L3-C1-10: a task's messages carry its tag and reply to its card, and the card is never overwritten. */
 export async function taskThreadOnThePhone(ctx: L1Context): Promise<void> {
   const { harness, phone } = ctx;
@@ -57,7 +68,10 @@ export async function taskThreadOnThePhone(ctx: L1Context): Promise<void> {
   expect(registry).toHaveLength(1);
   expect(registry[0]!.topic_id).toBeNull();
   expect(registry[0]!.state).toBe("ACTIVE");
-  expect(sentMessageId(harness, registry[0]!.status_message_id!)).toBe(String(card.id));
+  const anchorSent = sentMessageId(harness, registry[0]!.status_message_id!);
+  expect(anchorSent).not.toBeNull();
+  // The registry's anchor is the message the replies were actually addressed to.
+  expect(lastReplyTarget(harness)).toBe(anchorSent);
 
   // Everything behind the card is exactly S-L1-05.
   await waitForPromptStatus(task, "DONE");
