@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OperationsPrompt, OperationsSuite, PromptOption } from "@agent-console/shared";
 import { ContextPicker, promptState } from "./ContextPicker";
-import { WorkItemDetail } from "./tasks/WorkItemDetail";
+import { activityRemarkLabel, WorkItemDetail } from "./tasks/WorkItemDetail";
 
 function prompt(overrides: Partial<PromptOption> = {}): PromptOption {
   return {
@@ -171,4 +171,27 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
   assert.match(html, /Mark no spawn/);
   assert.doesNotMatch(html, /Recover and resume|blind release|release ownership/i);
   assert.match(html, /flex-wrap/);
+});
+
+test("task activity labels Telegram-originated human responses distinctly", () => {
+  assert.equal(activityRemarkLabel({
+    id: 1,
+    promptId: 1,
+    runId: null,
+    kind: "HUMAN_RESPONSE",
+    content: "Use directory.example",
+    actorType: "USER",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    source: "telegram",
+  }), "Telegram · HUMAN_RESPONSE");
+  assert.equal(activityRemarkLabel({
+    id: 2,
+    promptId: 1,
+    runId: null,
+    kind: "HUMAN_RESPONSE",
+    content: "Local answer",
+    actorType: "USER",
+    createdAt: "2026-09-16T00:01:00.000Z",
+    source: "local",
+  }), "USER · HUMAN_RESPONSE");
 });

@@ -5,6 +5,8 @@ import { startExecute } from "./runService.ts";
 import { runHub } from "./runHub.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
+type HumanResponseSource = "local" | "telegram";
+
 export interface HumanResponseResult {
   responseId: number;
   started: boolean;
@@ -15,25 +17,25 @@ export interface HumanResponseResult {
 
 // Serialize double clicks and retries for a task, including the save/start boundary.
 const pending = new Map<number, Promise<unknown>>();
-export async function respondAndContinue(promptId: number, input: Record<string, unknown>): Promise<HumanResponseResult> {
-  return serialize(promptId, input, true);
+export async function respondAndContinue(promptId: number, input: Record<string, unknown>, options: { source?: HumanResponseSource } = {}): Promise<HumanResponseResult> {
+  return serialize(promptId, input, true, options.source ?? "local");
 }
 
-export async function saveHumanResponse(promptId: number, input: Record<string, unknown>): Promise<HumanResponseResult> {
+export async function saveHumanResponse(promptId: number, input: Record<string, unknown>, options: { source?: HumanResponseSource } = {}): Promise<HumanResponseResult> {
   if (input.expectedRevision === undefined) throw new WorkspaceError(422, "revision_required", "Review the current question before saving.");
   if (input.responseId !== undefined) throw new WorkspaceError(422, "validation_error", "Save requires answer content, not a resume reference.");
-  return serialize(promptId, input, false);
+  return serialize(promptId, input, false, options.source ?? "local");
 }
 
-async function serialize(promptId: number, input: Record<string, unknown>, resume: boolean): Promise<HumanResponseResult> {
+async function serialize(promptId: number, input: Record<string, unknown>, resume: boolean, source: HumanResponseSource): Promise<HumanResponseResult> {
   const previous = pending.get(promptId) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(() => submit(promptId, input, resume));
+  const next = previous.catch(() => undefined).then(() => submit(promptId, input, resume, source));
   pending.set(promptId, next);
   try { return await next; }
   finally { if (pending.get(promptId) === next) pending.delete(promptId); }
 }
 
-async function submit(promptId: number, input: Record<string, unknown>, resume: boolean): Promise<HumanResponseResult> {
+async function submit(promptId: number, input: Record<string, unknown>, resume: boolean, source: HumanResponseSource): Promise<HumanResponseResult> {
   if (resume && !isProviderId(input.provider)) throw new WorkspaceError(422, "provider_required", "Choose an agent to continue.");
   if (input.model !== undefined && input.model !== null && typeof input.model !== "string") throw new WorkspaceError(422, "validation_error", "Model must be a string.");
   workspaces.assertHumanInputRevision(promptId, input.expectedRevision);
@@ -51,7 +53,7 @@ async function submit(promptId: number, input: Record<string, unknown>, resume: 
     if (runHub.activeForWorkspace(activity.item.workspace.id) || activity.sessions.some(run => run.role === "execute" && ["STARTING", "RUNNING"].includes(run.state))) {
       throw new WorkspaceError(409, "prompt_run_active", "Wait for the running task to stop before answering.");
     }
-    response = workspaces.respondToBlockedPrompt(promptId, { content, hold: !resume, expectedRevision: input.expectedRevision });
+    response = workspaces.respondToBlockedPrompt(promptId, { content, hold: !resume, expectedRevision: input.expectedRevision }, { source });
   }
   if (!resume) workspaces.holdHumanResponse(promptId, response.id);
   const saved = { responseId: response.id, started: false, runId: null, revision: workspaces.humanInputState(promptId).revision };

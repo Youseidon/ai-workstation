@@ -14,6 +14,11 @@ type DetailTab = "overview" | "sessions" | "activity";
 
 type ActivityPayload = Awaited<ReturnType<typeof import("@/lib/workspacesApi").workspaceApi.activity>>;
 
+export function activityRemarkLabel(entry: ActivityPayload["remarks"][number]): string {
+  if (entry.kind === "HUMAN_RESPONSE" && entry.source === "telegram") return "Telegram · HUMAN_RESPONSE";
+  return `${entry.actorType} · ${entry.kind}`;
+}
+
 export function WorkItemDetail({
   suite,
   item,
@@ -70,7 +75,7 @@ export function WorkItemDetail({
       ...activity.remarks.map((entry) => ({
         id: `r${entry.id}`,
         at: entry.createdAt,
-        label: `${entry.actorType} · ${entry.kind}`,
+        label: activityRemarkLabel(entry),
         text: entry.content,
         tone:
           entry.kind === "BLOCKER" || entry.kind === "DECISION_NEEDED"

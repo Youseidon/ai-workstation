@@ -126,6 +126,8 @@ test("fake Telegram E2E posts a question, processes callbacks, and resumes once"
     assert.deepEqual(await adapter.pollOnce(), { fetched: 1, saved: 1, nextOffset: 101 });
     assert.deepEqual(await adapter.processPendingCallbacks(), { processed: 1, ignored: 0 });
     assert.notEqual(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
+    const savedResponse = workspaces.promptActivity(f.prompt.id).remarks.find(entry => entry.kind === "HUMAN_RESPONSE" && entry.content === "Use directory.example");
+    assert.equal(savedResponse?.source, "telegram");
 
     await refreshQuestion(f);
     const second = control.postPersonalQuestion(f.prompt.id, actor.id, { provider: "claude" });

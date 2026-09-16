@@ -212,8 +212,8 @@ export class TaskControlService {
 
     try {
       const result = action.action === "save_human_response"
-        ? await saveHumanResponse(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision })
-        : await respondAndContinue(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision, provider: action.provider, model: action.model });
+        ? await saveHumanResponse(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision }, { source: "telegram" })
+        : await respondAndContinue(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision, provider: action.provider, model: action.model }, { source: "telegram" });
       return workspaces.recordTaskControlReceipt({
         commandId: input.commandId,
         actionRef: action.ref,

@@ -699,7 +699,8 @@ export interface ProgramGate {
 export interface AgentStatusOption { label: string; advantages: string[]; disadvantages: string[] }
 
 export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
-export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
+export type PromptRemarkSource = "local" | "telegram";
+export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string; source?:PromptRemarkSource }
 export interface PromptStatusEvent { id:number; promptId:number; runId:string|null; previousStatus:PromptStatus; newStatus:PromptStatus; reason:string; verificationSummary:string; actorType:"IMPORT"|"SYSTEM"|"AGENT"|"USER"; createdAt:string }
 
 export interface HumanInputRequest {

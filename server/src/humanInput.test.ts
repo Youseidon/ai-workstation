@@ -119,6 +119,7 @@ test("save-only needs no provider and durably blocks task starts until explicit 
     assert.equal(saved.runId, null);
     const activity = workspaces.promptActivity(f.prompt.id);
     assert.equal(activity.humanInput.savedResponseId, saved.responseId);
+    assert.equal(activity.remarks.find(entry => entry.id === saved.responseId)?.source, "local");
     assert.equal(activity.item.prompt.humanResponseHeld, true);
     assert.equal(activity.item.prompt.ready, false);
     assert.equal(activity.item.operationalState, "AWAITING_RESPONSE");
