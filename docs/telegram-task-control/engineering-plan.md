@@ -410,15 +410,24 @@ Revisit when the bot becomes eligible for topics in private chats, or when a rea
 Against the harness test bot (never the operator's own bot), before any C1/C2 code: the operator enables topics for the chat; the rest is scripted with the harness's real-Telegram backend: call `createForumTopic` in the private chat, send with `message_thread_id`, edit and close a topic, delete a topic, reply from the user client inside a topic, and record the exact update fields received.
 The recorded responses become contract fixtures for the fake Telegram server's topic support.
 Record the result in `implementation.md`.
-If private-chat topics are unsupported, the design already names the fallback (user-flows section 1): a private group containing only the operator and the bot, with topics. Do not fall back to one flat multi-task chat.
+If private-chat topics are unsupported, the design named a fallback (user-flows section 1): a private group containing only the operator and the bot, with topics.
+Both are unavailable as of 2026-09-16, so C1 organises the flat chat instead, as described below. That is a deliberate replacement, not the silent drift into one undifferentiated chat the original wording warned against.
 
-**C1: thread registry (RTC-25).**
+**C1: thread registry and a chat organised without topics (RTC-25). Approved by the operator 2026-09-16.**
 Add a migration for `telegram_thread(bot_id, chat_id, subject_kind, subject_id, topic_id, status_message_id, state, created_at, updated_at)`.
 `subject_kind` is `task` or `workstation` now; `pipeline` and L2 kinds can be added later.
 Every enqueue resolves its destination through `threadFor(subject)` instead of choosing a topic.
-Until C2 is enabled, every subject resolves to the paired chat with no topic, which is exactly L1 behaviour; the Live Telegram panel reports "topics not set up".
+With topics unavailable, every subject resolves to the paired chat with no topic, which is exactly L1 behaviour, and the Live Telegram panel reports "topics not available for this bot".
+Four additions then give the flat chat what a topic would have given it:
 
-**C2: per-task topics (RTC-26).**
+- **A task tag.** Every message about a task carries a tag built from its key, such as `#t142`, so tapping it filters the chat to that task. The tag must contain a letter: the recorded real-Telegram fixtures show `#123` is not a hashtag while `#a1` and `#tag_x` are (`e2e/src/telegramEntities.test.ts`). Telegram adds the entity itself, so no `parse_mode` and no markup.
+- **An anchor message per task.** The question card is the task's living status, edited in place through its lifecycle, which is what `status_message_id` already tracks. Nothing stacks.
+- **Replies instead of threads.** Every later message for a subject is sent with `reply_to_message_id` set to its anchor, so the phone shows the quote header and can jump back. Result and receipt messages stay separate replies rather than being folded into the anchor, so the record of what was decided is not overwritten by a later edit.
+- **A pinned control panel.** The workstation subject owns one `/status` view, edited in place and pinned once. Editing rather than resending avoids pin churn.
+
+Recovery: if the operator deletes an anchor, F1 already records the edit as failed once without retrying; the registry marks the anchor gone and the next message for that subject sends and registers a new one.
+
+**C2: per-task topics (RTC-26). Not built; needs the C0 recording first.**
 Create a task topic lazily, on that task's first phone message; name it with the task key and title, capped at 128 characters.
 A `create_thread` outbox operation precedes rows for that subject; those rows wait for the topic id and are held, not sent to General, if creation fails.
 Close the topic when the task reaches COMPLETE or SKIPPED; reopen it if the task becomes active again.
