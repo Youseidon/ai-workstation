@@ -425,7 +425,7 @@ the control record; G04 is jd's one-time governance note.
   topic_id)`, and SQLite treats NULLs as distinct, so group actors need a
   sentinel `topic_id`.
 - `task_control_action.action` has a CHECK constraint, so widening it rebuilds
-  the table; the latest migration is 23, so this track's is 24.
+  the table; the latest migration is 23, so this track uses 24, 25 and 26, one per slice.
 - `handleMessage` answers "That message is not a task question" to any reply it
   cannot match, which must be suppressed in the team group.
 - `notifyWaitingTasks` posts to every enrolled actor, so group actors must never
@@ -436,9 +436,9 @@ the control record; G04 is jd's one-time governance note.
 | Slice | Builds | Proven by | Done when |
 | --- | --- | --- | --- |
 | TM0 Harness | Two environments on offset ports sharing one fake Telegram with two bots and one bare repository; group membership and admin rights, invite links, privacy-mode delivery rules, `network.cutGit()` per environment. | Harness self-tests; LT-1 and LG-1 recorded first, because both decide behaviour the fake must copy. | Any team scenario can be written, and the fake's delivery rules match LT-1. |
-| TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, group actors with the sentinel topic, the one manual "ask jd to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4; TM-T1-1; then LT-3. | Two people, two bots and one group exist, with jd's workstation offline for all but the last step. |
-| TM2 Item threads | Team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor discussion dropped, no "not a task question" in the group. | TM-T0-1; TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
-| TM3 Grants | Migration 24 (action check widened by table rebuild, group actor sentinel, `item_grant`, `item_link`), grant and revoke cards, the access message, `/context`, `/answer`, `/resume`, teammate removal. | TM-T0-2, TM-T0-5; TM-T1-4, TM-T1-5; then LT-4. | R-B is usable by two people on real phones. This is the first release point. |
+| TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, migration 24 (`team_roster`, group actor sentinel and unique index), the one manual "ask jd to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4, TM-T0-5 (migration 24); TM-T1-1; then LT-3. | Two people, two bots and one group exist, with jd's workstation offline for all but the last step. |
+| TM2 Item threads | Migration 25 (`telegram_thread` rebuilt to allow `item`, `item_link`), team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor discussion dropped, no "not a task question" in the group. | TM-T0-1, TM-T0-5 (migration 25); TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
+| TM3 Grants | Migration 26 (action check widened by table rebuild, `item_grant`), grant and revoke cards, the access message, `/context`, `/answer`, `/resume`, teammate removal. | TM-T0-2, TM-T0-5 (migration 26); TM-T1-4, TM-T1-5; then LT-4. | R-B is usable by two people on real phones. This is the first release point. |
 | TM4 Handover | Snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, worktree run, requirement questions across workstations, return, and apply by ordinary merge. Two commits: capture through run, then return and apply. | TM-T0-6, TM-T0-7; TM-T1-H1 to TM-T1-H3; LT-5 optional. | R-A works end to end with the fake agent, behind the handover capability until the G01 record exists. |
 
 #### Tests, the crucial set
@@ -451,7 +451,7 @@ T0, seven scenarios, each table-driven rather than split per case:
 | TM-T0-2 | Grant matrix: every command and action against owner, other person with and without each capability, revoked, stranger, and after a handover starts. |
 | TM-T0-3 | Join code: encode, decode, expiry, tampering, wrong team, reused invite id. |
 | TM-T0-4 | Shared record compare-and-swap, roster and control: concurrent writers, uncertain push found by command id, loser re-validates and stays lost. |
-| TM-T0-5 | Migration 24 from 23, including the action table rebuild and the group actor sentinel; pre-upgrade cards still answer and resume exactly once. |
+| TM-T0-5 | Migrations 24, 25 and 26, each from its predecessor: both table rebuilds preserve rows and indexes, C1 threads are unchanged, the group actor index stops duplicates, and pre-upgrade cards still answer and resume exactly once. Each slice adds its own case. |
 | TM-T0-6 | Snapshot capture: HEAD, index and worktree untouched, untracked included, ignored excluded, escaping symlink and submodule refused. |
 | TM-T0-7 | Apply: clean merge completes once, conflict leaves Git's own conflict state and does not complete, second apply returns the first receipt. |
 
@@ -484,13 +484,26 @@ Burn-in is 3 repeats, the project default. Each slice keeps the existing rules:
 test-design pass first, coverage matrix gate, default-off, committed with its
 tests and an `implementation.md` entry.
 
+#### Execution
+
+The track is run by an orchestrator session following
+[team-track-dev-brief.md](team-track-dev-brief.md): 20 numbered tasks across TM0
+to TM3, each built by a fresh background worker agent in its own git worktree and
+branch, verified against the task's acceptance criteria, merged to main by
+fast-forward only and never pushed, with a tracker file as the only state carried
+between sessions. Harness tasks run one at a time because worktrees share the
+harness ports. An independent auditor agent checks discipline and re-verifies
+every acceptance criterion after task 10 (end of TM1), which must pass before TM2
+starts, and again after task 20.
+
 #### Rollback and regression
 
-`team.enabled` is off by default and every slice ships behind it. Migration 24 is
-additive apart from the `task_control_action` rebuild, which preserves rows and
-indexes. TM2 and TM3 touch the outbox, actor lookup and thread registry that L1
-and L3 exercise, so the full T1 suite must pass again after each of them; the
-harness makes that automatic rather than a manual repeat.
+`team.enabled` is off by default and every slice ships behind it. Each slice owns
+one migration (24 in TM1, 25 in TM2, 26 in TM3), so a slice rolls back on its own.
+Migrations 25 and 26 rebuild a table to widen a CHECK constraint and must
+preserve rows and indexes. TM2 and TM3 touch the outbox, actor lookup and thread
+registry that L1 and L3 exercise, so the full T1 suite must pass again after each
+of them; the harness makes that automatic rather than a manual repeat.
 
 #### Definition of done
 

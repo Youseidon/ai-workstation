@@ -167,7 +167,7 @@ New: add "The same rule holds for both people in an item thread. A slash command
 - `handleMessage` answers "That message is not a task question" to any reply it cannot match, which must not happen in the team group where the other person's bot may own the reply.
 - `notifyWaitingTasks` posts every waiting task to every enrolled actor, so a group actor must never be enrolled for personal notifications.
 - `taskSummary` accepts only the `owner` audience; a `team` audience is added, and it hides quota.
-- The latest migration is 23, so this design's migration is 24 unless another lands first.
+- The latest migration is 23, so this design uses 24, 25 and 26, one per slice, unless another lands first.
 
 ### 4.2 People, bots and the roster
 
@@ -321,16 +321,22 @@ The shape is settled:
 
 ## 6. Protocol and data additions
 
-Local migration 24, additive:
+Local migrations, one per slice, so each slice ships and rolls back on its own:
 
-- `task_control_action.action`: widen the check to add `resume_saved`, `grant`, `revoke`, `close_thread`, `publish_offer`, `accept_offer`, `decline_offer`, `withdraw_offer`, `return_work`, `apply_result`, `request_changes`; add `subject_kind` (`task` or `item`), `item_id` and `payload_json` for grant capabilities or offer epoch.
-- `telegram_thread.subject_kind`: add `item`; item threads reuse the existing anchor, pin and ANCHOR_GONE handling from C1.
-- `team_roster(person_id, workstation_id, workstation_code, label, telegram_user_id, bot_id, bot_username, is_self, schema_version)`: a local cache of `refs/aw/team`.
-- `item_grant(item_id, person_id, capability, granted_command_id, granted_at, revoked_command_id, revoked_at)` with a unique active row per item, person and capability.
-- `item_link(item_id PRIMARY KEY, prompt_id, role, epoch, control_head)`: the team-wide item id to the local task, as `requester` or `executor`. The item id is minted once by the starting workstation and is what group tags are built from.
-- `task_control_actor`: group actors carry a sentinel `topic_id` rather than NULL, because SQLite treats each NULL as distinct and the existing unique index would not stop duplicate group actor rows. Migration 24 adds the sentinel and a check that one group actor exists per roster person and chat.
+- **Migration 24 (TM1).**
+  `team_roster(person_id, workstation_id, workstation_code, label, telegram_user_id, bot_id, bot_username, is_self, schema_version)`, a local cache of `refs/aw/team`.
+  Group actors in `task_control_actor` carry a sentinel `topic_id` rather than NULL, because SQLite treats each NULL as distinct and the existing unique index would not stop duplicate group actor rows; the migration adds the sentinel convention and a unique index enforcing one group actor per roster person and chat.
+- **Migration 25 (TM2).**
+  `telegram_thread.subject_kind` gains `item`.
+  The column has a CHECK constraint, so the table is rebuilt with its indexes and rows, and C1's existing threads must be unchanged afterwards.
+  `item_link(item_id PRIMARY KEY, prompt_id, role, epoch, control_head)` maps the team-wide item id to the local task, as `requester` or `executor`; the item id is minted once by the starting workstation and is what group tags are built from.
+- **Migration 26 (TM3).**
+  `task_control_action.action` widens its check to add `resume_saved`, `grant`, `revoke` and `close_thread`, and gains `subject_kind` (`task` or `item`), `item_id` and `payload_json` for grant capabilities.
+  This is also a CHECK change, so the table is rebuilt with its indexes and rows.
+  `item_grant(item_id, person_id, capability, granted_command_id, granted_at, revoked_command_id, revoked_at)` with a unique active row per item, person and capability.
+- **Handover actions** (`publish_offer`, `accept_offer`, `decline_offer`, `withdraw_offer`, `return_work`, `apply_result`, `request_changes`) are added by TM4's own migration, not before.
 
-Widening the `task_control_action.action` check means SQLite must rebuild that table, since a CHECK constraint cannot be altered in place; migration 24 therefore recreates it with its indexes and copies the rows, and TM-T0-5 proves pre-upgrade cards still answer and resume exactly once afterwards.
+TM-T0-5 proves every one of these from its predecessor: rows and indexes preserved, C1 threads unchanged, and pre-upgrade cards still answering and resuming exactly once.
 
 Settings (Task Control group): `team.enabled` and the existing workstation label.
 
@@ -402,7 +408,7 @@ Release points: after TM3, item threads and grants can be enabled with no gate; 
    The proposal's 128-character topic name cap is gone with topics.
 3. G01 for handover: whether Yousef running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. Recorded before TM4 starts.
 4. Handover detail (section 5.4) is written when TM4 starts, not before.
-5. Migration number 24 assumes nothing else lands first.
+5. Migration numbers 24 to 26 assume nothing else lands first; the L1 defects that go first must be checked for a migration.
 6. Topics stay unavailable (C0). If a bot and group ever qualify, item threads can move onto real topics through the same registry seam, and this design does not need to change to allow it.
 7. LG-1 runs before TM1, not with handover: the one-winner claim depends on how the host treats a non-fast-forward push of the ref shape we choose, and the fallback to an ordinary branch is a different implementation, not a different setting.
 8. Handover is symmetric by construction, but only the jd to Yousef direction is in the scenario list. If the reverse ever matters, it needs its own row rather than an assumption.
