@@ -1067,6 +1067,12 @@ export interface TelegramLiveStatus {
   lastError: string | null;
   nextRetryAt: string | null;
   outbox: { queued: number; retrying: number; failed: number };
+  /**
+   * Whether this bot can put each task in its own topic (RTC-26). Telegram offers no
+   * topics to this bot today, so the chat is organised with tags, anchor messages,
+   * replies and one pinned control panel instead (L3 C1).
+   */
+  topics: { available: boolean; note: string };
   pairing: TelegramPairingState | null;
   actors: TelegramEnrolledActor[];
 }

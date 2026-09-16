@@ -7,9 +7,9 @@ import { createLogger, type Logger } from "../../lib/logger.ts";
 import { runHub } from "../../runHub.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
-import { taskSummary } from "../../telegramSummary.ts";
+import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
-import { WorkspaceError, workspaces } from "../../workspaces.ts";
+import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
 import { TelegramAdapter } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
@@ -59,6 +59,13 @@ interface PairingSession {
   challenge: string | null;
   observed: TelegramPairingState["observed"];
 }
+
+/**
+ * Topics are unavailable to this bot (C0, recorded 2026-09-16: BotFather offers no
+ * topics for it and a two-member group cannot become a forum), so C1 organises the
+ * flat chat instead. C2 turns this on once a real recording exists.
+ */
+const TELEGRAM_TOPICS = { available: false, note: "Topics are not available for this bot, so each task is kept together by its tag, its card and replies to it, with one pinned control panel." } as const;
 
 const AUTH_RETRY_MS = 5 * 60_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -150,6 +157,7 @@ export class TelegramLiveRuntime {
       lastError: this.lastError,
       nextRetryAt: this.nextRetryAt,
       outbox: botId === null ? { queued: 0, retrying: 0, failed: 0 } : workspaces.telegramOutboxCounts(botId),
+      topics: TELEGRAM_TOPICS,
       pairing: this.pairing === null ? null : {
         code: this.pairing.code,
         deepLink: this.bot?.username ? `https://t.me/${this.bot.username}?start=${this.pairing.code}` : null,
@@ -203,7 +211,7 @@ export class TelegramLiveRuntime {
     const session = this.requireSession();
     if (typeof chatId !== "string" || !workspaces.taskControlActors("telegram").some(actor => actor.chat_id === chatId)) throw new WorkspaceError(404, "actor_not_found", "No enrolled Telegram chat has this id.");
     if (typeof text !== "string" || text.trim() === "") throw new WorkspaceError(400, "invalid_text", "Text is required.");
-    return workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId: null, payload: textPayload(text) });
+    return workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId: null, payload: textPayload(text), subject: WORKSTATION_SUBJECT });
   }
 
   /** Harness seam only: queues an edit of a message this bot's outbox sent, through the same path a product edit uses. */
@@ -395,6 +403,7 @@ export class TelegramLiveRuntime {
           nextNotifyAt = this.now() + this.notifyIntervalMs;
         }
         await this.sendDue(session);
+        await this.pinControlPanels(session);
       } catch (error) {
         this.log.warn(this.safe(`delivery cycle failed: ${error instanceof Error ? error.message : String(error)}`));
       }
@@ -492,8 +501,39 @@ export class TelegramLiveRuntime {
     };
   }
 
+  /**
+   * Queues a view for the workstation subject. `/status` also maintains the chat's one
+   * control panel (C1): the first one becomes that panel and is pinned once, and every
+   * later one brings the pinned panel up to date in place, which is what avoids pin
+   * churn. A panel the operator deleted is registered again by the next `/status`,
+   * because its edit failed for good and the registry gave up on it.
+   */
   private enqueueView(session: Session, chatId: string, topicId: string | null, request: ViewRequest): void {
-    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: renderView(request, this.viewContext()) });
+    const payload = renderView(request, this.viewContext());
+    const outboxId = workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload, subject: WORKSTATION_SUBJECT });
+    if (request.view !== "status") return;
+    const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId, subject: WORKSTATION_SUBJECT });
+    if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") {
+      workspaces.setTelegramThreadAnchor(thread.id, outboxId, { pin: true });
+      return;
+    }
+    if (thread.statusMessageId !== outboxId) workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: thread.statusMessageId, payload });
+  }
+
+  /**
+   * Pins each control panel once, after its message exists. Telegram may refuse the
+   * pin (an older chat, a permission the operator changed); that is recorded as
+   * attempted either way, so a refusal is never retried and never fails the message.
+   */
+  private async pinControlPanels(session: Session): Promise<void> {
+    for (const pending of workspaces.telegramThreadsAwaitingPin(session.botId)) {
+      workspaces.markTelegramThreadPinAttempted(pending.id);
+      try {
+        await session.api.pinChatMessage(pending.chatId, pending.messageId);
+      } catch (error) {
+        this.log.warn(this.safe(`pinChatMessage failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
   }
 
   /**
@@ -520,9 +560,15 @@ export class TelegramLiveRuntime {
     }
   }
 
-  /** Queues a plain reply in the chat and topic it answers (RTC-21), so it never lands in General or another topic. */
-  private enqueueText(session: Session, chatId: string, topicId: string | null, text: string): void {
-    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: textPayload(text) });
+  /**
+   * Queues a plain reply through the subject's thread (C1), which today is the paired
+   * chat with no topic. A message about a task carries that task's tag and is delivered
+   * as a reply to the task's anchor card; a result or receipt is always its own message,
+   * never an edit of the anchor, so the record of what was decided cannot be overwritten.
+   */
+  private enqueueText(session: Session, chatId: string, topicId: string | null, text: string, subject: TelegramSubject = WORKSTATION_SUBJECT): void {
+    const tag = subject.kind === "task" ? taskTagFor(Number(subject.id)) : null;
+    workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: textPayload(tag === null ? text : `${text}\n${tag}`), subject });
   }
 
   /** The question revision a card's buttons were issued for, or null when it has none. */
@@ -566,14 +612,14 @@ export class TelegramLiveRuntime {
         return;
       }
       if (!this.isAwaiting(payload.promptId)) {
-        this.enqueueText(session, message.chatId, message.topicId, "This task no longer needs input. Review it in the local app.");
+        this.enqueueText(session, message.chatId, message.topicId, "This task no longer needs input. Review it in the local app.", taskSubject(payload.promptId));
         return;
       }
       // Answers bind to the question they were written for (user-flows 5, B12):
       // a reply to a superseded card is refused, never rebound to the new question.
       const revision = workspaces.humanInputState(payload.promptId).revision;
       if (this.cardRevision(card?.payload) !== revision) {
-        this.enqueueText(session, message.chatId, message.topicId, "Not recorded: that question has changed since this message. Reply to the latest question for this task.");
+        this.enqueueText(session, message.chatId, message.topicId, "Not recorded: that question has changed since this message. Reply to the latest question for this task.", taskSubject(payload.promptId));
         if (!workspaces.hasTaskControlActionForRevision({ promptId: payload.promptId, actorId: actor.id, botId: session.botId, revision })) this.postQuestion(session, payload.promptId, actor.id);
         return;
       }
@@ -618,12 +664,15 @@ export class TelegramLiveRuntime {
       }
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null });
       if (!actor || actor.enabled !== 1 || replay) return;
+      // A result belongs to the task it decided, so it carries that task's tag and
+      // replies to its card; a rejection that names no task is workstation-wide.
+      const subject = receipt.promptId > 0 ? taskSubject(receipt.promptId) : WORKSTATION_SUBJECT;
       if (receipt.state === "APPLIED") {
-        this.enqueueText(session, callback.chatId, callback.topicId ?? null, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`);
+        this.enqueueText(session, callback.chatId, callback.topicId ?? null, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`, subject);
         runHub.operationsChanged();
         return;
       }
-      this.enqueueText(session, callback.chatId, callback.topicId ?? null, `Not applied: ${receipt.message}`);
+      this.enqueueText(session, callback.chatId, callback.topicId ?? null, `Not applied: ${receipt.message}`, subject);
       if (receipt.errorCode !== null && REISSUE_CODES.has(receipt.errorCode) && receipt.promptId > 0 && this.isAwaiting(receipt.promptId)) {
         // An expired action shares its revision with the dead card, so it always
         // needs a fresh one; a changed question may already have been reposted.

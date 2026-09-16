@@ -155,6 +155,20 @@ export function taskTag(workspaceId: number, workspaceName: string, promptId: nu
   return `#${shared > 1 ? `${slug}${workspaceId}` : slug}_t${promptId}`;
 }
 
+/**
+ * The tag of one task, resolved from the task itself (L3 C1): every message about a
+ * task carries it, not only the card, so tapping it filters the chat to that task.
+ * Null when the task is gone, so a message is never held up by a missing tag.
+ */
+export function taskTagFor(promptId: number): string | null {
+  try {
+    const workspace = workspaces.get(workspaces.promptHome(promptId).workspaceId);
+    return taskTag(workspace.id, workspace.name, promptId);
+  } catch {
+    return null;
+  }
+}
+
 /* -------------------------------- options -------------------------------- */
 
 /** Documented phone caps for agent-reported options (operator decision, 2026-09-16). */

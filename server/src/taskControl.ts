@@ -4,7 +4,7 @@ import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
 export interface TaskControlConfig {
   enabled: boolean;
@@ -165,6 +165,10 @@ export class TaskControlService {
       chatId: actor.chat_id,
       topicId: actor.topic_id,
       payload: renderPersonalQuestion(promptId, actions.map(action => ({ ...action, promptId, expectedRevision: humanInput.revision, expiresAt }))),
+      // The task's own thread (C1): the first card becomes its anchor, and every later
+      // message about the task is delivered as a reply to that card.
+      subject: taskSubject(promptId),
+      anchor: {},
     });
     return { outboxId, actions };
   }
@@ -178,6 +182,7 @@ export class TaskControlService {
       chatId: actor.chat_id,
       topicId: actor.topic_id,
       payload: renderQuotaWarning(warning),
+      subject: WORKSTATION_SUBJECT,
     });
     return { outboxId };
   }

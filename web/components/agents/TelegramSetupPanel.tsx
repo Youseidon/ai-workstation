@@ -96,6 +96,9 @@ export function TelegramSetupPanel({ refreshKey, unsavedChanges = false }: { ref
           )}
         </p>
       )}
+      {connected && !status.topics.available && (
+        <p className="mt-1 text-[11px] leading-snug text-fg-muted">{status.topics.note}</p>
+      )}
       {status.lastError !== null && (
         <p className="mt-1 break-words text-[11px] text-warning">
           {status.lastError}
