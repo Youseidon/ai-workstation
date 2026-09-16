@@ -6,7 +6,7 @@ import { fileHashes, HARNESS_ROOT_PREFIX, realDatabaseHarnessRows, repoRoot } fr
 import { randomBytes } from "node:crypto";
 import { FakeProvider } from "../drivers/fakeProvider.ts";
 import { FakePhone, type PhoneDriver } from "../drivers/phone.ts";
-import { FakeTelegramServer, type ApiCall, type FakeBot } from "../fakes/telegramServer.ts";
+import { FakeTelegramServer, type ApiCall, type FakeBot, type FakeChat, type FakeUser } from "../fakes/telegramServer.ts";
 import { LIVE_ENV_PATH, LiveSetupError, loadLiveConfig } from "./liveConfig.ts";
 import { forgetCodexTrust } from "./providerState.ts";
 import { PreflightError, preflightBot } from "./telegramPreflight.ts";
@@ -28,6 +28,8 @@ export const serverUrl = `http://127.0.0.1:${SERVER_PORT}`;
 export const webUrl = `http://127.0.0.1:${WEB_PORT}`;
 
 export interface EnvironmentOptions {
+  /** Offset from the default harness ports. Offset 0 keeps the historical 4100/3100 pair. */
+  portOffset?: number;
   /** Saved setting overrides, written to the root's .agent-console/settings.json before boot. */
   settings?: Record<string, unknown>;
   /** Extra boot-time variables for the root's .env. */
@@ -53,6 +55,8 @@ export interface EnvironmentOptions {
     proxy?: boolean;
     /** Fake only: the chat and the bot's update queue start with what an earlier run left behind (S-H6-21). */
     leftoversFromEarlierRun?: boolean;
+    /** Fake only: let team harnesses share one fake Telegram server across app environments. */
+    sharedFake?: { server: FakeTelegramServer; bot: FakeBot; user?: FakeUser; chat?: FakeChat & { type: "private" } };
   };
 }
 
@@ -112,6 +116,11 @@ export class HarnessEnvironment {
   readonly root: string;
   readonly logsDir: string;
   readonly homeDir: string;
+  readonly serverPort: number;
+  readonly webPort: number;
+  readonly serverUrl: string;
+  readonly webUrl: string;
+  readonly webDistDir: string;
   readonly server: ManagedProcess;
   readonly web: ManagedProcess;
   readonly fakeProvider: FakeProvider;
@@ -127,6 +136,11 @@ export class HarnessEnvironment {
   private readonly operatorPortsBefore: Promise<{ api: boolean; web: boolean }>;
 
   constructor(private readonly options: EnvironmentOptions = {}) {
+    this.serverPort = SERVER_PORT + (options.portOffset ?? 0);
+    this.webPort = WEB_PORT + (options.portOffset ?? 0);
+    this.serverUrl = `http://127.0.0.1:${this.serverPort}`;
+    this.webUrl = `http://127.0.0.1:${this.webPort}`;
+    this.webDistDir = options.portOffset ? `${WEB_DIST_DIR}-${this.serverPort}` : WEB_DIST_DIR;
     this.operatorPortsBefore = Promise.all([isPortOpen(4000), isPortOpen(3000)]).then(([api, web]) => ({ api, web }));
     this.root = mkdtempSync(HARNESS_ROOT_PREFIX);
     this.logsDir = join(this.root, "logs");
@@ -136,7 +150,7 @@ export class HarnessEnvironment {
     mkdirSync(join(this.root, ".agent-console"), { recursive: true, mode: 0o700 });
     writeFileSync(
       join(this.root, ".env"),
-      dotenv({ HOST: "127.0.0.1", PORT: String(SERVER_PORT), AGENT_API_BASE_URL: serverUrl, ALLOWED_ORIGINS: webUrl, ...options.env }),
+      dotenv({ HOST: "127.0.0.1", PORT: String(this.serverPort), AGENT_API_BASE_URL: this.serverUrl, ALLOWED_ORIGINS: this.webUrl, ...options.env }),
     );
     this.fakeProvider = new FakeProvider(this.root);
     const telegramSettings = options.telegram
@@ -170,9 +184,9 @@ export class HarnessEnvironment {
     });
     this.web = new ManagedProcess("web", {
       command: process.execPath,
-      args: [join(repoRoot, "node_modules/next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(WEB_PORT)],
+      args: [join(repoRoot, "node_modules/next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(this.webPort)],
       cwd: join(repoRoot, "web"),
-      env: harnessWebEnv(serverUrl),
+      env: harnessWebEnv(this.serverUrl, this.webDistDir),
       logFile: join(this.logsDir, "web.log"),
     });
   }
@@ -182,28 +196,30 @@ export class HarnessEnvironment {
   }
 
   async start(): Promise<void> {
-    for (const port of [SERVER_PORT, WEB_PORT]) {
+    for (const port of [this.serverPort, this.webPort]) {
       if (await isPortOpen(port)) throw new Error(`harness port ${port} is already in use; stop whatever is listening there (the harness never uses 4000/3000 instead)`);
     }
-    ensureWebBuild(serverUrl, join(this.logsDir, "web-build.log"));
+    ensureWebBuild(this.serverUrl, join(this.logsDir, "web-build.log"), this.webDistDir);
     if (this.options.telegram?.backend === "fake") await this.startFakeTelegram();
     if (this.options.telegram?.backend === "real") await this.startRealTelegram();
     await this.startServer();
     this.web.start();
-    await waitFor("harness web", async () => (await fetch(webUrl)).ok, 60_000, this.web.whenExited());
+    await waitFor("harness web", async () => (await fetch(this.webUrl)).ok, 60_000, this.web.whenExited());
   }
 
   private async startFakeTelegram(): Promise<void> {
-    const server = new FakeTelegramServer();
-    await server.listen();
+    const shared = this.options.telegram?.sharedFake;
+    const server = shared?.server ?? new FakeTelegramServer();
+    if (!shared) await server.listen();
     const botId = this.options.telegram?.botId ?? 700_000_000 + Math.floor(Math.random() * 99_999);
-    const bot: FakeBot = { id: botId, username: "harness_fake_bot", token: `${botId}:${randomBytes(27).toString("base64url")}` };
-    server.addBot(bot);
+    const bot: FakeBot = shared?.bot ?? { id: botId, username: "harness_fake_bot", token: `${botId}:${randomBytes(27).toString("base64url")}` };
+    if (!shared) server.addBot(bot);
     this.telegramServer = server;
     this.telegramBot = bot;
-    const chat = { id: FAKE_OPERATOR.id, type: "private" as const };
+    const user = shared?.user ?? FAKE_OPERATOR;
+    const chat = shared?.chat ?? { id: FAKE_OPERATOR.id, type: "private" as const };
     if (this.options.telegram?.leftoversFromEarlierRun) await seedLeftovers(server, bot, chat);
-    this.phone = new FakePhone(server, bot, FAKE_OPERATOR, chat);
+    this.phone = new FakePhone(server, bot, user, chat);
     this.addSecret({ label: "harness:fake-bot-token", value: bot.token });
     await this.connectTelegram({ upstream: server.url, token: bot.token, botId: String(bot.id), forbidden: operatorBotId(), useProxy: this.options.telegram?.proxy === true, pollTimeoutSeconds: "2" });
     // The preflight is the harness's own traffic; `calls` records what the harness server does.
@@ -277,12 +293,12 @@ export class HarnessEnvironment {
 
   async startServer(): Promise<void> {
     this.server.start();
-    await waitFor("harness server", async () => (await fetch(`${serverUrl}/api/health`)).ok, 60_000, this.server.whenExited());
+    await waitFor("harness server", async () => (await fetch(`${this.serverUrl}/api/health`)).ok, 60_000, this.server.whenExited());
   }
 
   async stopServer(): Promise<void> {
     await this.server.stop();
-    await waitFor("harness server port closed", async () => !(await isPortOpen(SERVER_PORT)), 15_000);
+    await waitFor("harness server port closed", async () => !(await isPortOpen(this.serverPort)), 15_000);
   }
 
   async restartServer(): Promise<void> {
@@ -341,7 +357,7 @@ export class HarnessEnvironment {
     await this.web.stop();
     await this.server.stop();
     await this.telegramProxy?.close();
-    await this.telegramServer?.close();
+    if (!this.options.telegram?.sharedFake) await this.telegramServer?.close();
     await this.realPhone?.disconnect().catch(() => undefined);
     if (this.options.realHome) forgetCodexTrust(this.root);
     const problems: string[] = [];
@@ -360,7 +376,7 @@ export class HarnessEnvironment {
     const operatorPorts = await this.operatorPortsBefore;
     if (operatorPorts.api && !(await isPortOpen(4000))) problems.push("the operator's server on 4000 stopped answering during the run");
     if (operatorPorts.web && !(await isPortOpen(3000))) problems.push("the operator's web app on 3000 stopped answering during the run");
-    if (existsSync(join(repoRoot, "web", WEB_DIST_DIR, "..", ".next-e2e")) === false) problems.push("harness web build directory missing");
+    if (existsSync(join(repoRoot, "web", this.webDistDir)) === false) problems.push("harness web build directory missing");
 
     if (problems.length > 0) {
       throw new Error(`harness end-of-run checks failed (root kept at ${this.root}):\n${problems.join("\n")}`);
