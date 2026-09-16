@@ -1,7 +1,7 @@
 # Scenario table: team track TM0, harness self-test
 
 Status: test-design pass, 2026-09-16, written before implementation from the Team track design and T01 live evidence.
-Review: jd skim required before this task is DONE. Until the skim is recorded, this table is ready but the task remains blocked at the card's skim stop point.
+Review: jd skim approved 2026-09-16: yes, this table covers TM0 for T03/T04, including H-TM-LT1 administrator delivery.
 
 Specification sources:
 
@@ -42,6 +42,6 @@ In the rows below, **env A** and **env B** are two independent app environments 
 | S-TM0-08 | TM0, T03, `network.cutGit()` | failure path | Given env A and env B share the bare repository. When `envA.network.cutGit()` is active, env A's fetch or push fails with a sanitized harness-network error, while env B can still fetch and push and fake Telegram calls still work for both environments. When env A restores Git, its next Git operation succeeds. The symmetric env B case is also covered. | T1 fake | must |
 | S-TM0-09 | TM0, T03/T04, cleanup and isolation | restart | Given a test starts env A, env B, one fake Telegram, one shared group and one bare repository. When the test disposes them and starts a second test. Then no ports, pending Telegram updates, group membership, invite links, pinned-message state, Git refs or cut-network state leak from the first test into the second. Failure case: disposal while Git is cut or a Telegram long poll is pending still completes within the harness timeout. | T0 fake + T1 fake | should |
 
-## Skim question for jd
+## Skim
 
-Please skim `docs/e2e-scenarios/tm0.md`: does this scenario table cover the TM0 harness acceptance surface for T03/T04, including H-TM-LT1 administrator delivery, before implementation starts?
+JD skim response received 2026-09-16: yes, `docs/e2e-scenarios/tm0.md` covers TM0 for T03/T04, including H-TM-LT1 administrator delivery.
