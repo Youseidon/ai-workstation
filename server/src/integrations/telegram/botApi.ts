@@ -7,6 +7,12 @@ export interface TelegramSendRequest {
   chatId: string;
   topicId: string | null;
   payload: unknown;
+  /**
+   * The message this one answers (L3 C1). Without topics, a reply is what keeps a
+   * subject's messages together in a flat chat: the phone shows the quote header and
+   * can jump back to the anchor.
+   */
+  replyToMessageId?: string | null;
 }
 
 /** Normalized inbox payload for a button tap. Matches the adapter's callback shape. */
@@ -63,6 +69,8 @@ export interface LiveTelegramBotApi extends TelegramBotApi {
   answerCallbackQuery(callbackQueryId: string, text: string): Promise<void>;
   /** Registers the bot's command menu. */
   setMyCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void>;
+  /** Pins the control panel (L3 C1). Attempted once per panel: a refusal never holds up a message. */
+  pinChatMessage(chatId: string, messageId: string): Promise<void>;
 }
 
 export type TelegramApiErrorKind =

@@ -112,7 +112,7 @@ export class TelegramAdapter {
     if (!row) throw new Error("Telegram outbox row was not found.");
     if (row.operation === "edit") return this.deliverEdit(row);
     try {
-      const sent = await this.api.sendMessage({ chatId: row.chatId, topicId: row.topicId, payload: row.payload });
+      const sent = await this.api.sendMessage({ chatId: row.chatId, topicId: row.topicId, payload: row.payload, replyToMessageId: row.replyToMessageId });
       workspaces.markTelegramOutbox(outboxId, "SENT", null, { sentMessageId: sent.messageId });
       if (this.options.bindSentMessageIds) {
         const refs = actionRefs(row.payload);
@@ -124,6 +124,8 @@ export class TelegramAdapter {
       const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
       const message = redactBotToken(error instanceof Error ? error.message : String(error));
       workspaces.markTelegramOutbox(outboxId, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
+      // A message that will never arrive cannot stay a subject's anchor (C1).
+      if (retryAt === null) workspaces.markTelegramThreadAnchorGone(outboxId);
       return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
     }
   }
@@ -134,6 +136,7 @@ export class TelegramAdapter {
     if (target.sentMessageId === null) {
       // The send it would edit failed for good, so there is no message to change.
       workspaces.markTelegramOutbox(row.id, "FAILED", "The message to edit was never delivered.");
+      workspaces.markTelegramThreadAnchorGone(row.targetOutboxId!);
       return { state: "FAILED", retryAt: null, rateLimited: false };
     }
     try {
@@ -145,6 +148,10 @@ export class TelegramAdapter {
       const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
       const message = redactBotToken(error instanceof Error ? error.message : String(error));
       workspaces.markTelegramOutbox(row.id, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
+      // The edit is not retried (F1); if the message it addressed was a subject's anchor,
+      // the operator deleted it, so the registry gives up on it and the next message for
+      // that subject registers a new anchor (C1 recovery).
+      if (retryAt === null) workspaces.markTelegramThreadAnchorGone(row.targetOutboxId!);
       return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
     }
   }

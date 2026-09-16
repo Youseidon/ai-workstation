@@ -577,6 +577,31 @@ db.transaction(() => {
     db.exec(`ALTER TABLE prompt_status_event ADD COLUMN options_json TEXT;`);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(22,?)").run(new Date().toISOString());
   }
+  if (pending(23)) {
+    // L3 C1 (RTC-25): one thread per subject of a chat. Telegram gives this bot no
+    // topics, so `topic_id` stays null and every subject resolves to the paired chat;
+    // the column exists for C2, which fills it once a real topic recording exists.
+    // `status_message_id` is the outbox row carrying the subject's anchor message, not
+    // a Bot API id: that row already records the delivered message id, so the registry
+    // never holds a second, divergent copy of it.
+    db.exec(`
+      CREATE TABLE telegram_thread (
+        id INTEGER PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        subject_kind TEXT NOT NULL CHECK(subject_kind IN ('task','workstation')),
+        subject_id TEXT NOT NULL,
+        topic_id TEXT,
+        status_message_id INTEGER REFERENCES telegram_outbox(id) ON DELETE SET NULL,
+        state TEXT NOT NULL CHECK(state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX telegram_thread_subject_uq ON telegram_thread(bot_id, chat_id, subject_kind, subject_id);
+      ALTER TABLE telegram_outbox ADD COLUMN thread_id INTEGER REFERENCES telegram_thread(id) ON DELETE SET NULL;
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(23,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -643,6 +668,32 @@ type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; stat
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; execution_provider: string | null; execution_model: string | null; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
 type TaskControlActorRow = { id: string; transport: string; transport_user_id: string; chat_id: string; topic_id: string | null; label: string; enabled: number; created_at: string };
+
+/**
+ * What a Telegram message is about (L3 C1). `task` is one saved task, `workstation`
+ * everything that belongs to the workstation itself; `pipeline` and the L2 kinds are
+ * added here when they exist.
+ */
+export type TelegramSubjectKind = "task" | "workstation";
+export interface TelegramSubject { kind: TelegramSubjectKind; id: string }
+/** The one workstation subject of a chat: commands, help, pairing and quota all share it. */
+export const WORKSTATION_SUBJECT: TelegramSubject = { kind: "workstation", id: "workstation" };
+export const taskSubject = (promptId: number): TelegramSubject => ({ kind: "task", id: String(promptId) });
+
+export interface TelegramThreadRow {
+  id: number;
+  botId: string;
+  chatId: string;
+  subjectKind: TelegramSubjectKind;
+  subjectId: string;
+  /** Always null while this bot has no topics; C2 fills it. */
+  topicId: string | null;
+  /** The outbox row carrying this subject's anchor message, or null when it has none. */
+  statusMessageId: number | null;
+  state: "ACTIVE" | "PIN_PENDING" | "ANCHOR_GONE";
+}
+
+const THREAD_COLUMNS = "SELECT id,bot_id botId,chat_id chatId,subject_kind subjectKind,subject_id subjectId,topic_id topicId,status_message_id statusMessageId,state FROM telegram_thread";
 type TaskControlActionRow = { ref: string; action: TaskControlAction; prompt_id: number; actor_id: string; chat_id: string; topic_id: string | null; bot_id: string; message_id: string | null; expected_revision: string; provider: string | null; model: string | null; expires_at: string; created_at: string; applied_command_id: string | null };
 type TaskControlReceiptRow = { command_id: string; action_ref: string; state: TaskControlReceipt["state"]; response_id: number | null; started: number; run_id: string | null; message: string; error_code: string | null; created_at: string; action: TaskControlAction; prompt_id: number };
 type StartIntentState = "START_INTENT" | "RUNNING" | "KNOWN_STOPPED" | "KNOWN_NO_SPAWN" | "START_UNKNOWN";
@@ -1035,11 +1086,69 @@ export const workspaces = {
     if (input.state === "APPLIED") db.prepare("UPDATE task_control_action SET applied_command_id=? WHERE ref=?").run(input.commandId, input.actionRef);
     return { commandId: input.commandId, state: input.state, action: action.action, promptId: action.prompt_id, message: input.message, responseId: input.responseId ?? null, started: input.started === true, runId: input.runId ?? null, errorCode: input.errorCode ?? null, createdAt: now };
   }); },
-  enqueueTelegramOutbox(input: { botId: string; chatId: string; topicId?: string | null; payload: unknown }): number { return sqliteGuard(() => {
+  /**
+   * The thread of one subject in one chat (L3 C1). Created on first use and never
+   * duplicated: the same subject always resolves to the same row, and its
+   * destination is the chat with `topic_id` (null while Telegram gives this bot no
+   * topics, which is exactly the L1 destination).
+   */
+  telegramThreadFor(input: { botId: string; chatId: string; subject: TelegramSubject }): TelegramThreadRow { return sqliteGuard(() => db.transaction(() => {
+    const botId = requireText(input.botId, "botId", 120);
+    const chatId = requireText(input.chatId, "chatId", 120);
+    const subjectId = requireText(input.subject.id, "subjectId", 120);
     const now = new Date().toISOString();
-    return Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at) VALUES(?,?,?,?, 'QUEUED',?,?)")
-      .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), input.topicId ?? null, JSON.stringify(input.payload), now, now).lastInsertRowid);
-  }); },
+    db.prepare("INSERT OR IGNORE INTO telegram_thread(bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at) VALUES(?,?,?,?,NULL,NULL,'ACTIVE',?,?)")
+      .run(botId, chatId, input.subject.kind, subjectId, now, now);
+    return db.prepare(`${THREAD_COLUMNS} WHERE bot_id=? AND chat_id=? AND subject_kind=? AND subject_id=?`).get(botId, chatId, input.subject.kind, subjectId) as TelegramThreadRow;
+  })()); },
+  telegramThreads(botId?: string): TelegramThreadRow[] {
+    return (botId === undefined
+      ? db.prepare(`${THREAD_COLUMNS} ORDER BY id`).all()
+      : db.prepare(`${THREAD_COLUMNS} WHERE bot_id=? ORDER BY id`).all(botId)) as TelegramThreadRow[];
+  },
+  /**
+   * Records which outbox row carries a subject's anchor. `pin` asks for the one pin
+   * a control panel gets; the pin is attempted once after delivery and never again,
+   * so a refused pin can never hold up the message.
+   */
+  setTelegramThreadAnchor(threadId: number, outboxId: number, options: { pin?: boolean } = {}): void {
+    db.prepare("UPDATE telegram_thread SET status_message_id=?,state=?,updated_at=? WHERE id=?")
+      .run(outboxId, options.pin === true ? "PIN_PENDING" : "ACTIVE", new Date().toISOString(), threadId);
+  },
+  /** The operator deleted an anchor (its edit or its send failed for good): the next message registers a new one. */
+  markTelegramThreadAnchorGone(outboxId: number): number {
+    return db.prepare("UPDATE telegram_thread SET status_message_id=NULL,state='ANCHOR_GONE',updated_at=? WHERE status_message_id=?")
+      .run(new Date().toISOString(), outboxId).changes;
+  },
+  /** Anchors whose one pin is still owed and whose message has been delivered. */
+  telegramThreadsAwaitingPin(botId: string): Array<{ id: number; chatId: string; messageId: string }> {
+    return db.prepare(`SELECT t.id,t.chat_id chatId,o.sent_message_id messageId FROM telegram_thread t JOIN telegram_outbox o ON o.id=t.status_message_id
+      WHERE t.bot_id=? AND t.state='PIN_PENDING' AND o.state='SENT' AND o.sent_message_id IS NOT NULL ORDER BY t.id`)
+      .all(botId) as Array<{ id: number; chatId: string; messageId: string }>;
+  },
+  /** The pin was attempted, whatever Telegram answered: a panel is pinned once, never in a loop. */
+  markTelegramThreadPinAttempted(threadId: number): void {
+    db.prepare("UPDATE telegram_thread SET state='ACTIVE',updated_at=? WHERE id=? AND state='PIN_PENDING'").run(new Date().toISOString(), threadId);
+  },
+  /**
+   * Queues a message. With a `subject`, the destination comes from that subject's
+   * thread (C1) rather than from a caller-chosen topic, and the row is recorded
+   * against the thread so it is delivered as a reply to the subject's anchor.
+   * `anchor` offers this row as the anchor, which it becomes only when the subject
+   * has none: an anchor is never silently replaced.
+   */
+  enqueueTelegramOutbox(input: { botId: string; chatId: string; topicId?: string | null; payload: unknown; subject?: TelegramSubject; anchor?: { pin?: boolean } }): number { return sqliteGuard(() => db.transaction(() => {
+    const thread = input.subject === undefined ? null : this.telegramThreadFor({ botId: input.botId, chatId: input.chatId, subject: input.subject });
+    const now = new Date().toISOString();
+    const id = Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at,thread_id) VALUES(?,?,?,?, 'QUEUED',?,?,?)")
+      // The thread owns the destination; while it has no topic of its own (C1: this bot
+      // has none), a reply still lands in the topic of the message it answers (F2).
+      .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), thread?.topicId ?? input.topicId ?? null, JSON.stringify(input.payload), now, now, thread?.id ?? null).lastInsertRowid);
+    if (thread !== null && input.anchor !== undefined && (thread.statusMessageId === null || thread.state === "ANCHOR_GONE")) {
+      this.setTelegramThreadAnchor(thread.id, id, input.anchor);
+    }
+    return id;
+  })()); },
   /**
    * Queues an edit of the message a SENT-or-pending send row delivers. A queued
    * or retrying edit of the same message is replaced rather than stacked, so
@@ -1079,15 +1188,26 @@ export const workspaces = {
   dropQueuedTelegramEdits(botId: string, chatId: string): number {
     return db.prepare("DELETE FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND operation='edit' AND (state='QUEUED' OR (state='FAILED' AND next_attempt_at IS NOT NULL))").run(botId, chatId).changes;
   },
-  /** One outbox row with what a sender needs, including an edit's target message id once its send has one. */
-  telegramOutboxRow(id: number): { id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; operation: "send" | "edit"; payloadVersion: number; target: { state: "QUEUED" | "SENT" | "FAILED"; sentMessageId: string | null; retrying: boolean } | null } | null {
-    const row = db.prepare(`SELECT o.id,o.bot_id botId,o.chat_id chatId,o.topic_id topicId,o.payload_json payload,o.state,o.attempt_count attemptCount,o.operation,o.payload_version payloadVersion,
-      t.state targetState,t.sent_message_id targetMessageId,t.next_attempt_at targetNextAttempt
-      FROM telegram_outbox o LEFT JOIN telegram_outbox t ON t.id=o.target_outbox_id WHERE o.id=?`).get(id) as Record<string, unknown> | undefined;
+  /**
+   * One outbox row with what a sender needs, including an edit's target message id
+   * once its send has one, and the anchor its subject's thread replies to (C1):
+   * a later message for a subject quotes that subject's anchor, which is how a flat
+   * chat shows what belongs together. The anchor itself never replies to itself.
+   */
+  telegramOutboxRow(id: number): { id: number; botId: string; chatId: string; topicId: string | null; payload: unknown; state: "QUEUED" | "SENT" | "FAILED"; attemptCount: number; operation: "send" | "edit"; payloadVersion: number; replyToMessageId: string | null; targetOutboxId: number | null; target: { state: "QUEUED" | "SENT" | "FAILED"; sentMessageId: string | null; retrying: boolean } | null } | null {
+    const row = db.prepare(`SELECT o.id,o.bot_id botId,o.chat_id chatId,o.topic_id topicId,o.payload_json payload,o.state,o.attempt_count attemptCount,o.operation,o.payload_version payloadVersion,o.target_outbox_id targetOutboxId,
+      t.state targetState,t.sent_message_id targetMessageId,t.next_attempt_at targetNextAttempt,a.sent_message_id replyToMessageId
+      FROM telegram_outbox o
+      LEFT JOIN telegram_outbox t ON t.id=o.target_outbox_id
+      LEFT JOIN telegram_thread th ON th.id=o.thread_id AND th.state<>'ANCHOR_GONE'
+      LEFT JOIN telegram_outbox a ON a.id=th.status_message_id AND a.id<>o.id AND a.state='SENT'
+      WHERE o.id=?`).get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       id: row.id as number, botId: row.botId as string, chatId: row.chatId as string, topicId: row.topicId as string | null, payload: JSON.parse(row.payload as string) as unknown,
       state: row.state as "QUEUED" | "SENT" | "FAILED", attemptCount: row.attemptCount as number, operation: row.operation as "send" | "edit", payloadVersion: row.payloadVersion as number,
+      replyToMessageId: row.operation === "send" ? (row.replyToMessageId as string | null) ?? null : null,
+      targetOutboxId: (row.targetOutboxId as number | null) ?? null,
       target: row.operation === "edit" ? { state: row.targetState as "QUEUED" | "SENT" | "FAILED", sentMessageId: row.targetMessageId as string | null, retrying: row.targetNextAttempt !== null } : null,
     };
   },
@@ -1213,6 +1333,7 @@ export const workspaces = {
       db.prepare("DELETE FROM telegram_action_content WHERE action_ref IN (SELECT ref FROM task_control_action WHERE bot_id=?)").run(botId);
       db.prepare("DELETE FROM task_control_action WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_outbox WHERE bot_id=?").run(botId);
+      db.prepare("DELETE FROM telegram_thread WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_inbox WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM telegram_poll_cursor WHERE bot_id=?").run(botId);
       db.prepare("DELETE FROM task_control_pairing_challenge WHERE actor_id IS NULL OR actor_id NOT IN (SELECT id FROM task_control_actor)").run();

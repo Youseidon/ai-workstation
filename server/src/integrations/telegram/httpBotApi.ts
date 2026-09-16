@@ -137,6 +137,12 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
       link_preview_options: { is_disabled: true },
     };
     if (request.topicId !== null) body.message_thread_id = Number(request.topicId);
+    if (request.replyToMessageId !== undefined && request.replyToMessageId !== null) {
+      // The anchor may have been deleted between queueing and sending; the message still
+      // has to arrive, so Telegram is told to send it without the quote in that case.
+      body.reply_to_message_id = Number(request.replyToMessageId);
+      body.allow_sending_without_reply = true;
+    }
     if (message.replyMarkup !== null) body.reply_markup = message.replyMarkup;
     if (message.entities.length > 0) body.entities = message.entities;
     const messageId = id(record(await this.withoutRejectedEntities("sendMessage", body))?.message_id);
@@ -182,6 +188,12 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
 
   async setMyCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void> {
     await this.call("setMyCommands", { commands });
+  }
+
+  async pinChatMessage(chatId: string, messageId: string): Promise<void> {
+    // Silent: the panel is a reference, not news, and a pin notification on every
+    // workstation would be exactly the churn this slice avoids.
+    await this.call("pinChatMessage", { chat_id: chatId, message_id: Number(messageId), disable_notification: true });
   }
 
   async answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {
