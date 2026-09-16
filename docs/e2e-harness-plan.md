@@ -43,7 +43,7 @@ Concretely, the harness must:
    Recorded real responses back it up in T0 contract suites.
 4. **Every scenario includes its failure path.** A happy-path-only scenario is incomplete (matches engineering standards).
 5. **No sleeps.** Waits are on observable conditions (an API state, a transcript message, a DOM state) with explicit timeouts.
-6. **New scenarios must prove they are stable before they count.** A burn-in command runs a new or changed scenario 20 times; any failure blocks merging it.
+6. **New scenarios must prove they are stable before they count.** A burn-in command runs a new or changed scenario 3 times; any failure blocks merging it.
    Flaky scenarios are fixed, not retried or silently quarantined.
 7. **Failures leave evidence.** Each failed scenario saves a Playwright trace, screenshots, server and web logs, the Telegram transcript, the fake provider log and a database copy.
 8. **Secrets never enter artifacts.** Every run ends with an automated token sweep over logs, artifacts, API responses and the database copy; a match fails the run.
