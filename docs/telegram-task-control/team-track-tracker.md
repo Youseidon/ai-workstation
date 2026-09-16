@@ -21,7 +21,7 @@ Preconditions:
 
 | Id | Slice | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| T01 | TM0 | pending |  |  |  | LT-1 script: two bots in one group. |  |
+| T01 | TM0 | blocked: jd |  |  |  | Needs second throwaway bot token in `~/.config/ai-workstation/e2e-live.env` and a Telegram group containing both bots before the LT-1 worker can finish. | 2026-09-16 |
 | T02 | TM0 | pending |  |  |  | TM0 scenario table. |  |
 | T03 | TM0 | pending |  |  |  | Two environments side by side. |  |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
@@ -45,3 +45,4 @@ Preconditions:
 ## Notes
 
 - 2026-09-16: Tracker created after L1 precondition cleanup. Next task is T01.
+- 2026-09-16: T01 marked `blocked: jd` before spawning because its row has a known jd setup requirement: a second throwaway bot, its token placed by jd in `~/.config/ai-workstation/e2e-live.env`, and a group containing both bots. No push-notification tool was available in this session, so the request is recorded here and sent in chat.
