@@ -409,19 +409,22 @@ migrate();
 }
 
 db.transaction(() => {
-  const version = (db.prepare("SELECT MAX(version) version FROM schema_migration").get() as { version: number }).version;
-  if (version < 14) {
+  // Each migration is gated on its own recorded row, not on the highest one, so a
+  // database missing one step still gets it (and a later one is never re-applied).
+  const applied = new Set((db.prepare("SELECT version FROM schema_migration").all() as Array<{ version: number }>).map((row) => row.version));
+  const pending = (version: number) => !applied.has(version);
+  if (pending(14)) {
     db.exec("ALTER TABLE pipeline ADD COLUMN execution_provider TEXT; ALTER TABLE pipeline ADD COLUMN execution_model TEXT;");
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(14,?)").run(new Date().toISOString());
   }
-  if (version < 15) {
+  if (pending(15)) {
     db.exec(`CREATE TABLE human_response_hold (
       prompt_id INTEGER PRIMARY KEY REFERENCES prompt(id) ON DELETE CASCADE,
       response_id INTEGER NOT NULL REFERENCES prompt_remark(id) ON DELETE CASCADE
     );`);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(15,?)").run(new Date().toISOString());
   }
-  if (version < 16) {
+  if (pending(16)) {
     db.exec(`
       CREATE TABLE task_control_actor (
         id TEXT PRIMARY KEY,
@@ -479,7 +482,7 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(16,?)").run(new Date().toISOString());
   }
-  if (version < 17) {
+  if (pending(17)) {
     db.exec(`
       CREATE TABLE telegram_inbox (
         bot_id TEXT NOT NULL,
@@ -498,7 +501,7 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(17,?)").run(new Date().toISOString());
   }
-  if (version < 18) {
+  if (pending(18)) {
     db.exec(`
       CREATE TABLE task_control_pairing_challenge (
         challenge TEXT PRIMARY KEY,
@@ -514,7 +517,7 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(18,?)").run(new Date().toISOString());
   }
-  if (version < 19) {
+  if (pending(19)) {
     db.exec(`
       CREATE TABLE workspace_start_intent (
         id TEXT PRIMARY KEY,
@@ -538,7 +541,7 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(19,?)").run(new Date().toISOString());
   }
-  if (version < 20) {
+  if (pending(20)) {
     // Live Telegram (L1): durable retry schedule and the Bot API message id of a
     // sent card, plus the answer text a button tap will submit, since Telegram
     // callback data cannot carry it. No token is stored anywhere in this schema.
@@ -554,7 +557,7 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(20,?)").run(new Date().toISOString());
   }
-  if (version < 21) {
+  if (pending(21)) {
     // L3 F1 (RTC-21): an outbox row either sends a new message or edits the
     // message an earlier send row delivered. Queued edits of one message
     // coalesce into a single row; payload_version lets a delivery that raced a

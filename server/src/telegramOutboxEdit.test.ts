@@ -356,7 +356,7 @@ test("S-L3-F1-04: migration 21 keeps every L1 outbox row as a send, unchanged, a
       try {
         const rows = migrated.prepare("SELECT * FROM telegram_outbox ORDER BY id").all() as Array<Record<string, unknown>>;
         assert.deepEqual(rows.map(({ operation, target_outbox_id, payload_version, ...rest }) => { assert.equal(operation, "send"); assert.equal(target_outbox_id, null); assert.equal(payload_version, 0); return rest; }), before, `boot ${run}`);
-        assert.deepEqual(migrated.prepare("SELECT version FROM schema_migration WHERE version >= 20 ORDER BY version").all(), [{ version: 20 }, { version: 21 }]);
+        assert.deepEqual(migrated.prepare("SELECT version FROM schema_migration WHERE version IN (20,21) ORDER BY version").all(), [{ version: 20 }, { version: 21 }], "migration 21 is applied exactly once and 20 is untouched");
       } finally {
         migrated.close();
       }
