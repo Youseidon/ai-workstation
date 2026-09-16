@@ -596,6 +596,33 @@ Implemented fourteenth slice (L3 B, RTC-24: read-only status commands):
 - Tests: 7 registry tests (T0), 11 T1 scenarios (a mutation that sends views instead of editing them is caught), and a T3 spec for B's live rows.
 - Not implemented from the table: rows needing a usage seam (S-L3-B-08), completion-time seams (S-L3-B-06), recorded Bot API limits (S-L3-B-30), fault-injection variants for navigation (S-L3-B-19, 31, 34), topics (S-L3-B-40, blocked on C2), and several should rows.
 
+Implemented fifteenth slice (L3 A2, RTC-22 and RTC-23: a card the operator can decide from):
+
+- Scenario table: [`l3-a2.md`](../e2e-scenarios/l3-a2.md) (14 rows), deliberately lean because the operator asked for minimal testing on this slice.
+  Its open questions were answered by the operator before implementation:
+  - options belong to the blocking status, not the task, so a new block replaces them and a stale list never reaches a later question;
+  - the phone gets the last three runs and the most recent previous answer, with a count of the rest;
+  - at most four options, each advantage or disadvantage capped at 200 characters, every cut declared;
+  - the age reads "blocked 14 min ago" and is computed at delivery, not stored;
+  - the identifier on the card is its tag, whose id half is a word `/task` already accepts, and the summary also carries the task key for the same purpose;
+  - the tag is project-scoped (`#acme_t142`) so two projects never share one, and it always contains a letter because Telegram makes no hashtag of `#123`.
+- The card (`server/src/integrations/telegram/card.ts`) is now labelled sections in the order a phone reads them: the tag; `Task: <title>`; the age and breadcrumb; the question and its required action; the options with their trade-offs; the operator's answer on answer cards; the recommendation and "If you wait"; the reply hint; then one `expandable_blockquote` holding context ("where it fits", goal, progress), history and details.
+  A section with no data is absent entirely, not an empty heading.
+- The summary (`server/src/telegramSummary.ts`) gained `key`, `tag`, `blockedAt`, `breadcrumb.nextStep`, `history` and `options`.
+  History reads the existing run, status-event and remark records; nothing new is stored for it.
+  The tag is a hashtag-safe project slug (at most 16 characters, disambiguated with the workspace id when another project's name reduces to the same slug, compared without case because Telegram matches hashtags that way) and the task's own id after a `t`.
+  The id, not the task key, carries the identity: a key can repeat across programs, and `/task` already offers a picker when it does, so a key-based tag would name more than one task.
+- The progress contract gained an optional `options` list on a BLOCKED `post_status`, over HTTP and through the in-process Claude tools, named in both run prompts.
+  Migration 22 stores it on `prompt_status_event`. Options are reported by the agent only: no model is called while a card is rendered, and no trade-off is generated.
+- Budget: the shrink order is details, history, context, recommendation, then blockers after the first, then the answer, and only as a last resort the options, so the question, its action and the options survive. Every shortening is declared as before.
+- Tests: 2 new formatter tests and 8 new summary and contract tests at T0 (server suite 229 of 229), and 3 new T1 scenarios, S-L3-A2-11, 12 and 13 (full T1 110 of 110 in 15.2 minutes; burn-in of the three new rows 9 of 9 at the default 3 repeats).
+  The slice A scenarios were updated where A2 deliberately changed the layout, with no behavioural assertion weakened.
+- Findings for the operator:
+  - S-L3-A-01 and S-L3-A-02 could not be kept literally unchanged: A2 moves the goal and progress into the collapsed section and adds a header, so their line-by-line layout assertions were rewritten. Every assertion about buttons, receipts, runs, human responses, redaction and `parse_mode` is unchanged, and the L1 rows (S-L1-05, 06, 18) needed no edit because `Task: <title>` is still the card's second line.
+  - The phone now sees two entities on a card: the app's blockquote and the `hashtag` Telegram adds for the tag. The bot still sends exactly one entity and no `parse_mode`.
+  - A run whose status post is refused ends without a status, so the system blocks the task itself; such a block has no options, which is the right outcome but means a rejected `post_status` still costs the agent its run.
+- Not implemented from the table: S-L3-A2-13a's real-Telegram half and S-L3-A2-14 (both need the test bot), and nothing else was deferred.
+
 L1 T3 close-out (real Telegram through the harness test bot and the operator's signed-in client), 2026-09-15/16:
 
 - The first T3 runs found differences between the fake and real Telegram, fixed in the harness and the fake (commits cad5b04 to c1c7723):

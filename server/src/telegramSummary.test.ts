@@ -6,7 +6,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import type { HandoffBrief, ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { config } from "./config.ts";
-import { blockText, HISTORY_RUNS, lineText, MAX_OPTIONS, redactPhoneText, TAG_KEY_MAX, TAG_SLUG_MAX, taskSummary, TRADE_OFF_MAX } from "./telegramSummary.ts";
+import { blockText, HISTORY_RUNS, lineText, MAX_OPTIONS, redactPhoneText, TAG_SLUG_MAX, taskSummary, TRADE_OFF_MAX } from "./telegramSummary.ts";
 import { workspaces } from "./workspaces.ts";
 
 // Scenario IDs refer to docs/e2e-scenarios/l3-f3-a.md (slice F3, RTC-22): the task summary model.
@@ -451,10 +451,10 @@ test("S-L3-A2-13a (T0): the tag is project-scoped, hashtag-safe and stable, and 
       // (#123 is not a hashtag; see e2e/src/telegramEntities.test.ts).
       assert.match(summary.tag, /^#[A-Za-z0-9_]+$/, summary.tag);
       assert.match(summary.tag, /[A-Za-z]/, summary.tag);
-      assert.ok(summary.tag.length <= 1 + TAG_SLUG_MAX + 10 + 1 + TAG_KEY_MAX, summary.tag);
-      assert.ok(summary.tag.endsWith(`_t${summary.promptId}`), "the task key, letter-prefixed because #123 is not a hashtag");
+      assert.ok(summary.tag.length <= 1 + TAG_SLUG_MAX + 10 + 2 + 12, summary.tag);
+      assert.ok(summary.tag.endsWith(`_t${summary.promptId}`), "the task id, letter-prefixed because #123 is not a hashtag");
     }
-    assert.equal(taskSummary(digits.prompt.id).tag.split("_")[0], "#123", "a digits-only project name keeps its digits; the key carries the letter");
+    assert.equal(taskSummary(digits.prompt.id).tag.split("_")[0], "#123", "a digits-only project name keeps its digits; the id part carries the letter");
     assert.equal(taskSummary(solo.prompt.id).key, String(solo.prompt.id), "the identifier is what /task accepts");
   } finally {
     solo.cleanup();

@@ -129,9 +129,8 @@ export function blockText(value: string, max = 1500): string {
 
 /* ---------------------------------- tag ---------------------------------- */
 
-/** Documented caps: the project slug and the key part of a tag, in characters. */
+/** Documented cap: the project slug of a tag, in characters. */
 export const TAG_SLUG_MAX = 16;
-export const TAG_KEY_MAX = 24;
 
 /** Hashtag-safe form of one part of a tag: redacted, then letters, digits and underscores only. */
 function tagPart(value: string, max: number): string {
@@ -139,21 +138,21 @@ function tagPart(value: string, max: number): string {
 }
 
 /**
- * The chat tag for a task: a project slug and the task key, such as `#acme_t142`.
+ * The chat tag for a task: a project slug and the task's own id, such as `#acme_t142`.
  * Two projects must never share a tag, so a slug another workspace also produces is
- * disambiguated with the workspace id; the same task always produces the same tag.
+ * disambiguated with the workspace id; slugs are compared without case because Telegram
+ * matches hashtags that way. The id, not the task key, carries the identity: a key may
+ * repeat across programs (`/task` offers a picker when it does), and the tag must name
+ * exactly one task. The same task therefore always produces the same tag.
  * Telegram makes a hashtag only of letters, digits and underscores, and only when it
  * contains a letter - `#123` is not a hashtag while `#a1` is
- * (`e2e/src/telegramEntities.test.ts`) - so a key of digits alone gets a `t` prefix.
+ * (`e2e/src/telegramEntities.test.ts`) - which the `t` before the id guarantees.
  */
-export function taskTag(workspaceId: number, workspaceName: string, key: string): string {
+export function taskTag(workspaceId: number, workspaceName: string, promptId: number): string {
   const slugOf = (id: number, name: string) => tagPart(name, TAG_SLUG_MAX) || `w${id}`;
   const slug = slugOf(workspaceId, workspaceName);
-  const shared = workspaces.list().filter((entry) => slugOf(entry.id, entry.name) === slug).length;
-  const scope = shared > 1 ? `${slug}${workspaceId}` : slug;
-  const tail = tagPart(key, TAG_KEY_MAX) || "task";
-  const tag = `${scope}_${/[A-Za-z]/.test(tail) ? tail : `t${tail}`}`;
-  return `#${/[A-Za-z]/.test(tag) ? tag : `t${tag}`}`;
+  const shared = workspaces.list().filter((entry) => slugOf(entry.id, entry.name).toLowerCase() === slug.toLowerCase()).length;
+  return `#${shared > 1 ? `${slug}${workspaceId}` : slug}_t${promptId}`;
 }
 
 /* -------------------------------- options -------------------------------- */
@@ -288,8 +287,8 @@ export function taskSummary(promptId: number, audience: SummaryAudience = "owner
   const offered = summaryOptions(blocking?.options ?? []);
   const base = {
     promptId,
-    key: lineText(key, TAG_KEY_MAX * 2),
-    tag: taskTag(item.workspace.id, item.workspace.name, key),
+    key: lineText(key, 60),
+    tag: taskTag(item.workspace.id, item.workspace.name, promptId),
     breadcrumb: {
       workstation: label,
       workspace: lineText(item.workspace.name, 120),
