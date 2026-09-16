@@ -21,7 +21,7 @@ current source and tests support the claimed behaviour.
 | Local handoff brief/successor workflow | Partially implemented | `handoffCoordinator.ts` can run an LLM handoff and start a local successor. It is not Task Transfer: it lacks factual no-LLM package capture, shared Git records, named teammate acceptance and return/apply review. |
 | Workspace/run concurrency | Implemented (M2) | Migration 19 adds `workspace_start_intent` with a unique active index on effective directory; `reserveStartIntent` runs before awaited provider detection and is shared by all start paths. Verified by aliased-path race tests. |
 | Startup recovery | Implemented for ownership (M2/M2d); process proof still absent | `reconcileStartIntentsForRestart` classifies unreleased intents as `START_UNKNOWN`, recovery refuses them, and `classifyStartUnknown` lets an operator record known-stopped/no-spawn to release the gate. The app still cannot itself prove an OS subprocess stopped; that remains an operator confirmation, not a machine fact. |
-| Telegram enrollment, polling, inbox/outbox and rendering | L1 implemented; verified on real Telegram by the harness (T3), phone look check pending | L1 adds the real Bot API client, token storage, long-poll runtime with backoff, pairing with local confirmation and the Live Telegram panel over the M1 contracts. The full T3 run of 2026-09-15 passed against a dedicated test bot (implementation.md, L1 T3 close-out). Topics and teammate use are not implemented. |
+| Telegram enrollment, polling, inbox/outbox and rendering | L1 implemented; verified on real Telegram by the harness (T3) and the operator's phone look check, 2026-09-16 | L1 adds the real Bot API client, token storage, long-poll runtime with backoff, pairing with local confirmation and the Live Telegram panel over the M1 contracts. The full T3 run of 2026-09-15 passed against a dedicated test bot and the phone look check passed on rendering (implementation.md, L1 T3 close-out). Topics and teammate use are not implemented. |
 | Remote actor authorization and command receipts | L1 implemented for personal control; verified by T3 | Real callback queries are answered and receipted idempotently for Save answer, Answer and resume and Resume with saved answer, including expired and superseded actions. Shared-command publication is not implemented. |
 | Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. The L3 `/status` and `/quota` views deliver it to the phone; the `/status` quota headline passed T3 on 2026-09-15 (H-L3-40). |
 | Shared Git control history and package/result refs | Not implemented | No administrative checkout, roster validation, signed control branches, package manifests, result application or force-rewrite detection exist. |
@@ -71,7 +71,7 @@ Observed discrepancies:
 | RTC-19 | Live adapter runtime wiring | The adapter actually runs: today `TelegramAdapter` is instantiated nowhere outside its own test. | I03, D15 | Instantiate and supervise the adapter in server startup when transport is live and a token is configured; reconnect/backoff lifecycle and visible transport status; default-off preserved. | Server start/stop with transport live and disabled; reconnect after forced network failure; no polling when unconfigured. | L1 |
 | RTC-20 | Live personal operation evidence | The capability is judged by a real delivered message, not a fixture. | D16 | Record a real end-to-end operation: question posted to the operator's phone, button tap, local state change. | One live run evidencing Save answer and Answer and resume from the phone, plus the observed failure behaviour when the workstation is offline. | L1 |
 | RTC-21 | Telegram message edits and topic-aware replies | A status or navigation message updates in place instead of stacking new messages; a reply lands in the topic it answers. | D15, D17, protocol section 7 | The Bot API wrapper has only `sendMessage`; `enqueueText` hardcodes `topicId: null`. Add an outbox edit operation and pass the incoming topic through. | Fake and stubbed-HTTP tests: edit coalescing, "message is not modified" treated as success, edit of a deleted message, reply routed to the incoming topic. | L3 |
-| RTC-22 | Task summary model | Every phone surface describes a task from the same structured facts. | D17, B21 | No shared summary exists; the question renderer reads only title, status and question text. Build a pure model over the handoff brief, blocker remarks and pipeline position. | Fixture tests: brief present, brief absent with blocker remark, no pipeline, pipeline step, sanitized fields. | L3 |
+| RTC-22 | Task summary model | Every phone surface describes a task from the same structured facts. | D17, B21 | Built in F3 over the handoff brief, blocker remarks and pipeline position. A2 adds what the operator needs to decide from the card alone: identifier and age, the next enabled step, the task's history, and agent-reported options with their trade-offs. | Fixture tests: brief present, brief absent with blocker remark, no pipeline, pipeline step, sanitized fields; A2 adds history and options cases. | L3 |
 | RTC-23 | Context-rich question cards | A phone question card carries enough context to decide without the laptop. | D17, user-flows section 2 | The card drops the stored `HandoffBrief`; `sanitizeTelegramText` flattens line breaks and cuts at 1200 characters. Render from RTC-22 with a section budget. | Formatter tests for section priority under the 4096 limit, expandable detail entity offsets (emoji, non-Latin), no markup parsing, graceful fallback without a brief. | L3 |
 | RTC-24 | Read-only status commands | The operator can ask what is running, blocked or failed and drill down, without any state change or LLM call. | D17, user-flows section 9, B30 | Only `/start <code>` and replies are handled; every callback goes to task control. Add command parsing, a view registry and a separate navigation callback route. | Command and navigation tests for each view, unpaired actor ignored, navigation never produces a receipt, pagination under the size limit, `setMyCommands` registration. | L3 |
 | RTC-25 | Thread registry | Every phone message belongs to a subject (a task or the workstation) that maps to one thread. | D17, user-flows section 1 | No subject-to-thread mapping exists. Add a registry with a no-topic mode that preserves today's behaviour. | Registry tests: subject lookup, no-topic mode unchanged from L1 behaviour, status message id tracked per subject. | L3 |
@@ -382,6 +382,16 @@ Allocate the 4096-character budget by priority: breadcrumb, blocker and action t
 Long detail goes in an `expandable_blockquote` message entity; still no `parse_mode`, so task text can never inject markup.
 The formatter returns entities with UTF-16 offsets.
 
+**A2: a card the operator can decide from (RTC-22, RTC-23). Approved by the operator 2026-09-16 after the phone look check.**
+The A card renders correctly but says too little to decide from. A2 restructures it into labelled sections and adds the two facts it lacks.
+Order, because a phone shows about twelve lines before a tap: identifier, title, age and breadcrumb; the question and its required action; the options with their trade-offs; the recommendation and what happens if you wait; then collapsed context, history and details.
+- Identifier and age come from the prompt and its run; the breadcrumb and the rest of the context are today's summary fields, regrouped.
+- "Where it fits" adds the next enabled step of the suite flowchart, which the summary does not read yet.
+- History is new: the task's runs, when it blocked, how many times, and any previous answers. It reads the existing run and remark records; nothing new is stored.
+- Options with pros and cons are reported by the agent, not generated. Extend the progress contract (`post_status` and the HTTP equivalent) with an optional list of options, each a label with its advantages and disadvantages, and name it in the saved-task prompt. The section is absent when the agent gives nothing; no LLM call is made while rendering a card, because a card must not wait on a model or invent a trade-off the agent never considered.
+- The budget rules and the no-`parse_mode` rule of A are unchanged; a section is dropped before the question is.
+Evidence: a test-design pass and scenario table first, as for every L3 slice, kept lean (the operator asked for minimal testing); T0 for the summary model and the contract, T1 for the rendered card, and one T3 row.
+
 **B: read-only status commands (RTC-24).**
 Implement user-flows section 9.
 `handleMessage` parses `/command` after the actor check and before the reply-to check; unknown commands and plain text get `/help`.
@@ -389,8 +399,12 @@ Views live in a registry (`server/src/integrations/telegram/views.ts`): each ent
 Navigation buttons use the `nv_` callback prefix (protocol section 7). The adapter routes `nv_` callbacks to a new `onNavigation` hook before task control; the hook checks the actor, answers the callback and edits the message through F1.
 `/task` renders the same F3 summary as the question card.
 
-**C0: live topic check (RTC-26). Operator involvement required for BotFather settings only.**
-Against the harness test bot (never the operator's own bot), before any C1/C2 code: the operator enables topics for the bot in BotFather; the rest is scripted with the harness's real-Telegram backend: call `createForumTopic` in the private chat, send with `message_thread_id`, edit and close a topic, delete a topic, reply from the user client inside a topic, and record the exact update fields received.
+**C0: live topic check (RTC-26). Operator involvement required for the chat setup only.**
+Recorded 2026-09-16: @BotFather offers no topics or threads setting for the harness test bot, and `getMe` reports `has_topics_enabled: false` and `allows_users_to_create_topics: false`.
+Telegram gates topics in private chats to eligible bot apps, and while they are enabled Telegram Stars purchases in that bot carry a non-refundable 15% fee.
+C0 therefore runs against the fallback named in user-flows section 1, approved by the operator 2026-09-16: a private group containing only the operator and the test bot, with topics enabled and the bot an admin with Manage Topics.
+The recorded result must say that private-chat topics were unavailable, so C1/C2 keep the no-topic mode and the group mode, and a later move to private-chat topics stays a configuration change.
+Against the harness test bot (never the operator's own bot), before any C1/C2 code: the operator enables topics for the chat; the rest is scripted with the harness's real-Telegram backend: call `createForumTopic` in the private chat, send with `message_thread_id`, edit and close a topic, delete a topic, reply from the user client inside a topic, and record the exact update fields received.
 The recorded responses become contract fixtures for the fake Telegram server's topic support.
 Record the result in `implementation.md`.
 If private-chat topics are unsupported, the design already names the fallback (user-flows section 1): a private group containing only the operator and the bot, with topics. Do not fall back to one flat multi-task chat.
@@ -527,14 +541,14 @@ tracker), and a final "publish a release report" step duplicating
    not released automatically, and 5% quota warnings never pause, switch provider
    or request takeover without explicit action.
 
-6. Implement L1 live personal Telegram. IMPLEMENTED, NOT YET COMMITTED.
+6. Implement L1 live personal Telegram. DONE 2026-09-15 (committed).
    Implement the real Bot API client, real token storage and enrolment, and
    adapter startup wiring. Keep the fake transport as the regression suite. The
    operator supplies the bot token; do not generate, request or store a live
    credential without an explicit instruction to do so.
    Code and automated evidence are recorded in `implementation.md` (ninth slice).
 
-7. Verify L1 against a real bot. IN PROGRESS.
+7. Verify L1 against a real bot. DONE 2026-09-16.
    Required evidence: a real message received on the operator's phone, Save
    answer and Answer and resume each driving one real local run, correct
    behaviour when the workstation is offline, and no token in any log, API
@@ -542,7 +556,8 @@ tracker), and a final "publish a release report" step duplicating
    Recorded so far (2026-09-14): a real message on the operator's phone, pairing, and Answer and resume driving one real local run to DONE (H-L1-05).
    Remaining rows are tracked in `human-verification.md` (H-L1-06 to H-L1-17).
    Recorded 2026-09-15/16: the full T3 harness run passed every L1 row that has a T3 scenario (H-L1-14 needs a second account), with the proxy rows burned in (implementation.md, L1 T3 close-out).
-   Only the operator's phone look check (S-H6-33) remains; steps 6 and 7 are marked DONE once it is recorded.
+   The phone look check (S-H6-33) passed on rendering 2026-09-16, which closes this step.
+   Recorded with it, and not a rendering defect: the operator judged the card content too thin to decide from, which became the L3 A2 slice below.
 
 7a. Close out L1 before step 8.
     Do these before starting the G01-G03 feasibility experiments or any enhancement of the Telegram integration.
@@ -608,7 +623,7 @@ tracker), and a final "publish a release report" step duplicating
     6. Run the L1 rows through the harness (T1 and T3) plus the phone look check; finish the remaining close-out items above; mark steps 6 and 7 DONE.
        T3 DONE 2026-09-15/16 (implementation.md, L1 T3 close-out); the phone look check is pending.
        Split of the remaining work, decided by the operator 2026-09-16, run as two parallel sessions:
-       - Close-out: the phone look check record, then C0 (item 8) once topics are enabled for the test bot.
+       - Close-out: DONE 2026-09-16, including the phone look check. C0 follows, against the fallback group (no BotFather topics setting exists for the test bot).
        - Teammate design: review the teammate design proposal with the operator, then write the approved design as a documented revision and build plan; G01 is decided before the handover slices only.
        Moved after or parallel to the teammate design, not before it: credential rotation for the test bot and harness client, the L1 defects above, the real-database cleanup above, L3 T3 rows without a test, C1 and C2, H7 and H9.
        Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently (human-verification.md, known issues).
@@ -620,7 +635,7 @@ tracker), and a final "publish a release report" step duplicating
     9. Harness slice H9 (mutation testing) before L3 close-out.
 
 7b. Implement L3 personal Telegram surface.
-    Build the slices of section 3a L3 in order: F1, F2, F3, A, B, then C0 (live, with the operator), C1, C2.
+    Build the slices of section 3a L3 in order: F1, F2, F3, A, B, A2, then C0 (live, with the operator), C1, C2.
     A and B do not depend on C0-C2 and are useful even if topics slip.
     Each slice starts with a test-design pass and a scenario table the operator skims (engineering standards, definition of ready), and adds its scenarios to the harness.
     Commit each slice separately with its tests and an `implementation.md` evidence entry.
