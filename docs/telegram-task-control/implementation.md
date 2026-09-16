@@ -689,6 +689,18 @@ L1D2 precondition cleanup (Agents header negative-zero display), 2026-09-16:
 - Focused tests: `npm run test:quota-ui --workspace web` passed 3 test files, 3 of 3 subtests, including the new `CountUp` negative-zero regression.
 - Web checks: `npm run typecheck --workspace web -- --tsBuildInfoFile /tmp/l1d2-web.tsbuildinfo` passed; `npm run lint --workspace web` passed with 0 errors and 5 existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
 
+L1D4 precondition cleanup (Telegram configured-without-token badge), 2026-09-16:
+
+- Current code already applies the live token state from commit b39ae1c: when Task Control settings use live Telegram but no boot-time token was loaded, `withLiveTokenState` reports setup `telegram_missing_token` with a `TELEGRAM_BOT_TOKEN` reason instead of leaving the settings-derived `telegram_configured` value.
+- The Agents badge map renders `telegram_missing_token` as "Telegram token missing"; "Telegram configured" remains only the label for the true configured setup.
+- Added a minimal UI regression test for the badge map; no product behaviour changed.
+- Verification:
+  - `npx -y npm@11 install` completed in the L1D4 worktree after one sandboxed DNS failure; the approved rerun added 496 packages, audited 501 packages, 0 vulnerabilities.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-l1d4-token-badge-rerun node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts` passed: 1 test file, 1 of 1 pass, 0 fail.
+  - `npm run test:quota-ui --workspace web` passed: 4 test files, 4 of 4 pass, 0 fail, including `components/agents/badge.test.tsx`.
+  - `npm run typecheck --workspace server` passed.
+  - `npm run typecheck --workspace web` passed.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |

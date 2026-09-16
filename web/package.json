@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:quota-ui": "node --import tsx --test components/CountUp.test.tsx components/agents/usage.test.tsx components/recovery.test.tsx",
+    "test:quota-ui": "node --import tsx --test components/CountUp.test.tsx components/agents/usage.test.tsx components/agents/badge.test.tsx components/recovery.test.tsx",
     "verify:m4-browser": "node --import tsx ../scripts/verify-m4-browser.mjs",
     "typecheck": "tsc --noEmit"
   },
