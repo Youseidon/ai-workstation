@@ -22,7 +22,7 @@ Preconditions:
 | Id | Slice | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | T01 | TM0 | done | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` | `0781cf1..b75077c` | `H-TM-LT1` PASS; live script recorded administrator delivery to both bots; jd chose to model broad administrator delivery in design/fake; typecheck and secret sweep passed. | 2026-09-16 |
-| T02 | TM0 | blocked: jd | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` |  | `docs/e2e-scenarios/tm0.md` ready on branch `10c3ea0`; awaiting jd skim before merge. | 2026-09-16 |
+| T02 | TM0 | done | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` | `93c4e80..32fb000` | `docs/e2e-scenarios/tm0.md` committed; H-TM-LT1 administrator delivery included; jd skim recorded; `git diff --check` and `npm run typecheck` passed. | 2026-09-16 |
 | T03 | TM0 | pending |  |  |  | Two environments side by side. |  |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
 | T05 | TM1 | pending |  |  |  | LG-1 script: repository refs. |  |
@@ -52,3 +52,4 @@ Preconditions:
 - 2026-09-16: jd decided to update the design/fake to model administrator delivery. T01 worker was sent back to apply the approved design/spec correction and report again.
 - 2026-09-16: T01 merged by fast-forward. Orchestrator verification: `npm run typecheck` passed; tracked-file secret sweep passed across 302 tracked files and 5 live secrets; branch `tm/T01-lt1-two-bots-group` deleted.
 - 2026-09-16: T02 worker reported BLOCKED for jd skim. Question: does `docs/e2e-scenarios/tm0.md` cover the TM0 harness acceptance surface for T03/T04, including H-TM-LT1 administrator delivery, before implementation starts?
+- 2026-09-16: jd answered yes on T02 skim. T02 merged by fast-forward after orchestrator verification: `git diff --check main...tm/T02-tm0-scenario-table` passed and `npm run typecheck` passed. Branch deleted.
