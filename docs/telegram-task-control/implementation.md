@@ -623,6 +623,28 @@ Implemented fifteenth slice (L3 A2, RTC-22 and RTC-23: a card the operator can d
   - A run whose status post is refused ends without a status, so the system blocks the task itself; such a block has no options, which is the right outcome but means a rejected `post_status` still costs the agent its run.
 - Not implemented from the table: S-L3-A2-13a's real-Telegram half and S-L3-A2-14 (both need the test bot), and nothing else was deferred.
 
+Implemented sixteenth slice (L3 C1, RTC-25: thread registry and a chat organised without topics):
+
+- Scenario table: [`l3-c1.md`](../e2e-scenarios/l3-c1.md) (8 rows), deliberately lean because the operator asked for minimal testing on this slice, and adding no tier, driver capability or fake.
+  C0 is blocked on Telegram, so this slice is the no-topic organisation of the flat chat, not a step towards C2.
+- Migration 23 adds `telegram_thread(bot_id, chat_id, subject_kind, subject_id, topic_id, status_message_id, state, created_at, updated_at)` with one row per subject per chat, plus `telegram_outbox.thread_id`.
+  `subject_kind` is `task` or `workstation`; `pipeline` and the L2 kinds are added when they exist.
+  `status_message_id` holds the outbox row carrying the subject's anchor, not a Bot API id: that row already records the delivered message id, so the registry never keeps a second copy of it that could disagree.
+- Every enqueue now names its subject, and the thread decides the destination. Topics are unavailable to this bot, so every subject resolves to the paired chat with `topic_id` null, which is exactly L1 behaviour; a reply still lands in the topic of the message it answers, so F2 is unchanged and C2 can fill the column later.
+- Every message about a task carries that task's tag, appended as its own last line, from A2's `taskTag` (through a new `taskTagFor(promptId)`); the tag is never re-derived here. Workstation messages (pairing, help, views, unpair, quota) carry none.
+- The first question card for a task is registered as that task's anchor. Later messages for the task are sent with `reply_to_message_id` set to it, resolved at delivery from the anchor row's recorded message id, so a row queued before the anchor was delivered still quotes it. Result and receipt messages are always their own replies, never edits of the anchor.
+- `/status` maintains the chat's one control panel: the first one is registered and pinned once, and every later `/status` brings it up to date in place through the F1 edit path. The pin is attempted exactly once per panel and a refusal is only logged, so it can never fail the message.
+- Recovery: an edit that fails permanently (the operator deleted the message) marks that subject's anchor gone, as does a send that fails permanently; the next message for the subject is registered as the new anchor and, for the workstation, pinned again.
+- `TelegramLiveStatus` gained `topics: { available, note }`, and the Live Telegram panel says topics are not available for this bot and how the chat is organised instead.
+- Tests: 4 new T0 tests in `telegramLiveRuntime.test.ts` covering the registry, the tag, the anchor and replies, the pin and the deleted-panel recovery (server suite 233 of 233), and 3 new T1 scenarios, S-L3-C1-10, 11 and 12 (full T1 113 of 113 in 15.7 minutes, with S-L1-05, S-L1-06, S-L1-18, S-L3-A-01, S-L3-A-02, S-L3-A2-11, S-L3-A2-12 and S-L3-B-12 unchanged; burn-in of the three new rows 9 of 9 at the default 3 repeats).
+  The fake Telegram server gained `reply_to_message_id` (with `allow_sending_without_reply`) and `pinChatMessage`, mirroring the Bot API; no new tier, driver capability or fake was added.
+- Findings for the operator (also recorded as questions 1 and 2 of the table):
+  - "The question card is the task's living status, edited in place through its lifecycle" cannot be taken literally without rewriting rows the operator required to keep passing: S-L1-05 and S-L1-06 wait for a new answer card, S-L1-11 for a new card when the question changes, S-L3-A-01, S-L3-A-02 and S-L3-A2-11 for a new card once a brief arrives, and S-L1-09, S-L1-10 and S-L1-13 tap buttons on older cards that an edit would strip. This slice therefore anchors the first card and replies to it, and edits only the control panel in place.
+  - The same applies to `/status`: one panel edited in place versus the B rows that expect a reply to every command. The command still answers with its own message, and the pinned panel is refreshed in place alongside it.
+  - Two T0 assertions on the exact text of a result message became `startsWith`, because the tag is now a line below it. No behavioural assertion was weakened.
+  - The reply uses `reply_to_message_id` with `allow_sending_without_reply`, the form the plan names; current Telegram also offers `reply_parameters`. A T3 recording should confirm the form before C2.
+- Not implemented from the table: nothing was deferred at T0 or T1; S-L3-C1-13 is the existing suites passing again, not a test of its own.
+
 L1 T3 close-out (real Telegram through the harness test bot and the operator's signed-in client), 2026-09-15/16:
 
 - The first T3 runs found differences between the fake and real Telegram, fixed in the harness and the fake (commits cad5b04 to c1c7723):
