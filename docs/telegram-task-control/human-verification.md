@@ -223,7 +223,9 @@ H-L1-05, verified 2026-09-14 against the real database, with a Codex saved task 
   Fixed: a reply or navigation tap whose message is not yet known waits for the delivery in progress (S-L1-33, T0 and T1).
 - Found 2026-09-15: Telegram drops a button tap the bot has not collected about 2.5 minutes after it is made (measured: pending at 141 seconds, gone at 151); messages are kept.
   A tap made while the workstation is offline for longer is lost: the phone shows a spinner and nothing happens, and the server never learns of it.
-  H-L1-08 was rewritten to stay within that limit; whether the app should do something about lost taps (for example, re-send open question cards after a long outage) is an open operator decision.
+  H-L1-08 was rewritten to stay within that limit.
+  Decided by the operator 2026-09-16: accept this and build nothing for it.
+  A tap lost to a long outage stays lost; the question card is still open, so the answer can be given again by replying.
 - Open: `npm run dev` stopped reloading on source changes after repeated restarts in one session; restart it manually after pulling server changes.
 
 ## L3 personal Telegram surface checklist

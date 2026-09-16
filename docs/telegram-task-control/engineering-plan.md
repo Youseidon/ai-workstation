@@ -638,7 +638,7 @@ tracker), and a final "publish a release report" step duplicating
        - Close-out: DONE 2026-09-16, including the phone look check. C0 is blocked on Telegram (no topics for the bot, and a two-member group cannot become a forum), so the close-out ends here.
        - Teammate design: review the teammate design proposal with the operator, then write the approved design as a documented revision and build plan; G01 is decided before the handover slices only.
        Moved after or parallel to the teammate design, not before it: credential rotation for the test bot and harness client, the L1 defects above, the real-database cleanup above, L3 T3 rows without a test, C1 and C2, H7 and H9.
-       Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently (human-verification.md, known issues).
+       Decided 2026-09-16: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently, and that is accepted; no re-send or warning is built (human-verification.md, known issues).
     7. Harness slices H7 (UI coverage) and H8 (workflow integration). H7 may run in parallel with L3.
        H8 workflow changes DONE 2026-09-15: harness tiers are required checks in `docs/engineering-standards.md`, the L1 checklist names each row's harness scenario and tier, and L3 slices each get a test-design pass before implementation.
        H8 is complete when the L1 close-out runs through T3, which is blocked on the operator's live setup.
