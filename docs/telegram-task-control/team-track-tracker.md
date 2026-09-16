@@ -21,7 +21,7 @@ Preconditions:
 
 | Id | Slice | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| T01 | TM0 | blocked: jd | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` |  | LT-1 live run found design-disproving behavior: admin-bot group replies and unanchored discussion were delivered to both bots. Awaiting jd decision before design/plan/fake corrections or merge. | 2026-09-16 |
+| T01 | TM0 | done | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` | `0781cf1..b75077c` | `H-TM-LT1` PASS; live script recorded administrator delivery to both bots; jd chose to model broad administrator delivery in design/fake; typecheck and secret sweep passed. | 2026-09-16 |
 | T02 | TM0 | pending |  |  |  | TM0 scenario table. |  |
 | T03 | TM0 | pending |  |  |  | Two environments side by side. |  |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
@@ -50,3 +50,4 @@ Preconditions:
 - 2026-09-16: jd confirmed the local env and group setup is done. T01 worker `01a0a9ec-be3d-7911-9624-72e5406e2dd0` started on `tm/T01-lt1-two-bots-group`.
 - 2026-09-16: T01 worker reported BLOCKED after a real LT-1 check disproved design section 4.4 assumptions. Result summary: plain command reaches both bots confirmed; addressed command reaches at least the named bot confirmed; reply reaches only replied-to bot disproved; unanchored discussion reaches neither disproved. Worker question: should section 4.4 and the fake model administrator delivery, or should team setup avoid making bots administrators except when pin/invite operations are needed? No T01 branch merge yet.
 - 2026-09-16: jd decided to update the design/fake to model administrator delivery. T01 worker was sent back to apply the approved design/spec correction and report again.
+- 2026-09-16: T01 merged by fast-forward. Orchestrator verification: `npm run typecheck` passed; tracked-file secret sweep passed across 302 tracked files and 5 live secrets; branch `tm/T01-lt1-two-bots-group` deleted.
