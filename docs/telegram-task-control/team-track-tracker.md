@@ -46,3 +46,4 @@ Preconditions:
 
 - 2026-09-16: Tracker created after L1 precondition cleanup. Next task is T01.
 - 2026-09-16: T01 marked `blocked: jd` before spawning because its row has a known jd setup requirement: a second throwaway bot, its token placed by jd in `~/.config/ai-workstation/e2e-live.env`, and a group containing both bots. No push-notification tool was available in this session, so the request is recorded here and sent in chat.
+- 2026-09-16: jd pasted a bot token in chat. The orchestrator treated it as compromised, did not use or store it, and asked jd to rotate it in BotFather. T01 remains blocked until a fresh rotated token is present only in `~/.config/ai-workstation/e2e-live.env` and the Telegram group contains both bots.
