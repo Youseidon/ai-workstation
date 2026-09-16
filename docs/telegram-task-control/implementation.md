@@ -500,6 +500,14 @@ Rollback/default-off behavior:
 - Setting the transport back to Fake Telegram, disabling task control, or removing the token stops all Bot API traffic and leaves task state untouched.
 - Migration 20 is additive; older code ignores the new columns and table.
 
+L1D3 precondition cleanup (dev reload check), 2026-09-16:
+
+- The L1 step 7a note that `npm run dev` stopped reloading after repeated restarts was not reproducible on current main.
+- Added `scripts/check-dev-reload.mjs`, a local-only regression probe. It starts the root `npm run dev`, waits for the server and web app, edits `server/src/index.ts` so `/api/health` returns a unique `devReloadProbe` token, edits `web/app/page.tsx` so the rendered page contains the same unique token, verifies both changes without manual restart, stops the root dev command, restores the files and repeats.
+- Added `WEB_PORT` support to the root `dev:web` script so this check can use unused local ports while preserving the default web port of 3000. The server port is still controlled by the existing `PORT` environment variable.
+- Verification: `npx -y npm@11 install` completed in the L1D3 worktree; `DEV_RELOAD_STARTS=6 DEV_RELOAD_SERVER_PORT=4300 DEV_RELOAD_WEB_PORT=3300 node scripts/check-dev-reload.mjs` passed with `PASS 6/6 repeated npm run dev starts reloaded server and web source changes`.
+- No live Telegram, provider execution, harness run or remote mutation was performed.
+
 Implemented tenth slice (step 7a defect: Claude saved-task runs through typed progress tools):
 
 - Scenario table: [`scenarios/claude-sdk-tools.md`](scenarios/claude-sdk-tools.md), 31 rows written by a separate test-design pass before implementation.

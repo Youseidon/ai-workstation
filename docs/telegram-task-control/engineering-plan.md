@@ -666,7 +666,9 @@ tracker), and a final "publish a release report" step duplicating
     - FIXED 2026-09-16 (implementation.md L1D1): Answers submitted from Telegram are labelled in the task timeline from their applied task-control receipt; local/browser answers remain local `USER` responses.
     - The task-control capability badge reports "Telegram configured" from settings alone, even when no token is loaded; the Live Telegram panel shows the true state.
     - FIXED 2026-09-16 (implementation.md L1D2). The Agents header sometimes renders "-0 AVAILABLE" at page load; `CountUp` now normalizes JavaScript negative zero at its display boundary while preserving meaningful negative numbers.
-    - `npm run dev` stopped reloading on source changes after repeated restarts in one session; confirm whether this is reproducible.
+    - NOT REPRODUCIBLE 2026-09-16 (implementation.md L1D3 precondition cleanup): `npm run dev` reloaded both server and web source changes after repeated restarts in one session.
+      `scripts/check-dev-reload.mjs` starts the root dev command, edits `server/src/index.ts` and `web/app/page.tsx`, waits for `/api/health` and the rendered page to show the new tokens, stops the dev command, and repeats.
+      Evidence: `DEV_RELOAD_STARTS=6 DEV_RELOAD_SERVER_PORT=4300 DEV_RELOAD_WEB_PORT=3300 node scripts/check-dev-reload.mjs` passed 6 of 6 cycles on current main.
 
     Documentation refresh, once step 7 is complete:
 
