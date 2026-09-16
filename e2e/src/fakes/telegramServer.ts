@@ -105,6 +105,7 @@ export class FakeTelegramServer {
   private readonly openCallbacks = new Map<string, { botId: number; createdAt: number }>();
   private readonly failures: ScriptedFailure[] = [];
   private readonly topics = new Map<string, { name: string; closed: boolean; deleted: boolean }>();
+  private readonly pinnedMessages = new Map<number, number>();
   readonly calls: ApiCall[] = [];
   private nextUpdateId = 100_000;
   private nextMessageId = 1;
@@ -315,6 +316,8 @@ export class FakeTelegramServer {
         return this.editMessageText(bot, body);
       case "answerCallbackQuery":
         return this.answerCallbackQuery(body);
+      case "pinChatMessage":
+        return this.pinChatMessage(body);
       case "setMyCommands":
         if (!Array.isArray(body.commands)) throw apiError(400, "Bad Request: commands must be an array");
         return true;
@@ -399,12 +402,33 @@ export class FakeTelegramServer {
       if (!topic || topic.deleted) throw apiError(400, "Bad Request: message thread not found");
       if (topic.closed) throw apiError(400, "Bad Request: TOPIC_CLOSED");
     }
+    // A reply keeps a subject's messages together where there are no topics (L3 C1).
+    // Telegram refuses a reply to a message that is gone unless the sender allows it.
+    const replyTo = typeof body.reply_to_message_id === "number" ? body.reply_to_message_id : undefined;
+    const replied = replyTo === undefined ? undefined : this.find(chatId, replyTo);
+    if (replyTo !== undefined && !replied && body.allow_sending_without_reply !== true) throw apiError(400, "Bad Request: message to be replied not found");
     const message = this.store(chat, { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username }, body.text, {
       ...(isKeyboard(body.reply_markup) ? { reply_markup: body.reply_markup } : {}),
       ...entitiesField(body),
       ...(threadId === undefined ? {} : { message_thread_id: threadId, is_topic_message: true }),
+      ...(replied ? { reply_to_message: { message_id: replied.message_id } } : {}),
     });
     return wireMessage(message);
+  }
+
+  /** Pins a message in a chat, as the control panel is pinned once (L3 C1). */
+  private pinChatMessage(body: Json): boolean {
+    const chatId = Number(body.chat_id);
+    if (!this.knownChat(chatId)) throw apiError(400, "Bad Request: chat not found");
+    const message = this.find(chatId, Number(body.message_id));
+    if (!message) throw apiError(400, "Bad Request: message to pin not found");
+    this.pinnedMessages.set(chatId, message.message_id);
+    return true;
+  }
+
+  /** Test control: the message currently pinned in a chat, if any. */
+  pinnedMessageId(chatId: number): number | undefined {
+    return this.pinnedMessages.get(chatId);
   }
 
   /** Telegram's limits: 4096 UTF-16 units of text, and entities that fit inside it. */

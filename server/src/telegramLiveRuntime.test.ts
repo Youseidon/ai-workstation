@@ -12,7 +12,8 @@ import { HttpTelegramBotApi } from "./integrations/telegram/httpBotApi.ts";
 import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integrations/telegram/runtime.ts";
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
-import { workspaces } from "./workspaces.ts";
+import { taskTagFor } from "./telegramSummary.ts";
+import { taskSubject, WORKSTATION_SUBJECT, workspaces } from "./workspaces.ts";
 
 /* -------------------------------------------------------------------------- */
 /* A stub Bot API: real HTTP client, fake api.telegram.org behind fetch        */
@@ -20,13 +21,14 @@ import { workspaces } from "./workspaces.ts";
 
 type Scripted = { status: number; body: Record<string, unknown> } | Error;
 type User = { id: number; first_name: string; username?: string };
-type RecordedMessage = { chatId: string; topicId: number | null; text: string; buttons: Array<{ text: string; data: string }>; messageId: number };
+type RecordedMessage = { chatId: string; topicId: number | null; text: string; buttons: Array<{ text: string; data: string }>; messageId: number; replyToMessageId: number | null; edits: number };
 
 class StubTelegram {
   readonly rawToken: string;
   readonly calls: Array<{ method: string; body: Record<string, unknown> }> = [];
   readonly messages: RecordedMessage[] = [];
   readonly answered: Array<{ id: string; text: string }> = [];
+  readonly pinned: Array<{ chatId: string; messageId: number }> = [];
   private updates: Array<Record<string, unknown>> = [];
   private nextUpdateId = 1;
   private nextMessageId = 500;
@@ -89,7 +91,7 @@ class StubTelegram {
       }
       case "sendMessage": {
         const markup = body.reply_markup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined;
-        const message = { chatId: String(body.chat_id), topicId: typeof body.message_thread_id === "number" ? body.message_thread_id : null, text: String(body.text), buttons: (markup?.inline_keyboard ?? []).flat().map(button => ({ text: button.text, data: button.callback_data })), messageId: this.nextMessageId++ };
+        const message = { chatId: String(body.chat_id), topicId: typeof body.message_thread_id === "number" ? body.message_thread_id : null, text: String(body.text), buttons: (markup?.inline_keyboard ?? []).flat().map(button => ({ text: button.text, data: button.callback_data })), messageId: this.nextMessageId++, replyToMessageId: typeof body.reply_to_message_id === "number" ? body.reply_to_message_id : null, edits: 0 };
         this.messages.push(message);
         const hold = this.holdSendResponse;
         if (hold !== null) await hold(message);
@@ -97,6 +99,17 @@ class StubTelegram {
       }
       case "answerCallbackQuery":
         this.answered.push({ id: String(body.callback_query_id), text: String(body.text) });
+        return json(200, { ok: true, result: true });
+      case "editMessageText": {
+        const target = this.messages.find(message => message.messageId === Number(body.message_id) && message.chatId === String(body.chat_id));
+        if (!target) return json(400, { ok: false, error_code: 400, description: "Bad Request: message to edit not found" });
+        if (target.text === String(body.text)) return json(400, { ok: false, error_code: 400, description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" });
+        target.text = String(body.text);
+        target.edits += 1;
+        return json(200, { ok: true, result: { message_id: target.messageId, chat: { id: Number(body.chat_id) }, date: 1, text: body.text } });
+      }
+      case "pinChatMessage":
+        this.pinned.push({ chatId: String(body.chat_id), messageId: Number(body.message_id) });
         return json(200, { ok: true, result: true });
       default:
         return json(404, { ok: false, error_code: 404, description: "Not Found" });
@@ -312,7 +325,7 @@ test("live E2E over the stubbed Bot API: pair, post a question, reply, Save answ
     assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
 
     h.stub.tap(operator, answerCard, "Save answer");
-    await waitFor(() => h.stub.messages.find(message => message.text === "Done: Answer saved; task remains waiting."), "save receipt");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done: Answer saved; task remains waiting.")), "save receipt");
     assert.notEqual(workspaces.humanInputState(f.prompt.id).savedResponseId, null);
     assert.equal(starts, 0, "Save answer must not restart work");
 
@@ -320,7 +333,7 @@ test("live E2E over the stubbed Bot API: pair, post a question, reply, Save answ
     const resumeCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Resume with saved answer")), "resume card");
     assert.match(resumeCard.text, /Saved answer:\nUse directory\.example/);
     h.stub.tap(operator, resumeCard, "Resume with saved answer");
-    await waitFor(() => h.stub.messages.find(message => message.text === "Done: Answer saved and resume requested."), "resume receipt");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done: Answer saved and resume requested.")), "resume receipt");
     h.stub.tap(operator, resumeCard, "Resume with saved answer");
     await waitFor(() => h.stub.answered.filter(entry => entry.text === "Already applied.").length === 1, "duplicate tap receipt");
     assert.equal(starts, 1, "a duplicate tap must not start a second run");
@@ -703,6 +716,135 @@ test("S-L3-F2-09 (T0): a reply whose topic was closed or deleted is recorded fai
       assert.equal(failed.attemptCount, 1);
       assert.equal(h.runtime.status().state, "polling");
     }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/* ------------------------------ L3 C1: threads ----------------------------- */
+
+test("S-L3-C1-01 (T0): one thread per subject, resolved to the chat with no topic, recorded on every message it sends", () => {
+  const botId = `telegram-threads-${Date.now()}`;
+  try {
+    const first = workspaces.telegramThreadFor({ botId, chatId: "4242", subject: taskSubject(77) });
+    const again = workspaces.telegramThreadFor({ botId, chatId: "4242", subject: taskSubject(77) });
+    const workstation = workspaces.telegramThreadFor({ botId, chatId: "4242", subject: WORKSTATION_SUBJECT });
+    const otherChat = workspaces.telegramThreadFor({ botId, chatId: "4343", subject: taskSubject(77) });
+    assert.equal(again.id, first.id, "the same subject always resolves to the same thread");
+    assert.notEqual(workstation.id, first.id);
+    assert.notEqual(otherChat.id, first.id, "a subject is scoped to its chat");
+    // Topics are unavailable to this bot, so every subject resolves to the paired chat itself.
+    assert.deepEqual(workspaces.telegramThreads(botId).map(thread => thread.topicId), [null, null, null]);
+    assert.deepEqual(workspaces.telegramThreads(botId).map(thread => thread.state), ["ACTIVE", "ACTIVE", "ACTIVE"]);
+
+    const withSubject = workspaces.enqueueTelegramOutbox({ botId, chatId: "4242", payload: { kind: "text", text: "about the task" }, subject: taskSubject(77) });
+    // A row queued without a subject is still queued and sent: the L1 rows keep working.
+    const without = workspaces.enqueueTelegramOutbox({ botId, chatId: "4242", payload: { kind: "text", text: "no subject" } });
+    assert.equal(workspaces.telegramOutboxRow(withSubject)?.replyToMessageId, null, "no anchor yet, so nothing to reply to");
+    assert.equal(workspaces.telegramOutboxRow(without)?.state, "QUEUED");
+    assert.deepEqual(workspaces.dueTelegramOutbox(botId, new Date()).map(row => row.id), [withSubject, without]);
+  } finally {
+    workspaces.removeTelegramRecordsForBot(botId);
+  }
+});
+
+test("S-L3-C1-02/03 (T0): every message about a task carries its tag and replies to the task's anchor card", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    await f.askQuestion();
+    const card = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    const tag = taskTagFor(f.prompt.id)!;
+    assert.equal(card.text.split("\n")[0], tag, "A2 renders the tag as the card header; C1 reuses that function");
+    assert.equal(card.replyToMessageId, null, "the anchor itself replies to nothing");
+
+    // The card is the task's anchor, and nothing about the task stacks outside its thread.
+    const thread = workspaces.telegramThreads(h.botId).find(entry => entry.subjectKind === "task" && entry.subjectId === String(f.prompt.id))!;
+    assert.equal(workspaces.telegramOutboxRow(thread.statusMessageId!)?.payload && true, true);
+
+    h.stub.send(operator, operatorChat, "Use the list", card.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Save answer")), "answer card");
+    assert.equal(answerCard.replyToMessageId, card.messageId, "a later card quotes the anchor");
+    h.stub.tap(operator, answerCard, "Save answer");
+    const result = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done:")), "tap result");
+    assert.equal(result.text, `Done: Answer saved; task remains waiting.\n${tag}`);
+    assert.equal(result.replyToMessageId, card.messageId);
+    assert.equal(result.edits, 0, "the record of what was decided is its own message, never an edit of the anchor");
+    assert.equal(card.edits, 0, "the anchor is never overwritten by a later message");
+
+    // A message that is not about a task carries no tag and is not addressed to the task's anchor.
+    h.stub.send(operator, operatorChat, "just chatting");
+    const help = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("To answer a task")), "help view");
+    assert.equal(help.text.includes(tag), false);
+    assert.equal(help.replyToMessageId, null);
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("S-L3-C1-04 (T0): the control panel is pinned once, edited in place, and registered again after the operator deletes it", async () => {
+  const h = harness();
+  const f = fixture();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    assert.equal(h.runtime.status().topics.available, false, "the panel says topics are not available for this bot");
+
+    h.stub.send(operator, operatorChat, "/status");
+    const panel = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Status ·")), "control panel");
+    await waitFor(() => h.stub.pinned.length === 1 && h.stub.pinned[0]!.messageId === panel.messageId, "the panel pinned once");
+
+    // A later /status keeps that one panel current in place; the pin is never repeated.
+    await f.askQuestion();
+    await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "question card");
+    h.stub.send(operator, operatorChat, "/status");
+    await waitFor(() => panel.edits === 1, "the pinned panel edited in place");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(h.stub.pinned.length, 1, "editing rather than resending is what avoids pin churn");
+
+    // The operator deletes the panel: its edit fails once, is not retried, and the next /status registers a new one.
+    const botThread = () => workspaces.telegramThreads(h.botId).find(thread => thread.subjectKind === "workstation")!;
+    assert.equal(botThread().statusMessageId !== null, true);
+    h.stub.script("editMessageText", { status: 400, body: { ok: false, error_code: 400, description: "Bad Request: message to edit not found" } });
+    h.stub.send(operator, operatorChat, "/status");
+    const failed = await waitFor(() => workspaces.telegramOutbox().find(row => row.botId === h.botId && row.state === "FAILED" && row.lastError?.includes("message to edit not found")), "failed edit");
+    assert.equal(failed.attemptCount, 1, "F1 records a deleted target failed without retry");
+    await waitFor(() => botThread().state === "ANCHOR_GONE", "the registry gives up on the deleted anchor");
+
+    h.stub.send(operator, operatorChat, "/status");
+    await waitFor(() => h.stub.pinned.length === 2, "the new panel pinned once");
+    const replacement = h.stub.messages.filter(message => message.text.startsWith("Status ·")).at(-1)!;
+    assert.equal(h.stub.pinned[1]!.messageId, replacement.messageId);
+    assert.notEqual(replacement.messageId, panel.messageId);
+    assert.equal(botThread().state, "ACTIVE");
+    assert.equal(h.runtime.status().state, "polling", "a refused edit is not an outage");
+  } finally {
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("S-L3-C1-04 (T0): a pin Telegram refuses is attempted once and never holds up the message", async () => {
+  const h = harness();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    h.stub.script("pinChatMessage", { status: 400, body: { ok: false, error_code: 400, description: "Bad Request: not enough rights to pin a message" } });
+    h.stub.send(operator, operatorChat, "/status");
+    const panel = await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Status ·")), "control panel");
+    await waitFor(() => workspaces.telegramThreads(h.botId).find(thread => thread.subjectKind === "workstation")?.state === "ACTIVE", "the pin attempted");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(h.stub.calls.filter(call => call.method === "pinChatMessage").length, 1, "a refused pin is never retried");
+    assert.equal(h.stub.pinned.length, 0);
+    assert.equal(panel.text.startsWith("Status ·"), true, "the panel itself stands");
+    assert.equal(workspaces.telegramOutbox().some(row => row.botId === h.botId && row.state === "FAILED"), false, "the message did not fail with the pin");
+    assert.equal(h.runtime.status().state, "polling");
   } finally {
     await h.cleanup();
   }
