@@ -123,7 +123,7 @@ Old: "The personal phone surface (L3) gives the operator enough context to decid
 New: add "The same rule holds for both people in an item thread. A slash command that would change state only renders an action card bound to the current revision; the tap on that card is the action, validated and receipted by the workstation that owns the item."
 
 **D18 (new).**
-"Each person runs their own bot and each workstation long-polls only its own bot. Telegram routes by construction: a callback query reaches the bot that sent the card, a reply reaches the bot whose message it answers, and a private chat reaches only that person's bot. A command typed in the team group reaches both bots, so each workstation answers only for the items it owns and stays silent otherwise, and no workstation ever answers for another. Bots run with privacy mode on, so a group message reaches a bot only when it starts with a slash or replies to that bot's own message. Discussion that replies to an item's anchor therefore does reach the owning workstation, which matches it against open questions and commands and otherwise drops it with no reply; such a message stays in that machine's local inbox and never reaches the repository or the other machine."
+"Each person runs their own bot and each workstation long-polls only its own bot. Telegram routes callbacks by construction: a callback query reaches the bot that sent the card, and a private chat reaches only that person's bot. In the team group both bots are administrators so they can pin messages and create invite links; LT-1 recorded that administrator bots receive plain commands, addressed commands, replies to bot messages and unanchored discussion even when `getMe.can_read_all_group_messages` is false. Each workstation therefore filters every delivered group update by ownership: it answers only for the items it owns and stays silent otherwise, and no workstation ever answers for another. Discussion that replies to an item's anchor or to nothing can be delivered to both workstations; each matches it against open questions and commands and otherwise drops it with no reply. Such a message stays in that machine's local inbox and never reaches the repository or the other machine."
 
 **D19 (new).**
 "Either person may open an item thread, including on an item the other person owns; on the other person's item this is a request that takes effect when the owning workstation confirms it. Every decision about an item belongs to the workstation that owns it. The other person may read the thread and use read-only commands. The owner may grant named capabilities (context, answer, resume) for one item and one person; a grant is revocable, ends when the thread closes or a handover starts, and never includes provider, permission, access or scope decisions, which stay with the owner's workstation settings. Grants are checked when a tap is applied, not when a card is shown."
@@ -212,16 +212,16 @@ Telegram decides most of this on its own:
 | Update | Reaches | Owner |
 | --- | --- | --- |
 | Callback on a card | Only the bot that sent the card | That bot's workstation, always |
-| Reply to a bot message | Only the bot whose message it answers | That bot's workstation, always |
+| Reply to a bot message outside the team administrator group | Only the bot whose message it answers | That bot's workstation, always |
 | Private chat message | Only that person's bot | That person's workstation |
 | `/start <code>` pairing | Only that person's bot | That person's workstation |
-| Command in the team group | Both bots, unless addressed with `@botname` (subject to LT-1) | The workstation that owns the item the command names or the anchor it replies to. A command addressed to the other person's bot is ignored, even when this workstation owns the item. If no workstation owns the named item, only the typer's own workstation answers, with an error, so the mistake is never met with silence. |
-| Discussion replying to an item's anchor | Only the anchor's bot, because privacy mode delivers replies to a bot's own messages | The owning workstation. It matches the reply against open questions and granted commands and otherwise drops it with no reply and no receipt. |
-| Discussion replying to nothing | Neither bot | Nobody. Nothing is delivered or stored. |
+| Command in the team group | Both administrator bots, including addressed commands | The workstation that owns the item the command names or the anchor it replies to. A command addressed to the other person's bot is ignored, even when this workstation owns the item. If no workstation owns the named item, only the typer's own workstation answers, with an error, so the mistake is never met with silence. |
+| Discussion replying to an item's anchor | Both administrator bots | The owning workstation handles it; the other stays silent. The owner matches the reply against open questions and granted commands and otherwise drops it with no reply and no receipt. |
+| Discussion replying to nothing | Both administrator bots | No item owner is implied. Each workstation drops it unless it is a recognized team-level command for its own person. |
 
-So the only ownership decisions the app makes are the last three rows, and they are answered from local records: the item link and the thread registry.
-A workstation that does not own the named item stays silent, which is also why the "That message is not a task question" hint must never be sent in the team group: the reply it cannot match usually belongs to the other person's bot, or is ordinary discussion.
-A delivered discussion reply is kept in the owning machine's local inbox like any other update, which is local-only; it never reaches the repository or the other workstation.
+So the only ownership decisions the app makes are the last three rows, and they are answered from local records: the item link, the thread registry and the local paired actor.
+A workstation that does not own the named item stays silent, which is also why the "That message is not a task question" hint must never be sent in the team group: the reply it cannot match usually belongs to the other person's item, or is ordinary discussion.
+A delivered group discussion message can be kept in each administrator bot's local inbox like any other update, which is local-only; it never reaches the repository or the other workstation.
 
 There are no relayed updates, no workstation code in callback data and no toast that speaks for another machine.
 
@@ -361,7 +361,7 @@ Sized for two people who trust each other and share a private repository.
 | Join codes | Single use through the roster's used invite ids, 24-hour expiry, no credential inside. | Someone who holds the code can add themselves to the roster until it expires or is used; they still need repository access to do anything. |
 | Actions on a workstation | Owner-local action records, actor check against the Telegram user id from that person's own pairing, grant check at tap time, revision, expiry, message binding, idempotent receipts. | A teammate misusing a capability they were granted. |
 | Strangers in the group | Not on the roster: ignored, nothing stored, nothing relayed. | Metadata a group member can see anyway. |
-| Group contents | Privacy mode keeps unaddressed discussion away from both bots. Commands, taps and replies to a bot's own message are delivered, so a discussion message that replies to an item's anchor does reach the owning workstation; it is dropped after matching and kept only in that machine's local inbox. | Anything a group member can read in the group, and the anchor replies each owner's machine keeps locally. |
+| Group contents | LT-1 recorded that administrator bots receive unaddressed discussion, replies to bot messages and commands even with `getMe.can_read_all_group_messages=false`. Workstations therefore treat delivery as broad and authority as local: non-owned and non-command discussion is dropped after matching, with no reply, receipt or repository write. | Anything a group member can read in the group, and delivered group messages each administrator bot keeps locally. |
 | Repository | Fast-forward or compare-and-swap writes; a detected non-fast-forward rewrite of a control ref disables handover until inspected (G03). | Repository administrators rewriting history. |
 | Handed-over code | The receiver never executes imported hooks, filters or setup while importing; it runs under their own local settings. | A malicious teammate, or a malicious snapshot beyond what the receiver's own permission settings stop. |
 
@@ -376,7 +376,7 @@ Sized for two people who trust each other and share a private repository.
 
 Reused as is: `FakeTelegramServer`, `FakePhone`, the route proxy and `network.cutTelegram()`, process lifecycle helpers, the fake provider CLI, scenario tables, the coverage matrix, burn-in and the token sweep.
 
-Added in harness slice TM0: port offsets so two environments run side by side, a second bot and a second fake user on the shared fake Telegram, group membership and administrator rights (`getChatMember`), `createChatInviteLink` and joining through it, privacy-mode delivery rules for group messages, `network.cutGit()` per environment, and a shared bare repository per test.
+Added in harness slice TM0: port offsets so two environments run side by side, a second bot and a second fake user on the shared fake Telegram, group membership and administrator rights (`getChatMember`), `createChatInviteLink` and joining through it, LT-1 delivery rules for administrator bots in group messages, `network.cutGit()` per environment, and a shared bare repository per test.
 
 ### 8.2 Automated scenarios
 
@@ -388,7 +388,7 @@ Every rule in section 4.4, every grant rule in 5.3 and every failure row in 5.5 
 
 | ID | Who and time | Steps | Pass |
 | --- | --- | --- | --- |
-| LT-1 Two bots in a group | jd, 5 min, the test bot plus a second throwaway bot | Record `getMe.can_read_all_group_messages` for both bots. Put both in a group; record `getChatMember` rights for both, pin a message, and create and use a one-member `createChatInviteLink`. Send `/status`, `/status@one-bot`, a reply to each bot's own message from someone other than its owner, and discussion replying to nothing. | Records exactly which of these each bot receives. The design assumes: a plain command reaches both, an addressed one reaches at least the bot named, a reply reaches the replied-to bot, and unaddressed discussion reaches neither. Any difference corrects 4.4 and the fake; if a plain command does not reach both, group commands use `@botname` or buttons. |
+| LT-1 Two bots in a group | jd, 5 min, the test bot plus a second throwaway bot | Record `getMe.can_read_all_group_messages` for both bots. Put both in a group; record `getChatMember` rights for both, pin a message, and create and use a one-member `createChatInviteLink`. Send `/status`, `/status@one-bot`, a reply to each bot's own message from someone other than its owner, and discussion replying to nothing. | Records exactly which of these each bot receives. Recorded 2026-09-16: both bots were administrators; both reported `can_read_all_group_messages=false`; plain commands, addressed commands, replies to either bot message and unanchored discussion reached both bots. The fake must model administrator delivery this broadly; routing correctness comes from ownership filtering, not Telegram privacy mode. |
 | LT-3 Join | jd and Yousef, 10 min, real bots | Yousef's own L1 setup, then the join code, then jd adds their bot and sends the invite link. | Yousef's total setup recorded by stopwatch; both panels show the team; the roster has both people and both bots. |
 | LT-4 Thread and grant | jd and Yousef, 5 min, throwaway workspace with the fake agent | jd starts a thread; Yousef `/resume` is refused; jd grants answer and resume; Yousef answers and resumes from their phone. | Exactly one run on jd-laptop; phone look check of the anchor card, access message and toasts on both phones. |
 | LG-1 Repository refs | jd, 2 min, script | Push, fetch and compare-and-swap `refs/aw/*`; attempt a non-fast-forward; push an `aw/handover/*` branch. | Custom refs accepted, conflict rejected, no Actions run triggered. Prior art suggests this passes; if refused, fall back to `aw-*` branches with `[skip ci]`. |
@@ -403,7 +403,7 @@ Release points: after TM3, item threads and grants can be enabled with no gate; 
 
 ## 10. Open items
 
-1. LT-1 decides whether a plain `/status` in the group reaches both bots. If it does not, group commands take `@botname` or become buttons, and 4.4 and 8.2 are corrected.
+1. LT-1 recorded that administrator bots in the group both receive plain commands, addressed commands, replies to either bot's message and unanchored discussion, despite `can_read_all_group_messages=false`. jd decided on 2026-09-16 to model this administrator delivery in the fake and keep correctness in the local ownership filters.
 2. Four new default values, proposed and not yet recorded: team taps expire after 10 minutes; a grant lasts until revoked, the thread closes or a handover starts; a join code is single use with a 24-hour expiry; the item id is short and opaque, and the group tag built from it follows C1's tag rules.
    The proposal's 128-character topic name cap is gone with topics.
 3. G01 for handover: whether Yousef running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. Recorded before TM4 starts.

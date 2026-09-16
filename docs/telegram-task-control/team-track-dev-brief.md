@@ -192,7 +192,7 @@ The orchestrator reports the audit result to jd either way.
 - **Tags.** C1's tag is built from the local task id, which differs between the two machines; team tags come from the item id.
 - **Message ids.** A Bot API message id and a GramJS client message id are only equal on the fake. The C1 live spec failed on this (commit 0f820c4); compare in the right id space.
 - **Bots cannot add bots.** Adding Yousef's bot to the group is jd's manual step; do not automate it.
-- **Privacy mode.** A reply to a bot's own message is delivered even in privacy mode, so anchor discussion reaches the owner's bot and must be dropped quietly.
+- **Administrator delivery.** LT-1 recorded that administrator bots receive group commands, replies to either bot's messages and unanchored discussion even when `getMe.can_read_all_group_messages` is false. Fake Telegram must model that broad delivery; team routing correctness comes from ownership filters and quiet drops, not privacy mode.
 - **Harness hygiene.** Never edit `server/src` or `e2e/src` while a harness run is in flight. Copy real-provider event logs out of `e2e/test-results` before a new Playwright run, because it clears the directory. A T3 run re-records `e2e/contracts/telegram-bot-api.json`; restore it with `git checkout` if the shapes did not change.
 - **Skipped live evidence.** On A2 and C1 the building agents did not write the live part and it had to be added afterwards. A task whose criteria include a real check is not done without it.
 

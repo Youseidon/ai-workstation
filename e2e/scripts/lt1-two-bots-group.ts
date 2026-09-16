@@ -318,10 +318,10 @@ async function main(): Promise<void> {
         unanchoredDiscussion,
       },
       assumptions: {
-        "plain command reaches both bots": plainCommand["test-bot"] && plainCommand["second-bot"] ? "confirmed" : "disproved",
-        "addressed command reaches at least the named bot": addressedToTestBot["test-bot"] && addressedToSecondBot["second-bot"] ? "confirmed" : "disproved",
-        "reply reaches only the replied-to bot": replyToTestBotMessage["test-bot"] && !replyToTestBotMessage["second-bot"] && !replyToSecondBotMessage["test-bot"] && replyToSecondBotMessage["second-bot"] ? "confirmed" : "disproved",
-        "unanchored discussion reaches neither bot": !unanchoredDiscussion["test-bot"] && !unanchoredDiscussion["second-bot"] ? "confirmed" : "disproved",
+        "plain command reaches both admin bots": plainCommand["test-bot"] && plainCommand["second-bot"] ? "confirmed" : "disproved",
+        "addressed command reaches at least the named admin bot": addressedToTestBot["test-bot"] && addressedToSecondBot["second-bot"] ? "confirmed" : "disproved",
+        "reply to an admin bot message reaches both admin bots": replyToTestBotMessage["test-bot"] && replyToTestBotMessage["second-bot"] && replyToSecondBotMessage["test-bot"] && replyToSecondBotMessage["second-bot"] ? "confirmed" : "disproved",
+        "unanchored discussion reaches both admin bots": unanchoredDiscussion["test-bot"] && unanchoredDiscussion["second-bot"] ? "confirmed" : "disproved",
       },
     };
 

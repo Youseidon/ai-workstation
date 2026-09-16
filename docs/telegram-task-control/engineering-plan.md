@@ -435,9 +435,9 @@ the control record; G04 is jd's one-time governance note.
 
 | Slice | Builds | Proven by | Done when |
 | --- | --- | --- | --- |
-| TM0 Harness | Two environments on offset ports sharing one fake Telegram with two bots and one bare repository; group membership and admin rights, invite links, privacy-mode delivery rules, `network.cutGit()` per environment. | Harness self-tests; LT-1 and LG-1 recorded first, because both decide behaviour the fake must copy. | Any team scenario can be written, and the fake's delivery rules match LT-1. |
+| TM0 Harness | Two environments on offset ports sharing one fake Telegram with two bots and one bare repository; group membership and admin rights, invite links, LT-1 administrator-delivery rules for group messages, `network.cutGit()` per environment. | Harness self-tests; LT-1 and LG-1 recorded first, because both decide behaviour the fake must copy. | Any team scenario can be written, and the fake's delivery rules match LT-1. |
 | TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, migration 24 (`team_roster`, group actor sentinel and unique index), the one manual "ask jd to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4, TM-T0-5 (migration 24); TM-T1-1; then LT-3. | Two people, two bots and one group exist, with jd's workstation offline for all but the last step. |
-| TM2 Item threads | Migration 25 (`telegram_thread` rebuilt to allow `item`, `item_link`), team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor discussion dropped, no "not a task question" in the group. | TM-T0-1, TM-T0-5 (migration 25); TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
+| TM2 Item threads | Migration 25 (`telegram_thread` rebuilt to allow `item`, `item_link`), team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules over LT-1's broad administrator delivery: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor and unanchored discussion dropped, no "not a task question" in the group. | TM-T0-1, TM-T0-5 (migration 25); TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
 | TM3 Grants | Migration 26 (action check widened by table rebuild, `item_grant`), grant and revoke cards, the access message, `/context`, `/answer`, `/resume`, teammate removal. | TM-T0-2, TM-T0-5 (migration 26); TM-T1-4, TM-T1-5; then LT-4. | R-B is usable by two people on real phones. This is the first release point. |
 | TM4 Handover | Snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, worktree run, requirement questions across workstations, return, and apply by ordinary merge. Two commits: capture through run, then return and apply. | TM-T0-6, TM-T0-7; TM-T1-H1 to TM-T1-H3; LT-5 optional. | R-A works end to end with the fake agent, behind the handover capability until the G01 record exists. |
 
@@ -447,7 +447,7 @@ T0, seven scenarios, each table-driven rather than split per case:
 
 | ID | Proves |
 | --- | --- |
-| TM-T0-1 | Group routing rules: owner answers, other silent, addressed-to-another ignored, unknown item answered once by the typer's workstation, anchor discussion reply dropped, hint never produced. |
+| TM-T0-1 | Group routing rules under LT-1 administrator delivery: both bots can receive commands, replies and unanchored discussion; owner answers, other silent, addressed-to-another ignored, unknown item answered once by the typer's workstation, anchor and unanchored discussion dropped, hint never produced. |
 | TM-T0-2 | Grant matrix: every command and action against owner, other person with and without each capability, revoked, stranger, and after a handover starts. |
 | TM-T0-3 | Join code: encode, decode, expiry, tampering, wrong team, reused invite id. |
 | TM-T0-4 | Shared record compare-and-swap, roster and control: concurrent writers, uncertain push found by command id, loser re-validates and stays lost. |
@@ -464,7 +464,7 @@ T1, seven for R-B plus three for handover, all on two environments:
 | --- | --- |
 | TM-T1-1 | Yousef joins with jd-laptop stopped: roster gains their person, bot and workstation, the manual bot-add step is shown, both panels agree. |
 | TM-T1-2 | Team enabled on both: each person's private-chat question and tap work on their own machine, and neither inbox ever holds the other's private-chat update. |
-| TM-T1-3 | Group routing live: a command on an anchor is answered once by the owner, an unknown item gets one error from the typer's workstation, a discussion reply gets nothing, a non-roster member gets nothing. |
+| TM-T1-3 | Group routing live: with both administrator bots receiving group updates, a command on an anchor is answered once by the owner, an unknown item gets one error from the typer's workstation, anchor and unanchored discussion get nothing, a non-roster member gets nothing. |
 | TM-T1-4 | jd grants answer and resume; Yousef answers and resumes: exactly one run on jd-laptop, and the card names jd's allowance. |
 | TM-T1-5 | Revoke while Yousef's card is open, and a tap after the action expired with jd-laptop stopped in between: both rejected, no run, card reissued. |
 | TM-T1-6 | Thread lifecycle: anchor pinned at start, updated and unpinned at completion, grants end, old buttons rejected, reopen posts a new anchor. |
