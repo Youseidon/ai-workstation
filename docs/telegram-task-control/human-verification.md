@@ -228,6 +228,15 @@ H-L1-05, verified 2026-09-14 against the real database, with a Codex saved task 
   A tap lost to a long outage stays lost; the question card is still open, so the answer can be given again by replying.
 - Open: `npm run dev` stopped reloading on source changes after repeated restarts in one session; restart it manually after pulling server changes.
 
+## Team track live checklist
+
+Scope: Team track real checks from [`teammate-design.md`](teammate-design.md) section 8.4.
+Rows must not include bot tokens, API hashes, session strings, bot usernames, bot ids, user ids, chat/group ids or invite links.
+
+| ID | Case | Steps | Expected result | Script | Automated status | Live status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-TM-LT1 | Two bots in a group | 2026-09-16: ran `e2e/scripts/lt1-two-bots-group.ts` with the existing harness test bot, the second throwaway bot from `~/.config/ai-workstation/e2e-live.env`, and a temporary private group created by the signed-in test user. The script added both bots, promoted both as administrators with pin and invite rights, verified `getMe`, `getChatMember`, pinning, one-use invite creation and rejoin, then sent a plain `/status`, addressed commands to each bot, replies to each bot's own message and an unanchored discussion message. | Record exactly which updates each bot receives so the fake can copy Telegram. | `node --import tsx e2e/scripts/lt1-two-bots-group.ts` | BLOCKED: script exited 3 after recording a design-disproving result. Both bots reported `can_read_all_group_messages=false`; both were administrators with pin and invite rights; both could pin; the one-use invite was created and used by leaving and rejoining. Delivery: plain command reached both bots; addressed commands reached at least the named bot and also the other bot; replies to each bot's own message reached both bots; unanchored discussion reached both bots. | BLOCKED - 2026-09-16. Section 4.4 assumptions: plain command reaches both = confirmed; addressed command reaches at least named bot = confirmed; reply reaches only the replied-to bot = disproved; unanchored discussion reaches neither = disproved. Per the Team track rule, stop before changing design, plan or fake. |
+
 ## L3 personal Telegram surface checklist
 
 Scope: milestone L3 (RTC-21 to RTC-26), one operator in their own private chat.
@@ -254,4 +263,3 @@ Live status is satisfied by the T3 scenarios named plus the phone look check.
 | H-L3-46 | Views after restart | Leave a view on the phone, restart the workstation, tap its buttons. | Old view buttons still navigate by editing the same message; no duplicates. | S-L3-B-32 (T1, T3) | PASS (T1); T3 PASS 2026-09-15 (real Telegram, test bot) | PASS - 2026-09-16 (T3 plus the phone look check) |
 | H-L3-47 | Views change nothing | Use every command and button with a blocked task. | No run starts, no answer is recorded, the task stays blocked. | S-L3-B-14, S-L3-B-37 (T1) | PASS (T1) | Pending |
 | H-L3-48 | Stranger gets nothing | From a second Telegram account (optional), send `/status` to the bot. | No reply and no task information. | S-L3-B-23 (T1) | PASS (T1) | Optional |
-
