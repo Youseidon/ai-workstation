@@ -23,7 +23,7 @@ Preconditions:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | T01 | TM0 | done | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` | `0781cf1..b75077c` | `H-TM-LT1` PASS; live script recorded administrator delivery to both bots; jd chose to model broad administrator delivery in design/fake; typecheck and secret sweep passed. | 2026-09-16 |
 | T02 | TM0 | done | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` | `93c4e80..32fb000` | `docs/e2e-scenarios/tm0.md` committed; H-TM-LT1 administrator delivery included; jd skim recorded; `git diff --check` and `npm run typecheck` passed. | 2026-09-16 |
-| T03 | TM0 | in progress | `01a0aa25-f416-7fd0-9c55-d62ca5d4f83e` | `tm/T03-two-environments-side-by-side` |  | Two-environment harness worker started. | 2026-09-16 |
+| T03 | TM0 | blocked: review | `01a0aa25-f416-7fd0-9c55-d62ca5d4f83e` | `tm/T03-two-environments-side-by-side` |  | Worker reported DONE twice, but orchestrator verification failed `node --import tsx --test --test-concurrency=1 e2e/src/tm0.selftest.test.ts` twice with `ERR_TEST_FAILURE`; branch unmerged for review. | 2026-09-16 |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
 | T05 | TM1 | pending |  |  |  | LG-1 script: repository refs. |  |
 | T06 | TM1 | pending |  |  |  | TM1 scenario table and four defaults. |  |
@@ -53,3 +53,5 @@ Preconditions:
 - 2026-09-16: T01 merged by fast-forward. Orchestrator verification: `npm run typecheck` passed; tracked-file secret sweep passed across 302 tracked files and 5 live secrets; branch `tm/T01-lt1-two-bots-group` deleted.
 - 2026-09-16: T02 worker reported BLOCKED for jd skim. Question: does `docs/e2e-scenarios/tm0.md` cover the TM0 harness acceptance surface for T03/T04, including H-TM-LT1 administrator delivery, before implementation starts?
 - 2026-09-16: jd answered yes on T02 skim. T02 merged by fast-forward after orchestrator verification: `git diff --check main...tm/T02-tm0-scenario-table` passed and `npm run typecheck` passed. Branch deleted.
+- 2026-09-16: T03 worker first reported DONE at `65ac229`, but orchestrator rerun of `node --import tsx --test --test-concurrency=1 e2e/src/tm0.selftest.test.ts` failed with `ERR_TEST_FAILURE`; `npm run typecheck` passed. Worker was sent back once.
+- 2026-09-16: T03 worker reported DONE again at `0cc1ed7`, but the same orchestrator rerun failed again with `ERR_TEST_FAILURE`; `npm run typecheck` passed. Per track rule, T03 is `blocked: review` after two verification failures. No merge performed.
