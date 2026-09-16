@@ -694,7 +694,10 @@ tracker), and a final "publish a release report" step duplicating
     Required evidence: the L3 definition of done observed through a T3 harness run plus the operator's phone look check, plus H-L3 rows in `human-verification.md`.
     Queued follow-ups (status and Stop, Ask the agent, starting from the phone, brief version 2) are planned only after this step.
 
-8. Build the Team track of section 3b.
+8. Build the Team track of section 3b, after the step 7a L1 defects are fixed.
+   jd decided the order on 2026-09-16, because TM0 changes the harness ports and
+   fake Telegram those fixes also use. A development agent works from
+   [team-track-dev-brief.md](team-track-dev-brief.md), which covers TM0 to TM3.
    Record LT-1 (two bots in a group) and LG-1 (repository refs) first, because
    both decide behaviour the fake must copy. Then build TM0 to TM3 in order,
    each with its test-design pass, its crucial scenarios and its
