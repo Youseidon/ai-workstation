@@ -663,6 +663,14 @@ L1 T3 close-out (real Telegram through the harness test bot and the operator's s
 - `human-verification.md` records T3 PASS for 27 H-L1 and H-L3 rows. Their Live column stays Pending until the operator's phone look check (S-H6-33).
 - Open operator decision: a tap made while every polling workstation is offline for more than about 2.5 minutes is lost silently.
 
+L1D2 precondition cleanup (Agents header negative-zero display), 2026-09-16:
+
+- `CountUp` now normalizes only JavaScript negative zero at the presentation boundary, including initial render, animation rounding and custom `format` callbacks. Meaningful negative values such as `-1` still render as negative.
+- The Agents header `available` stat continues to pass its provider count through `CountUp`, so page-load and transition renders cannot produce `-0 AVAILABLE`.
+- Pre-fix failure probe: `node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal((-0).toLocaleString(), '0');"` failed with `AssertionError [ERR_ASSERTION]: '-0' !== '0'`.
+- Focused tests: `npm run test:quota-ui --workspace web` passed 3 test files, 3 of 3 subtests, including the new `CountUp` negative-zero regression.
+- Web checks: `npm run typecheck --workspace web -- --tsBuildInfoFile /tmp/l1d2-web.tsbuildinfo` passed; `npm run lint --workspace web` passed with 0 errors and 5 existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
+
 ## 1. Current code: useful pieces and actual gaps
 
 | Existing location | Reuse | Gap that must not be assumed solved |
