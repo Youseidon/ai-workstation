@@ -22,7 +22,7 @@ Preconditions:
 | Id | Slice | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | T01 | TM0 | done | `01a0a9ec-be3d-7911-9624-72e5406e2dd0` | `tm/T01-lt1-two-bots-group` | `0781cf1..b75077c` | `H-TM-LT1` PASS; live script recorded administrator delivery to both bots; jd chose to model broad administrator delivery in design/fake; typecheck and secret sweep passed. | 2026-09-16 |
-| T02 | TM0 | in progress | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` |  | TM0 scenario table worker started. | 2026-09-16 |
+| T02 | TM0 | blocked: jd | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` |  | `docs/e2e-scenarios/tm0.md` ready on branch `10c3ea0`; awaiting jd skim before merge. | 2026-09-16 |
 | T03 | TM0 | pending |  |  |  | Two environments side by side. |  |
 | T04 | TM0 | pending |  |  |  | Group features in the fake. |  |
 | T05 | TM1 | pending |  |  |  | LG-1 script: repository refs. |  |
@@ -51,3 +51,4 @@ Preconditions:
 - 2026-09-16: T01 worker reported BLOCKED after a real LT-1 check disproved design section 4.4 assumptions. Result summary: plain command reaches both bots confirmed; addressed command reaches at least the named bot confirmed; reply reaches only replied-to bot disproved; unanchored discussion reaches neither disproved. Worker question: should section 4.4 and the fake model administrator delivery, or should team setup avoid making bots administrators except when pin/invite operations are needed? No T01 branch merge yet.
 - 2026-09-16: jd decided to update the design/fake to model administrator delivery. T01 worker was sent back to apply the approved design/spec correction and report again.
 - 2026-09-16: T01 merged by fast-forward. Orchestrator verification: `npm run typecheck` passed; tracked-file secret sweep passed across 302 tracked files and 5 live secrets; branch `tm/T01-lt1-two-bots-group` deleted.
+- 2026-09-16: T02 worker reported BLOCKED for jd skim. Question: does `docs/e2e-scenarios/tm0.md` cover the TM0 harness acceptance surface for T03/T04, including H-TM-LT1 administrator delivery, before implementation starts?
