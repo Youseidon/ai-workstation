@@ -4,6 +4,11 @@ import type { RenderedView } from "./integrations/telegram/views.ts";
 
 export type TeamItemCommand = "task" | "status" | "access" | "help";
 
+export interface ParsedTeamItemCommand {
+  command: TeamItemCommand;
+  itemReference: string | null;
+}
+
 export interface TeamItemViewState {
   promptStatus: string;
   operationalState: string;
@@ -12,11 +17,14 @@ export interface TeamItemViewState {
   now: Date;
 }
 
-export function parseTeamItemCommand(text: string, botUsername: string | null): TeamItemCommand | "other_bot" | null {
-  const match = /^\/(task|status|access|help)(?:@([A-Za-z0-9_]+))?\s*$/i.exec(text.trim());
+export function parseTeamItemCommand(text: string, botUsername: string | null): ParsedTeamItemCommand | "other_bot" | null {
+  const match = /^\/(task|status|access|help)(?:@([A-Za-z0-9_]+))?(?:\s+(awi1_[a-f0-9]{24}|#item_[a-f0-9]{24}))?\s*$/i.exec(text.trim());
   if (!match) return null;
   if (match[2] !== undefined && (botUsername === null || match[2].toLowerCase() !== botUsername.toLowerCase())) return "other_bot";
-  return match[1]!.toLowerCase() as TeamItemCommand;
+  return {
+    command: match[1]!.toLowerCase() as TeamItemCommand,
+    itemReference: match[3] ?? null,
+  };
 }
 
 function simpleView(lines: string[]): RenderedView {

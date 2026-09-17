@@ -11,8 +11,9 @@ import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
-import { renderTeamItemAnchor, renderTeamItemView, parseTeamItemCommand, type TeamItemViewState } from "../../teamItemViews.ts";
+import { renderTeamItemAnchor, renderTeamItemView, type TeamItemViewState } from "../../teamItemViews.ts";
 import { itemTag } from "../../teamItems.ts";
+import { routeTeamItemMessage } from "../../teamRouting.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
 import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
@@ -874,18 +875,30 @@ export class TelegramLiveRuntime {
   }
 
   private handleTeamItemMessage(session: Session, message: TelegramMessagePayload, roster: TeamRoster): boolean {
-    if (message.replyToMessageId === null) return true;
-    const thread = workspaces.telegramItemThreadForMessage(session.botId, message.chatId, message.replyToMessageId);
-    if (thread === null) return true;
-    const link = workspaces.itemLink(thread.subjectId);
+    const thread = message.replyToMessageId === null
+      ? null
+      : workspaces.telegramItemThreadForMessage(session.botId, message.chatId, message.replyToMessageId);
+    const route = routeTeamItemMessage({
+      text: message.text,
+      botUsername: this.bot?.username ?? null,
+      localBotId: session.botId,
+      senderTelegramUserId: message.transportUserId,
+      members: roster.members,
+      replyItemId: thread?.subjectId ?? null,
+      localItemIds: new Set(workspaces.itemLinks().map(link => link.itemId)),
+    });
+    if (route.kind === "drop") return true;
+    if (route.kind === "unknown_item") {
+      this.enqueueText(session, roster.groupChatId, null, "Item not found. Check the item tag and try again.");
+      return true;
+    }
+    const link = workspaces.itemLink(route.itemId);
     if (link === null) return true;
-    const command = parseTeamItemCommand(message.text, this.bot?.username ?? null);
-    if (command === null || command === "other_bot") return true;
     const { state, summary } = this.teamItemPayload(session, roster, link);
     workspaces.enqueueTelegramOutbox({
       botId: session.botId,
       chatId: roster.groupChatId,
-      payload: renderTeamItemView(command, summary, state),
+      payload: renderTeamItemView(route.command, summary, state),
       subject: itemSubject(link.itemId),
     });
     return true;
