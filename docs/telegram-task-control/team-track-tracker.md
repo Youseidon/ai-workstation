@@ -28,7 +28,7 @@ Preconditions:
 | T04 | TM0 | done | direct | `tm/T04-group-fake` | `2f61ecb` | Group roster/admin rights, pinning, one-use invites and broad administrator delivery added; T04 contract passed, TM0 self-test passed, workspace typecheck passed. | 2026-09-17 |
 | T05 | TM1 | done | direct | `tm/T05-lg1-repository-refs` | `5eefd4a` | LG-1 PASS on psyba96/contech-intel: custom refs accepted, divergent non-fast-forward rejected, handover branch accepted; both disposable probe refs deleted. | 2026-09-17 |
 | T06 | TM1 | done | direct | `tm/T06-tm1-scenario-defaults` | `7841848` | TM1 scenario table committed; jd's four defaults and deferred LT-3 recorded in implementation evidence. | 2026-09-17 |
-| T07 | TM1 | in progress | direct | `tm/T07-roster-model` |  | Migration 24 and roster model. | 2026-09-17 |
+| T07 | TM1 | done | direct | `tm/T07-roster-model` | `68584cd` | Migration 24, sentinel-protected group actors, local roster cache, join codec and `refs/aw/team` CAS landed; T0 4/4, server 237/237 and workspace typecheck passed. | 2026-09-17 |
 | T08 | TM1 | pending |  |  |  | Create team. |  |
 | T09 | TM1 | pending |  |  |  | Join team. |  |
 | T10 | TM1 | pending |  |  |  | TM1 close-out and audit 1. |  |
@@ -68,3 +68,4 @@ Preconditions:
 - 2026-09-17: T06 started directly under jd's authorization. The four defaults are accepted: 10-minute team taps; grants end on revoke, thread close or handover; join codes are single use and expire after 24 hours; item ids are short and opaque and produce C1-compatible group tags.
 - 2026-09-17: T06 merged by fast-forward. `git diff --check` passed; `tm1.md` records jd's skim and the deferred-until-full-build LT-3 decision.
 - 2026-09-17: T07 started directly under jd's authorization.
+- 2026-09-17: T07 merged by fast-forward. Focused roster suite passed 4/4, including a temporary bare-Git compare-and-swap; full server suite passed 237/237 and workspace typecheck passed.
