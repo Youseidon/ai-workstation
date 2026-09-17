@@ -18,6 +18,83 @@ The corresponding implementation scenarios are in
 [`tm1.md`](../e2e-scenarios/tm1.md). LT-3, the real two-person join check, is
 parked until the full team build at jd's direction.
 
+Team track TM0/TM1 close-out before audit 1, 2026-09-17:
+
+- Scope closed here: TM0 harness and TM1 team/roster evidence through T09. T10
+  is a close-out/documentation task only and remains in progress in the tracker
+  until the orchestrator merges it and runs audit 1.
+- TM0 automated evidence from the tracker:
+  - T01 `node --import tsx e2e/scripts/lt1-two-bots-group.ts`: H-TM-LT1 PASS.
+    Both administrator bots reported `can_read_all_group_messages=false`; both
+    received plain commands, addressed commands, replies to either bot message
+    and unanchored discussion. The fake and design were corrected to model this
+    broad administrator delivery.
+  - T02 `git diff --check main...tm/T02-tm0-scenario-table`: passed; `npm run
+    typecheck`: passed; `docs/e2e-scenarios/tm0.md` has jd skim approval.
+  - T03F `node --import tsx --test --test-concurrency=1
+    e2e/src/tm0.selftest.test.ts`: passed. `npm run typecheck`: passed.
+    `npx playwright test e2e/src/h2-fake-provider-inline.spec.ts`: 4/4 passed
+    after restoring the fake-provider launcher executable bit. Full T1:
+    `npm run e2e` passed 113/113 in 16.5 minutes.
+  - T04 `node --import tsx --test --test-concurrency=1
+    e2e/src/tm0.fake.contract.test.ts`: passed. This is 1 node-test covering
+    S-TM0-03, S-TM0-04 and S-TM0-05: group roster/admin rights, pinning,
+    one-use invites and broad administrator delivery. The TM0 self-test and
+    workspace typecheck also passed.
+- TM1 automated and live evidence from the tracker:
+  - T05 `node --import tsx e2e/scripts/lg1-repository-refs.ts`: H-TM-LG1 PASS
+    against the repository jd approved for disposable probes. Custom
+    `refs/aw/*` refs were accepted, a divergent non-fast-forward update was
+    rejected, an `aw/handover/*` branch was accepted and both probe refs were
+    deleted.
+  - T06 `git diff --check`: passed. `docs/e2e-scenarios/tm1.md` records jd's
+    skim approval, the four defaults above and LT-3 deferred until the full
+    build.
+  - T07 `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t07-verify node --import
+    tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`: focused T0
+    roster suite passed 4/4 at the time; `npm test --workspace server` passed
+    237/237; `npm run typecheck`: passed.
+  - T08 `node --import tsx --test --test-concurrency=1
+    server/src/telegramLiveRuntime.test.ts`: focused runtime suite passed
+    23/23, including TM-T1-1a's group command, administrator-rights,
+    local-confirmation and temporary bare-remote roster path. Full server suite
+    passed 237/237; `npm run typecheck --workspace server` and `npm run
+    typecheck --workspace web` passed.
+  - T09 sandboxed rerun of `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t09-verify
+    node --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
+    failed with `spawnSync git EPERM`; the unsandboxed rerun
+    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t09-verify-escalated node
+    --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
+    passed 5/5. `npm run typecheck --workspace server`: passed. `npm run
+    typecheck --workspace web`: passed.
+- T10 reruns in this worktree:
+  - This worktree was created without dependencies. Initial `npm run typecheck
+    --workspace server`, `npm run typecheck --workspace web` and
+    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster node --import tsx
+    --test --test-concurrency=1 server/src/teamRoster.test.ts` failed before or
+    at dependency loading because `tsc`/`tsx` and type packages were absent.
+  - After linking the already-installed local dependency tree with `ln -s
+    /home/junaid/ai-workstation/node_modules node_modules` (no network install),
+    `npm run typecheck --workspace server`: passed; `npm run typecheck
+    --workspace web`: passed.
+  - Sandboxed `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster node
+    --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
+    exited `ERR_TEST_FAILURE` with no subtest detail. Unsandboxed
+    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster-unsandboxed node
+    --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
+    passed 5/5: TM-T0-3 join-code round trip/tamper/expiry, TM-T0-4 in-memory
+    compare-and-swap, TM-T0-4 Git compare-and-swap to `refs/aw/team`,
+    TM-T0-3 single-use invite consumption and TM-T0-5 migration 24 group-actor
+    duplicate protection.
+  - `team.enabled` remains default-off by absence: the settings file exposes
+    only `taskControl.enabled`, `taskControl.notificationsEnabled` and
+    `taskControl.remoteActionsEnabled`, all with `fallback: false`; no
+    `team.enabled` setting or live token/identifier was added.
+- Not rerun by T10: full server suite and full T1 suite. Cite existing tracker
+  summary only: T07/T08 full server suite passed 237/237, and T03F full T1
+  passed 113/113. There is no verified 239/239 full-server count in this
+  close-out evidence.
+
 Development is authorized. No further product decision is required for the local
 control foundation. G01-G04 remain evidence/deployment gates, not unanswered
 questions blocking all code. An unresolved gate never defaults to approval.
