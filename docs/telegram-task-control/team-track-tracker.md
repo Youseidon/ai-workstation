@@ -25,7 +25,7 @@ Preconditions:
 | T02 | TM0 | done | `01a0aa07-9659-7fa0-9129-81b3b0710f2c` | `tm/T02-tm0-scenario-table` | `93c4e80..32fb000` | `docs/e2e-scenarios/tm0.md` committed; H-TM-LT1 administrator delivery included; jd skim recorded; `git diff --check` and `npm run typecheck` passed. | 2026-09-16 |
 | T03 | TM0 | done | `01a0aa25-f416-7fd0-9c55-d62ca5d4f83e` | `tm/T03F-harness-selftest-fix` | `d448a4b..a395176` | Two environments, shared fake Telegram and one bare repository implemented and verified via T03F. | 2026-09-17 |
 | T03F | TM0 | done | `01a0abf1-ded6-73c3-bc1c-f273659beff3` | `tm/T03F-harness-selftest-fix` | `d448a4b..a395176` | Focused TM0 self-test passed; workspace typecheck passed; inline fake-provider suite passed 4/4 after launcher permission fix; full T1 passed 113/113 in 16.5m. | 2026-09-17 |
-| T04 | TM0 | in progress | direct | `tm/T04-group-fake` |  | Direct completion authorized by jd after worker service exhaustion. | 2026-09-17 |
+| T04 | TM0 | done | direct | `tm/T04-group-fake` | `2f61ecb` | Group roster/admin rights, pinning, one-use invites and broad administrator delivery added; T04 contract passed, TM0 self-test passed, workspace typecheck passed. | 2026-09-17 |
 | T05 | TM1 | pending |  |  |  | LG-1 script: repository refs. |  |
 | T06 | TM1 | pending |  |  |  | TM1 scenario table and four defaults. |  |
 | T07 | TM1 | pending |  |  |  | Migration 24 and roster model. |  |
@@ -63,3 +63,4 @@ Preconditions:
 - 2026-09-17: jd explicitly authorized direct completion without a worker. T03F resumed to repair the inline fake-provider failure and complete verification.
 - 2026-09-17: T03F merged by fast-forward. Root cause of the inline fake-provider failure was the non-executable launcher in its worktree; restoring its tracked executable mode made the inline suite pass. Final evidence: focused TM0 self-test, workspace typecheck, and full T1 113/113 in 16.5m.
 - 2026-09-17: T04 started directly by the orchestrator under jd's standing authorization.
+- 2026-09-17: T04 merged by fast-forward. `tm0.fake.contract.test.ts` passed S-TM0-03/04/05; TM0 two-environment self-test and workspace typecheck passed.
