@@ -31,7 +31,7 @@ Preconditions:
 | T07 | TM1 | done | direct | `tm/T07-roster-model` | `68584cd` | Migration 24, sentinel-protected group actors, local roster cache, join codec and `refs/aw/team` CAS landed; T0 4/4, server 237/237 and workspace typecheck passed. | 2026-09-17 |
 | T08 | TM1 | done | direct | `tm/T08-create-team` | `2c1cf47` | Create-team flow verifies group admin rights, awaits local confirmation, publishes the roster with CAS and creates a non-personal group actor; focused runtime 23/23, server 237/237, server/web typecheck passed. | 2026-09-17 |
 | T09 | TM1 | done | direct | `tm/T09-join-team` | `ffe3cc7` | Join-code validation, single-use roster publish, runtime/API join path and Agents join panel landed; focused roster suite passed 5/5 after Git sandbox escalation; server/web typecheck passed. | 2026-09-17 |
-| T10 | TM1 | pending |  |  |  | TM1 close-out and audit 1. |  |
+| T10 | TM1 | in progress | pending spawn | `tm/T10-tm1-closeout` |  | TM1 close-out and audit 1. | 2026-09-17 |
 | T11 | TM2 | pending |  |  |  | TM2 scenario table. |  |
 | T12 | TM2 | pending |  |  |  | Migration 25 and item ids. |  |
 | T13 | TM2 | pending |  |  |  | Anchors and read-only views. |  |
@@ -73,3 +73,4 @@ Preconditions:
 - 2026-09-17: T08 merged by fast-forward. Focused live-runtime suite passed 23/23 including TM-T1-1a's group command, administrator-rights, local-confirmation and temporary bare-remote roster path; full server suite passed 237/237 and server/web typecheck passed.
 - 2026-09-17: T09 started directly under jd's authorization; execution continues without slice-boundary pauses.
 - 2026-09-17: T09 merged by fast-forward. The generated `package-lock.json` `hasInstallScript` line was absent from the final diff. Verification: `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t09-verify-escalated node --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts` passed 5/5 after the sandboxed rerun failed with `spawnSync git EPERM`; `npm run typecheck --workspace server` passed; `npm run typecheck --workspace web` passed.
+- 2026-09-17: T10 started directly under jd's authorization; close-out worker pending spawn.
