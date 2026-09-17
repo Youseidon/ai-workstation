@@ -9,6 +9,7 @@ import { activeRuns } from "./activeRuns.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
 import { isItemId, mintItemId } from "./teamItems.ts";
+import { isItemGrantCapability, type ItemGrantCapability } from "./teamGrants.ts";
 
 const databasePath = resolve(config.repoRoot, ".agent-console/console.sqlite");
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
@@ -672,6 +673,67 @@ db.transaction(() => {
   }
 }
 
+{
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=26").get();
+  if (!applied) {
+    // Receipts and Telegram action content point back to this table. Disable
+    // foreign-key actions only for the atomic swap so those durable rows survive.
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE task_control_action_v26 (
+            ref TEXT PRIMARY KEY,
+            action TEXT NOT NULL CHECK(action IN ('save_human_response','answer_and_resume','resume_saved','grant','revoke','close_thread')),
+            prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+            actor_id TEXT NOT NULL REFERENCES task_control_actor(id) ON DELETE CASCADE,
+            chat_id TEXT NOT NULL,
+            topic_id TEXT,
+            bot_id TEXT NOT NULL,
+            message_id TEXT,
+            expected_revision TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            applied_command_id TEXT,
+            subject_kind TEXT NOT NULL DEFAULT 'task' CHECK(subject_kind IN ('task','item')),
+            item_id TEXT REFERENCES item_link(item_id) ON DELETE CASCADE,
+            payload_json TEXT,
+            CHECK((subject_kind='task' AND item_id IS NULL) OR (subject_kind='item' AND item_id IS NOT NULL))
+          );
+          INSERT INTO task_control_action_v26
+            (ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id)
+          SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id
+          FROM task_control_action;
+          DROP TABLE task_control_action;
+          ALTER TABLE task_control_action_v26 RENAME TO task_control_action;
+          CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
+          CREATE TABLE item_grant (
+            item_id TEXT NOT NULL REFERENCES item_link(item_id) ON DELETE CASCADE,
+            person_id TEXT NOT NULL,
+            capability TEXT NOT NULL CHECK(capability IN ('context','answer','resume')),
+            granted_command_id TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            revoked_command_id TEXT,
+            revoked_at TEXT,
+            CHECK((revoked_command_id IS NULL AND revoked_at IS NULL) OR (revoked_command_id IS NOT NULL AND revoked_at IS NOT NULL))
+          );
+          CREATE UNIQUE INDEX item_grant_active_uq
+            ON item_grant(item_id, person_id, capability)
+            WHERE revoked_at IS NULL;
+          CREATE INDEX item_grant_item_idx ON item_grant(item_id, person_id, granted_at);
+        `);
+        db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(26,?)").run(new Date().toISOString());
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    const violations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+    if (violations.length > 0) throw new Error(`Migration 26 left ${violations.length} foreign-key violation(s)`);
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -755,6 +817,16 @@ export interface ItemLinkRow {
   controlHead: string | null;
 }
 
+export interface ItemGrantRow {
+  itemId: string;
+  personId: string;
+  capability: ItemGrantCapability;
+  grantedCommandId: string;
+  grantedAt: string;
+  revokedCommandId: string | null;
+  revokedAt: string | null;
+}
+
 /**
  * What a Telegram message is about (L3 C1). `task` is one saved task, `workstation`
  * everything that belongs to the workstation itself; `pipeline` and the L2 kinds are
@@ -784,7 +856,7 @@ export interface TelegramThreadRow {
 }
 
 const THREAD_COLUMNS = "SELECT id,bot_id botId,chat_id chatId,subject_kind subjectKind,subject_id subjectId,topic_id topicId,status_message_id statusMessageId,state FROM telegram_thread";
-type TaskControlActionRow = { ref: string; action: TaskControlAction; prompt_id: number; actor_id: string; chat_id: string; topic_id: string | null; bot_id: string; message_id: string | null; expected_revision: string; provider: string | null; model: string | null; expires_at: string; created_at: string; applied_command_id: string | null };
+type TaskControlActionRow = { ref: string; action: TaskControlAction; prompt_id: number; actor_id: string; chat_id: string; topic_id: string | null; bot_id: string; message_id: string | null; expected_revision: string; provider: string | null; model: string | null; expires_at: string; created_at: string; applied_command_id: string | null; subject_kind: "task" | "item"; item_id: string | null; payload_json: string | null };
 type TaskControlReceiptRow = { command_id: string; action_ref: string; state: TaskControlReceipt["state"]; response_id: number | null; started: number; run_id: string | null; message: string; error_code: string | null; created_at: string; action: TaskControlAction; prompt_id: number };
 type StartIntentState = "START_INTENT" | "RUNNING" | "KNOWN_STOPPED" | "KNOWN_NO_SPAWN" | "START_UNKNOWN";
 type StartIntentRow = { id: string; workspace_id: number; effective_directory: string; prompt_id: number | null; provider: string; model: string | null; source: string; state: StartIntentState; detail: string | null; created_at: string; updated_at: string; released_at: string | null };
@@ -1185,8 +1257,58 @@ export const workspaces = {
   itemLinks(): ItemLinkRow[] {
     return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link ORDER BY rowid").all() as ItemLinkRow[];
   },
-  createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string }): TaskControlActionReference { return sqliteGuard(() => {
-    if (!["save_human_response", "answer_and_resume"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
+  grantItemCapability(input: { itemId: string; personId: string; capability: ItemGrantCapability; commandId: string; grantedAt?: string }): ItemGrantRow { return sqliteGuard(() => db.transaction(() => {
+    if (!isItemId(input.itemId) || this.itemLink(input.itemId) === null) throw new WorkspaceError(404, "item_not_found", "Team item not found.");
+    if (!isItemGrantCapability(input.capability)) throw new WorkspaceError(422, "validation_error", "Item capability must be context, answer or resume.");
+    const personId = requireText(input.personId, "personId", 160);
+    const commandId = requireText(input.commandId, "commandId", 160);
+    const existing = db.prepare(`SELECT item_id itemId,person_id personId,capability,granted_command_id grantedCommandId,
+      granted_at grantedAt,revoked_command_id revokedCommandId,revoked_at revokedAt
+      FROM item_grant WHERE item_id=? AND person_id=? AND capability=? AND revoked_at IS NULL`)
+      .get(input.itemId, personId, input.capability) as ItemGrantRow | undefined;
+    if (existing !== undefined) return existing;
+    const grantedAt = input.grantedAt ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(grantedAt))) throw new WorkspaceError(422, "validation_error", "grantedAt must be an ISO timestamp.");
+    db.prepare("INSERT INTO item_grant(item_id,person_id,capability,granted_command_id,granted_at) VALUES(?,?,?,?,?)")
+      .run(input.itemId, personId, input.capability, commandId, grantedAt);
+    return { itemId: input.itemId, personId, capability: input.capability, grantedCommandId: commandId, grantedAt, revokedCommandId: null, revokedAt: null };
+  })()); },
+  revokeItemCapability(input: { itemId: string; personId: string; capability: ItemGrantCapability; commandId: string; revokedAt?: string }): boolean { return sqliteGuard(() => {
+    if (!isItemGrantCapability(input.capability)) throw new WorkspaceError(422, "validation_error", "Item capability must be context, answer or resume.");
+    const revokedAt = input.revokedAt ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(revokedAt))) throw new WorkspaceError(422, "validation_error", "revokedAt must be an ISO timestamp.");
+    return db.prepare(`UPDATE item_grant SET revoked_command_id=?,revoked_at=?
+      WHERE item_id=? AND person_id=? AND capability=? AND revoked_at IS NULL`)
+      .run(requireText(input.commandId, "commandId", 160), revokedAt, input.itemId, requireText(input.personId, "personId", 160), input.capability).changes > 0;
+  }); },
+  revokeItemGrants(input: { itemId: string; commandId: string; personId?: string; revokedAt?: string }): number { return sqliteGuard(() => {
+    const revokedAt = input.revokedAt ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(revokedAt))) throw new WorkspaceError(422, "validation_error", "revokedAt must be an ISO timestamp.");
+    const commandId = requireText(input.commandId, "commandId", 160);
+    if (input.personId === undefined) {
+      return db.prepare("UPDATE item_grant SET revoked_command_id=?,revoked_at=? WHERE item_id=? AND revoked_at IS NULL")
+        .run(commandId, revokedAt, input.itemId).changes;
+    }
+    return db.prepare("UPDATE item_grant SET revoked_command_id=?,revoked_at=? WHERE item_id=? AND person_id=? AND revoked_at IS NULL")
+      .run(commandId, revokedAt, input.itemId, requireText(input.personId, "personId", 160)).changes;
+  }); },
+  itemGrants(itemId: string, options?: { activeOnly?: boolean; personId?: string }): ItemGrantRow[] {
+    if (!isItemId(itemId)) return [];
+    const clauses = ["item_id=?"];
+    const values: string[] = [itemId];
+    if (options?.activeOnly === true) clauses.push("revoked_at IS NULL");
+    if (options?.personId !== undefined) { clauses.push("person_id=?"); values.push(options.personId); }
+    return db.prepare(`SELECT item_id itemId,person_id personId,capability,granted_command_id grantedCommandId,
+      granted_at grantedAt,revoked_command_id revokedCommandId,revoked_at revokedAt
+      FROM item_grant WHERE ${clauses.join(" AND ")} ORDER BY granted_at,rowid`).all(...values) as ItemGrantRow[];
+  },
+  hasItemCapability(itemId: string, personId: string, capability: ItemGrantCapability): boolean {
+    if (!isItemId(itemId) || !isItemGrantCapability(capability)) return false;
+    return db.prepare("SELECT 1 FROM item_grant WHERE item_id=? AND person_id=? AND capability=? AND revoked_at IS NULL")
+      .get(itemId, personId, capability) !== undefined;
+  },
+  createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string; subjectKind?: "task" | "item"; itemId?: string | null; payload?: unknown }): TaskControlActionReference { return sqliteGuard(() => {
+    if (!["save_human_response", "answer_and_resume", "resume_saved", "grant", "revoke", "close_thread"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
     this.assertHumanInputRevision(input.promptId, input.expectedRevision);
     const ref = requireText(input.ref, "ref", 160);
     const actor = db.prepare("SELECT id FROM task_control_actor WHERE id=? AND enabled=1").get(input.actorId);
@@ -1198,14 +1320,28 @@ export const workspaces = {
     const botId = requireText(input.botId, "botId", 120);
     const messageId = input.messageId === undefined || input.messageId === null ? null : requireText(input.messageId, "messageId", 120);
     const model = input.model === undefined || input.model === null ? null : requireText(input.model, "model", 200);
+    const subjectKind = input.subjectKind ?? "task";
+    const itemId = input.itemId === undefined || input.itemId === null ? null : input.itemId;
+    if (subjectKind === "item") {
+      if (itemId === null || !isItemId(itemId)) throw new WorkspaceError(422, "validation_error", "An item action requires a valid Team item id.");
+      const link = this.itemLink(itemId);
+      if (link === null || link.promptId !== input.promptId) throw new WorkspaceError(409, "item_conflict", "The Team item does not belong to this task.");
+    } else if (itemId !== null) {
+      throw new WorkspaceError(422, "validation_error", "A task action cannot carry a Team item id.");
+    }
+    let payloadJson: string | null = null;
+    if (input.payload !== undefined) {
+      try { payloadJson = JSON.stringify(input.payload); } catch { throw new WorkspaceError(422, "validation_error", "Action payload must be JSON serializable."); }
+      if (payloadJson === undefined) throw new WorkspaceError(422, "validation_error", "Action payload must be JSON serializable.");
+    }
     db.prepare(`
-      INSERT INTO task_control_action(ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(ref, input.action, input.promptId, input.actorId, chatId, topicId, botId, messageId, input.expectedRevision, input.provider ?? null, model, input.expiresAt, new Date().toISOString());
+      INSERT INTO task_control_action(ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,subject_kind,item_id,payload_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(ref, input.action, input.promptId, input.actorId, chatId, topicId, botId, messageId, input.expectedRevision, input.provider ?? null, model, input.expiresAt, new Date().toISOString(), subjectKind, itemId, payloadJson);
     return { ref, action: input.action, promptId: input.promptId, expectedRevision: input.expectedRevision, expiresAt: input.expiresAt };
   }); },
   taskControlAction(ref: string): TaskControlActionRow | null {
-    return (db.prepare("SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id FROM task_control_action WHERE ref=?").get(ref) as TaskControlActionRow | undefined) ?? null;
+    return (db.prepare("SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json FROM task_control_action WHERE ref=?").get(ref) as TaskControlActionRow | undefined) ?? null;
   },
   taskControlReceiptForAction(ref: string): TaskControlReceipt | null {
     const row = db.prepare(`

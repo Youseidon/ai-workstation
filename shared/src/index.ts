@@ -1008,7 +1008,14 @@ export interface PromptActivity {
 /* Task control                                                                */
 /* -------------------------------------------------------------------------- */
 
-export const TASK_CONTROL_ACTIONS = ["save_human_response", "answer_and_resume"] as const;
+export const TASK_CONTROL_ACTIONS = [
+  "save_human_response",
+  "answer_and_resume",
+  "resume_saved",
+  "grant",
+  "revoke",
+  "close_thread",
+] as const;
 export type TaskControlAction = (typeof TASK_CONTROL_ACTIONS)[number];
 
 export const TASK_CONTROL_RECEIPT_STATES = ["APPLIED", "REJECTED"] as const;

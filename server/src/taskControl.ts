@@ -234,6 +234,9 @@ export class TaskControlService {
           message: threadRequest.decision === "confirm" ? "Team thread confirmed." : "Team thread request declined.",
         });
       }
+      if (action.action !== "save_human_response" && action.action !== "answer_and_resume") {
+        return this.reject(input, "action_not_available", "This Team action is not available yet.", action.ref);
+      }
       const result = action.action === "save_human_response"
         ? await saveHumanResponse(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision }, { source: "telegram" })
         : await respondAndContinue(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision, provider: action.provider, model: action.model }, { source: "telegram" });
