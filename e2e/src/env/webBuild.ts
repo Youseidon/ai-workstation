@@ -34,6 +34,7 @@ export function harnessWebEnv(serverUrl: string, distDir = WEB_DIST_DIR): NodeJS
     NEXT_TELEMETRY_DISABLED: "1",
     AGENT_CONSOLE_HARNESS: "1",
     AGENT_CONSOLE_WEB_DIST_DIR: distDir,
+    AGENT_CONSOLE_WEB_TSCONFIG_PATH: `${distDir}-tsconfig.json`,
     NEXT_PUBLIC_AGENT_SERVER_URL: serverUrl,
   };
 }
@@ -43,6 +44,9 @@ export function ensureWebBuild(serverUrl: string, logFile: string, distDir = WEB
   const stampFile = join(webDir, distDir, ".harness-source-hash");
   const hash = webSourceHash(serverUrl);
   if (existsSync(stampFile) && readFileSync(stampFile, "utf8") === hash) return false;
+  // Next updates its configured tsconfig with generated type paths. Keep that
+  // harness-only mutation beside the matching build rather than in web/tsconfig.json.
+  writeFileSync(join(webDir, `${distDir}-tsconfig.json`), '{\n  "extends": "./tsconfig.json"\n}\n');
   const result = spawnSync(process.execPath, [join(repoRoot, "node_modules/next/dist/bin/next"), "build"], { cwd: webDir, env: harnessWebEnv(serverUrl, distDir), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   writeFileSync(logFile, `${result.stdout}\n${result.stderr}`, { flag: "a" });
   if (result.status !== 0) throw new Error(`harness web build failed (see ${logFile})`);

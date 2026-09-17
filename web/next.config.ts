@@ -23,6 +23,7 @@ if (harnessMode) {
 
 const nextConfig: NextConfig = {
   ...(harnessMode ? { distDir: process.env.AGENT_CONSOLE_WEB_DIST_DIR } : {}),
+  ...(harnessMode ? { typescript: { tsconfigPath: process.env.AGENT_CONSOLE_WEB_TSCONFIG_PATH } } : {}),
   // The event schema lives in a workspace package of raw TypeScript, shared
   // verbatim with the server so the two can never drift.
   transpilePackages: ["@agent-console/shared"],
