@@ -47,7 +47,7 @@ export function ensureWebBuild(serverUrl: string, logFile: string, distDir = WEB
   // Next updates its configured tsconfig with generated type paths. Keep that
   // harness-only mutation beside the matching build rather than in web/tsconfig.json.
   writeFileSync(join(webDir, `${distDir}-tsconfig.json`), '{\n  "extends": "./tsconfig.json"\n}\n');
-  const result = spawnSync(process.execPath, [join(repoRoot, "node_modules/next/dist/bin/next"), "build"], { cwd: webDir, env: harnessWebEnv(serverUrl, distDir), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSync(process.execPath, [join(repoRoot, "node_modules/next/dist/bin/next"), "build", "--webpack"], { cwd: webDir, env: harnessWebEnv(serverUrl, distDir), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   writeFileSync(logFile, `${result.stdout}\n${result.stderr}`, { flag: "a" });
   if (result.status !== 0) throw new Error(`harness web build failed (see ${logFile})`);
   writeFileSync(stampFile, hash);

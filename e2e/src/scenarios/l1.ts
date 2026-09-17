@@ -388,6 +388,7 @@ export async function pairingAuthorization({ harness }: L1Context, repair: () =>
   const operator = harness.phone!;
   const group = new FakePhone(server, bot, { id: 5_550_001, firstName: "Operator" }, { id: -100_777, type: "supergroup", title: "Team" });
   const other = new FakePhone(server, bot, { id: 5_550_321, firstName: "Other" }, { id: 5_550_321, type: "private" });
+  server.addChatMember(group.chat, bot, { administrator: true });
 
   const { pairing } = await state.post<{ pairing: { code: string } }>("/api/task-control/telegram/pairing");
   await group.send(`/start ${pairing.code}`);

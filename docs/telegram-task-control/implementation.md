@@ -90,6 +90,29 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     only `taskControl.enabled`, `taskControl.notificationsEnabled` and
     `taskControl.remoteActionsEnabled`, all with `fallback: false`; no
     `team.enabled` setting or live token/identifier was added.
+- T10R audit remediation:
+  - The audit's `S-L1-04` timeout was a stale test fixture after T04. The fake
+    now delivers group updates only to administrator bots, but the scenario had
+    not registered its bot as a group administrator. The runtime refusal path
+    was still present. Registering the fixture bot as an administrator restored
+    the intended delivery without changing runtime authorization behavior.
+  - The harness web build now invokes Next with `--webpack`. Its explicit
+    allowlisted environment remains unchanged; this avoids Turbopack's denied
+    PostCSS worker port without inheriting the operator shell or secrets.
+  - `npm run e2e --workspace e2e -- --project=t1
+    tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: passed 1/1 in 48.7s.
+    `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: passed 3/3 in 31.3s.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10r-roster node --import tsx
+    --test --test-concurrency=1 server/src/teamRoster.test.ts`: passed 5/5.
+    `node --import tsx --test --test-concurrency=1
+    --test-name-pattern=TM-T1-1a server/src/telegramLiveRuntime.test.ts`:
+    passed 1/1, the existing `TM-T1-1a (T0 part)` coverage.
+  - Inspection with `rg -n "TM-T1-1(a|b)?" e2e server/src web` found no
+    Playwright implementation of TM-T1-1, TM-T1-1a or TM-T1-1b. Only the
+    server-side T0 portion of TM-T1-1a exists. No three-repeat Team T1 burn-in
+    is claimed; implementing those Playwright rows remains a separate audit
+    evidence gap outside T10R.
 - Not rerun by T10: full server suite and full T1 suite. Cite existing tracker
   summary only: T07/T08 full server suite passed 237/237, and T03F full T1
   passed 113/113. There is no verified 239/239 full-server count in this
