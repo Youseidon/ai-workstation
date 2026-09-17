@@ -20,9 +20,9 @@ parked until the full team build at jd's direction.
 
 Team track TM0/TM1 close-out before audit 1, 2026-09-17:
 
-- Scope closed here: TM0 harness and TM1 team/roster evidence through T09. T10
-  is a close-out/documentation task only and remains in progress in the tracker
-  until the orchestrator merges it and runs audit 1.
+- Scope closed here: TM0 harness and TM1 team/roster evidence through T10. T10
+  is a close-out/documentation task only; audit 1 runs immediately after its
+  tracker completion.
 - TM0 automated evidence from the tracker:
   - T01 `node --import tsx e2e/scripts/lt1-two-bots-group.ts`: H-TM-LT1 PASS.
     Both administrator bots reported `can_read_all_group_messages=false`; both
