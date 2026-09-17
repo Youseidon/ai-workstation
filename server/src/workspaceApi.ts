@@ -4,10 +4,17 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
-import { isProviderId } from "@agent-console/shared";
+import { isProviderId, programDraftPreview } from "@agent-console/shared";
+import { startConsult, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
+/*
+ * An operator editing a drafted program PATCHes the whole body back: every
+ * suite, every work item, every page of instructions. That is legitimately
+ * larger than any other request this API takes.
+ */
+const MAX_DRAFT_BODY_BYTES = 4 * 1024 * 1024;
 
 const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
   already_complete: "station_already_complete",
@@ -29,12 +36,12 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+function body(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = "";
     req.on("data", (chunk: Buffer) => {
       raw += chunk.toString("utf8");
-      if (raw.length > MAX_BODY_BYTES) { reject(new WorkspaceError(413, "body_too_large", "Request body is too large")); req.destroy(); }
+      if (raw.length > maxBytes) { reject(new WorkspaceError(413, "body_too_large", "Request body is too large")); req.destroy(); }
     });
     req.on("end", () => {
       try {
@@ -59,8 +66,32 @@ function failure(res: ServerResponse, error: unknown): void {
   json(res, 500, { error: { code: "internal_error", message: "Workspace operation failed" } });
 }
 
+/**
+ * Whether this path belongs to the workspace API.
+ *
+ * Exported because `index.ts` has to decide the same thing before it delegates,
+ * and this list used to be written out in both places. It drifted the moment a
+ * route was added: `/api/program-drafts` was routed here and rejected there, so
+ * the endpoint returned the outer 404 and looked unimplemented. One copy.
+ */
+export function isWorkspaceApiPath(pathname: string): boolean {
+  return pathname === "/api/sessions"
+    || pathname.startsWith("/api/sessions/")
+    || pathname === "/api/operations"
+    || pathname === "/api/report"
+    || pathname === "/api/pipelines"
+    || pathname === "/api/statuses"
+    || pathname === "/api/triggers"
+    || pathname.startsWith("/api/statuses/")
+    || pathname.startsWith("/api/triggers/")
+    || pathname.startsWith("/api/definition-of-done/")
+    || pathname.startsWith("/api/workspaces")
+    || pathname.startsWith("/api/program-drafts")
+    || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(pathname);
+}
+
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== "/api/sessions" && url.pathname !== "/api/operations" && url.pathname !== "/api/report" && url.pathname !== "/api/pipelines" && url.pathname !== "/api/statuses" && url.pathname !== "/api/triggers" && !url.pathname.startsWith("/api/statuses/") && !url.pathname.startsWith("/api/triggers/") && !url.pathname.startsWith("/api/definition-of-done/") && !url.pathname.startsWith("/api/workspaces") && !/^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) return false;
+  if (!isWorkspaceApiPath(url.pathname)) return false;
   const mutates = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
   if (mutates) {
     res.once("finish", () => {
@@ -301,6 +332,16 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
+    {
+      const sessionMatch=url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+      if(sessionMatch){
+        if(method!=="GET"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
+        const session=workspaces.sessionById(sessionMatch[1]!);
+        if(session===null)throw new WorkspaceError(404,"not_found","Session not found");
+        json(res,200,{session});
+        return true;
+      }
+    }
     if(url.pathname==="/api/report"){
       if(method==="GET"){
         const workspaceParam=url.searchParams.get("workspace");
@@ -318,6 +359,130 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if (method === "GET") json(res, 200, { workspaces: workspaces.list() });
       else if (method === "POST") json(res, 201, { workspace: workspaces.create(await body(req)) });
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    /*
+     * Agent-authored programs.
+     *
+     * A draft is the whole point of these routes: an agent may fill one in, and
+     * only the operator turns one into a program. So the writes here are split
+     * accordingly — POST starts an agent, PATCH is the operator's own edit, and
+     * `apply` is the single place a draft becomes rows in `program`, `suite` and
+     * `prompt`.
+     */
+    const draftsMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/program-drafts$/);
+    if(draftsMatch){
+      const workspaceId=id(draftsMatch[1]!);
+      if(method==="GET"){
+        json(res,200,{drafts:workspaces.programDrafts(workspaceId).map(draft=>({draft,preview:programDraftPreview(draft.body)}))});
+      } else if(method==="POST"){
+        const input=await body(req);
+        const goal=typeof input.goal==="string"?input.goal:"";
+        // No provider means "open an empty draft and let me write it myself".
+        if(input.provider===undefined){
+          const draft=workspaces.createProgramDraft({workspaceId,goal});
+          json(res,201,{draft,preview:programDraftPreview(draft.body),runId:null});
+          return true;
+        }
+        if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose a provider to draft with",{provider:"Unknown provider"});
+        const started=await startProgramAuthor({
+          workspaceId,goal,provider:input.provider,
+          model:typeof input.model==="string"?input.model:null,
+        });
+        json(res,201,{draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId});
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    /*
+     * Talking to an agent about a program that already exists.
+     *
+     * `ask` is a consult: read-only, no writer lock, the answer is its
+     * transcript. `revisions` opens a revision draft — a copy of the program an
+     * agent edits — and, like a new-program draft, changes nothing until the
+     * operator applies it.
+     */
+    const programAgentMatch=url.pathname.match(/^\/api\/programs\/(\d+)\/(ask|revisions)$/);
+    if(programAgentMatch){
+      if(method!=="POST"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
+      const programId=id(programAgentMatch[1]!);
+      const workspaceId=workspaces.programBrief(programId).workspace.id;
+      const input=await body(req);
+      const model=typeof input.model==="string"&&input.model!==""?input.model:null;
+      if(programAgentMatch[2]==="ask"){
+        if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose an agent to ask",{provider:"Unknown provider"});
+        const question=typeof input.question==="string"?input.question.trim():"";
+        if(question==="")throw new WorkspaceError(422,"validation_error","Ask a question about the program",{question:"Required"});
+        const started=await startConsult({workspaceId,programId,provider:input.provider,model,question});
+        json(res,202,{runId:started.runId});
+        return true;
+      }
+      const goal=typeof input.goal==="string"?input.goal:"";
+      if(input.provider===undefined){
+        const draft=workspaces.createProgramRevision({workspaceId,programId,goal});
+        json(res,201,{draft,preview:programDraftPreview(draft.body),runId:null});
+        return true;
+      }
+      if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose an agent to make the changes",{provider:"Unknown provider"});
+      const started=await startProgramAuthor({workspaceId,programId,goal,provider:input.provider,model});
+      json(res,201,{draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId});
+      return true;
+    }
+    const draftMatch=url.pathname.match(/^\/api\/program-drafts\/(\d+)$/);
+    if(draftMatch){
+      const draftId=id(draftMatch[1]!);
+      if(method==="GET"){
+        const draft=workspaces.programDraft(draftId);
+        json(res,200,{draft,preview:programDraftPreview(draft.body)});
+      } else if(method==="PATCH"){
+        const draft=workspaces.saveProgramDraft(draftId,await body(req,MAX_DRAFT_BODY_BYTES));
+        json(res,200,{draft,preview:programDraftPreview(draft.body)});
+      } else if(method==="DELETE"){
+        workspaces.removeProgramDraft(draftId);res.writeHead(204);res.end();
+      } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const draftApplyMatch=url.pathname.match(/^\/api\/program-drafts\/(\d+)\/apply$/);
+    if(draftApplyMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const input=await body(req);
+        const applied=workspaces.applyProgramDraft(id(draftApplyMatch[1]!),{withPipeline:input.withPipeline===true});
+        json(res,201,{
+          draft:applied.draft,
+          programId:applied.programId,
+          prompts:applied.prompts,
+          pipelineId:applied.pipelineId,
+          pipelineError:applied.pipelineError,
+          revision:applied.revision,
+          workspace:workspaces.tree(applied.draft.workspaceId),
+        });
+      }
+      return true;
+    }
+    const draftDiscardMatch=url.pathname.match(/^\/api\/program-drafts\/(\d+)\/discard$/);
+    if(draftDiscardMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const draft=workspaces.discardProgramDraft(id(draftDiscardMatch[1]!));
+        json(res,200,{draft,preview:programDraftPreview(draft.body)});
+      }
+      return true;
+    }
+    const draftReviseMatch=url.pathname.match(/^\/api\/program-drafts\/(\d+)\/revise$/);
+    if(draftReviseMatch){
+      if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const draftId=id(draftReviseMatch[1]!);
+        const input=await body(req);
+        if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose a provider to revise with",{provider:"Unknown provider"});
+        const draft=workspaces.programDraft(draftId);
+        const started=await startProgramAuthor({
+          workspaceId:draft.workspaceId,draftId,provider:input.provider,
+          model:typeof input.model==="string"?input.model:null,
+          ...(typeof input.feedback==="string"?{feedback:input.feedback}:{}),
+        });
+        json(res,202,{draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId});
+      }
       return true;
     }
     let importMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/imports\/(inspect|apply)$/);
@@ -374,7 +539,12 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/activity$/);
     if(match&&method==="GET"){json(res,200,workspaces.promptActivity(id(match[1]!)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);
-    if(match&&method==="POST"){json(res,201,{remark:workspaces.respondToBlockedPrompt(id(match[1]!),await body(req))});return true;}
+    if(match&&method==="POST"){
+      const promptId=id(match[1]!);
+      const remark=workspaces.respondToBlockedPrompt(promptId,await body(req));
+      await pipelineScheduler.onPromptResponded(promptId);
+      json(res,201,{remark});return true;
+    }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audit$/);

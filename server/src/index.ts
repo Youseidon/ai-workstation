@@ -12,7 +12,7 @@ import { createLogger } from "./lib/logger.ts";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
 import { runRoleStartError } from "./runner.ts";
 import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
-import { handleWorkspaceApi } from "./workspaceApi.ts";
+import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
 import { removeAllAgentShims } from "./agentShim.ts";
@@ -20,6 +20,7 @@ import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentCon
 import { hashRunToken } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { ProviderUnavailableError, consultContextText, startConsult, startExecute, startVerifySuite } from "./runService.ts";
+import { programDraftStateMarkdown, programRevisionStateMarkdown } from "./programAuthor.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { scheduleRetentionSweep } from "./retention.ts";
 import { settings } from "./settings.ts";
@@ -47,17 +48,24 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const MAX_BODY_BYTES = 64 * 1024;
+/*
+ * An author run posts a whole suite of work items in one call, and each item is
+ * a page of instructions. 64 KB is the right ceiling for a status post and the
+ * wrong one for a proposal — a run whose suite is one item over it would lose
+ * everything it had composed, with a dropped socket as the only explanation.
+ */
+const MAX_AUTHOR_BODY_BYTES = 1024 * 1024;
 
 /** A model id is a short slug; anything longer is a malformed or hostile frame. */
 const MAX_MODEL_LENGTH = 200;
 
-function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
     let raw = "";
     req.on("data", (chunk: Buffer) => {
       raw += chunk.toString("utf8");
-      if (raw.length > MAX_BODY_BYTES) {
-        reject(new Error("request body too large"));
+      if (raw.length > maxBytes) {
+        reject(new WorkspaceError(413, "body_too_large", `Request body is larger than ${Math.round(maxBytes / 1024)} KB`));
         req.destroy();
       }
     });
@@ -139,18 +147,41 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|decompose)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|decompose|propose-program|propose-suite|revise-program)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
       const memory=runContexts.authenticate(runId,token);if(!memory)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");
       const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
-      if(persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose"))throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks, status, or decompose.");
+      // Two doors, and neither opens the other. An execute run works a work
+      // item and may never write a draft; an author run writes a draft and has
+      // no work item to post about. A consult run has neither.
+      const authoring=operation==="propose-program"||operation==="propose-suite"||operation==="revise-program";
+      if(authoring&&persisted.role!=="author")throw new WorkspaceError(403,"author_only","Only an author run can propose a program.");
+      if(!authoring&&persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose")){
+        throw persisted.role==="author"
+          ? new WorkspaceError(403,"author_only","An author run drafts a program; it has no work item to report on.")
+          : new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks, status, or decompose.");
+      }
       const startedAt=Date.now();
       if(operation==="context"&&req.method==="GET"){
+        if(persisted.role==="author"){
+          const draft=workspaces.programDraftForRun(runId);
+          if(draft===null)throw new WorkspaceError(409,"draft_not_found","This run has no program draft.");
+          if(req.headers.accept?.includes("application/json"))sendJson(res,200,{purpose:"author",draft});
+          else{
+            const markdown=draft.targetProgramId===null
+              ?programDraftStateMarkdown(draft)
+              :programRevisionStateMarkdown(draft,workspaces.programBrief(draft.targetProgramId),{item:url.searchParams.get("item")});
+            res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
+            res.end(markdown);
+          }
+          recordDbAccess(runId,describeRead({operation:"context",summary:`read program draft ${draft.id}`,durationMs:Date.now()-startedAt}));
+          return;
+        }
         if(persisted.role==="consult"){
-          const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question);
+          const markdown=consultContextText(memory.workspaceId,persisted.promptId,memory.question,memory.programId,url.searchParams.get("item"));
           if(req.headers.accept?.includes("application/json"))sendJson(res,200,{purpose:"consult",markdown});
           else{res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});res.end(markdown);}
           return;
@@ -176,8 +207,8 @@ const httpServer = createServer((req, res) => {
         recordDbAccess(runId,describeRead({operation:"state",summary:`read ${(history.events as unknown[]).length} status events and ${(history.remarks as unknown[]).length} remarks`,durationMs:Date.now()-startedAt}));
         return;
       }
-      if((operation==="remarks"||operation==="status"||operation==="decompose")&&req.method==="POST"){
-        void readJsonBody(req).then(async body=>{
+      if((operation==="remarks"||operation==="status"||operation==="decompose"||authoring)&&req.method==="POST"){
+        void readJsonBody(req,authoring?MAX_AUTHOR_BODY_BYTES:MAX_BODY_BYTES).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
           // An agent claiming DONE is the moment the definition-of-done commands
@@ -207,7 +238,12 @@ const httpServer = createServer((req, res) => {
               return;
             }
           }
-          const result=operation==="remarks"?workspaces.addAgentRemark(runId,body):operation==="status"?workspaces.updateAgentStatus(runId,body):workspaces.decomposePrompt(runId,body);
+          const result=operation==="propose-program"?workspaces.proposeProgram(runId,body)
+            :operation==="propose-suite"?workspaces.proposeSuite(runId,body)
+            :operation==="revise-program"?workspaces.reviseProgram(runId,body)
+            :operation==="remarks"?workspaces.addAgentRemark(runId,body)
+            :operation==="status"?workspaces.updateAgentStatus(runId,body)
+            :workspaces.decomposePrompt(runId,body);
           // The agent cannot see the runner's counters. Riding the reply it is
           // already making is the one channel that reaches every provider, so a
           // run learns to bank its work before the budget stops it.
@@ -251,7 +287,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/sessions" || url.pathname === "/api/operations" || url.pathname === "/api/report" || url.pathname === "/api/pipelines" || url.pathname === "/api/statuses" || url.pathname === "/api/triggers" || url.pathname.startsWith("/api/statuses/") || url.pathname.startsWith("/api/triggers/") || url.pathname.startsWith("/api/definition-of-done/") || url.pathname.startsWith("/api/workspaces") || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(url.pathname)) {
+  if (isWorkspaceApiPath(url.pathname)) {
     void handleWorkspaceApi(req, res, url);
     return;
   }

@@ -10,13 +10,14 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { progressApiMarkdown } from "../src/agentContext.ts";
+import { programAuthorPrompt } from "../src/programAuthor.ts";
 import { createAgentShim, removeAgentShim } from "../src/agentShim.ts";
 import { newId } from "../src/lib/ids.ts";
 import { runContexts } from "../src/runContext.ts";
@@ -278,6 +279,98 @@ test("with no launcher the raw contract is still there", () => {
 test("a sub-step at maximum depth is not offered decompose", () => {
   const deep = progressApiMarkdown({ runId: "r1", token: "t", port: 4000, canDecompose: false, shimPath: "/tmp/x/agent-step" });
   assert.doesNotMatch(deep, /decompose --file/);
+});
+
+/* ------------------------------------------------------------------ */
+/* The author door                                                     */
+/* ------------------------------------------------------------------ */
+
+test("the authoring commands are offered, and only to author runs", () => {
+  const usage = run(["help"]).out;
+  assert.match(usage, /agent-step propose-program --file/);
+  assert.match(usage, /agent-step propose-suite --file/);
+  // Said plainly, because an execute run that tries one gets a 403 and an
+  // author run that goes looking for `done` will not find one.
+  assert.match(usage, /Author runs \(drafting a program\) have their own two commands/);
+});
+
+test("a proposal with no file is refused locally rather than posted empty", () => {
+  const env = { AGENT_CONSOLE_RUN_URL: "http://127.0.0.1:1/x", AGENT_CONSOLE_RUN_TOKEN: "t" };
+  const program = run(["propose-program"], env);
+  assert.equal(program.code, 1);
+  assert.match(program.err, /--file program\.json/);
+  const suite = run(["propose-suite"], env);
+  assert.equal(suite.code, 1);
+  assert.match(suite.err, /--file suite\.json/);
+});
+
+test("a suite proposal with no suite key is refused before the round trip", () => {
+  const directory = mkdtempSync(join(tmpdir(), "propose-"));
+  try {
+    const file = join(directory, "suite.json");
+    writeFileSync(file, JSON.stringify({ prompts: [{ title: "T", content: "c" }] }));
+    const result = run(["propose-suite", "--file", file], {
+      AGENT_CONSOLE_RUN_URL: "http://127.0.0.1:1/x", AGENT_CONSOLE_RUN_TOKEN: "t",
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.err, /--suite S1/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a refused proposal names the field, so the next attempt is different", () => {
+  // A proposal is refused per field. "Some of that proposal was refused" with
+  // no field name is an invitation to re-post the same body.
+  const source = readFileSync(SHIM, "utf8");
+  assert.match(source, /formatFields/);
+  assert.match(source, /error\?\.fields/);
+});
+
+test("the author brief says what a work item is and how to post one", () => {
+  const brief = programAuthorPrompt({
+    workspace: { name: "Console", workDirectory: "/tmp/ws", description: "" },
+    draft: {
+      id: 7, workspaceId: 1, runId: "run_1", state: "PENDING", goal: "Plan the transition.",
+      body: { name: "", overview: "", notes: "", suites: [] },
+      appliedProgramId: null, targetProgramId: null, baseline: null, createdAt: "now", updatedAt: "now",
+    },
+    shimPath: "/tmp/x/agent-step", runId: "run_1", token: "secret-token", port: 4000, feedback: null,
+  });
+  assert.match(brief, /Plan the transition\./);
+  assert.match(brief, /\/tmp\/x\/agent-step" propose-program --file program\.json/);
+  assert.match(brief, /\/tmp\/x\/agent-step" propose-suite --file suite\.json/);
+  // The two things a drafted work item is worthless without.
+  assert.match(brief, /## Verify/);
+  assert.match(brief, /One session's worth/);
+  // And the fact that decides what this run may do.
+  assert.match(brief, /Read the working tree, do not change it/);
+  assert.match(brief, /Nothing you post here starts any work/);
+  assert.doesNotMatch(brief, /secret-token/);
+});
+
+test("a revise run is shown the draft it is changing, not a blank page", () => {
+  const brief = programAuthorPrompt({
+    workspace: { name: "Console", workDirectory: "/tmp/ws", description: "" },
+    draft: {
+      id: 7, workspaceId: 1, runId: "run_2", state: "PENDING", goal: "Plan it.",
+      body: {
+        name: "Transition", overview: "", notes: "",
+        suites: [
+          { key: "S1", name: "Foundations", overview: "", filled: true, prompts: [{ key: "S1-01", title: "First", content: "x", dependsOn: [], gate: null }] },
+          { key: "S2", name: "Endpoints", overview: "", filled: false, prompts: [] },
+        ],
+      },
+      appliedProgramId: null, targetProgramId: null, baseline: null, createdAt: "now", updatedAt: "now",
+    },
+    shimPath: null, runId: "run_2", token: "t", port: 4000, feedback: "Split S1; it is too big.",
+  });
+  assert.match(brief, /What this draft already says/);
+  assert.match(brief, /S1-01 — First/);
+  assert.match(brief, /\(no work items yet\)/);
+  assert.match(brief, /Split S1; it is too big\./);
+  // No launcher for this provider, so the raw contract has to be there.
+  assert.match(brief, /curl/);
 });
 
 /* ------------------------------------------------------------------ */

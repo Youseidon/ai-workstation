@@ -20,6 +20,8 @@ import { TextArea, TextInput } from "./ui/Field";
 import { Modal } from "./ui/Modal";
 import { Skeleton } from "./ui/Spinner";
 import { useDialogs } from "./ui/Dialogs";
+import { ProgramAgentPanel } from "./programs/ProgramAgentPanel";
+import { ProgramDraftPanel } from "./programs/ProgramDraftPanel";
 import { useToast } from "./ui/Toast";
 
 type Kind = "program" | "suite" | "prompt";
@@ -54,6 +56,10 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const [expandedPrompts, setExpandedPrompts] = useState<Set<number>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Bumped when a revision is opened from a program: remounts the drafts panel
+  // with that draft open, and scrolls to it.
+  const [draftsFocus, setDraftsFocus] = useState<{ generation: number; draftId: number | null }>({ generation: 0, draftId: null });
+  const draftsPanel = useRef<HTMLDivElement>(null);
 
   const program = tree?.programs.find((x) => x.id === programId) ?? null;
   const suite = program?.suites.find((x) => x.id === suiteId) ?? null;
@@ -273,6 +279,19 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
               onDelete={() => void removeWorkspace()}
             />
 
+            <div ref={draftsPanel} className="mt-5 scroll-mt-4">
+              <ProgramDraftPanel
+                key={`${tree.id}:${draftsFocus.generation}`}
+                serverUrl={serverUrl}
+                workspaceId={tree.id}
+                onApplied={async () => {
+                  await refresh();
+                  await refreshGlobal();
+                }}
+                initialOpenId={draftsFocus.draftId}
+              />
+            </div>
+
             <div className="mt-5 grid min-h-[32rem] grid-cols-1 overflow-hidden rounded-panel border border-line bg-surface-1 lg:grid-cols-[21rem_minmax(0,1fr)]">
               <DirectoryTree
                 tree={tree}
@@ -368,6 +387,27 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
                 />
               ) : (
                 <EmptyDetail />
+              )}
+              {instructionField === null && program !== null && (
+                <div className="mt-4">
+                  <ProgramAgentPanel
+                    key={program.id}
+                    serverUrl={serverUrl}
+                    workDirectory={tree.workDirectory}
+                    program={program}
+                    focus={
+                      prompt !== null
+                        ? `work item ${prompt.externalKey === null ? "" : `${prompt.externalKey} — `}${prompt.title}`
+                        : suite !== null
+                          ? `suite ${suite.externalKey === null ? "" : `${suite.externalKey} — `}${suite.name}`
+                          : null
+                    }
+                    onRevisionStarted={(draftId) => {
+                      setDraftsFocus((current) => ({ generation: current.generation + 1, draftId }));
+                      requestAnimationFrame(() => draftsPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                    }}
+                  />
+                </div>
               )}
               </div>
             </div>

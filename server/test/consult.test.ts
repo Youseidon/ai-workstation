@@ -233,11 +233,37 @@ test("custom consults persist without a prompt and show as research", () => {
     const session = workspaces.sessions().find((item) => item.id === runId);
     assert.equal(session?.promptId, null);
     assert.equal(session?.promptTitle, "(research)");
+    assert.equal(session?.displayText, null);
     assert.equal(session?.promptStatus, null);
     assert.equal(session?.role, "consult");
     workspaces.finishAgentRun(runId, "done");
     const prompt = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
     assert.equal(prompt.status, "TODO");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a chat-box consult keeps the question as its activity title", () => {
+  const ctx = fixture();
+  try {
+    const runId = unique("run");
+    const credential = runContexts.create(runId, ctx.workspace.id, null, undefined, "what owns auth?");
+    workspaces.beginConsultRun({
+      runId,
+      workspaceId: ctx.workspace.id,
+      promptId: null,
+      provider: "codex",
+      model: null,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText: "what owns auth?",
+    });
+    const session = workspaces.sessions().find((item) => item.id === runId);
+    assert.equal(session?.promptId, null);
+    assert.equal(session?.promptTitle, "what owns auth?");
+    assert.equal(session?.displayText, "what owns auth?");
+    assert.equal(session?.role, "consult");
   } finally {
     ctx.cleanup();
   }

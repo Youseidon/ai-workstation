@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { isRunRole } from "@agent-console/shared";
+import { RUN_ROLES, isRunRole } from "@agent-console/shared";
 import type { RunHandle } from "../src/runner.ts";
 import { runRoleStartError, emptyBudgetSnapshot } from "../src/runner.ts";
 import { runHub } from "../src/runHub.ts";
@@ -46,9 +47,25 @@ const workspace = { id: 9001, name: "Lock", workDirectory: "/tmp/lock" };
 test("unknown run roles are malformed", () => {
   assert.equal(isRunRole("execute"), true);
   assert.equal(isRunRole("consult"), true);
+  assert.equal(isRunRole("author"), true);
   assert.equal(isRunRole("writer"), false);
   assert.equal(isRunRole(undefined), false);
   assert.equal(isRunRole(null), false);
+});
+
+test("the role CHECK on agent_run lists exactly RUN_ROLES", () => {
+  // These are two copies of one list, and their drifting apart is what forced a
+  // rebuild of `agent_run` twice — migration 22 for `handoff`/`review`, and
+  // migration 34 for `author`. A rebuild of that table is the most dangerous
+  // statement in this codebase (it cascades into the entire transcript history),
+  // so the next person to add a role finds out here, in a unit test, rather than
+  // from a CHECK constraint failure on a live database.
+  const source = readFileSync(new URL("../src/workspaces.ts", import.meta.url), "utf8");
+  const checks = [...source.matchAll(/CHECK\(role IN \(([^)]*)\)\)/g)]
+    .map((match) => match[1]!.split(",").map((value) => value.trim().replace(/'/g, "")));
+  assert.ok(checks.length > 0, "no role CHECK found — the migration was rewritten");
+  // The newest rebuild is the one in force; the earlier ones are history.
+  assert.deepEqual([...checks.at(-1)!].sort(), [...RUN_ROLES].sort());
 });
 
 test("consult starts are allowed except for Cursor", () => {

@@ -176,6 +176,92 @@ test("agent_post BLOCKED parks human_question and is never continued", async () 
   }
 });
 
+test("answering a human question resumes the parked pipeline and starts its station", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
+    const firstRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(firstRunId, {
+      requestId: randomUUID(),
+      expectedStatus: "IN_PROGRESS",
+      status: "BLOCKED",
+      reason: "need a decision",
+      verificationSummary: "Choose the deployment region",
+    });
+    workspaces.finishAgentRun(firstRunId, "done");
+    await pipelineScheduler.onExecuteEnded({
+      runId: firstRunId,
+      workspaceId: ctx.workspace.id,
+      promptId,
+      processState: "done",
+    });
+
+    workspaces.respondToBlockedPrompt(promptId, { content: "Deploy to Sydney." });
+    await pipelineScheduler.onPromptResponded(promptId);
+
+    const resumed = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(resumed.waitReason, null);
+    assert.notEqual(resumed.currentRunId, firstRunId);
+    assert.ok(resumed.currentRunId !== null);
+    assert.equal(workspaces.promptOutcome(promptId).status, "IN_PROGRESS");
+    assert.equal(started.length, 2);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("answering after a server restart revives the interrupted human-wait pipeline", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
+    const firstRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(firstRunId, {
+      requestId: randomUUID(),
+      expectedStatus: "IN_PROGRESS",
+      status: "BLOCKED",
+      reason: "need a decision",
+      verificationSummary: "Delete or retain the unused routes",
+    });
+    workspaces.finishAgentRun(firstRunId, "done");
+    await pipelineScheduler.onExecuteEnded({
+      runId: firstRunId,
+      workspaceId: ctx.workspace.id,
+      promptId,
+      processState: "done",
+    });
+    const parked = workspaces.activePipeline(ctx.suite.id)!;
+    workspaces.updatePipelineRun(parked.id, {
+      state: "INTERRUPTED",
+      stopReason: "server_restart",
+      endedAt: new Date().toISOString(),
+    });
+    workspaces.updateNamedPipelineRun(parked.pipelineRunId!, {
+      state: "INTERRUPTED",
+      stopReason: "server_restart",
+      endedAt: new Date().toISOString(),
+    });
+
+    workspaces.respondToBlockedPrompt(promptId, { content: "Delete them." });
+    await pipelineScheduler.onPromptResponded(promptId);
+
+    const resumed = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(resumed.state, "PLAYING");
+    assert.equal(resumed.stopReason, null);
+    assert.equal(resumed.waitReason, null);
+    assert.ok(resumed.currentRunId !== null);
+    assert.equal(workspaces.promptOutcome(promptId).status, "IN_PROGRESS");
+    assert.equal(started.length, 2);
+    assert.equal(workspaces.namedPipelineRunById(parked.pipelineRunId!)!.state, "PLAYING");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test("a continuation after a refused done carries the Verify failure in its brief", async () => {
   const { runDefinitionOfDoneCommands } = await import("../src/definitionOfDone.ts");
   const ctx = fixture(1);

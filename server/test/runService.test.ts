@@ -94,10 +94,12 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   const pipelineLock = firstIndex(body, "activePipelineForWorkspace");
   const lock = firstIndex(body, "runHub.activeForWorkspace");
   const begin = firstIndex(body, "beginAgentRun");
+  const customBegin = firstIndex(body, "beginCustomExecuteRun");
   const launch = firstIndex(body, "startRun(");
   const running = firstIndex(body, "markAgentRunRunning");
   const hubStart = firstIndex(body, "runHub.start");
   assert.ok(pipelineLock < lock && lock < begin && begin < launch && launch < running && running < hubStart);
+  assert.ok(lock < customBegin && customBegin < launch);
   const onEnd = body.slice(firstIndex(body, "onEnd:"), running);
   assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
   assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));

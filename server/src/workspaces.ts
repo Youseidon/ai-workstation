@@ -2,12 +2,13 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
+import type { ProgramBrief, ProgramBriefItem } from "./programBrief.ts";
 import { settings } from "./settings.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
 import { decide, endOfRunReason, endOfRunSignal } from "./statusTransition.ts";
@@ -1166,6 +1167,159 @@ if (afterThirty < 31) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(31,?)").run(new Date().toISOString());
 }
 
+const afterThirtyOne = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyOne < 32) {
+  // Chat-box runs (custom execute, and consults without a work item) had no
+  // place to keep the instruction the operator typed. Activity then titled
+  // them "(research)" or omitted them entirely, because execute never even
+  // wrote an agent_run row.
+  //
+  // One ALTER TABLE ADD COLUMN. No rebuild, so no `PRAGMA foreign_keys`
+  // question (migration 22). Proven against a copy of the live database:
+  // 29 tables, row counts unchanged including 183,113 agent_run_event rows,
+  // integrity_check ok, foreign_key_check clean. Existing runs stay NULL.
+  const migrate32 = db.transaction(() => {
+    db.exec("ALTER TABLE agent_run ADD COLUMN display_text TEXT;");
+  });
+  migrate32();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(32,?)").run(new Date().toISOString());
+}
+
+const afterThirtyTwo = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyTwo < 33) {
+  // Agent-authored programs: a proposal, and nowhere near the library.
+  //
+  // An author run may write here and nowhere else. Until an operator applies
+  // one of these rows, nothing in `program`, `suite` or `prompt` has changed —
+  // which is the whole reason a draft exists rather than the agent calling the
+  // tree's CRUD directly. Applying is a human action that runs the same
+  // transaction the disk importer runs.
+  //
+  // No foreign key to `agent_run`: the run id is provenance, and migration 22's
+  // lesson is that a cascade there is lost evidence. Nor to `program` — a draft
+  // that has been applied keeps saying so even if the program is later deleted,
+  // because "this was applied once" is the fact the operator needs when they
+  // find the same proposal in the list again.
+  //
+  // Additive: one CREATE TABLE and two indexes. No rebuild, no DROP, so there
+  // is no `PRAGMA foreign_keys` question to get wrong.
+  const migrate33 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE program_draft (
+        id INTEGER PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        run_id TEXT,
+        state TEXT NOT NULL DEFAULT 'PENDING' CHECK(state IN ('PENDING','APPLIED','DISCARDED')),
+        goal TEXT NOT NULL DEFAULT '',
+        body_json TEXT NOT NULL,
+        applied_program_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX program_draft_workspace_idx ON program_draft(workspace_id, id);
+      CREATE UNIQUE INDEX program_draft_run_idx ON program_draft(run_id) WHERE run_id IS NOT NULL;
+    `);
+  });
+  migrate33();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(33,?)").run(new Date().toISOString());
+}
+
+const afterThirtyThree = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyThree < 34) {
+  // `author` becomes a role a run can have, and `review` — a role nothing has
+  // written since the reviewer subsystem was removed in migration 29/31 — stops
+  // being one.
+  //
+  // This is a rebuild of `agent_run`, which is the most dangerous thing this
+  // file does. Five tables reference it: `agent_run_event`, `agent_command` and
+  // `completion_audit` cascade on delete, `prompt_status_event` and
+  // `prompt_remark` null their run_id. With foreign keys on, the DROP below
+  // takes the entire transcript history with it — that is migration 22's
+  // incident, 135,025 events, and it reported success while doing it.
+  //
+  // So: `PRAGMA foreign_keys = OFF` is issued by the caller, OUTSIDE the
+  // transaction, in a try/finally. Inside one SQLite ignores it silently.
+  // `server/test/migrationSafety.test.ts` enforces this at the source level.
+  //
+  // The CHECK is rewritten rather than dropped, and `server/test/runRole.test.ts`
+  // now asserts it lists exactly `RUN_ROLES` — the drift between that union and
+  // this constraint is what made a rebuild necessary twice.
+  const migrate34 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE agent_run_author (
+        id TEXT PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        prompt_id INTEGER REFERENCES prompt(id) ON DELETE CASCADE,
+        role TEXT NOT NULL DEFAULT 'execute' CHECK(role IN ('execute','consult','handoff','author')),
+        provider TEXT NOT NULL,
+        model TEXT,
+        state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        context_token_hash TEXT NOT NULL,
+        token_expires_at TEXT NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        tool_calls INTEGER,
+        tool_output_bytes INTEGER,
+        stop_reason TEXT,
+        session_id TEXT,
+        wrapup_of TEXT,
+        display_text TEXT
+      );
+      INSERT INTO agent_run_author SELECT
+        id, workspace_id, prompt_id,
+        -- Nothing should hold the dead role, but a row that somehow does is
+        -- kept as a run rather than refused: it is history, and 'execute' is
+        -- what a reviewer run borrowed before it had a role of its own.
+        CASE role WHEN 'review' THEN 'execute' ELSE role END,
+        provider, model, state, started_at, ended_at,
+        context_token_hash, token_expires_at, input_tokens, output_tokens,
+        cached_input_tokens, tool_calls, tool_output_bytes, stop_reason,
+        session_id, wrapup_of, display_text
+      FROM agent_run;
+      DROP TABLE agent_run;
+      ALTER TABLE agent_run_author RENAME TO agent_run;
+      CREATE UNIQUE INDEX active_prompt_run_uq ON agent_run(prompt_id)
+        WHERE state IN ('STARTING','RUNNING') AND role = 'execute';
+      CREATE INDEX agent_run_prompt_idx ON agent_run(prompt_id,started_at);
+      CREATE INDEX agent_run_workspace_role_idx ON agent_run(workspace_id,role,started_at);
+    `);
+  });
+  // Outside the transaction, where the pragma actually takes effect.
+  db.pragma("foreign_keys = OFF");
+  try {
+    migrate34();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(34,?)").run(new Date().toISOString());
+}
+
+const afterThirtyFour = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyFour < 35) {
+  // A draft can revise a program that already exists, rather than propose a
+  // new one. `target_program_id` names that program; `baseline_json` is the
+  // program as it was when the draft was opened, which apply compares against
+  // so it writes only what the draft changed and refuses to overwrite an edit
+  // made to the program since.
+  //
+  // No foreign key, for the same reason `applied_program_id` has none: a
+  // cascade or a SET NULL would erase "this draft was about that program",
+  // which is the fact apply needs to refuse cleanly once the program is gone.
+  //
+  // Additive: two nullable columns. No rebuild, no DROP.
+  const migrate35 = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE program_draft ADD COLUMN target_program_id INTEGER;
+      ALTER TABLE program_draft ADD COLUMN baseline_json TEXT;
+    `);
+  });
+  migrate35();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(35,?)").run(new Date().toISOString());
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1556,19 +1710,40 @@ function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,s
 function requireActiveExecuteRun(runId:string):{prompt_id:number;role:RunRole} {
   const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;
   if(!run)throw new WorkspaceError(409,"run_not_active","Run is not active");
+  // An author run is not read-only — it is working on a draft and has no work
+  // item to report on. Saying "read-only" to one would send it looking for a
+  // permission it was never refused.
+  if(run.role==="author")throw new WorkspaceError(403,"author_only","An author run drafts a program; it has no work item to report on.");
   if(run.role!=="execute")throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks or status.");
   if(run.prompt_id===null)throw new WorkspaceError(409,"run_not_active","Run is not attached to a work item");
   return {prompt_id:run.prompt_id,role:run.role};
 }
 
-const beginConsultTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string})=>{
+const DISPLAY_TEXT_LIMIT=20000;
+function clipDisplayText(value:string|null|undefined):string|null {
+  if(typeof value!=="string")return null;
+  const trimmed=value.trim();
+  if(trimmed==="")return null;
+  return trimmed.length>DISPLAY_TEXT_LIMIT?trimmed.slice(0,DISPLAY_TEXT_LIMIT):trimmed;
+}
+
+const beginConsultTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null})=>{
   if(!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(args.workspaceId))throw new WorkspaceError(404,"not_found","Workspace not found");
   if(args.promptId!==null){
     const prompt=db.prepare(`SELECT p.id FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=? AND g.workspace_id=?`).get(args.promptId,args.workspaceId);
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
   }
   const now=new Date().toISOString();
-  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,'consult')").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt);
+  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text) VALUES(?,?,?,?,?,'STARTING',?,?,?,'consult',?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,clipDisplayText(args.displayText));
+});
+
+/** Chat-box execute: no work item, so no status transition and no per-prompt lock. */
+const beginCustomExecuteTransaction=db.transaction((args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string})=>{
+  if(!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(args.workspaceId))throw new WorkspaceError(404,"not_found","Workspace not found");
+  const displayText=clipDisplayText(args.displayText);
+  if(displayText===null)throw new WorkspaceError(422,"validation_error","Prompt is empty");
+  const now=new Date().toISOString();
+  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text) VALUES(?,?,NULL,?,?,'STARTING',?,?,?,'execute',?)").run(args.runId,args.workspaceId,args.provider,args.model,now,args.tokenHash,args.expiresAt,displayText);
 });
 
 const agentRemarkTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"remark",()=>{
@@ -1635,6 +1810,8 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
  * every prior attempt.
  */
 const CONTEXT_REMARK_LIMIT=8;
+/** Cap for transcript payloads returned to the UI. Matches live WebSocket replay. */
+const MAX_SESSION_EVENTS=2000;
 
 /** Parent brief + siblings for a decompose sub-step; null for a station. */
 function buildParentContext(parentPromptId:number|null):AgentPromptParentContext|null {
@@ -1800,25 +1977,575 @@ const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string
   return{promptId:run.prompt_id,children};
 }));
 
-const importProgramTransaction = db.transaction((workspaceId: number, pack: ImportedProgram): number => {
-  if (!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(workspaceId)) throw new WorkspaceError(404,"not_found","Workspace not found");
-  if (db.prepare("SELECT 1 FROM program WHERE workspace_id=? AND external_key=?").get(workspaceId,pack.key)) throw new WorkspaceError(409,"conflict",`Program ${pack.key} already exists in this workspace`);
+/**
+ * A whole program, written in one go.
+ *
+ * Shared by the two things that can produce one: the disk importer, and an
+ * applied agent draft. It exists as a function so the second does not get a
+ * second, subtly different insert — the dependency edges, the gate rows and
+ * `syncPromptVerifyCriteria` (which is what turns a `## Verify` block into
+ * command criteria) all have to happen for both, and the way that stays true is
+ * for there to be one copy of it.
+ *
+ * The caller owns the transaction: both callers have their own preconditions to
+ * check in the same atomic unit.
+ */
+interface ProgramTreeInsert {
+  key: string | null;
+  name: string;
+  overview: string;
+  suites: Array<{
+    key: string | null;
+    name: string;
+    overview: string;
+    prompts: Array<{
+      key: string | null; title: string; content: string;
+      status: PromptRecord["status"]; completedAt: string | null; result: string; isGate: boolean;
+    }>;
+  }>;
+  dependencies: Array<{ promptKey: string; dependsOnKey: string }>;
+  gates: Array<{ promptKey: string; code: string; name: string; description: string }>;
+}
+
+function insertProgramTree(workspaceId: number, tree: ProgramTreeInsert): { programId: number; promptIds: Map<string, number> } {
   const now=new Date().toISOString();
-  db.prepare("UPDATE workspace SET description=?,updated_at=? WHERE id=?").run(pack.workspaceDescription,now,workspaceId);
   const programOrder=nextOrder("program","workspace_id",workspaceId);
-  const programId=Number(db.prepare("INSERT INTO program(workspace_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)").run(workspaceId,pack.name,pack.overview,programOrder,now,now,pack.key).lastInsertRowid);
+  const programId=Number(db.prepare("INSERT INTO program(workspace_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)").run(workspaceId,tree.name,tree.overview,programOrder,now,now,tree.key).lastInsertRowid);
   const promptIds=new Map<string,number>();
-  pack.suites.forEach((suite,suiteOrder)=>{
-    const suiteId=Number(db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)").run(programId,suite.name,"",suiteOrder,now,now,suite.key).lastInsertRowid);
+  tree.suites.forEach((suite,suiteOrder)=>{
+    const suiteId=Number(db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)").run(programId,suite.name,suite.overview,suiteOrder,now,now,suite.key).lastInsertRowid);
     suite.prompts.forEach((prompt,promptOrder)=>{
       const promptId=Number(db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at,external_key,status,completed_at,result,is_gate) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(suiteId,prompt.title,prompt.content,promptOrder,now,now,prompt.key,prompt.status,prompt.completedAt,prompt.result,prompt.isGate?1:0).lastInsertRowid);
       syncPromptVerifyCriteria(promptId, prompt.content);
-      promptIds.set(prompt.key,promptId);
+      if(prompt.key!==null) promptIds.set(prompt.key,promptId);
     });
   });
-  for(const dependency of pack.dependencies) db.prepare("INSERT INTO prompt_dependency(prompt_id,depends_on_prompt_id) VALUES(?,?)").run(promptIds.get(dependency.promptKey),promptIds.get(dependency.dependsOnKey));
-  pack.gates.forEach((gate,index)=>db.prepare("INSERT INTO program_gate(program_id,prompt_id,code,name,description,sort_order) VALUES(?,?,?,?,?,?)").run(programId,promptIds.get(gate.promptKey),gate.code,gate.name,gate.description,index));
-  return programId;
+  for(const dependency of tree.dependencies){
+    const promptId=promptIds.get(dependency.promptKey);const dependsOnId=promptIds.get(dependency.dependsOnKey);
+    if(promptId===undefined||dependsOnId===undefined)continue;
+    db.prepare("INSERT INTO prompt_dependency(prompt_id,depends_on_prompt_id) VALUES(?,?)").run(promptId,dependsOnId);
+  }
+  tree.gates.forEach((gate,index)=>{
+    const promptId=promptIds.get(gate.promptKey);
+    if(promptId===undefined)return;
+    db.prepare("INSERT INTO program_gate(program_id,prompt_id,code,name,description,sort_order) VALUES(?,?,?,?,?,?)").run(programId,promptId,gate.code,gate.name,gate.description,index);
+  });
+  return {programId,promptIds};
+}
+
+const importProgramTransaction = db.transaction((workspaceId: number, pack: ImportedProgram): number => {
+  if (!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(workspaceId)) throw new WorkspaceError(404,"not_found","Workspace not found");
+  if (db.prepare("SELECT 1 FROM program WHERE workspace_id=? AND external_key=?").get(workspaceId,pack.key)) throw new WorkspaceError(409,"conflict",`Program ${pack.key} already exists in this workspace`);
+  // A disk pack carries the workspace's standing instructions with it; an
+  // agent-authored draft deliberately does not, and must never overwrite them.
+  db.prepare("UPDATE workspace SET description=?,updated_at=? WHERE id=?").run(pack.workspaceDescription,new Date().toISOString(),workspaceId);
+  return insertProgramTree(workspaceId,{
+    key:pack.key,name:pack.name,overview:pack.overview,
+    suites:pack.suites.map(suite=>({key:suite.key,name:suite.name,overview:"",prompts:suite.prompts.map(prompt=>({key:prompt.key,title:prompt.title,content:prompt.content,status:prompt.status,completedAt:prompt.completedAt,result:prompt.result,isGate:prompt.isGate}))})),
+    dependencies:pack.dependencies,
+    gates:pack.gates,
+  }).programId;
+});
+
+/* ------------------------------------------------------------------------- */
+/* Agent-authored programs                                                    */
+/* ------------------------------------------------------------------------- */
+
+type ProgramDraftRow = {
+  id:number; workspace_id:number; run_id:string|null; state:ProgramDraftState; goal:string;
+  body_json:string; applied_program_id:number|null; created_at:string; updated_at:string;
+  target_program_id:number|null; baseline_json:string|null;
+};
+
+function draftRecord(row:ProgramDraftRow):ProgramDraftRecord {
+  let body:ProgramDraftBody;
+  // A draft whose JSON cannot be parsed is still a row the operator has to be
+  // able to see and discard. Returning an empty body rather than throwing keeps
+  // one corrupt draft from taking the whole list down with it.
+  try{ body=JSON.parse(row.body_json) as ProgramDraftBody; }catch{ body=emptyProgramDraftBody(); }
+  let baseline:ProgramDraftBody|null=null;
+  if(row.baseline_json!==null){ try{ baseline=JSON.parse(row.baseline_json) as ProgramDraftBody; }catch{ baseline=null; } }
+  return {
+    id:row.id,
+    workspaceId:row.workspace_id,
+    runId:row.run_id,
+    state:row.state,
+    goal:row.goal,
+    body,
+    appliedProgramId:row.applied_program_id,
+    targetProgramId:row.target_program_id,
+    baseline,
+    createdAt:row.created_at,
+    updatedAt:row.updated_at,
+  };
+}
+
+function draftRow(id:number):ProgramDraftRow {
+  const row=db.prepare("SELECT * FROM program_draft WHERE id=?").get(id) as ProgramDraftRow|undefined;
+  if(row===undefined)throw new WorkspaceError(404,"not_found","Program draft not found");
+  return row;
+}
+
+function writeDraftBody(id:number,body:ProgramDraftBody):void {
+  db.prepare("UPDATE program_draft SET body_json=?,updated_at=? WHERE id=?").run(JSON.stringify(body),new Date().toISOString(),id);
+}
+
+/** The errors object shape the REST layer already renders, from a shared validator. */
+function refuseInvalid(errors:Record<string,string>):never {
+  throw new WorkspaceError(422,"validation_error","Some of that proposal was refused",errors);
+}
+
+/**
+ * The author run's door.
+ *
+ * Deliberately not `requireActiveExecuteRun`: an author run has no work item,
+ * so every check that one makes is meaningless here, and an execute run must
+ * not be able to reach the draft table either. The two doors are separate so
+ * neither can be widened by accident.
+ */
+function requireActiveAuthorRun(runId:string):{draft:ProgramDraftRow} {
+  const run=db.prepare("SELECT role,workspace_id workspaceId FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId) as {role:RunRole;workspaceId:number}|undefined;
+  if(!run)throw new WorkspaceError(409,"run_not_active","Run is not active");
+  if(run.role!=="author")throw new WorkspaceError(403,"author_only","Only an author run can propose a program.");
+  const row=db.prepare("SELECT * FROM program_draft WHERE run_id=?").get(runId) as ProgramDraftRow|undefined;
+  if(row===undefined)throw new WorkspaceError(409,"draft_not_found","This run has no program draft to write to.");
+  if(row.state!=="PENDING")throw new WorkspaceError(409,"draft_settled",`This draft was already ${row.state.toLowerCase()}; it can no longer be changed.`);
+  return {draft:row};
+}
+
+const proposeProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-program",()=>{
+  const {draft}=requireActiveAuthorRun(runId);
+  if(draft.target_program_id!==null)throw new WorkspaceError(409,"revision_draft","This draft revises an existing program. Post changes with revise-program; proposing a whole program would throw its history away.");
+  const parsed=normalizeProgramProposal(input);
+  if(!parsed.ok)refuseInvalid(parsed.errors);
+  // A second program post replaces the first outright, work items included. An
+  // author that has changed its mind about the suites has changed its mind
+  // about what the work items belong to, and silently keeping the old ones
+  // would leave items filed under a suite that no longer means what it did.
+  const body=bodyFromProgramProposal(parsed.value);
+  writeDraftBody(draft.id,body);
+  return {
+    draftId:draft.id,
+    program:body.name,
+    suites:body.suites.map(suite=>({key:suite.key,name:suite.name})),
+    next:"Post one `propose-suite` per suite, using the keys above.",
+  };
+}));
+
+const proposeSuiteTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-suite",()=>{
+  const {draft}=requireActiveAuthorRun(runId);
+  if(draft.target_program_id!==null)throw new WorkspaceError(409,"revision_draft","This draft revises an existing program. Post changes with revise-program; re-posting a suite would throw its items' history away.");
+  const current=draftRecord(draft).body;
+  if(current.suites.length===0){
+    throw new WorkspaceError(409,"no_program_yet","Post `propose-program` first: this draft has no suites to file work items under.");
+  }
+  const parsed=normalizeSuiteProposal(input,current);
+  if(!parsed.ok)refuseInvalid(parsed.errors);
+  const body=withSuiteProposal(current,parsed.value);
+  writeDraftBody(draft.id,body);
+  const filled=body.suites.filter(suite=>suite.prompts.length>0).map(suite=>suite.key);
+  const remaining=body.suites.filter(suite=>suite.prompts.length===0).map(suite=>suite.key);
+  return {
+    draftId:draft.id,
+    suite:parsed.value.suiteKey,
+    prompts:body.suites.find(suite=>suite.key===parsed.value.suiteKey)?.prompts.map(prompt=>({key:prompt.key,title:prompt.title}))??[],
+    filled,
+    remaining,
+    next:remaining.length===0
+      ?"Every suite has work items. Say what you proposed and stop; the operator applies it."
+      :`Still to post: ${remaining.join(", ")}.`,
+  };
+}));
+
+/**
+ * Turns an approved draft into a real program.
+ *
+ * The keys are assigned here, not taken from the draft: `program.external_key`
+ * is unique per workspace and `prompt.external_key` per suite, and a model
+ * choosing its own would fail the insert at the end of the operator's approval
+ * rather than at the start of the agent's run.
+ */
+const applyProgramDraftTransaction=db.transaction((id:number):{programId:number;prompts:number} => {
+  const row=draftRow(id);
+  if(row.target_program_id!==null)throw new WorkspaceError(409,"revision_draft","This draft revises an existing program; apply it as a revision.");
+  if(row.state!=="PENDING")throw new WorkspaceError(409,"draft_settled",`This draft was already ${row.state.toLowerCase()}.`);
+  const draft=draftRecord(row);
+  if(!canApplyProgramDraft(draft.body)){
+    throw new WorkspaceError(422,"draft_incomplete","This draft cannot be applied yet.",undefined,{issues:programDraftIssues(draft.body)});
+  }
+  const taken=(db.prepare("SELECT external_key key FROM program WHERE workspace_id=? AND external_key IS NOT NULL").all(row.workspace_id) as Array<{key:string}>).map(entry=>entry.key);
+  const key=programKeyFrom(draft.body.name,taken);
+  const gates=draft.body.suites.flatMap(suite=>suite.prompts.filter(prompt=>prompt.gate!==null).map(prompt=>({promptKey:prompt.key,name:prompt.gate!.name,description:prompt.gate!.description})));
+  const inserted=insertProgramTree(row.workspace_id,{
+    key,
+    name:draft.body.name,
+    overview:draft.body.overview,
+    suites:draft.body.suites.map(suite=>({
+      key:suite.key,
+      name:suite.name,
+      overview:suite.overview,
+      prompts:suite.prompts.map(prompt=>({
+        key:prompt.key,title:prompt.title,content:prompt.content,
+        status:"TODO" as const,completedAt:null,result:"",isGate:prompt.gate!==null,
+      })),
+    })),
+    dependencies:resolvedDependencies(draft.body),
+    gates:gates.map((gate,index)=>({promptKey:gate.promptKey,code:`G${index+1}`,name:gate.name,description:gate.description})),
+  });
+  db.prepare("UPDATE program_draft SET state='APPLIED',applied_program_id=?,updated_at=? WHERE id=?").run(inserted.programId,new Date().toISOString(),id);
+  return {programId:inserted.programId,prompts:inserted.promptIds.size};
+});
+
+/* ------------------------------------------------------------------------- */
+/* Revisions: an agent-proposed change to a program that already exists      */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The program as a revision draft body: every suite and work item carrying the
+ * id of the row it copies.
+ *
+ * Keys are the library's own where they can be (so the agent and the operator
+ * talk about `BT-S2-04`, not a number this draft invented), and assigned only
+ * where a row has none or one that is not usable as a key. Dependencies inside
+ * the program are carried; ones that point outside it are not, because a draft
+ * cannot name them and apply must never delete what it could not see.
+ */
+function programRevisionBody(programId:number):ProgramDraftBody {
+  const program=db.prepare("SELECT id,name,overview FROM program WHERE id=?").get(programId) as {id:number;name:string;overview:string}|undefined;
+  if(!program)throw new WorkspaceError(404,"not_found","Program not found");
+  const suites=db.prepare("SELECT id,name,overview,external_key FROM suite WHERE program_id=? ORDER BY sort_order,id").all(programId) as Array<{id:number;name:string;overview:string;external_key:string|null}>;
+  const prompts=db.prepare("SELECT p.id,p.suite_id,p.title,p.content,p.external_key FROM prompt p JOIN suite s ON s.id=p.suite_id WHERE s.program_id=? ORDER BY s.sort_order,p.sort_order,p.id").all(programId) as Array<{id:number;suite_id:number;title:string;content:string;external_key:string|null}>;
+  const edges=db.prepare("SELECT d.prompt_id promptId,d.depends_on_prompt_id dependsOnId FROM prompt_dependency d JOIN prompt p ON p.id=d.prompt_id JOIN suite s ON s.id=p.suite_id WHERE s.program_id=? ORDER BY d.prompt_id,d.depends_on_prompt_id").all(programId) as Array<{promptId:number;dependsOnId:number}>;
+  const gates=new Map((db.prepare("SELECT prompt_id,name,description FROM program_gate WHERE program_id=?").all(programId) as Array<{prompt_id:number;name:string;description:string}>).map(gate=>[gate.prompt_id,{name:gate.name,description:gate.description}]));
+  const usable=(key:string|null,used:Set<string>)=>{
+    const upper=key?.trim().toUpperCase()??"";
+    return DRAFT_KEY_PATTERN.test(upper)&&!used.has(upper)?upper:null;
+  };
+  const suiteKeys=new Set<string>();const promptKeys=new Set<string>();const keyById=new Map<number,string>();
+  const suiteEntries=suites.map((suite,index)=>{
+    let key=usable(suite.external_key,suiteKeys);
+    for(let n=index;key===null;n+=1)key=usable(suiteKeyAt(n),suiteKeys);
+    suiteKeys.add(key);
+    const own=prompts.filter(prompt=>prompt.suite_id===suite.id);
+    for(const [at,prompt] of own.entries()){
+      let promptKey=usable(prompt.external_key,promptKeys);
+      for(let n=at;promptKey===null;n+=1)promptKey=usable(promptKeyAt(key,n),promptKeys);
+      promptKeys.add(promptKey);keyById.set(prompt.id,promptKey);
+    }
+    return {suite,key,own};
+  });
+  const body={
+    name:program.name,
+    overview:program.overview,
+    notes:"",
+    suites:suiteEntries.map(({suite,key,own})=>({
+      key,name:suite.name,overview:suite.overview,filled:own.length>0,sourceId:suite.id,
+      prompts:own.map(prompt=>({
+        key:keyById.get(prompt.id)!,
+        title:prompt.title,
+        content:prompt.content,
+        dependsOn:edges.filter(edge=>edge.promptId===prompt.id&&keyById.has(edge.dependsOnId)).map(edge=>keyById.get(edge.dependsOnId)!),
+        gate:gates.get(prompt.id)??null,
+        sourceId:prompt.id,
+      })),
+    })),
+  };
+  const normalized=normalizeProgramDraftBody(body,{revision:true});
+  if(!normalized.ok)throw new WorkspaceError(422,"revision_unsupported","This program cannot be opened as a revision draft.",normalized.errors);
+  return normalized.value;
+}
+
+const reviseProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"revise-program",()=>{
+  const {draft}=requireActiveAuthorRun(runId);
+  if(draft.target_program_id===null){
+    throw new WorkspaceError(409,"not_a_revision","This draft proposes a new program. Use propose-program and propose-suite.");
+  }
+  const record=draftRecord(draft);
+  const result=applyRevisionChanges(record.body,input);
+  if(!result.ok)refuseInvalid(result.errors);
+  writeDraftBody(draft.id,result.value.body);
+  const pending=diffProgramRevision(record.baseline??result.value.body,result.value.body);
+  return {
+    draftId:draft.id,
+    applied:result.value.applied,
+    pendingChanges:pending.length,
+    next:"Post more changes if the request needs them, then summarise what you changed and why, and stop. The operator reviews the changes and applies them.",
+  };
+}));
+
+interface RevisionApplySummary { added:number; updated:number; removed:number; moved:number; newPromptIds:number[] }
+
+type IndexedBody={
+  suites:Map<number,ProgramDraftSuite>;
+  items:Map<number,{prompt:ProgramDraftPrompt;suiteId:number|null}>;
+  idByKey:Map<string,number>;
+};
+
+function indexRevisionBody(body:ProgramDraftBody):IndexedBody {
+  const suites=new Map<number,ProgramDraftSuite>();const items=new Map<number,{prompt:ProgramDraftPrompt;suiteId:number|null}>();const idByKey=new Map<string,number>();
+  for(const suite of body.suites){
+    if(typeof suite.sourceId==="number")suites.set(suite.sourceId,suite);
+    for(const prompt of suite.prompts){
+      if(typeof prompt.sourceId!=="number")continue;
+      items.set(prompt.sourceId,{prompt,suiteId:typeof suite.sourceId==="number"?suite.sourceId:null});
+      idByKey.set(prompt.key,prompt.sourceId);
+    }
+  }
+  return {suites,items,idByKey};
+}
+
+const gateText=(gate:ProgramDraftPrompt["gate"])=>gate===null?"":JSON.stringify([gate.name,gate.description]);
+
+/**
+ * Writes a revision draft back into its program.
+ *
+ * Three versions are in play: the baseline (the program when the draft was
+ * opened), the draft, and the program now. A field is written only when the
+ * draft differs from the baseline, and refused when the program has *also*
+ * moved away from the baseline to something else — that is someone's edit
+ * made after the draft was opened, and applying over it would lose it with no
+ * trace. Everything the draft did not change is left exactly as it is now.
+ *
+ * Rows are updated in place, never deleted and re-created, so an item keeps its
+ * status, its run history and its revisions; a changed instruction is recorded
+ * in `prompt_revision` exactly like an operator's edit.
+ */
+const applyProgramRevisionTransaction=db.transaction((id:number):{programId:number;summary:RevisionApplySummary}=>{
+  const row=draftRow(id);
+  if(row.state!=="PENDING")throw new WorkspaceError(409,"draft_settled",`This draft was already ${row.state.toLowerCase()}.`);
+  const record=draftRecord(row);
+  const programId=row.target_program_id!;
+  const program=db.prepare("SELECT id,workspace_id workspaceId,name,overview FROM program WHERE id=?").get(programId) as {id:number;workspaceId:number;name:string;overview:string}|undefined;
+  if(!program||program.workspaceId!==row.workspace_id)throw new WorkspaceError(409,"revision_target_gone","The program this draft revises no longer exists. Discard the draft.");
+  if(record.baseline===null)throw new WorkspaceError(409,"revision_baseline_missing","This revision draft has no record of where it started, so it cannot be applied safely.");
+  const draft=record.body;const base=record.baseline;
+  if(!canApplyProgramDraft(draft)){
+    throw new WorkspaceError(422,"draft_incomplete","This draft cannot be applied yet.",undefined,{issues:programDraftIssues(draft)});
+  }
+  if(row.run_id!==null&&db.prepare("SELECT 1 FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(row.run_id)){
+    throw new WorkspaceError(409,"draft_busy","The agent is still writing this draft. Wait for it to finish, or stop it, before applying.");
+  }
+  if(db.prepare("SELECT 1 FROM agent_run r JOIN prompt p ON p.id=r.prompt_id JOIN suite s ON s.id=p.suite_id WHERE s.program_id=? AND r.state IN ('STARTING','RUNNING') LIMIT 1").get(programId)){
+    throw new WorkspaceError(409,"program_busy","An agent is working on a work item in this program. Apply the changes once it has finished.");
+  }
+  if(db.prepare("SELECT 1 FROM suite_pipeline_run WHERE workspace_id=? AND state IN ('PLAYING','WAITING_HUMAN','PAUSED')").get(row.workspace_id)){
+    throw new WorkspaceError(409,"workspace_busy","A pipeline is active in this workspace. Stop or finish it before changing the program it may be running.");
+  }
+
+  const B=indexRevisionBody(base);
+  const C=indexRevisionBody(programRevisionBody(programId));
+  const status=new Map((db.prepare("SELECT p.id,p.status FROM prompt p JOIN suite s ON s.id=p.suite_id WHERE s.program_id=?").all(programId) as Array<{id:number;status:string}>).map(entry=>[entry.id,entry.status]));
+
+  // A sourceId counts only if the baseline has it, and only once: anything
+  // else is a new row, whatever the body claims.
+  const claimedSuites=new Set<number>();const claimedItems=new Set<number>();
+  const plan=draft.suites.map(suite=>{
+    const suiteId=typeof suite.sourceId==="number"&&B.suites.has(suite.sourceId)&&!claimedSuites.has(suite.sourceId)?suite.sourceId:null;
+    if(suiteId!==null)claimedSuites.add(suiteId);
+    return {suite,suiteId,items:suite.prompts.map(prompt=>{
+      const itemId=typeof prompt.sourceId==="number"&&B.items.has(prompt.sourceId)&&!claimedItems.has(prompt.sourceId)?prompt.sourceId:null;
+      if(itemId!==null)claimedItems.add(itemId);
+      return {prompt,itemId};
+    })};
+  });
+  const planItems=plan.flatMap(suite=>suite.items);
+  const draftDeps=(prompt:ProgramDraftPrompt)=>prompt.dependsOn.map(key=>{
+    const entry=planItems.find(item=>item.prompt.key===key);
+    return entry===undefined?`?${key}`:entry.itemId===null?`new:${key}`:`#${entry.itemId}`;
+  }).sort().join(",");
+  const knownDeps=(index:IndexedBody,prompt:ProgramDraftPrompt)=>prompt.dependsOn.map(key=>index.idByKey.has(key)?`#${index.idByKey.get(key)}`:`?${key}`).sort().join(",");
+
+  const conflicts:string[]=[];
+  const threeWay=(label:string,baseValue:string,draftValue:string,currentValue:string)=>{
+    if(draftValue!==baseValue&&currentValue!==baseValue&&currentValue!==draftValue)conflicts.push(`${label} was changed in the program after this draft was made.`);
+  };
+  threeWay("The program name",base.name,draft.name,program.name);
+  threeWay("The program overview",base.overview,draft.overview,program.overview);
+  for(const suite of plan){
+    if(suite.suiteId===null)continue;
+    const b=B.suites.get(suite.suiteId)!;const c=C.suites.get(suite.suiteId);
+    if(c===undefined){conflicts.push(`Suite ${b.key} (${b.name}) was deleted from the program after this draft was made.`);continue;}
+    threeWay(`Suite ${b.key}'s name`,b.name,suite.suite.name,c.name);
+    threeWay(`Suite ${b.key}'s overview`,b.overview,suite.suite.overview,c.overview);
+  }
+  // Items deleted from the program since, that the draft did not change: they
+  // stay deleted, and nothing below may point at them.
+  const skipped=new Set<number>();
+  for(const suite of plan){
+    for(const item of suite.items){
+      if(item.itemId===null)continue;
+      const b=B.items.get(item.itemId)!;const c=C.items.get(item.itemId);
+      const draftSuite=suite.suiteId===null?"new":String(suite.suiteId);
+      const changed=b.prompt.title!==item.prompt.title||b.prompt.content!==item.prompt.content||gateText(b.prompt.gate)!==gateText(item.prompt.gate)
+        ||knownDeps(B,b.prompt)!==draftDeps(item.prompt)||String(b.suiteId)!==draftSuite;
+      if(c===undefined){
+        if(changed)conflicts.push(`${b.prompt.key} was deleted from the program after this draft was made.`);
+        skipped.add(item.itemId);
+        continue;
+      }
+      const label=b.prompt.key;
+      threeWay(`${label}'s title`,b.prompt.title,item.prompt.title,c.prompt.title);
+      threeWay(`${label}'s instructions`,b.prompt.content,item.prompt.content,c.prompt.content);
+      threeWay(`${label}'s gate`,gateText(b.prompt.gate),gateText(item.prompt.gate),gateText(c.prompt.gate));
+      threeWay(`${label}'s dependencies`,knownDeps(B,b.prompt),draftDeps(item.prompt),knownDeps(C,c.prompt));
+      threeWay(`${label}'s suite`,String(b.suiteId),draftSuite,String(c.suiteId));
+    }
+  }
+  const removedItems=[...B.items.keys()].filter(itemId=>!claimedItems.has(itemId)&&C.items.has(itemId));
+  for(const itemId of removedItems){
+    const b=B.items.get(itemId)!.prompt;const c=C.items.get(itemId)!.prompt;
+    if(b.title!==c.title||b.content!==c.content)conflicts.push(`${b.key} was edited after this draft was made; removing it would lose that edit.`);
+    if(status.get(itemId)==="IN_PROGRESS")conflicts.push(`${b.key} is in progress and cannot be removed.`);
+    const keptChildren=(db.prepare("SELECT id FROM prompt WHERE parent_prompt_id=?").all(itemId) as Array<{id:number}>).filter(child=>claimedItems.has(child.id));
+    if(keptChildren.length>0)conflicts.push(`${b.key} has sub-steps this draft keeps; removing it would delete them too.`);
+  }
+  const removedSuites=[...B.suites.keys()].filter(suiteId=>!claimedSuites.has(suiteId)&&C.suites.has(suiteId));
+  for(const suiteId of removedSuites){
+    const b=B.suites.get(suiteId)!;
+    if([...C.items].some(([itemId,entry])=>entry.suiteId===suiteId&&!B.items.has(itemId))){
+      conflicts.push(`Suite ${b.key} gained work items after this draft was made; removing it would delete them.`);
+    }
+  }
+  if(conflicts.length>0){
+    throw new WorkspaceError(409,"revision_conflict","The program changed since this draft was made.",undefined,{issues:conflicts});
+  }
+
+  const now=new Date().toISOString();
+  const reason=`Applied program revision draft ${id}`;
+  const summary:RevisionApplySummary={added:0,updated:0,removed:0,moved:0,newPromptIds:[]};
+  const temp=(rowId:number)=>`~revision-${id}-${rowId}~`;
+
+  if(draft.name!==base.name||draft.overview!==base.overview){
+    db.prepare("UPDATE program SET name=?,overview=?,updated_at=? WHERE id=?").run(draft.name!==base.name?draft.name:program.name,draft.overview!==base.overview?draft.overview:program.overview,now,programId);
+  }
+
+  // 1. Work items the draft removed.
+  for(const itemId of removedItems){db.prepare("DELETE FROM prompt WHERE id=?").run(itemId);summary.removed+=1;}
+
+  // 2. Set aside every name that is about to change or go, so a swap or a
+  //    reuse cannot trip a unique index halfway through.
+  for(const suiteId of removedSuites)db.prepare("UPDATE suite SET name=?,sort_order=? WHERE id=?").run(temp(suiteId),-suiteId,suiteId);
+  for(const suite of plan){
+    if(suite.suiteId!==null&&C.suites.has(suite.suiteId)&&B.suites.get(suite.suiteId)!.name!==suite.suite.name){
+      db.prepare("UPDATE suite SET name=? WHERE id=?").run(temp(suite.suiteId),suite.suiteId);
+    }
+  }
+  for(const item of planItems){
+    if(item.itemId!==null&&!skipped.has(item.itemId)&&B.items.get(item.itemId)!.prompt.title!==item.prompt.title){
+      db.prepare("UPDATE prompt SET title=? WHERE id=?").run(temp(item.itemId),item.itemId);
+    }
+  }
+
+  // 3. Suites: new ones in, retained ones renamed.
+  const suiteIds=new Map<(typeof plan)[number],number>();
+  const takenSuiteKeys=new Set((db.prepare("SELECT external_key key FROM suite WHERE program_id=? AND external_key IS NOT NULL").all(programId) as Array<{key:string}>).map(entry=>entry.key));
+  plan.forEach((suite,index)=>{
+    if(suite.suiteId!==null){
+      suiteIds.set(suite,suite.suiteId);
+      const b=B.suites.get(suite.suiteId)!;const c=C.suites.get(suite.suiteId)!;
+      if(b.name!==suite.suite.name||b.overview!==suite.suite.overview){
+        db.prepare("UPDATE suite SET name=?,overview=?,updated_at=? WHERE id=?").run(
+          b.name!==suite.suite.name?suite.suite.name:c.name,
+          b.overview!==suite.suite.overview?suite.suite.overview:c.overview,now,suite.suiteId);
+      }
+      return;
+    }
+    const key=takenSuiteKeys.has(suite.suite.key)?null:suite.suite.key;
+    if(key!==null)takenSuiteKeys.add(key);
+    suiteIds.set(suite,Number(db.prepare("INSERT INTO suite(program_id,name,overview,sort_order,created_at,updated_at,external_key) VALUES(?,?,?,?,?,?,?)")
+      .run(programId,suite.suite.name,suite.suite.overview,-1_000_000-index,now,now,key).lastInsertRowid));
+  });
+
+  // 4. Work items: moves, new rows, edits.
+  const itemIds=new Map<string,number>();
+  const takenPromptKeys=new Set((db.prepare("SELECT p.external_key key FROM prompt p JOIN suite s ON s.id=p.suite_id WHERE s.program_id=? AND p.external_key IS NOT NULL").all(programId) as Array<{key:string}>).map(entry=>entry.key));
+  let fresh=0;
+  for(const suite of plan){
+    const targetSuiteId=suiteIds.get(suite)!;
+    for(const item of suite.items){
+      if(item.itemId!==null&&skipped.has(item.itemId))continue;
+      if(item.itemId===null){
+        const key=takenPromptKeys.has(item.prompt.key)?null:item.prompt.key;
+        if(key!==null)takenPromptKeys.add(key);
+        fresh+=1;
+        const newId=Number(db.prepare("INSERT INTO prompt(suite_id,title,content,sort_order,created_at,updated_at,external_key,status,completed_at,result,is_gate) VALUES(?,?,?,?,?,?,?,'TODO',NULL,'',?)")
+          .run(targetSuiteId,item.prompt.title,item.prompt.content,-2_000_000-fresh,now,now,key,item.prompt.gate===null?0:1).lastInsertRowid);
+        syncPromptVerifyCriteria(newId,item.prompt.content);
+        itemIds.set(item.prompt.key,newId);
+        summary.added+=1;summary.newPromptIds.push(newId);
+        continue;
+      }
+      const itemId=item.itemId;
+      itemIds.set(item.prompt.key,itemId);
+      const b=B.items.get(itemId)!;const c=C.items.get(itemId)!;
+      if(b.suiteId!==suite.suiteId){
+        db.prepare("UPDATE prompt SET suite_id=?,sort_order=? WHERE id=?").run(targetSuiteId,-itemId,itemId);
+        summary.moved+=1;
+      }
+      const titleChanged=b.prompt.title!==item.prompt.title;const contentChanged=b.prompt.content!==item.prompt.content;
+      if(titleChanged||contentChanged){
+        const stored=db.prepare("SELECT title,content FROM prompt WHERE id=?").get(itemId) as {title:string;content:string};
+        const previousTitle=titleChanged?c.prompt.title:stored.title;
+        db.prepare("INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) VALUES(?,?,?,'USER',?,?)").run(itemId,previousTitle,stored.content,reason,now);
+        db.prepare("UPDATE prompt SET title=?,content=?,updated_at=? WHERE id=?").run(titleChanged?item.prompt.title:stored.title,contentChanged?item.prompt.content:stored.content,now,itemId);
+        if(contentChanged)syncPromptVerifyCriteria(itemId,item.prompt.content);
+      }
+      if(titleChanged||contentChanged||gateText(b.prompt.gate)!==gateText(item.prompt.gate)||knownDeps(B,b.prompt)!==draftDeps(item.prompt))summary.updated+=1;
+    }
+  }
+
+  // 5. Suites the draft removed. Their items were deleted or moved out above.
+  for(const suiteId of removedSuites)db.prepare("DELETE FROM suite WHERE id=?").run(suiteId);
+
+  // 6. Order: the draft's order, then anything added to the program since the
+  //    draft was made, in the order it already had.
+  const reorder=(table:"suite"|"prompt",parent:"program_id"|"suite_id",parentId:number,wanted:number[])=>{
+    const rest=(db.prepare(`SELECT id FROM ${table} WHERE ${parent}=? ORDER BY sort_order,id`).all(parentId) as Array<{id:number}>).map(entry=>entry.id).filter(rowId=>!wanted.includes(rowId));
+    const order=[...wanted,...rest];
+    for(const rowId of order)db.prepare(`UPDATE ${table} SET sort_order=? WHERE id=?`).run(-rowId,rowId);
+    order.forEach((rowId,index)=>db.prepare(`UPDATE ${table} SET sort_order=? WHERE id=?`).run(index,rowId));
+  };
+  reorder("suite","program_id",programId,plan.map(suite=>suiteIds.get(suite)!));
+  for(const suite of plan){
+    reorder("prompt","suite_id",suiteIds.get(suite)!,suite.items.map(item=>itemIds.get(item.prompt.key)).filter((rowId):rowId is number=>rowId!==undefined));
+  }
+
+  // 7. Dependencies, as a difference: edges the draft added go in, edges it
+  //    dropped come out, and edges to other programs are never touched.
+  const baseEdges=new Set([...B.items].flatMap(([itemId,entry])=>entry.prompt.dependsOn
+    .map(key=>B.idByKey.get(key)).filter((to):to is number=>to!==undefined).map(to=>`${itemId}>${to}`)));
+  const draftEdges=new Set(planItems.flatMap(item=>{
+    const from=itemIds.get(item.prompt.key);
+    if(from===undefined)return [];
+    return item.prompt.dependsOn.map(key=>itemIds.get(key)).filter((to):to is number=>to!==undefined&&to!==from).map(to=>`${from}>${to}`);
+  }));
+  for(const edge of draftEdges)if(!baseEdges.has(edge)){const [from,to]=edge.split(">").map(Number);db.prepare("INSERT OR IGNORE INTO prompt_dependency(prompt_id,depends_on_prompt_id) VALUES(?,?)").run(from,to);}
+  for(const edge of baseEdges)if(!draftEdges.has(edge)){const [from,to]=edge.split(">").map(Number);db.prepare("DELETE FROM prompt_dependency WHERE prompt_id=? AND depends_on_prompt_id=?").run(from,to);}
+
+  // 8. Gates.
+  for(const item of planItems){
+    const promptId=itemIds.get(item.prompt.key);
+    if(promptId===undefined)continue;
+    const was=item.itemId===null?null:B.items.get(item.itemId)!.prompt.gate;
+    if(gateText(was)===gateText(item.prompt.gate))continue;
+    const existing=db.prepare("SELECT id FROM program_gate WHERE prompt_id=?").get(promptId) as {id:number}|undefined;
+    if(item.prompt.gate===null){
+      db.prepare("DELETE FROM program_gate WHERE prompt_id=?").run(promptId);
+      db.prepare("UPDATE prompt SET is_gate=0 WHERE id=?").run(promptId);
+    } else if(existing!==undefined){
+      db.prepare("UPDATE program_gate SET name=?,description=? WHERE id=?").run(item.prompt.gate.name,item.prompt.gate.description,existing.id);
+    } else {
+      const codes=new Set((db.prepare("SELECT code FROM program_gate WHERE program_id=?").all(programId) as Array<{code:string}>).map(entry=>entry.code));
+      let n=codes.size+1;while(codes.has(`G${n}`))n+=1;
+      const order=(db.prepare("SELECT COALESCE(MAX(sort_order),-1)+1 value FROM program_gate WHERE program_id=?").get(programId) as {value:number}).value;
+      db.prepare("INSERT INTO program_gate(program_id,prompt_id,code,name,description,sort_order) VALUES(?,?,?,?,?,?)").run(programId,promptId,`G${n}`,item.prompt.gate.name,item.prompt.gate.description,order);
+      db.prepare("UPDATE prompt SET is_gate=1 WHERE id=?").run(promptId);
+    }
+  }
+
+  db.prepare("UPDATE program SET updated_at=? WHERE id=?").run(now,programId);
+  db.prepare("UPDATE program_draft SET state='APPLIED',applied_program_id=?,updated_at=? WHERE id=?").run(programId,now,id);
+  return {programId,summary};
 });
 
 /*
@@ -2261,6 +2988,27 @@ function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
   const satisfied = criteria.every((entry) => !entry.required || entry.result === "PASSED");
   return { enforcement: definition.enforcement, satisfied, blocking: definition.enforcement === "block", criteria };
 }
+
+function sessionPromptTitle(savedTitle:string|null, displayText:string|null, role:string):string {
+  if(typeof savedTitle==="string"&&savedTitle.trim()!=="")return savedTitle;
+  const line=(displayText??"").split("\n")[0]?.trim()??"";
+  if(line!=="")return line.slice(0,80);
+  return role==="consult"?"(research)":"(custom)";
+}
+
+type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"> & { savedTitle:string|null };
+
+function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSession {
+  const {savedTitle, displayText, ...rest}=row;
+  return {
+    ...rest,
+    displayText: displayText ?? null,
+    promptTitle: sessionPromptTitle(savedTitle, displayText, rest.role),
+    events,
+  };
+}
+
+const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id`;
 
 export const workspaces = {
   databasePath,
@@ -2706,8 +3454,218 @@ export const workspaces = {
     forgetOrphanedScopedRows();
   },
   importProgram(workspaceId:number,pack:ImportedProgram):WorkspaceTree { return sqliteGuard(()=>{ importProgramTransaction(workspaceId,pack); return this.tree(workspaceId); }); },
+
+  /* ---------------------------------------------------------------- */
+  /* Agent-authored programs                                           */
+  /* ---------------------------------------------------------------- */
+
+  /** Opens a proposal. Empty until an author run, or the operator, fills it in. */
+  createProgramDraft(args:{workspaceId:number;goal:string}):ProgramDraftRecord { return sqliteGuard(()=>{
+    this.get(args.workspaceId);
+    const goal=requireText(args.goal,"goal",DRAFT_GOAL_MAX);
+    const now=new Date().toISOString();
+    const id=Number(db.prepare("INSERT INTO program_draft(workspace_id,run_id,state,goal,body_json,created_at,updated_at) VALUES(?,NULL,'PENDING',?,?,?,?)")
+      .run(args.workspaceId,goal,JSON.stringify(emptyProgramDraftBody()),now,now).lastInsertRowid);
+    return draftRecord(draftRow(id));
+  }); },
+
+  /**
+   * Points a draft at the run that is about to write it.
+   *
+   * One run per draft and one draft per run, enforced by a unique index: two
+   * author runs filling the same proposal would each replace the other's
+   * suites, and the operator would approve whichever happened to post last.
+   */
+  attachDraftRun(draftId:number,runId:string):ProgramDraftRecord { return sqliteGuard(()=>{
+    const row=draftRow(draftId);
+    if(row.state!=="PENDING")throw new WorkspaceError(409,"draft_settled",`This draft was already ${row.state.toLowerCase()}.`);
+    const live=row.run_id===null?undefined:db.prepare("SELECT id FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(row.run_id) as {id:string}|undefined;
+    if(live!==undefined)throw new WorkspaceError(409,"draft_busy",`An author run is already working on this draft (${live.id}). Stop it before starting another.`);
+    db.prepare("UPDATE program_draft SET run_id=?,updated_at=? WHERE id=?").run(runId,new Date().toISOString(),draftId);
+    return draftRecord(draftRow(draftId));
+  }); },
+
+  programDrafts(workspaceId:number):ProgramDraftRecord[] {
+    this.get(workspaceId);
+    return (db.prepare("SELECT * FROM program_draft WHERE workspace_id=? ORDER BY id DESC").all(workspaceId) as ProgramDraftRow[]).map(draftRecord);
+  },
+
+  programDraft(id:number):ProgramDraftRecord { return draftRecord(draftRow(id)); },
+
+  programDraftForRun(runId:string):ProgramDraftRecord|null {
+    const row=db.prepare("SELECT * FROM program_draft WHERE run_id=?").get(runId) as ProgramDraftRow|undefined;
+    return row===undefined?null:draftRecord(row);
+  },
+
+  /** The operator's edit. Same bounds as the agent's post, same assigned keys. */
+  saveProgramDraft(id:number,input:unknown):ProgramDraftRecord { return sqliteGuard(()=>{
+    const row=draftRow(id);
+    if(row.state!=="PENDING")throw new WorkspaceError(409,"draft_settled",`This draft was already ${row.state.toLowerCase()}; it can no longer be changed.`);
+    const parsed=normalizeProgramDraftBody(input,{revision:row.target_program_id!==null});
+    if(!parsed.ok)throw new WorkspaceError(422,"validation_error","Some changes were refused",parsed.errors);
+    writeDraftBody(id,parsed.value);
+    return draftRecord(draftRow(id));
+  }); },
+
+  discardProgramDraft(id:number):ProgramDraftRecord { return sqliteGuard(()=>{
+    const row=draftRow(id);
+    if(row.state==="APPLIED")throw new WorkspaceError(409,"draft_settled","This draft has already been applied; delete the program instead.");
+    db.prepare("UPDATE program_draft SET state='DISCARDED',updated_at=? WHERE id=?").run(new Date().toISOString(),id);
+    return draftRecord(draftRow(id));
+  }); },
+
+  /** Removes a draft outright. The record is the operator's, not the ledger's. */
+  removeProgramDraft(id:number):void {
+    if(db.prepare("DELETE FROM program_draft WHERE id=?").run(id).changes===0)throw new WorkspaceError(404,"not_found","Program draft not found");
+  },
+
+  /**
+   * The operator's approval: the draft becomes a program.
+   *
+   * `withPipeline` also stages it — every suite in order, every work item a
+   * station — because a program that cannot be run until someone assembles a
+   * pipeline by hand is a list, not work. The pipeline is built after the tree
+   * lands and in its own guard: if it fails, the program is still correct and
+   * the caller is told which half happened.
+   */
+  applyProgramDraft(id:number,options:{withPipeline?:boolean}={}):{draft:ProgramDraftRecord;programId:number;prompts:number;pipelineId:number|null;pipelineError:string|null;revision:(RevisionApplySummary&{pipelineSteps:number})|null} {
+    if(draftRow(id).target_program_id!==null)return this.applyProgramRevision(id,options);
+    const result=sqliteGuard(()=>applyProgramDraftTransaction(id));
+    const draft=draftRecord(draftRow(id));
+    let pipelineId:number|null=null;
+    let pipelineError:string|null=null;
+    if(options.withPipeline===true){
+      try{
+        const suites=this.tree(draft.workspaceId).programs.find(program=>program.id===result.programId)?.suites??[];
+        const pipeline=this.createPipeline({workspaceId:draft.workspaceId,name:draft.body.name.slice(0,120),description:`Created with program draft ${id}.`,suiteIds:suites.map(suite=>suite.id)});
+        for(const suite of suites)for(const prompt of suite.prompts)this.addNamedPipelineStep(pipeline.id,prompt.id);
+        pipelineId=pipeline.id;
+      }catch(error){
+        pipelineError=error instanceof Error?error.message:String(error);
+      }
+    }
+    return {draft,programId:result.programId,prompts:result.prompts,pipelineId,pipelineError,revision:null};
+  },
+
+  /**
+   * The operator's approval of a revision: the draft's changes, written into
+   * the program it copies.
+   *
+   * `withPipeline` here means "put the new work items on the flowcharts that
+   * already run their suite", appended after that suite's existing stations. A
+   * new suite is not added to any pipeline — where a whole stage belongs in
+   * someone's pipeline is not something to guess.
+   */
+  applyProgramRevision(id:number,options:{withPipeline?:boolean}={}):{draft:ProgramDraftRecord;programId:number;prompts:number;pipelineId:number|null;pipelineError:string|null;revision:RevisionApplySummary&{pipelineSteps:number}} {
+    const result=sqliteGuard(()=>applyProgramRevisionTransaction(id));
+    if(result.summary.removed>0)forgetOrphanedScopedRows();
+    let pipelineSteps=0;
+    let pipelineError:string|null=null;
+    if(options.withPipeline===true){
+      for(const promptId of result.summary.newPromptIds){
+        try{
+          const home=this.promptHome(promptId);
+          const pipelines=db.prepare("SELECT pipeline_id id FROM pipeline_stage WHERE suite_id=?").all(home.suiteId) as Array<{id:number}>;
+          for(const pipeline of pipelines){this.addNamedPipelineStep(pipeline.id,promptId);pipelineSteps+=1;}
+        }catch(error){
+          pipelineError=error instanceof Error?error.message:String(error);
+        }
+      }
+    }
+    return {
+      draft:draftRecord(draftRow(id)),
+      programId:result.programId,
+      prompts:result.summary.added+result.summary.updated+result.summary.removed+result.summary.moved,
+      pipelineId:null,
+      pipelineError,
+      revision:{...result.summary,pipelineSteps},
+    };
+  },
+
+  /**
+   * Opens a revision of an existing program: a draft that starts as an exact
+   * copy of it, for an agent or the operator to change.
+   */
+  createProgramRevision(args:{workspaceId:number;programId:number;goal:string}):ProgramDraftRecord { return sqliteGuard(()=>{
+    this.get(args.workspaceId);
+    const owner=db.prepare("SELECT workspace_id FROM program WHERE id=?").get(args.programId) as {workspace_id:number}|undefined;
+    if(!owner||owner.workspace_id!==args.workspaceId)throw new WorkspaceError(404,"not_found","Program not found in this workspace");
+    const goal=requireText(args.goal,"goal",DRAFT_GOAL_MAX);
+    const body=JSON.stringify(programRevisionBody(args.programId));
+    const now=new Date().toISOString();
+    const id=Number(db.prepare("INSERT INTO program_draft(workspace_id,run_id,state,goal,body_json,created_at,updated_at,target_program_id,baseline_json) VALUES(?,NULL,'PENDING',?,?,?,?,?,?)")
+      .run(args.workspaceId,goal,body,now,now,args.programId,body).lastInsertRowid);
+    return draftRecord(draftRow(id));
+  }); },
+
+  /** Agent door: a list of changes to a revision draft. */
+  reviseProgram(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>reviseProgramTransaction(runId,input)); },
+
+  /**
+   * Everything an agent needs to reason about a whole program: its items in
+   * order with status, dependencies, gates and definition of done, and the
+   * pipelines that would run it.
+   */
+  programBrief(programId:number):ProgramBrief {
+    const program=db.prepare("SELECT g.id,g.external_key key,g.name,g.overview,w.id workspaceId FROM program g JOIN workspace w ON w.id=g.workspace_id WHERE g.id=?").get(programId) as {id:number;key:string|null;name:string;overview:string;workspaceId:number}|undefined;
+    if(!program)throw new WorkspaceError(404,"not_found","Program not found");
+    const workspace=this.get(program.workspaceId);
+    const suites=db.prepare("SELECT id,external_key key,name,overview FROM suite WHERE program_id=? ORDER BY sort_order,id").all(programId) as Array<{id:number;key:string|null;name:string;overview:string}>;
+    const itemsFor=db.prepare("SELECT p.id,p.external_key key,p.title,p.status,p.content,parent.external_key parentKey,parent.title parentTitle,(SELECT COUNT(*) FROM agent_run r WHERE r.prompt_id=p.id AND r.role='execute') runs FROM prompt p LEFT JOIN prompt parent ON parent.id=p.parent_prompt_id WHERE p.suite_id=? ORDER BY p.sort_order,p.id");
+    const depsFor=db.prepare("SELECT d.external_key key,d.title,d.status,CASE WHEN g.id=? THEN NULL ELSE g.name END programName FROM prompt_dependency e JOIN prompt d ON d.id=e.depends_on_prompt_id JOIN suite s ON s.id=d.suite_id JOIN program g ON g.id=s.program_id WHERE e.prompt_id=? ORDER BY d.external_key,d.title");
+    const gateFor=db.prepare("SELECT code,name,description FROM program_gate WHERE prompt_id=?");
+    const programSuiteIds=new Set(suites.map(suite=>suite.id));
+    return {
+      workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,description:workspace.description},
+      program:{id:program.id,key:program.key,name:program.name,overview:program.overview},
+      suites:suites.map(suite=>({
+        ...suite,
+        items:(itemsFor.all(suite.id) as Array<{id:number;key:string|null;title:string;status:StepStatus;content:string;parentKey:string|null;parentTitle:string|null;runs:number}>).map((item):ProgramBriefItem=>({
+          id:item.id,key:item.key,title:item.title,status:item.status,content:item.content,
+          parentKey:item.parentKey??item.parentTitle,
+          dependsOn:depsFor.all(programId,item.id) as ProgramBriefItem["dependsOn"],
+          gate:(gateFor.get(item.id) as ProgramBriefItem["gate"]|undefined)??null,
+          criteria:resolveDefinitionOfDone(item.id).criteria.map(criterion=>({kind:criterion.kind,text:criterion.kind==="COMMAND"?(criterion.command??criterion.text):criterion.text,required:criterion.required})),
+          runs:item.runs,
+        })),
+      })),
+      pipelines:this.listPipelines(program.workspaceId)
+        .filter(pipeline=>pipeline.stages.some(stage=>programSuiteIds.has(stage.suiteId)))
+        .map(pipeline=>({
+          id:pipeline.id,
+          name:pipeline.name,
+          active:pipeline.active?.state??null,
+          stages:pipeline.stages.map(stage=>{
+            const label=`${stage.suiteKey===null?"":`${stage.suiteKey} — `}${stage.suiteName}`;
+            if(!programSuiteIds.has(stage.suiteId))return {suiteId:stage.suiteId,label:`${label} (${stage.programName})`,steps:null};
+            const titles=new Map((itemsFor.all(stage.suiteId) as Array<{id:number;key:string|null;title:string}>).map(item=>[item.id,item]));
+            return {
+              suiteId:stage.suiteId,label,
+              steps:this.enabledNamedPipelineSteps(pipeline.id,stage.suiteId).map(step=>({
+                key:titles.get(step.promptId)?.key??null,title:titles.get(step.promptId)?.title??`#${step.promptId}`,
+                provider:step.provider,model:step.model,onDone:step.onDone,onUnfinished:step.onUnfinished,
+              })),
+            };
+          }),
+        })),
+      maxContinuations:settings.pipelinePolicy.maxContinuations,
+    };
+  },
+
+  /** Agent door: the program and its suites. */
+  proposeProgram(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>proposeProgramTransaction(runId,input)); },
+  /** Agent door: one suite's work items. */
+  proposeSuite(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>proposeSuiteTransaction(runId,input)); },
+
+  beginAuthorRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string}):void { sqliteGuard(()=>{
+    if(!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(args.workspaceId))throw new WorkspaceError(404,"not_found","Workspace not found");
+    const now=new Date().toISOString();
+    db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text) VALUES(?,?,NULL,?,?,'STARTING',?,?,?,'author',?)")
+      .run(args.runId,args.workspaceId,args.provider,args.model,now,args.tokenHash,args.expiresAt,clipDisplayText(args.displayText));
+  }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
-  beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
+  beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
+  beginCustomExecuteRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string}):void { sqliteGuard(()=>beginCustomExecuteTransaction(args)); },
   beginHandoffAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>{
     const now=new Date().toISOString();
     db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,'handoff')")
@@ -2975,15 +3933,51 @@ export const workspaces = {
     const rows=db.prepare(`SELECT p.id promptId,g.workspace_id workspaceId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.status='BLOCKED' OR EXISTS(SELECT 1 FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='HUMAN_RESPONSE') ORDER BY p.updated_at DESC`).all() as Array<{promptId:number;workspaceId:number}>;
     return rows.map(({promptId,workspaceId})=>{const prompt=this.resolvePrompt(workspaceId,promptId);const workspace=this.get(workspaceId);const history=this.promptHistory(promptId);const remarks=history.remarks as PromptRemark[];return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},latestBlocker:remarks.find(item=>item.kind==="BLOCKER")??null,remarks,events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),currentRun:this.latestRunActivity(promptId)};});
   },
-  latestRunActivity(promptId:number):AgentRunActivity|null { const run=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as Omit<AgentRunActivity,"events">|undefined;if(!run)return null;const rows=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id").all(run.id) as Array<{event_json:string}>;return{...run,events:rows.map(row=>JSON.parse(row.event_json) as NormalizedEvent)}; },
-  sessions():AgentSession[] { const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id ORDER BY r.started_at DESC`).all() as Array<Omit<AgentSession,"events">>;const events=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id");return rows.map(run=>({...run,events:(events.all(run.id) as Array<{event_json:string}>).map(row=>JSON.parse(row.event_json) as NormalizedEvent)})); },
+  /**
+   * Newest transcript events for one run, capped so a single detail view cannot
+   * pull tens of thousands of rows into the heap. Older events beyond the cap
+   * stay in the database for retention sweeps; the live WebSocket replay uses
+   * the same bound.
+   */
+  runEvents(runId:string,limit=MAX_SESSION_EVENTS):NormalizedEvent[] {
+    const rows=db.prepare(
+      "SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id DESC LIMIT ?",
+    ).all(runId,Math.max(0,limit)) as Array<{event_json:string}>;
+    return rows.reverse().map((row)=>JSON.parse(row.event_json) as NormalizedEvent);
+  },
+  latestRunActivity(promptId:number):AgentRunActivity|null {
+    const run=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as Omit<AgentRunActivity,"events">|undefined;
+    if(!run)return null;
+    return{...run,events:this.runEvents(run.id)};
+  },
+  /**
+   * Session index for the Activity page. Deliberately omits transcripts —
+   * shipping every `agent_run_event` row on a 30s poll OOMs the Node heap once
+   * the database holds more than a few dozen long runs. Fetch one session's
+   * events with `sessionById` when the operator opens it.
+   */
+  sessions():AgentSession[] {
+    const rows=db.prepare(`${SESSION_SELECT} ORDER BY r.started_at DESC`).all() as SessionQueryRow[];
+    return rows.map((run)=>hydrateSession(run, []));
+  },
+  /** One session with a capped transcript, for the Activity detail pane. */
+  sessionById(runId:string):AgentSession|null {
+    const run=db.prepare(`${SESSION_SELECT} WHERE r.id=?`).get(runId) as SessionQueryRow|undefined;
+    if(run===undefined)return null;
+    return hydrateSession(run, this.runEvents(run.id));
+  },
+  /** Sessions for one work item, each with a capped transcript. */
+  sessionsForPrompt(promptId:number):AgentSession[] {
+    const rows=db.prepare(`${SESSION_SELECT} WHERE r.prompt_id=? ORDER BY r.started_at DESC`).all(promptId) as SessionQueryRow[];
+    return rows.map((run)=>hydrateSession(run, this.runEvents(run.id)));
+  },
   /**
    * Token + estimated-cost rollup for the report page. Pulls usage from run
    * events without shipping full transcripts to the client.
    */
   usageReport(workspaceId?:number):UsageReport {
     if(workspaceId!==undefined)this.get(workspaceId);
-    const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,r.prompt_id promptId,p.external_key promptKey,COALESCE(p.title,'(research)') promptTitle,s.id suiteId,COALESCE(s.name,'') suiteName,g.id programId,COALESCE(g.name,'') programName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,r.input_tokens inputTokens,r.output_tokens outputTokens,r.cached_input_tokens cachedInputTokens FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id WHERE (? IS NULL OR r.workspace_id=?) ORDER BY r.started_at DESC`).all(workspaceId??null,workspaceId??null) as Array<{id:string;workspaceId:number;workspaceName:string;promptId:number|null;promptKey:string|null;promptTitle:string;suiteId:number|null;suiteName:string;programId:number|null;programName:string;provider:string;model:string|null;role:string;state:string;startedAt:string;endedAt:string|null;inputTokens:number|null;outputTokens:number|null;cachedInputTokens:number|null}>;
+    const rows=db.prepare(`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,s.id suiteId,COALESCE(s.name,'') suiteName,g.id programId,COALESCE(g.name,'') programName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,r.input_tokens inputTokens,r.output_tokens outputTokens,r.cached_input_tokens cachedInputTokens FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id WHERE (? IS NULL OR r.workspace_id=?) ORDER BY r.started_at DESC`).all(workspaceId??null,workspaceId??null) as Array<{id:string;workspaceId:number;workspaceName:string;promptId:number|null;promptKey:string|null;savedTitle:string|null;displayText:string|null;suiteId:number|null;suiteName:string;programId:number|null;programName:string;provider:string;model:string|null;role:string;state:string;startedAt:string;endedAt:string|null;inputTokens:number|null;outputTokens:number|null;cachedInputTokens:number|null}>;
     const eventsStmt=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id");
     const sessions:SessionUsageRow[]=rows.map(row=>{
       // Runs finished since usage was persisted answer from their own columns;
@@ -2992,7 +3986,7 @@ export const workspaces = {
         ?usageFromEvents((eventsStmt.all(row.id) as Array<{event_json:string}>).map(entry=>JSON.parse(entry.event_json) as NormalizedEvent))
         :{inputTokens:row.inputTokens,outputTokens:row.outputTokens??0,cachedInputTokens:row.cachedInputTokens??0,reasoningOutputTokens:0,totalTokens:row.inputTokens+(row.outputTokens??0)};
       const cost=estimateCost(usage,row.provider,row.model);
-      return{id:row.id,workspaceId:row.workspaceId,workspaceName:row.workspaceName,promptId:row.promptId,promptKey:row.promptKey,promptTitle:row.promptTitle,suiteId:row.suiteId,suiteName:row.suiteName,programId:row.programId,programName:row.programName,provider:row.provider,model:row.model,role:isRunRole(row.role)?row.role:"execute",state:row.state,startedAt:row.startedAt,endedAt:row.endedAt,usage,cost};
+      return{id:row.id,workspaceId:row.workspaceId,workspaceName:row.workspaceName,promptId:row.promptId,promptKey:row.promptKey,promptTitle:sessionPromptTitle(row.savedTitle,row.displayText,row.role),suiteId:row.suiteId,suiteName:row.suiteName,programId:row.programId,programName:row.programName,provider:row.provider,model:row.model,role:isRunRole(row.role)?row.role:"execute",state:row.state,startedAt:row.startedAt,endedAt:row.endedAt,usage,cost};
     });
     const totals=emptyUsageTotals();
     const byProviderMap=new Map<string,UsageTotals>();
@@ -3226,7 +4220,7 @@ export const workspaces = {
     const row=db.prepare("SELECT g.workspace_id workspaceId,s.id suiteId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=?").get(promptId) as {workspaceId:number;suiteId:number}|undefined;if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
     const prompts=this.operations(row.workspaceId).suites.find(suite=>suite.id===row.suiteId)?.prompts??[];
     const item=findOperationsPrompt(prompts,promptId);if(!item)throw new WorkspaceError(404,"not_found","Prompt not found");
-    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessions().filter(session=>session.promptId===promptId),audits:this.completionAuditsForPrompt(promptId),producedWork:this.promptProducedWork(promptId)};
+    const history=this.promptHistory(promptId);return{item,remarks:history.remarks as PromptRemark[],events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),sessions:this.sessionsForPrompt(promptId),audits:this.completionAuditsForPrompt(promptId),producedWork:this.promptProducedWork(promptId)};
   },
   /**
    * The per-second "running" heartbeat is a live-UI signal, not a record: it

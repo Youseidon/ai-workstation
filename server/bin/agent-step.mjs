@@ -40,6 +40,19 @@ const USAGE = `agent-step — record progress and status for this work item.
                                             item on the same working tree
   agent-step decompose --file children.json Split into sub-steps
 
+Author runs (drafting a program) have their own two commands and none of
+the above:
+
+  agent-step context                        Re-read the draft as it stands
+  agent-step propose-program --file p.json  The program and its suites
+  agent-step propose-suite --file s.json    One suite's work items
+
+Revision runs (changing a program that already exists) have one:
+
+  agent-step context [--item KEY]           The program as the draft has it
+                                            (--item: one work item in full)
+  agent-step revise --file changes.json     {"changes": [{"op": ...}, ...]}
+
 Remark kinds: PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION, COMPLETION.
 
 Post a PROGRESS remark after each verified slice. It is how you see how much
@@ -108,6 +121,13 @@ const ADVICE = {
   verification_failed: "The server ran this item's Verify commands and at least one failed. Fix them, then post done again — or continue with what remains.",
   decompose_title_conflict: "Rename the conflicting titles and post again; existing sub-steps are kept.",
   decompose_depth_exceeded: "Finish this sub-step, or post continue with what remains.",
+  author_only: "This run works a work item; it cannot propose a program.",
+  no_program_yet: "Post propose-program first, then one propose-suite per suite.",
+  revision_draft: "This run revises an existing program. Post changes with 'agent-step revise --file changes.json'.",
+  not_a_revision: "This run drafts a new program. Use propose-program and propose-suite.",
+  draft_settled: "This draft was already applied or discarded. Stop; there is nothing to write.",
+  draft_not_found: "This run has no draft to write to. Stop and report it.",
+  body_too_large: "Split this into fewer work items per post and try again.",
 };
 
 /** One readable block per failing Verify command (409 verification_failed). */
@@ -134,6 +154,20 @@ function formatDecomposeConflicts(conflicts) {
   }).join("\n");
 }
 
+/**
+ * Field-level refusals, one per line.
+ *
+ * A proposal is refused per field — `suites[2].name`, `prompts[0].content` —
+ * and a model that is only told "Some of that proposal was refused" re-posts
+ * the same body. Naming the field is what makes the next attempt different.
+ */
+function formatFields(fields) {
+  if (fields === null || typeof fields !== "object") return "";
+  const entries = Object.entries(fields);
+  if (entries.length === 0) return "";
+  return "\n" + entries.map(([field, message]) => `  ${field}: ${message}`).join("\n");
+}
+
 async function post(path, body) {
   const response = await send(path, {
     method: "POST",
@@ -150,10 +184,16 @@ async function post(path, body) {
       ? formatVerificationFailures(parsed?.error?.failures)
       : code === "decompose_title_conflict"
         ? formatDecomposeConflicts(parsed?.error?.conflicts)
-        : "";
+        : formatFields(parsed?.error?.fields);
     // Non-zero and specific. A silently swallowed refusal is how a run ends
     // believing it reported when it did not.
     fail(`agent-step: refused (${code}): ${message}${detail}${advice === undefined ? "" : `\n  ${advice}`}`, 2);
+  }
+  // What a revision did, line by line: the keys of added items are in here,
+  // and a later post needs them.
+  if (Array.isArray(parsed?.applied)) {
+    for (const line of parsed.applied) process.stdout.write(`  ${line}\n`);
+    if (typeof parsed.next === "string") process.stdout.write(`  ${parsed.next}\n`);
   }
   if (parsed?.budget !== undefined && parsed.budget !== null) {
     const b = parsed.budget;
@@ -184,7 +224,11 @@ if (BASE === "" || TOKEN === "") {
 }
 
 switch (command) {
-  case "context": await get(args.full === true ? "/context?full=1" : "/context"); break;
+  case "context": {
+    const query = typeof args.item === "string" ? `?item=${encodeURIComponent(args.item)}` : args.full === true ? "?full=1" : "";
+    await get(`/context${query}`);
+    break;
+  }
   case "state": await get("/state"); break;
   case "remark": {
     const text = args.text ?? args.content;
@@ -238,6 +282,40 @@ switch (command) {
     const children = Array.isArray(payload) ? payload : payload.children;
     if (!Array.isArray(children)) fail("The file must be a JSON array of {title, content}, or an object with a 'children' array.");
     await post("/decompose", { children, resumeBrief: payload.resumeBrief ?? args.brief ?? "" });
+    break;
+  }
+  case "propose-program": {
+    if (typeof args.file !== "string") fail("agent-step propose-program needs --file program.json");
+    let payload;
+    try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      fail("The file must be a JSON object: {name, overview, notes, suites: [{name, overview}]}.");
+    }
+    await post("/propose-program", payload);
+    break;
+  }
+  case "propose-suite": {
+    if (typeof args.file !== "string") fail("agent-step propose-suite needs --file suite.json");
+    let payload;
+    try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      fail("The file must be a JSON object: {suite: \"S1\", prompts: [{title, content, dependsOn, gate}]}.");
+    }
+    // --suite overrides the file, so one file can be re-posted against another
+    // suite without editing it.
+    const suite = typeof args.suite === "string" ? args.suite : payload.suite;
+    if (typeof suite !== "string" || suite.trim() === "") fail("agent-step propose-suite needs a suite key: --suite S1, or \"suite\" in the file.");
+    await post("/propose-suite", { ...payload, suite });
+    break;
+  }
+  case "revise": {
+    if (typeof args.file !== "string") fail("agent-step revise needs --file changes.json");
+    let payload;
+    try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
+    // A bare array is the list of changes; anything else must carry one.
+    const changes = Array.isArray(payload) ? payload : payload?.changes;
+    if (!Array.isArray(changes)) fail("The file must be {\"changes\": [{\"op\": \"update-item\", ...}]} or a JSON array of changes.");
+    await post("/revise-program", { changes });
     break;
   }
   default:

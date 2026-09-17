@@ -1,4 +1,5 @@
 import type {
+  ProgramDraftBody, ProgramDraftRecord, ProgramDraftPreview,
   StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
@@ -23,8 +24,12 @@ async function request<T>(serverUrl: string, path: string, init?: RequestInit): 
 
 const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 
+/** What applying a revision draft did to its program. */
+export interface ProgramRevisionApplied { added:number; updated:number; removed:number; moved:number; newPromptIds:number[]; pipelineSteps:number }
+
 export const workspaceApi = {
   async sessions(serverUrl:string){return (await request<{sessions:AgentSession[]}>(serverUrl,"/api/sessions")).sessions;},
+  async session(serverUrl:string,runId:string){return (await request<{session:AgentSession}>(serverUrl,`/api/sessions/${encodeURIComponent(runId)}`)).session;},
   async report(serverUrl:string,workspaceId?:number){return (await request<{report:UsageReport}>(serverUrl,`/api/report${workspaceId===undefined?"":`?workspace=${workspaceId}`}`)).report;},
   /** The status catalog and the trigger sentences, for the rules screen. */
   statuses(serverUrl:string){return request<{statuses:StatusDefinition[];triggers:Record<string,string>}>(serverUrl,"/api/statuses");},
@@ -57,6 +62,21 @@ export const workspaceApi = {
   createChild(serverUrl: string, parent: "workspaces"|"programs"|"suites", id: number, child: "programs"|"suites"|"prompts", value: unknown) { return request(serverUrl, `/api/${parent}/${id}/${child}`, { method: "POST", ...json(value) }); },
   updateChild(serverUrl: string, kind: "programs"|"suites"|"prompts", id: number, value: unknown) { return request(serverUrl, `/api/${kind}/${id}`, { method: "PATCH", ...json(value) }); },
   removeChild(serverUrl: string, kind: "programs"|"suites"|"prompts", id: number) { return request<void>(serverUrl, `/api/${kind}/${id}`, { method: "DELETE" }); },
+  /* Agent-authored programs: the draft is written by an agent (or by hand) and
+     only `applyProgramDraft` turns one into a program. */
+  programDrafts(serverUrl:string,workspaceId:number){return request<{drafts:Array<{draft:ProgramDraftRecord;preview:ProgramDraftPreview}>}>(serverUrl,`/api/workspaces/${workspaceId}/program-drafts`).then(r=>r.drafts);},
+  programDraft(serverUrl:string,id:number){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview}>(serverUrl,`/api/program-drafts/${id}`);},
+  /** With a provider, starts an author run; without one, opens an empty draft. */
+  startProgramDraft(serverUrl:string,workspaceId:number,value:{goal:string;provider?:ProviderId;model?:string|null}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string|null}>(serverUrl,`/api/workspaces/${workspaceId}/program-drafts`,{method:"POST",...json(value)});},
+  saveProgramDraft(serverUrl:string,id:number,body:ProgramDraftBody){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview}>(serverUrl,`/api/program-drafts/${id}`,{method:"PATCH",...json(body)});},
+  applyProgramDraft(serverUrl:string,id:number,value:{withPipeline?:boolean}={}){return request<{draft:ProgramDraftRecord;programId:number;prompts:number;pipelineId:number|null;pipelineError:string|null;revision:ProgramRevisionApplied|null;workspace:WorkspaceTree}>(serverUrl,`/api/program-drafts/${id}/apply`,{method:"POST",...json(value)});},
+  discardProgramDraft(serverUrl:string,id:number){return request<{draft:ProgramDraftRecord}>(serverUrl,`/api/program-drafts/${id}/discard`,{method:"POST",body:"{}"}).then(r=>r.draft);},
+  removeProgramDraft(serverUrl:string,id:number){return request<void>(serverUrl,`/api/program-drafts/${id}`,{method:"DELETE"});},
+  reviseProgramDraft(serverUrl:string,id:number,value:{provider:ProviderId;model?:string|null;feedback?:string}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string}>(serverUrl,`/api/program-drafts/${id}/revise`,{method:"POST",...json(value)});},
+  /* An existing program: ask about it (a read-only consult whose answer is its
+     transcript), or open a revision draft of it, with or without an agent. */
+  askAboutProgram(serverUrl:string,programId:number,value:{question:string;provider:ProviderId;model?:string|null}){return request<{runId:string}>(serverUrl,`/api/programs/${programId}/ask`,{method:"POST",...json(value)});},
+  startProgramRevision(serverUrl:string,programId:number,value:{goal:string;provider?:ProviderId;model?:string|null}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string|null}>(serverUrl,`/api/programs/${programId}/revisions`,{method:"POST",...json(value)});},
   history(serverUrl:string,id:number){return request<{events:PromptStatusEvent[];remarks:PromptRemark[];runs:unknown[]}>(serverUrl,`/api/prompts/${id}/history`);},
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},

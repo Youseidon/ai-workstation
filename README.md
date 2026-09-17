@@ -272,6 +272,46 @@ inserts the previewed structure in one transaction. Both accept `rootPath` and
 SQLite, shared standing instructions are copied into the workspace description,
 and no source path, file hash, or continuing filesystem link is stored.
 
+### Letting an agent write the program
+
+A program can also be drafted by an agent rather than typed. On the Workspaces
+page, say what the program should achieve and pick a provider: the agent reads
+that workspace's working tree and proposes suites and the work items inside
+them, each one a session's worth of work with its own `## Verify` block.
+
+**Nothing it writes reaches the library.** An author run has no work item, so it
+cannot post a status, a remark or a decompose; the only thing it can write is a
+row in `program_draft`, which nothing reads until you apply it. You edit the
+draft in place — retitle, rewrite, delete, reorder, fix dependencies — and then
+press **Create program**, which is the single place a draft becomes rows in
+`program`, `suite` and `prompt`, in one transaction, through the same code path
+the disk importer uses. Tick *and a pipeline to run it* to stage every suite and
+work item at the same time.
+
+The agent posts through two commands, and a run that is stopped halfway leaves a
+partial draft the next run continues rather than nothing at all:
+
+```bash
+agent-step propose-program --file program.json   # the program and its suites
+agent-step propose-suite   --file suite.json     # one suite's work items
+```
+
+Keys are assigned by the server (`S1`, `S1-01`, …), never by the agent, so a
+model cannot collide with the unique indexes at the end of a long run. Re-posting
+a suite replaces that suite's work items, which is also how **Revise** works: tell
+the agent what to change and it edits the draft it can already see.
+
+The author run reads the tree but starts with ordinary write permissions —
+`agent-step` is a shell command talking to 127.0.0.1, and a read-only sandbox
+blocks that outright on Codex. So it holds the workspace's writer lock for its
+duration, exactly like an execute run, and "do not change the tree" is an
+instruction in its brief rather than a sandbox. The guarantee that matters is the
+other one: the draft table, and your approval.
+
+REST: `GET|POST /api/workspaces/:id/program-drafts`, and
+`GET|PATCH|DELETE /api/program-drafts/:id` with `/apply`, `/discard` and
+`/revise`.
+
 When a saved prompt runs, its body is not pasted into the composer or transcript.
 The server creates a persisted run and a random bearer token, writes a per-run
 `agent-step` launcher with that credential baked in (mode `0700`, removed when

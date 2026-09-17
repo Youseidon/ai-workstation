@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { isProviderId, type ProviderId, type ProviderInfo } from "@agent-console/shared";
+import { isProviderId, type ProgramDraftRecord, type ProviderId, type ProviderInfo } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
+import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
+import { programBriefMarkdown, programConsultMarkdown } from "./programBrief.ts";
 import { config } from "./config.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -36,6 +38,22 @@ export interface StartConsultArgs {
   prompt?: string;
   promptId?: number;
   question?: string;
+  /** Ask about a whole program: its items, order, rules and pipelines. */
+  programId?: number;
+}
+
+export interface StartProgramAuthorArgs {
+  workspaceId: number;
+  provider: string;
+  model: string | null;
+  /** What the operator wants planned. Required for a new draft. */
+  goal?: string;
+  /** Revise an existing draft instead of opening one. */
+  draftId?: number;
+  /** Open a revision of this existing program instead of a new-program draft. */
+  programId?: number;
+  /** What the operator wants changed about that draft. */
+  feedback?: string;
 }
 
 export interface StartVerifySuiteArgs {
@@ -165,6 +183,22 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     customDisplay = resolvedPrompt;
     if (resolvedPrompt === "") throw new WorkspaceError(422, "validation_error", "Prompt is empty");
     if (workspace.description.trim() !== "") resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n# Work item\n\n${resolvedPrompt}`;
+    const credential = runContexts.create(plannedRunId, workspaceId, null);
+    try {
+      workspaces.beginCustomExecuteRun({
+        runId: plannedRunId,
+        workspaceId,
+        provider,
+        model,
+        tokenHash: credential.tokenHash,
+        expiresAt: credential.expiresAt,
+        displayText: customDisplay,
+      });
+    } catch (error) {
+      runContexts.revoke(plannedRunId);
+      throw error;
+    }
+    activeContextRunId = plannedRunId;
   }
 
   let clarificationAnswer = "";
@@ -284,7 +318,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   });
   // Marked RUNNING before the announcement, so a client that reacts to
   // run_started by refetching never reads a stale STARTING row.
-  if (savedPrompt !== null && mode === "execute") workspaces.markAgentRunRunning(handle.runId);
+  if (activeContextRunId !== null) workspaces.markAgentRunRunning(handle.runId);
   runHub.start({
     handle,
     workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
@@ -582,6 +616,16 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .find((value) => value !== "") ?? "";
 
+  const program = args.programId === undefined
+    ? null
+    : workspaces.tree(workspaceId).programs.find((entry) => entry.id === args.programId) ?? null;
+  if (args.programId !== undefined && program === null) {
+    throw new WorkspaceError(404, "not_found", "Program not found in this workspace");
+  }
+  if (program !== null && questionText === "") {
+    throw new WorkspaceError(422, "validation_error", "Ask a question about the program");
+  }
+
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
   if (args.promptId !== undefined) {
     savedPrompt = workspaces.resolvePrompt(workspaceId, args.promptId);
@@ -595,7 +639,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
 
   const plannedRunId = newId("run");
   const promptId = savedPrompt?.id ?? null;
-  const credential = runContexts.create(plannedRunId, workspaceId, promptId, undefined, question);
+  const credential = runContexts.create(plannedRunId, workspaceId, promptId, undefined, question, program?.id ?? null);
   try {
     workspaces.beginConsultRun({
       runId: plannedRunId,
@@ -605,6 +649,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
       model: args.model,
       tokenHash: credential.tokenHash,
       expiresAt: credential.expiresAt,
+      displayText: question,
     });
   } catch (error) {
     runContexts.revoke(plannedRunId);
@@ -616,7 +661,10 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
   const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
   let resolvedPrompt =
     `${liveBanner}Answer a research question about this working tree. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable. The tree may be changing under you if a writer is active.\n\nBefore answering, retrieve the authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nDo not post remarks or status. You cannot use the Progress API.\n\n## Question\n\n${question}`;
-  if (savedPrompt === null && workspace.description.trim() !== "") {
+  if (program !== null) {
+    resolvedPrompt =
+      `${liveBanner}Answer the operator's question about the program "${program.name}" in this workspace. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable.\n\nBefore answering, retrieve the whole program — every suite and work item, its status, dependencies, definition of done, and the pipelines that run it — with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nIf the output looks cut off, redirect it to a file (> program.md) and read that in parts. For one work item's full text, add ?item=KEY to that URL. Read the repository as well when the answer depends on the code. Do not post remarks or status.\n\n## Question\n\n${question}`;
+  } else if (savedPrompt === null && workspace.description.trim() !== "") {
     resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
   }
 
@@ -646,8 +694,8 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     source: {
       type: "consult",
       promptId,
-      promptKey: savedPrompt?.externalKey ?? null,
-      title: savedPrompt?.title ?? null,
+      promptKey: savedPrompt?.externalKey ?? program?.externalKey ?? null,
+      title: savedPrompt?.title ?? (program === null ? null : `Program: ${program.name}`),
       question,
     },
     role: "consult",
@@ -655,6 +703,134 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
   });
   void handle.done.catch((error: unknown) => log.error("consult failed", error));
   return { runId: handle.runId };
+}
+
+/**
+ * Drafts a program: suites and the work items inside them, for this workspace.
+ *
+ * The one run in this console that writes work items rather than doing them.
+ * It is an ordinary agent run in every other respect — same providers, same
+ * budget, same transcript — with two differences that matter:
+ *
+ *  - It has no work item, so it cannot post a status, a remark or a decompose;
+ *    `requireActiveAuthorRun` is a separate door from `requireActiveExecuteRun`
+ *    and neither can reach the other's operations.
+ *  - Everything it writes lands in `program_draft`, which nothing reads until an
+ *    operator applies it. That is the guarantee — not the paragraph in the
+ *    prompt asking it not to edit the tree, which is an instruction a model may
+ *    drop. It does start with normal permissions, because `agent-step` is a
+ *    shell command talking to 127.0.0.1 and a read-only sandbox blocks that
+ *    outright on Codex, so it holds the workspace's writer lock for its
+ *    duration like any execute run.
+ */
+export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<{ runId: string; draft: ProgramDraftRecord }> {
+  const workspace = workspaces.get(args.workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  const owner = workspaces.activePipelineForWorkspace(args.workspaceId);
+  if (owner !== null) {
+    throw new WorkspaceError(409, "workspace_busy", "A pipeline is already active in this workspace.", {
+      detail: "Stop or finish it before drafting a program in the same working directory.",
+    });
+  }
+  const busy = runHub.activeForWorkspace(args.workspaceId);
+  if (busy !== undefined) {
+    throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`, {
+      detail: "Stop the running agent before drafting a program in the same working directory.",
+    });
+  }
+  const provider = await requireAvailableProvider(args.provider);
+
+  // The draft exists before the run does, so a run that dies in its first
+  // second still leaves the operator something to re-run or delete, and so the
+  // agent has somewhere to post from its very first call.
+  const existing = args.draftId === undefined ? null : workspaces.programDraft(args.draftId);
+  if (existing !== null && existing.workspaceId !== args.workspaceId) {
+    throw new WorkspaceError(404, "not_found", "That draft belongs to another workspace");
+  }
+  const goal = existing?.goal ?? args.goal ?? "";
+  const draft = existing
+    ?? (args.programId === undefined
+      ? workspaces.createProgramDraft({ workspaceId: args.workspaceId, goal })
+      : workspaces.createProgramRevision({ workspaceId: args.workspaceId, programId: args.programId, goal }));
+  const revising = draft.targetProgramId !== null;
+
+  const plannedRunId = newId("run");
+  const credential = runContexts.create(plannedRunId, args.workspaceId, null, undefined, goal);
+  const displayText = revising ? `Revise program ${draft.body.name}: ${goal}` : `Draft a program: ${goal}`;
+  try {
+    workspaces.beginAuthorRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      provider,
+      model: args.model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  try {
+    workspaces.attachDraftRun(draft.id, plannedRunId);
+  } catch (error) {
+    // The run row exists but nothing will ever write through it. Close it here
+    // rather than leaving a STARTING row that the next boot would report as an
+    // abandoned run.
+    workspaces.finishAgentRun(plannedRunId, "error");
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  const promptArgs = {
+    workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+    draft: workspaces.programDraft(draft.id),
+    shimPath,
+    runId: plannedRunId,
+    token: credential.token,
+    port: config.port,
+    feedback: typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null,
+  };
+  const prompt = revising
+    ? programRevisionPrompt({ ...promptArgs, brief: workspaces.programBrief(draft.targetProgramId!) })
+    : programAuthorPrompt(promptArgs);
+
+  materialize(workspace);
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(provider),
+    prompt,
+    cwd: workspace.workDirectory,
+    model: args.model,
+    role: "author",
+    permissionOverride: "inherit",
+    onEvent: (event) => {
+      workspaces.recordAgentEvent(plannedRunId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state, metrics) => {
+      // Nothing concludes anything here. A draft is not a work item: an author
+      // run that ends without posting leaves a PENDING draft exactly as it
+      // found it, which is the honest record of what happened.
+      workspaces.finishAgentRun(runId, state, "", metrics);
+      runContexts.complete(runId);
+      removeAgentShim(runId);
+      runHub.end(runId, state);
+    },
+  });
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: { type: "author", draftId: draft.id, goal, programName: draft.body.name === "" ? null : draft.body.name, revision: revising },
+    role: "author",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("program author failed", error));
+  return { runId: handle.runId, draft: workspaces.programDraft(draft.id) };
 }
 
 /**
@@ -727,9 +903,14 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
   return { runId: handle.runId };
 }
 
-export function consultContextText(workspaceId: number, promptId: number | null, question: string): string {
+export function consultContextText(workspaceId: number, promptId: number | null, question: string, programId: number | null = null, item: string | null = null): string {
   const writer = runHub.activeExecuteForWorkspace(workspaceId);
   const liveWriter = writer === undefined ? null : { provider: writer.provider, model: writer.model };
+  if (programId !== null) {
+    const brief = workspaces.programBrief(programId);
+    if (brief.workspace.id !== workspaceId) throw new WorkspaceError(403, "run_scope_mismatch", "Run credential scope does not match");
+    return item === null ? programConsultMarkdown(brief, question, liveTreeBanner(liveWriter)) : programBriefMarkdown(brief, { item });
+  }
   if (promptId === null) {
     const workspace = workspaces.get(workspaceId);
     return consultWorkspaceMarkdown({

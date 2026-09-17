@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
-import { handleWorkspaceApi } from "../src/workspaceApi.ts";
+import { handleWorkspaceApi, isWorkspaceApiPath } from "../src/workspaceApi.ts";
 import { workspaces } from "../src/workspaces.ts";
 
 let seq = 0;
@@ -196,4 +196,139 @@ test("completing a station requires evidence and refuses terminal or live statio
   } finally {
     ctx.cleanup();
   }
+});
+
+test("session list omits transcripts; detail and prompt activity keep a capped copy", async () => {
+  const ctx = fixture();
+  try {
+    const runId = `run-${randomUUID()}`;
+    workspaces.beginAgentRun({
+      runId,
+      workspaceId: ctx.workspace.id,
+      promptId: ctx.prompt.id,
+      provider: "claude",
+      model: null,
+      tokenHash: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      role: "execute",
+    });
+    workspaces.markAgentRunRunning(runId);
+    for (let i = 0; i < 3; i += 1) {
+      workspaces.recordAgentEvent(runId, {
+        id: `evt-${i}`,
+        runId,
+        provider: "claude",
+        model: null,
+        timestamp: new Date().toISOString(),
+        type: "assistant_text",
+        payload: { blockId: `b${i}`, delta: false, kind: "message", text: `line ${i}` },
+      });
+    }
+    workspaces.finishAgentRun(runId, "done");
+
+    const listed = await call("GET", "/api/sessions");
+    assert.equal(listed.status, 200);
+    const sessions = listed.body.sessions as Array<{ id: string; events: unknown[] }>;
+    const listedSession = sessions.find((session) => session.id === runId);
+    assert.ok(listedSession);
+    assert.equal(listedSession.events.length, 0);
+
+    const detail = await call("GET", `/api/sessions/${runId}`);
+    assert.equal(detail.status, 200);
+    const session = detail.body.session as { id: string; events: unknown[] };
+    assert.equal(session.id, runId);
+    assert.equal(session.events.length, 3);
+
+    const activity = await call("GET", `/api/prompts/${ctx.prompt.id}/activity`);
+    assert.equal(activity.status, 200);
+    const activitySessions = activity.body.sessions as Array<{ id: string; events: unknown[] }>;
+    assert.equal(activitySessions.length, 1);
+    assert.equal(activitySessions[0]!.id, runId);
+    assert.equal(activitySessions[0]!.events.length, 3);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a chat-box execute persists and activity keeps the typed prompt", async () => {
+  const ctx = fixture();
+  try {
+    const runId = `run-${randomUUID()}`;
+    workspaces.beginCustomExecuteRun({
+      runId,
+      workspaceId: ctx.workspace.id,
+      provider: "claude",
+      model: null,
+      tokenHash: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      displayText: "rewrite the login form\nuse the existing theme",
+    });
+    workspaces.markAgentRunRunning(runId);
+    workspaces.recordAgentEvent(runId, {
+      id: "evt-0",
+      runId,
+      provider: "claude",
+      model: null,
+      timestamp: new Date().toISOString(),
+      type: "assistant_text",
+      payload: { blockId: "b0", delta: false, kind: "message", text: "working on it" },
+    });
+    workspaces.finishAgentRun(runId, "done");
+
+    const listed = await call("GET", "/api/sessions");
+    assert.equal(listed.status, 200);
+    const sessions = listed.body.sessions as Array<{
+      id: string;
+      promptId: number | null;
+      promptTitle: string;
+      displayText: string | null;
+      events: unknown[];
+    }>;
+    const listedSession = sessions.find((session) => session.id === runId);
+    assert.ok(listedSession);
+    assert.equal(listedSession.promptId, null);
+    assert.equal(listedSession.promptTitle, "rewrite the login form");
+    assert.equal(listedSession.displayText, "rewrite the login form\nuse the existing theme");
+    assert.equal(listedSession.events.length, 0);
+
+    const detail = await call("GET", `/api/sessions/${runId}`);
+    assert.equal(detail.status, 200);
+    const session = detail.body.session as {
+      id: string;
+      promptTitle: string;
+      displayText: string | null;
+      events: unknown[];
+    };
+    assert.equal(session.id, runId);
+    assert.equal(session.promptTitle, "rewrite the login form");
+    assert.equal(session.displayText, "rewrite the login form\nuse the existing theme");
+    assert.equal(session.events.length, 1);
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("every route this module answers is one the HTTP server will hand it", () => {
+  // These were two lists in two files. `/api/program-drafts` was added to one of
+  // them and the endpoint answered a 404 from the other — routed here, rejected
+  // there. The predicate is now shared, and `index.ts` must use it rather than
+  // spelling the prefixes out again.
+  for (const path of [
+    "/api/sessions", "/api/sessions/run_1", "/api/operations", "/api/report",
+    "/api/statuses", "/api/statuses/DONE", "/api/triggers/run_started",
+    "/api/definition-of-done/suite/1", "/api/workspaces", "/api/workspaces/1/tree",
+    "/api/workspaces/1/program-drafts", "/api/program-drafts/1",
+    "/api/program-drafts/1/apply", "/api/program-drafts/1/discard", "/api/program-drafts/1/revise",
+    "/api/programs/1", "/api/suites/1/prompts", "/api/prompts/1/history",
+    "/api/pipelines", "/api/pipelines/1/play", "/api/runs/run_1/interrupt", "/api/verifications/1",
+  ]) {
+    assert.equal(isWorkspaceApiPath(path), true, path);
+  }
+  for (const path of ["/api/providers", "/api/health", "/api/settings", "/ws", "/api/agent/runs/r/context"]) {
+    assert.equal(isWorkspaceApiPath(path), false, path);
+  }
+  const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /isWorkspaceApiPath\(url\.pathname\)/);
+  assert.doesNotMatch(source, /pathname\.startsWith\("\/api\/definition-of-done\//);
 });

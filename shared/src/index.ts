@@ -14,7 +14,7 @@ export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
-export const RUN_ROLES = ["execute", "consult", "handoff"] as const;
+export const RUN_ROLES = ["execute", "consult", "handoff", "author"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
 export function isRunRole(value: unknown): value is RunRole {
@@ -776,7 +776,7 @@ interface EventBase {
 export interface DbAccessPayload {
   /** Whether this read the app's state or changed it. */
   direction: "read" | "write";
-  operation: "context" | "state" | "remarks" | "status" | "decompose";
+  operation: "context" | "state" | "remarks" | "status" | "decompose" | "propose-program" | "propose-suite" | "revise-program";
   method: string;
   /** Accepted, refused, or replayed from the idempotency ledger. */
   outcome: "accepted" | "rejected" | "replayed";
@@ -1055,7 +1055,19 @@ export interface HumanInputRequest {
 
 export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
 export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
-export interface AgentSession extends AgentRunActivity { workspaceId:number; workspaceName:string; workDirectory:string; promptId:number|null; promptKey:string|null; promptTitle:string; promptStatus:PromptStatus|null; programName:string; suiteName:string }
+export interface AgentSession extends AgentRunActivity {
+  workspaceId:number;
+  workspaceName:string;
+  workDirectory:string;
+  promptId:number|null;
+  promptKey:string|null;
+  promptTitle:string;
+  promptStatus:PromptStatus|null;
+  programName:string;
+  suiteName:string;
+  /** Chat-box / consult instruction. Null for saved work items and older rows. */
+  displayText:string|null;
+}
 
 /**
  * What a work item shows on a card: its stored status, unless a live overlay
@@ -1676,7 +1688,8 @@ export type RunSource =
   | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
   | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
   | { type: "wrapup"; promptId: number; promptKey: string | null; title: string; sourceRunId: string; stopReason: string | null }
-  | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string };
+  | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string }
+  | { type: "author"; draftId: number; goal: string; programName: string | null; /** True when changing an existing program. */ revision?: boolean };
 
 export interface ServerRunStartedMessage {
   kind: "run_started";
@@ -1915,6 +1928,62 @@ export type {
 } from "./statusModel";
 export { parseVerifyBlock } from "./verifyBlock";
 export type { VerifyBlockParse, VerifyCommand } from "./verifyBlock";
+export {
+  DRAFT_CONTENT_MAX,
+  DRAFT_GOAL_MAX,
+  DRAFT_KEY_PATTERN,
+  DRAFT_MAX_PROMPTS,
+  DRAFT_MAX_PROMPTS_PER_SUITE,
+  DRAFT_MAX_SUITES,
+  DRAFT_MIN_SUITES,
+  DRAFT_NAME_MAX,
+  DRAFT_NOTES_MAX,
+  DRAFT_OVERVIEW_MAX,
+  DRAFT_TITLE_MAX,
+  PROGRAM_DRAFT_STATES,
+  allPrompts,
+  bodyFromProgramProposal,
+  canApplyProgramDraft,
+  countPrompts,
+  draftLimits,
+  emptyProgramDraftBody,
+  isProgramDraftState,
+  normalizeProgramDraftBody,
+  normalizeProgramProposal,
+  normalizeSuiteProposal,
+  programDraftIssues,
+  programDraftPreview,
+  programKeyFrom,
+  promptKeyAt,
+  resolvedDependencies,
+  suiteKeyAt,
+  withSuiteProposal,
+} from "./programDraft";
+export type {
+  DraftLimits,
+  DraftValidation,
+  ProgramDraftBody,
+  ProgramDraftGate,
+  ProgramDraftPreview,
+  ProgramDraftPrompt,
+  ProgramDraftRecord,
+  ProgramDraftState,
+  ProgramDraftSuite,
+  ProgramProposal,
+  SuiteProposal,
+} from "./programDraft";
+export {
+  REVISION_MAX_CHANGES,
+  REVISION_OPERATIONS,
+  applyRevisionChanges,
+  diffProgramRevision,
+} from "./programRevision";
+export type {
+  ProgramRevisionChange,
+  RevisionChangeKind,
+  RevisionOperation,
+  RevisionResult,
+} from "./programRevision";
 import type { StatusDefinition, StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
 
 export type {

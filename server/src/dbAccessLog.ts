@@ -13,10 +13,10 @@
 
 import type { DbAccessPayload } from "@agent-console/shared";
 
-export type DbOperation = "context" | "state" | "remarks" | "status" | "decompose";
+export type DbOperation = "context" | "state" | "remarks" | "status" | "decompose" | "propose-program" | "propose-suite" | "revise-program";
 
 /** The endpoints that change state. Everything else is a read. */
-const WRITES = new Set<DbOperation>(["remarks", "status", "decompose"]);
+const WRITES = new Set<DbOperation>(["remarks", "status", "decompose", "propose-program", "propose-suite", "revise-program"]);
 
 /**
  * What an accepted call touched.
@@ -31,6 +31,11 @@ const TABLES: Record<DbOperation, string[]> = {
   remarks: ["prompt_remark"],
   status: ["prompt", "prompt_status_event"],
   decompose: ["prompt", "prompt_status_event"],
+  // A proposal touches the draft and nothing else. That is the whole point of
+  // it, and naming the table is how the operator can see that it is true.
+  "propose-program": ["program_draft"],
+  "propose-suite": ["program_draft"],
+  "revise-program": ["program_draft"],
 };
 
 export function isDbWrite(operation: DbOperation): boolean {
@@ -55,13 +60,21 @@ export function describeAcceptedWrite(args: AcceptedWrite): DbAccessPayload {
   // A status post that left the status where it was is the idempotency ledger
   // replaying an earlier call. Reporting "IN_PROGRESS → DONE" twice would have
   // the operator hunting a transition that only ever happened once.
-  const replayed = args.operation !== "remarks" && args.before === args.after;
+  const replayed = args.operation === "status" || args.operation === "decompose"
+    ? args.before === args.after
+    : false;
   const summary =
     args.operation === "remarks"
       ? `+1 ${args.remarkKind ?? "PROGRESS"} remark`
       : args.operation === "decompose"
         ? "split into sub-steps"
-        : `${args.before ?? "?"} → ${args.after ?? "?"}`;
+        : args.operation === "propose-program"
+          ? "proposed a program and its suites"
+          : args.operation === "propose-suite"
+            ? "proposed a suite's work items"
+            : args.operation === "revise-program"
+              ? "proposed changes to a program"
+            : `${args.before ?? "?"} → ${args.after ?? "?"}`;
   return {
     direction: "write",
     operation: args.operation,

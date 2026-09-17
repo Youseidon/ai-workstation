@@ -10,10 +10,10 @@ import {
 } from "../src/dbAccessLog.ts";
 import type { DbOperation } from "../src/dbAccessLog.ts";
 
-const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "decompose"];
+const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "decompose", "propose-program", "propose-suite", "revise-program"];
 
 test("reads and writes are told apart, and only writes name tables", () => {
-  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "decompose"]);
+  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "decompose", "propose-program", "propose-suite", "revise-program"]);
   for (const operation of OPERATIONS) {
     // A read that claimed to have changed a table would be the worst kind of
     // wrong here: the log exists precisely so the operator does not have to
@@ -84,19 +84,20 @@ test("every agent endpoint is instrumented", () => {
   // route regex in index.ts is the list of endpoints an agent can reach, so it
   // is compared against the operations this module knows how to describe.
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  const route = source.match(/agent\\\/runs\\\/\(\[\^\/\]\+\)\\\/\(([a-z|]+)\)/);
+  const route = source.match(/agent\\\/runs\\\/\(\[\^\/\]\+\)\\\/\(([a-z|-]+)\)/);
   assert.ok(route !== null, "could not find the agent route pattern");
   assert.deepEqual(route[1]!.split("|").sort(), [...OPERATIONS].sort());
 
   const handler = source.slice(source.indexOf("const agentMatch"), source.indexOf('url.pathname === "/api/sessions"'));
-  // Five call sites cover the five operations: the two reads are separate
-  // branches; the three writes share one POST branch that records accepted and
-  // generic refused outcomes; and a Verify refusal on `done` records its own
-  // rejected write before returning 409 (so it never looks like a silent miss).
+  // Six call sites: the two reads on a work item are separate branches, an
+  // author run's context read is a third, the writes share one POST branch that
+  // records accepted and generic refused outcomes, and a Verify refusal on
+  // `done` records its own rejected write before returning 409 (so it never
+  // looks like a silent miss).
   assert.match(handler, /describeRead\(\{operation:"context"/, "context reads are not logged");
   assert.match(handler, /describeRead\(\{operation:"state"/, "state reads are not logged");
   assert.match(handler, /describeAcceptedWrite\(/, "accepted writes are not logged");
   assert.match(handler, /describeRejectedWrite\(/, "refused writes are not logged");
   assert.match(handler, /verification_failed/, "Verify refusals are not logged");
-  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 5);
+  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 6);
 });

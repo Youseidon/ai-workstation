@@ -11,6 +11,7 @@ import {
   mergeUsage,
   usageFromEvents,
   type AgentSession,
+  type ProviderId,
   type RunRole,
   type RunSource,
   type TokenUsage,
@@ -21,7 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Field";
 import { Skeleton } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
-import { applyEvent, type LogItem } from "@/lib/log";
+import { appendPrompt, applyEvent, type LogItem } from "@/lib/log";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole, type RunStatus } from "@/lib/agentConsole";
 import { useWorkspace } from "@/lib/workspaceContext";
@@ -48,6 +49,7 @@ interface ActivityRow {
   promptId: number | null;
   promptKey: string | null;
   promptTitle: string;
+  displayText: string | null;
   programName: string;
   suiteName: string;
   events: AgentSession["events"];
@@ -107,6 +109,22 @@ function titleFromSource(source: RunSource): string {
         : `Verify · ${source.promptKey}`;
     case "custom":
       return source.displayText.split("\n")[0]?.slice(0, 80) || "(custom)";
+    case "author":
+      return `Draft · ${source.programName ?? source.goal.slice(0, 60)}`;
+  }
+}
+
+function displayTextFromSource(source: RunSource): string | null {
+  switch (source.type) {
+    case "custom":
+      return source.displayText;
+    case "author":
+      return source.goal;
+    case "consult":
+    case "clarification":
+      return source.question;
+    default:
+      return null;
   }
 }
 
@@ -126,6 +144,7 @@ function rowFromSession(session: AgentSession, run: RunStatus | null): ActivityR
     promptId: session.promptId,
     promptKey: session.promptKey,
     promptTitle: session.promptTitle,
+    displayText: session.displayText,
     programName: session.programName,
     suiteName: session.suiteName,
     events: session.events,
@@ -154,6 +173,7 @@ function rowFromLiveRun(run: RunStatus): ActivityRow {
         ? run.source.promptKey
         : null,
     promptTitle: title,
+    displayText: displayTextFromSource(run.source),
     programName: run.source.type === "saved" ? run.source.programName : "",
     suiteName:
       run.source.type === "saved"
@@ -180,6 +200,8 @@ export function ActivityView() {
   const { workspaceId } = useWorkspace();
 
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
+  const [detailById, setDetailById] = useState<Record<string, AgentSession>>({});
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("list");
@@ -208,6 +230,30 @@ export function ActivityView() {
     return () => clearInterval(timer);
   }, [refresh, operationsRevision, runs.length]);
 
+  const selectedDetail = selectedId === null ? undefined : detailById[selectedId];
+  const selectedIsLive = selectedId !== null && runs.some((run) => run.runId === selectedId);
+
+  // List responses omit transcripts so a 30s poll cannot OOM the server. Load
+  // one session's events only when the operator opens it (and it is not live).
+  useEffect(() => {
+    if (selectedId === null || selectedIsLive || selectedDetail !== undefined) return;
+    let cancelled = false;
+    setDetailError(null);
+    void workspaceApi
+      .session(SERVER_URL, selectedId)
+      .then((session) => {
+        if (cancelled) return;
+        setDetailById((prev) => ({ ...prev, [session.id]: session }));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setDetailError(error instanceof Error ? error.message : "Session log could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, selectedIsLive, selectedDetail]);
+
   const rows = useMemo<ActivityRow[]>(() => {
     const byId = new Map((sessions ?? []).map((session) => [session.id, session]));
     const liveIds = new Set(runs.map((run) => run.runId));
@@ -219,10 +265,10 @@ export function ActivityView() {
 
     const historical = (sessions ?? [])
       .filter((session) => !liveIds.has(session.id))
-      .map((session) => rowFromSession(session, null));
+      .map((session) => rowFromSession(detailById[session.id] ?? session, null));
 
     return [...liveRows, ...historical];
-  }, [sessions, runs]);
+  }, [sessions, runs, detailById]);
 
   const filtered = useMemo(() => {
     return rows.filter((row) => {
@@ -242,7 +288,17 @@ export function ActivityView() {
   const logs = useMemo<LogItem[]>(() => {
     if (selected === null) return [];
     if (selected.live) return itemsFor(selected.id);
-    return selected.events.reduce<LogItem[]>((items, event) => applyEvent(items, event), []);
+    const seed =
+      selected.displayText !== null && selected.displayText !== ""
+        ? appendPrompt([], {
+            runId: selected.id,
+            provider: selected.provider as ProviderId,
+            model: selected.model,
+            text: selected.displayText,
+            timestamp: selected.startedAt,
+          })
+        : [];
+    return selected.events.reduce<LogItem[]>((items, event) => applyEvent(items, event), seed);
   }, [selected, itemsFor]);
 
   const selectedUsage = useMemo(() => (selected === null ? null : usageForRow(selected)), [selected]);
@@ -500,7 +556,15 @@ export function ActivityView() {
                     )}
                   </div>
                 </div>
-                {logs.length === 0 ? (
+                {detailError !== null && !selected.live ? (
+                  <p role="alert" className="rounded-panel border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
+                    Session log is unavailable: {detailError}
+                  </p>
+                ) : logs.length === 0 && !selected.live && detailById[selected.id] === undefined ? (
+                  <p className="rounded-panel border border-line p-4 text-sm text-fg-dim">
+                    Loading session log…
+                  </p>
+                ) : logs.length === 0 ? (
                   <p className="rounded-panel border border-line p-4 text-sm text-fg-dim">
                     No event stream was captured for this session yet.
                   </p>

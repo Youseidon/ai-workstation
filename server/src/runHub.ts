@@ -112,13 +112,20 @@ export const runHub = {
   },
 
   /**
-   * The execute run currently writing in a workspace, if any.
+   * The run currently holding a workspace's working directory, if any.
    *
    * A workspace is one working directory, and two agents editing the same tree
-   * at once corrupt each other's work.
+   * at once corrupt each other's work. An author run counts: it is told to read
+   * rather than write, but it starts with the same permissions an execute run
+   * does (it has to be able to reach `agent-step`, and a read-only sandbox
+   * blocks that outright on Codex), so treating it as a reader would be trusting
+   * an instruction where a lock belongs.
    */
   activeForWorkspace(workspaceId: number): LiveRun | undefined {
-    return this.activeExecuteForWorkspace(workspaceId);
+    for (const run of runs.values()) {
+      if (run.workspace.id === workspaceId && (run.role === "execute" || run.role === "author")) return run;
+    }
+    return undefined;
   },
 
   activeExecuteForWorkspace(workspaceId: number): LiveRun | undefined {

@@ -671,7 +671,9 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   const preferPlayTarget = body.preferPlayTarget === true;
   const owner = workspaces.activePipelineForWorkspace(suite.workspaceId);
   const active = workspaces.activePipeline(suiteId);
-  const busy = runHub.activeExecuteForWorkspace(suite.workspaceId);
+  // Writers, not just execute runs: an author run drafting a program holds the
+  // same working directory.
+  const busy = runHub.activeForWorkspace(suite.workspaceId);
   if (busy !== undefined && active?.currentRunId !== busy.runId) {
     throw new WorkspaceError(
       409,
@@ -921,16 +923,41 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
 }
 
 /**
- * Restarts a pipeline parked on a station a human has just resolved out of band
- * — skipped, or marked complete. Only a rail actually waiting on *this* station
- * moves; anything else is left exactly as it is.
+ * Restarts a pipeline parked on a station a human has just resolved — answered,
+ * skipped, or marked complete. Only a rail actually waiting on *this* station
+ * moves; anything else is left exactly as it is. `advance` starts an answered
+ * station again because its status is TODO, while terminal stations move on.
  */
 async function resumeAfterHumanResolution(promptId: number): Promise<void> {
   const home = workspaces.promptHome(promptId);
   await enqueue(home.workspaceId, async () => {
     const active = workspaces.activePipeline(home.suiteId);
-    if (active === null || active.state !== "WAITING_HUMAN" || active.currentPromptId !== promptId) return;
-    const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+    const pipeline = active ?? workspaces.latestPipeline(home.suiteId);
+    const parked = pipeline?.state === "WAITING_HUMAN";
+    const restartInterrupted = pipeline?.state === "INTERRUPTED"
+      && pipeline.stopReason === "server_restart"
+      && pipeline.waitReason === "human_question";
+    if (
+      pipeline === null
+      || (!parked && !restartInterrupted)
+      || pipeline.currentPromptId !== promptId
+    ) return;
+    // Do not revive an older interrupted rail underneath a newer owner of the
+    // same workspace. A normal WAITING_HUMAN rail is itself that owner.
+    const owner = workspaces.activePipelineForWorkspace(home.workspaceId);
+    if (owner !== null && owner.id !== pipeline.id) return;
+    const playing = workspaces.updatePipelineRun(pipeline.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
+    if (restartInterrupted && playing.pipelineRunId !== null) {
+      const parent = workspaces.namedPipelineRunById(playing.pipelineRunId);
+      if (parent?.state === "INTERRUPTED" && parent.stopReason === "server_restart") {
+        workspaces.updateNamedPipelineRun(parent.id, {
+          state: "PLAYING",
+          stopReason: null,
+          waitReason: null,
+          endedAt: null,
+        });
+      }
+    }
     await syncNamedFromSuite(playing);
     const live = workspaces.pipelineById(playing.id);
     if (live === null) return;
@@ -1177,6 +1204,11 @@ export const pipelineScheduler = {
   },
 
   onPromptSkipped(promptId: number): Promise<void> {
+    return resumeAfterHumanResolution(promptId);
+  },
+
+  /** The operator answered the question that parked this station. */
+  onPromptResponded(promptId: number): Promise<void> {
     return resumeAfterHumanResolution(promptId);
   },
 

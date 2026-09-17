@@ -100,6 +100,10 @@ function sourceText(source: RunSource): string {
       return `Auditing whether ${source.promptKey ?? source.title} was actually finished`;
     case "wrapup":
       return `Wrapping up ${source.promptKey ?? source.title}: the run before this one was stopped by its budget (${source.stopReason}) and is recording what it verified and what remains`;
+    case "author":
+      return source.revision === true
+        ? `Proposing changes to ${source.programName ?? "a program"} (draft ${source.draftId}): ${source.goal}`
+        : `Drafting a program (draft ${source.draftId}): ${source.goal}`;
   }
 }
 
