@@ -29,7 +29,7 @@ Preconditions:
 | T05 | TM1 | done | direct | `tm/T05-lg1-repository-refs` | `5eefd4a` | LG-1 PASS on psyba96/contech-intel: custom refs accepted, divergent non-fast-forward rejected, handover branch accepted; both disposable probe refs deleted. | 2026-09-17 |
 | T06 | TM1 | done | direct | `tm/T06-tm1-scenario-defaults` | `7841848` | TM1 scenario table committed; jd's four defaults and deferred LT-3 recorded in implementation evidence. | 2026-09-17 |
 | T07 | TM1 | done | direct | `tm/T07-roster-model` | `68584cd` | Migration 24, sentinel-protected group actors, local roster cache, join codec and `refs/aw/team` CAS landed; T0 4/4, server 237/237 and workspace typecheck passed. | 2026-09-17 |
-| T08 | TM1 | in progress | direct | `tm/T08-create-team` |  | Create team. | 2026-09-17 |
+| T08 | TM1 | done | direct | `tm/T08-create-team` | `2c1cf47` | Create-team flow verifies group admin rights, awaits local confirmation, publishes the roster with CAS and creates a non-personal group actor; focused runtime 23/23, server 237/237, server/web typecheck passed. | 2026-09-17 |
 | T09 | TM1 | pending |  |  |  | Join team. |  |
 | T10 | TM1 | pending |  |  |  | TM1 close-out and audit 1. |  |
 | T11 | TM2 | pending |  |  |  | TM2 scenario table. |  |
@@ -70,3 +70,4 @@ Preconditions:
 - 2026-09-17: T07 started directly under jd's authorization.
 - 2026-09-17: T07 merged by fast-forward. Focused roster suite passed 4/4, including a temporary bare-Git compare-and-swap; full server suite passed 237/237 and workspace typecheck passed.
 - 2026-09-17: T08 started directly under jd's authorization.
+- 2026-09-17: T08 merged by fast-forward. Focused live-runtime suite passed 23/23 including TM-T1-1a's group command, administrator-rights, local-confirmation and temporary bare-remote roster path; full server suite passed 237/237 and server/web typecheck passed.
