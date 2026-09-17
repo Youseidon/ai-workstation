@@ -1,47 +1,66 @@
-# Team Track Audit 1
+# Team Track Audit 1 Rerun
 
 Date: 2026-09-17
-Auditor: independent audit agent for T01 through T10
-Audited branch: `audit/team-track-audit-1`
-Audited head: `144357a58b33720f4f8fa9c1f35eb22d6a6d6a44` (`Clarify T10 close-out state`)
+Auditor: independent audit agent for T01-T10 plus T10R/T10V
+Audited branch: `audit/team-track-audit-1-rerun`
+Audited head: `9152b3f1e36f778fe96895e754b7f48843b4c9b3` (`Track T10V completion`)
 Tracker start: `37236e0af1c68c0852f9ede90afeb0643b42a7c7`
 Tracker origin start: `44ad5882fa792240860aff5468efd229a0b619c0`
 
 Overall result: **FAIL**
 
-Audit 1 cannot pass because D1/D2 are not satisfied by the tracker rows, and A2 is not satisfied by the auditor rerun of the full T1 suite. LT-3 is correctly recorded as scheduled/deferred, not PASS.
+The remediation fixed the original technical failures: the full server suite
+passes 239/239, the full T1 suite passes 116/116, focused S-L1-04 burn-in passes
+3/3, and the three TM1 rows pass 9/9 at three repeats.
 
-Note on `144357a`: after the first evidence run, `main` advanced from `a09d4ec` to `144357a` with a documentation-only clarification in `docs/telegram-task-control/implementation.md`. The audit branch was fast-forwarded with `git merge --ff-only main`; the product/test tree is unchanged by that commit. Lightweight git/doc checks below were rerun on `144357a`.
+Audit 1 still cannot pass because the required `team.enabled` default-off gate
+does not exist in product code. Team UI and API routes are exposed whenever the
+personal Telegram transport is selected. This fails A5 and the standing
+criterion on every Team task. A6 also fails because `implementation.md` does
+not contain the final full-suite 239/239 and 116/116 commands and counts.
+
+No live Telegram check was run by this auditor. H-TM-LT3 remains
+scheduled/deferred by operator instruction and is not counted as a live pass.
 
 ## Discipline
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| D1 fresh worker id per task | **FAIL** | `rg '^\\| T(0[1-9]\|10) \\|' docs/telegram-task-control/team-track-tracker.md \| rg -c '\\| direct \\|'` reported `direct rows: 6`. T04 through T09 use `direct`, not unique worker agent ids. |
-| D2 own branch and linear fast-forward | **FAIL** | `git log --merges 37236e0..HEAD` produced no output, so history is linear. But tracker branch evidence is not compliant: T03 and T03F share `tm/T03F-harness-selftest-fix`, and T04-T09 have direct execution rather than fresh worker branches. |
-| D3 nothing pushed | **PASS** | `git rev-parse HEAD main origin/main` returned `144357a58b33720f4f8fa9c1f35eb22d6a6d6a44`, `144357a58b33720f4f8fa9c1f35eb22d6a6d6a44`, `44ad5882fa792240860aff5468efd229a0b619c0`. `origin/main` still equals the tracker origin start. |
-| D4 scoped commits | **PASS with notes** | `git show --stat --oneline --no-renames 0781cf1 b75077c 93c4e80 32fb000 d448a4b a395176 2f61ecb 5eefd4a 7841848 68584cd 2c1cf47 ffe3cc7 b128876 144357a` showed each product/doc commit aligned to its task scope. Notable stats: T07 `68584cd` touched `server/src/teamRoster*` and `workspaces.ts`; T08 `2c1cf47` touched runtime/API/UI create-team paths; T09 `ffe3cc7` touched runtime/API/UI join paths. |
-| D5 messages imperative/no co-author | **PASS** | `git log --format='%h%x09%s%n%B%n---END---' 37236e0..HEAD \| rg -n 'Co-authored-by\|^---END---\|^[0-9a-f]{7}'` found no `Co-authored-by` lines. Messages are imperative, e.g. `Add team join flow`, `Track T10 completion`, `Clarify T10 close-out state`. |
-| D6 cleanup | **PASS** | `git worktree list` returned only `/home/junaid/ai-workstation 144357a [main]` and `/tmp/ai-workstation-audit1 144357a [audit/team-track-audit-1]`. `git branch --list 'tm/*'` produced no output. |
-| D7 scenario-before-code | **PASS** | Commit order: TM0 table `93c4e80` and skim `32fb000` precede TM0 implementation `d448a4b`/`2f61ecb`; TM1 table/defaults `7841848` precedes TM1 product commits `68584cd`, `2c1cf47`, `ffe3cc7`. |
-| D8 jd stops recorded/no worker contact | **PASS with notes** | Tracker records jd setup/decisions for T01, T02 skim, T03F/direct authorization, T05 repo/probe approval, T06 defaults, and LT-3 deferral. No evidence in tracker/report says a worker contacted Yousef. Direct T04-T09 execution is a D1/D2 failure, not a missing jd-answer finding. |
-| D9 tracker agrees with git | **PASS with exception** | `git log --oneline --reverse 37236e0..HEAD` lists all task/tracker commits through T10 plus `144357a Clarify T10 close-out state`. `rg` counted `done T01-T10 rows: 10`. `144357a` is a post-T10 documentation clarification requested before audit finalization and is outside task work. |
+| D1 fresh worker context | **PASS under controlling operator policy** | T01, T02, T03 and T10 have unique worker ids. T10R and T10V also have unique remediation worker ids. T04-T09 are recorded as `direct`; the operator explicitly authorized direct execution when no spawn mechanism was available, so those six rows are authorized fallback executions rather than an audit blocker. T03F is a separate remediation continuation and has its own worker id; its later direct continuation is recorded as operator-authorized after service-credit exhaustion. No id repeats among actual worker ids. |
+| D2 own branch and linear fast-forward | **PASS** | `git log --merges 37236e0..HEAD --oneline` produced no output. Tracker rows record distinct branches for T01, T02, T04-T10, T10R and T10V. T03F is the remediation continuation of T03, not a second numbered T01-T10 task; its branch and commits complete T03. History from the tracker start through `9152b3f` is linear. |
+| D3 nothing pushed | **PASS** | `git rev-parse HEAD main origin/main` returned `9152b3f1e36f778fe96895e754b7f48843b4c9b3`, the same main SHA, and `44ad5882fa792240860aff5468efd229a0b619c0`. `origin/main` still equals the tracker origin start. |
+| D4 scoped commits | **PASS** | `git show --stat` for task commits shows T01 live script/evidence; T02 TM0 table; T03 harness helper/build isolation; T04 fake group support; T05 LG-1 probe; T06 TM1 table/defaults; T07 roster model; T08 creation flow; T09 join flow; T10 close-out docs; T10R S-L1-04/build remediation; and T10V TM1 product/test completion. No unrelated product change was found in those commits. |
+| D5 messages imperative/no co-author | **PASS** | `git log --format='%B' 37236e0..HEAD | rg -qi 'co-authored-by'` found no co-author line. Task subjects are imperative, including `Add team roster model`, `Repair T10 audit verification`, and `Complete TM1 Playwright coverage`. |
+| D6 cleanup | **PASS** | `git branch --list 'tm/*'` produced no output. `git worktree list` showed only main and this audit worktree; no Team task worktree remains. |
+| D7 scenario-before-code | **PASS** | TM0 table `93c4e80` and skim `32fb000` precede T03/T04 product commits. TM1 table/defaults `7841848` precedes T07-T09 and T10V product commits. |
+| D8 jd stops/no worker escalation | **PASS** | Tracker records T01 setup and delivery decision, T02 skim, T03 remediation/direct authorization, T05 repository/probe approval, T06 defaults and skim, and LT-3 deferral. No report or tracker evidence says a worker contacted jd/Yousef or spawned an agent. |
+| D9 tracker agrees with git | **PASS** | Every task/remediation SHA named by the tracker exists on main through `9152b3f`. Product commits in the range map to T01-T10, T10R or T10V; remaining commits are tracker state, operator decisions, the first audit, or close-out clarification commits. T03 and T03F intentionally name the same remediation range because T03F completed T03 after its repeated verification failure. |
 
 ## Acceptance
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| A1 auditor re-verifies criteria | **FAIL/PARTIAL** | Reran practical checks on the audit worktree. Passed: typecheck, lint, full server unsandboxed, focused roster, focused TM0 fake/selftest, token/default-off checks. Not rerun: live Telegram LT-1 by instruction; LT-3 is scheduled/deferred; LG-1 remote probe was not rerun by auditor. Full T1 rerun failed, so acceptance is not fully reverified. |
-| A2 typecheck/lint/full server/full T1 | **FAIL** | `npm run typecheck` exited 0. `npm run lint --workspace web` exited 0 with `5 warnings`. Sandboxed server failed `pass 20 fail 4`; unsandboxed `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-server-unsandboxed npm test --workspace server` passed `# tests 239`, `# pass 239`, `# fail 0`. Full T1 after replacing the temporary symlink with a local dependency copy: `npm run e2e --workspace e2e` failed: `1 failed`, `112 passed (16.7m)`. Failure: `S-L1-04` timed out after `20000ms` waiting for the group refusal. |
-| A3 burn-in at 3 repeats | **PARTIAL PASS** | Focused burn-in command `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3 tests/t1/h1-environment.spec.ts tests/t1/l1-default-off.spec.ts` passed `15 passed (1.9m)`. Focused TM0/TM1 unit coverage also passed, but not every team-added T1 scenario has a distinct Playwright burn-in row in this range. |
-| A4 H-TM real rows | **PASS for records** | `rg -c '^\\| H-TM-' docs/telegram-task-control/human-verification.md` returned `3`. Rows: H-TM-LT1 PASS 2026-09-16; H-TM-LG1 PASS 2026-09-17; H-TM-LT3 scheduled/deferred until full build and explicitly not a live PASS. |
-| A5 invariants | **PASS with T1 caveat** | Token sweep `git grep -n -I -E '[0-9]{8,10}:[A-Za-z0-9_-]{35,}' -- ':!package-lock.json' ':!server/src/telegramSummary.test.ts'; printf 'exit=%s' $?` returned `exit=1`. Broader sweep only found an intentional redaction fixture in `server/src/telegramSummary.test.ts`. `server/src/taskControl.ts` has `enabled: false`; `docs/e2e-scenarios/tm1.md` says TM1 keeps `team.enabled` off by default. Full T1 token row `S-L1-28` passed during the 112/113 run. |
-| A6 implementation.md exact evidence | **PASS after clarification** | `sed -n '21,105p' docs/telegram-task-control/implementation.md` on `144357a` states: `Scope closed here: TM0 harness and TM1 team/roster evidence through T10. T10 is a close-out/documentation task only; audit 1 runs immediately after its tracker completion.` It records exact commands/counts and explicitly says T10 did not rerun full server/full T1. |
-| A7 corrected disproved design facts | **PASS** | H-TM-LT1 records disproved reply/discussion delivery assumptions; jd decided to model administrator delivery. `b75077c Model LT-1 administrator delivery` updated `engineering-plan.md`, `human-verification.md`, `team-track-dev-brief.md`, `teammate-design.md`, and the LT-1 script. |
+| A1 auditor re-verifies criteria | **FAIL** | Automated TM0/TM1 behavior is green: TM0 contracts 2/2, server 239/239, T1 116/116, S-L1-04 burn-in 3/3 and TM1 burn-in 9/9. Required files, scenario ordering, H-TM records, token sweep and Git discipline were inspected. However, the standing `team.enabled` default-off acceptance criterion is not implemented, so not every criterion holds. Live LT-1/LG-1 evidence was inspected rather than rerun; no live Telegram check was permitted, and no remote push was made. |
+| A2 typecheck/lint/full server/full T1 | **PASS** | `npm run typecheck`: exit 0 across shared, server, web and e2e. `npm run lint --workspace web`: exit 0 with 5 existing unused-parameter warnings and 0 errors. `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-rerun-server npm test --workspace server`: 239 tests, 239 pass, 0 fail. `npm run e2e --workspace e2e`: 116 passed in 19.9 minutes. |
+| A3 three-repeat burn-in | **PASS** | `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3 tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: 3/3 passed in 48.0 seconds. `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3 tests/t1/tm1-team-roster.spec.ts`: 9/9 passed in 4.7 minutes, covering TM-T1-1, TM-T1-1a and TM-T1-1b three times each. |
+| A4 H-TM real-check records | **PASS** | `human-verification.md` has H-TM-LT1 PASS dated 2026-09-16, H-TM-LG1 PASS dated 2026-09-17, and H-TM-LT3 explicitly scheduled/deferred until the full build. LT-3 is not represented as PASS. |
+| A5 invariants/default-off/token isolation | **FAIL** | Personal-control regression coverage and token isolation pass: full T1 is 116/116; S-L1-28 and S-L3-F1-22 pass; a tracked-file token-shaped secret sweep excluding the intentional redaction fixture reports no match. But `rg --glob '!docs/**' --glob '!node_modules/**' 'team\.enabled' .` returns no product-code match. `AgentsView.tsx` renders `TeamStatusPanel`, `TeamCreatePanel` and `TeamJoinPanel` whenever `taskControlTransport === "telegram"`; `workspaceApi.ts` serves all `/api/task-control/team*` routes without a Team feature gate. The default-off claim in `implementation.md` is therefore not supported by the tree. |
+| A6 implementation evidence | **FAIL** | The TM0/TM1 entry records historical task evidence and the T10R/T10V focused burn-ins. It does not record the final full server command/count of 239/239 or full T1 command/count of 116/116. It instead ends by saying full server/full T1 were not rerun for close-out and cites historical 237/237 and 113/113 evidence. That does not match A2's current-tree counts. |
+| A7 corrected disproved design facts | **PASS** | H-TM-LT1 records that administrator bots receive replies and unanchored discussion, contrary to the original assumption. Operator approval is recorded, and `b75077c Model LT-1 administrator delivery` updates the design, plan, brief, live record and script. No later live check disproved another design fact. |
 
-## Additional Command Evidence
+## Focused Evidence
 
-- `node --import tsx --test --test-concurrency=1 e2e/src/tm0.selftest.test.ts e2e/src/tm0.fake.contract.test.ts`: `# tests 2`, `# pass 2`, `# fail 0`.
-- Sandboxed focused roster: `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-roster node --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`: `# pass 0`, `# fail 1`, `ERR_TEST_FAILURE`.
-- Unsandboxed focused roster: `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-roster-unsandboxed node --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`: `# tests 5`, `# pass 5`, `# fail 0`.
-- Dependency note: this worktree had no `node_modules`. The allowed symlink to `/home/junaid/ai-workstation/node_modules` allowed typecheck/lint/server tests, but `next build`/T1 failed under Turbopack with `Symlink [project]/node_modules is invalid`. Replacing it with a temporary local copy allowed T1 to run; the copy was removed before writing this report.
+- `node --import tsx --test --test-concurrency=1 e2e/src/tm0.selftest.test.ts e2e/src/tm0.fake.contract.test.ts`: 2 tests, 2 pass, 0 fail. The tests cover S-TM0-01/02/03/04/05/07/08.
+- Full T1 includes the repaired `S-L1-04`, which passed in 9.0 seconds inside the 116/116 run.
+- Full T1 includes TM-T1-1a, TM-T1-1b and TM-T1-1; all three passed before the remaining personal-control suite.
+- The TM1 burn-in also checks the responsive status panel at 390x844 and 1440x1000 through TM-T1-1.
+- `git diff --check 37236e0..HEAD` passed.
+- Required scripts and tables are present: `lt1-two-bots-group.ts`, `lg1-repository-refs.ts`, `tm0.md` and `tm1.md`.
+
+## Required Remediation
+
+1. Add the real `team.enabled` setting with fallback `false`.
+2. Gate Team UI and Team API/runtime state-changing paths on that setting while leaving personal Telegram behavior unchanged.
+3. Add focused default-off coverage proving an existing personal Telegram setup cannot view or invoke Team capabilities until explicitly enabled.
+4. Update `implementation.md` with the final full server, full T1 and burn-in commands/counts.
+5. Rerun the affected checks and audit 1 before T11.
