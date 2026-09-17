@@ -97,6 +97,39 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
       ];
       return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null, entities: [] };
     }
+    case "team_item_access": {
+      const buttons = Array.isArray(data.actions) ? data.actions.flatMap(entry => {
+        const action = record(entry);
+        if (action === null || typeof action.ref !== "string" || typeof action.capability !== "string") return [];
+        if (action.action !== "grant" && action.action !== "revoke") return [];
+        const verb = action.action === "grant" ? "Grant" : "Revoke";
+        return [{ text: `${verb} ${action.capability}`, callback_data: action.ref }];
+      }) : [];
+      return {
+        text: clip(str(data.text), MAX_TEXT),
+        replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null,
+        entities: [],
+      };
+    }
+    case "team_item_action": {
+      const labels: Partial<Record<TaskControlAction, string>> = {
+        save_human_response: "Save answer",
+        answer_and_resume: "Answer and resume",
+        resume_saved: "Resume with saved answer",
+        grant: "Grant",
+        revoke: "Revoke",
+        close_thread: "Close thread",
+      };
+      const buttons = Array.isArray(data.actions) ? data.actions.flatMap(entry => {
+        const action = record(entry);
+        if (action === null || typeof action.ref !== "string" || typeof action.action !== "string") return [];
+        const label = labels[action.action as TaskControlAction];
+        return label === undefined ? [] : [{ text: label, callback_data: action.ref }];
+      }) : [];
+      const lines = [str(data.title), "", str(data.detail)];
+      if (typeof data.allowance === "string" && data.allowance !== "") lines.push("", str(data.allowance));
+      return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null, entities: [] };
+    }
     case "personal_question": {
       const bound = actions(data.actions).map(entry => ({ ...entry, content: contentForRef(entry.ref) }));
       const draft = bound.find(entry => entry.action === "save_human_response" && entry.content !== null)?.content ?? null;

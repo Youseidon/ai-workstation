@@ -312,7 +312,7 @@ The shape is settled:
 | Yousef taps while jd-laptop is offline under about 2.5 minutes | The tap is delivered when jd-laptop returns and applied if the action has not expired. |
 | Yousef taps while jd-laptop is offline longer | Telegram drops the uncollected tap (already accepted, commit 800fb9a). On return the workstation renews the open card's buttons with "Buttons renewed after this workstation was offline. Tap again if you already did." |
 | Either person writes a reply while the other workstation is offline | Messages wait in Telegram for 24 hours and are processed on return. |
-| A tap arrives after its 10-minute action expired | Rejected with "Not applied: this action expired" and a fresh card (Q5). |
+| A tap arrives after its 10-minute action expired | Rejected with "Not applied: this action expired". No card is renewed automatically; the requester sends the item command again for a fresh action. |
 | Yousef's workstation is off when the offer is published | jd sees "Waiting for yousef-desktop"; the Accept card appears when it returns. |
 | jd-laptop is off when Yousef returns work | The completion report is visible at once; Apply waits for jd-laptop (D01). |
 | The repository is unreachable | Threads, grants and personal control are unaffected, because they never touch it. Handover steps retry and say what they are waiting for. |

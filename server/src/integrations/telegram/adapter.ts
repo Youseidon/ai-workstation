@@ -142,6 +142,10 @@ export class TelegramAdapter {
     try {
       await this.api.editMessageText({ chatId: row.chatId, messageId: target.sentMessageId, payload: row.payload });
       workspaces.markTelegramOutbox(row.id, "SENT", null, { ifPayloadVersion: row.payloadVersion });
+      if (this.options.bindSentMessageIds) {
+        const refs = actionRefs(row.payload);
+        if (refs.length > 0) workspaces.bindTaskControlActionsToMessage(this.botId, refs, target.sentMessageId);
+      }
       return { state: "SENT", retryAt: null, rateLimited: false };
     } catch (error) {
       const delay = telegramRetryDelayMs(error, row.attemptCount);

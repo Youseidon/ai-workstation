@@ -26,14 +26,15 @@ test("T15 parses only unaddressed cross-owner discuss requests and derives stabl
 test("T15 owner-bound thread decisions are revision-checked, expiring and applied once", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm2-thread-request-"));
   const botId = `telegram-thread-owner-${Date.now()}`;
-  const ownerUserId = "101";
-  const ownerChatId = "private-101";
+  const ownerUserId = `${botId}-user`;
+  const wrongUserId = `${botId}-wrong-user`;
+  const ownerChatId = `${botId}-private`;
   const workspace = workspaces.create({ name: "thread-owner", workDirectory: directory });
   const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
   const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
   const prompt = workspaces.createChild("prompt", suite.id, { title: "Owner task", content: "Discuss safely" }) as PromptRecord;
   const owner = workspaces.upsertTaskControlActor({ id: `${botId}-owner`, transport: "fake_telegram", transportUserId: ownerUserId, chatId: ownerChatId, label: "Owner" });
-  workspaces.upsertTaskControlActor({ id: `${botId}-wrong`, transport: "fake_telegram", transportUserId: "202", chatId: ownerChatId, label: "Wrong user" });
+  workspaces.upsertTaskControlActor({ id: `${botId}-wrong`, transport: "fake_telegram", transportUserId: wrongUserId, chatId: ownerChatId, label: "Wrong user" });
   const control = new TaskControlService({ enabled: true, teamEnabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "fake_telegram", botId });
 
   const issue = (messageId: string, decision: TeamThreadRequestDecision, expiresAt = new Date(Date.now() + 60_000).toISOString()) => {
@@ -47,7 +48,7 @@ test("T15 owner-bound thread decisions are revision-checked, expiring and applie
 
   try {
     const wrongUser = issue("wrong-user", "confirm");
-    assert.equal((await tap(wrongUser, "wrong-user-command", "202")).errorCode, "actor_not_enrolled");
+    assert.equal((await tap(wrongUser, "wrong-user-command", wrongUserId)).errorCode, "actor_not_enrolled");
     assert.equal(workspaces.itemLink(wrongUser.itemId), null, "a wrong user shares nothing");
 
     const expired = issue("expired", "confirm", new Date(Date.now() - 1_000).toISOString());
@@ -75,6 +76,8 @@ test("T15 owner-bound thread decisions are revision-checked, expiring and applie
     assert.equal(workspaces.teamThreadRequestAppliedReceipt(confirmed.requestId)?.commandId, "confirm-command");
   } finally {
     workspaces.removeTelegramRecordsForBot(botId);
+    workspaces.removeTaskControlActor(owner.id);
+    workspaces.removeTaskControlActor(`${botId}-wrong`);
     workspaces.remove(workspace.id);
     rmSync(directory, { recursive: true, force: true });
   }

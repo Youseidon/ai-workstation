@@ -1292,6 +1292,12 @@ export const workspaces = {
     return db.prepare("UPDATE item_grant SET revoked_command_id=?,revoked_at=? WHERE item_id=? AND person_id=? AND revoked_at IS NULL")
       .run(commandId, revokedAt, input.itemId, requireText(input.personId, "personId", 160)).changes;
   }); },
+  revokePersonItemGrants(input: { personId: string; commandId: string; revokedAt?: string }): number { return sqliteGuard(() => {
+    const revokedAt = input.revokedAt ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(revokedAt))) throw new WorkspaceError(422, "validation_error", "revokedAt must be an ISO timestamp.");
+    return db.prepare("UPDATE item_grant SET revoked_command_id=?,revoked_at=? WHERE person_id=? AND revoked_at IS NULL")
+      .run(requireText(input.commandId, "commandId", 160), revokedAt, requireText(input.personId, "personId", 160)).changes;
+  }); },
   itemGrants(itemId: string, options?: { activeOnly?: boolean; personId?: string }): ItemGrantRow[] {
     if (!isItemId(itemId)) return [];
     const clauses = ["item_id=?"];
@@ -1540,6 +1546,14 @@ export const workspaces = {
     const row = db.prepare("SELECT id,topic_id topicId,payload_json payload FROM telegram_outbox WHERE bot_id=? AND chat_id=? AND sent_message_id=? AND state='SENT' AND operation='send' ORDER BY id DESC LIMIT 1")
       .get(botId, chatId, sentMessageId) as { id: number; topicId: string | null; payload: string } | undefined;
     return row ? { ...row, payload: JSON.parse(row.payload) as unknown } : null;
+  },
+  teamItemAccessOutbox(botId: string, itemId: string): { id: number; payload: unknown; sentMessageId: string | null } | null {
+    if (!isItemId(itemId)) return null;
+    const row = db.prepare(`SELECT id,payload_json payload,sent_message_id sentMessageId FROM telegram_outbox
+      WHERE bot_id=? AND operation='send' AND json_extract(payload_json,'$.kind')='team_item_access'
+        AND json_extract(payload_json,'$.itemId')=? ORDER BY id DESC LIMIT 1`)
+      .get(requireText(botId, "botId", 120), itemId) as { id: number; payload: string; sentMessageId: string | null } | undefined;
+    return row === undefined ? null : { ...row, payload: JSON.parse(row.payload) as unknown };
   },
   /**
    * Binds question-card actions to the Bot API message that actually carries

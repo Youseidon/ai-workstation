@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { ProviderId, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
+import type { ProviderId, TaskControlAction, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
 import { isProviderId } from "@agent-console/shared";
 import { assertHarnessBot, isHarnessMode } from "../../harnessGuard.ts";
 import { harnessSeams } from "../../harnessSeams.ts";
@@ -11,7 +11,8 @@ import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
-import { renderTeamItemAnchor, renderTeamItemView, type TeamItemViewState } from "../../teamItemViews.ts";
+import { renderTeamItemAccessMessage, renderTeamItemActionCard, renderTeamItemAnchor, renderTeamItemContext, renderTeamItemView, type TeamItemAccessAction, type TeamItemGrantedCommand, type TeamItemViewState } from "../../teamItemViews.ts";
+import type { ItemGrantCapability } from "../../teamGrants.ts";
 import { itemTag } from "../../teamItems.ts";
 import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
 import { routeTeamItemMessage } from "../../teamRouting.ts";
@@ -276,6 +277,14 @@ export class TelegramLiveRuntime {
     const roster = current?.roster ?? cached.record as TeamRoster;
     if (current !== null) {
       workspaces.upsertTeamRoster({ teamId: roster.teamId, groupChatId: roster.groupChatId, remoteUrl: roster.remoteUrl, revision: current.revision, record: roster });
+    }
+    const currentPeople = new Set(roster.members.map(member => member.telegramUserId));
+    const previousMembers = (cached.record as TeamRoster).members;
+    for (const actor of workspaces.taskControlActors("telegram").filter(candidate => candidate.chat_id === roster.groupChatId && candidate.topic_id === TEAM_GROUP_TOPIC_SENTINEL)) {
+      if (currentPeople.has(actor.transport_user_id)) continue;
+      const removed = previousMembers.find(member => member.telegramUserId === actor.transport_user_id);
+      if (removed !== undefined) workspaces.revokePersonItemGrants({ personId: removed.personId, commandId: `roster-remove-${current?.revision ?? cached.revision}` });
+      workspaces.disableTaskControlActor(actor.id);
     }
     for (const member of roster.members) {
       workspaces.upsertTeamGroupActor({ id: `telegram-team-${roster.teamId}-${member.telegramUserId}`, transport: "telegram", transportUserId: member.telegramUserId, chatId: roster.groupChatId, label: member.workstationLabel });
@@ -823,6 +832,12 @@ export class TelegramLiveRuntime {
       operationalState: activity.item.operationalState,
       ownerWorkstation: owner.workstationLabel,
       memberLabels: roster.members.map(member => member.workstationLabel),
+      memberAccess: roster.members.map(member => ({
+        personId: member.personId,
+        label: member.workstationLabel,
+        owner: member.botId === session.botId,
+        capabilities: workspaces.itemGrants(link.itemId, { activeOnly: true, personId: member.personId }).map(grant => grant.capability),
+      })),
       now: new Date(this.now()),
     };
   }
@@ -833,11 +848,75 @@ export class TelegramLiveRuntime {
     return { state, summary, payload: renderTeamItemAnchor(summary, state) };
   }
 
+  private createTeamItemAction(session: Session, roster: TeamRoster, link: ItemLinkRow, input: {
+    actor: TeamRoster["members"][number];
+    action: TaskControlAction;
+    capabilities?: ItemGrantCapability[];
+    targetPersonId?: string;
+    content?: string;
+  }): { ref: string; action: TaskControlAction } {
+    const actor = workspaces.taskControlTeamActorFor({ transport: "telegram", transportUserId: input.actor.telegramUserId, chatId: roster.groupChatId });
+    if (actor === null || actor.enabled !== 1) throw new WorkspaceError(403, "actor_not_enrolled", "This Team member is not active in the group.");
+    const target = this.resumeTarget(link.promptId);
+    const ref = `tc_${randomBytes(18).toString("base64url")}`;
+    workspaces.createTaskControlAction({
+      ref,
+      action: input.action,
+      promptId: link.promptId,
+      actorId: actor.id,
+      chatId: roster.groupChatId,
+      botId: session.botId,
+      expectedRevision: workspaces.humanInputState(link.promptId).revision,
+      provider: input.action === "answer_and_resume" || input.action === "resume_saved" ? target.provider : null,
+      model: input.action === "answer_and_resume" || input.action === "resume_saved" ? target.model : null,
+      expiresAt: new Date(this.now() + (harnessSeams.actionTtlMs ?? 10 * 60_000)).toISOString(),
+      subjectKind: "item",
+      itemId: link.itemId,
+      payload: { personId: input.targetPersonId ?? input.actor.personId, capabilities: input.capabilities ?? [] },
+    });
+    if (input.content !== undefined) workspaces.setTelegramActionContent(ref, input.content);
+    return { ref, action: input.action };
+  }
+
+  private teamItemAccessPayload(session: Session, roster: TeamRoster, link: ItemLinkRow) {
+    const owner = roster.members.find(member => member.botId === session.botId);
+    const teammate = roster.members.find(member => member.botId !== session.botId);
+    if (owner === undefined || teammate === undefined) return null;
+    const active = workspaces.itemGrants(link.itemId, { activeOnly: true, personId: teammate.personId }).map(grant => grant.capability);
+    const actions: TeamItemAccessAction[] = (["context", "answer", "resume"] as ItemGrantCapability[]).map(capability => {
+      const action = active.includes(capability) ? "revoke" : "grant";
+      return {
+        ...this.createTeamItemAction(session, roster, link, { actor: owner, action, capabilities: [capability], targetPersonId: teammate.personId }),
+        action,
+        capability,
+      };
+    });
+    return renderTeamItemAccessMessage({ itemId: link.itemId, ownerLabel: owner.workstationLabel, teammateLabel: teammate.workstationLabel, capabilities: active, actions });
+  }
+
+  private syncTeamItemAccess(session: Session, roster: TeamRoster, link: ItemLinkRow, forceEdit = false): void {
+    const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
+    const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
+    if (anchor === null || anchor.messageId === null || anchor.deliveredPayload === null) return;
+    const existing = workspaces.teamItemAccessOutbox(session.botId, link.itemId);
+    if (existing !== null && !forceEdit) return;
+    const payload = this.teamItemAccessPayload(session, roster, link);
+    if (payload === null) return;
+    if (existing === null) {
+      workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId: roster.groupChatId, payload, subject: itemSubject(link.itemId) });
+    } else {
+      workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: existing.id, payload });
+    }
+  }
+
   private syncTeamItemAnchors(session: Session): void {
     if (!this.settings().teamEnabled) return;
     let roster: TeamRoster;
     try { roster = this.teamRosterFor(session); } catch { return; }
-    for (const link of workspaces.itemLinks()) this.syncTeamItem(session, roster, link);
+    for (const link of workspaces.itemLinks()) {
+      this.syncTeamItem(session, roster, link);
+      this.syncTeamItemAccess(session, roster, link);
+    }
   }
 
   private syncTeamItem(session: Session, roster: TeamRoster, link: ItemLinkRow): void {
@@ -861,6 +940,8 @@ export class TelegramLiveRuntime {
     for (const link of workspaces.itemLinks()) {
       const { state, payload } = this.teamItemPayload(session, roster, link);
       if (state.promptStatus !== "DONE" && state.promptStatus !== "SKIPPED") continue;
+      const revoked = workspaces.revokeItemGrants({ itemId: link.itemId, commandId: `item-complete-${link.itemId}` });
+      if (revoked > 0) this.syncTeamItemAccess(session, roster, link, true);
       const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
       if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") continue;
       const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
@@ -873,6 +954,60 @@ export class TelegramLiveRuntime {
         this.log.warn(this.safe(`unpinChatMessage failed: ${error instanceof Error ? error.message : String(error)}`));
       }
     }
+  }
+
+  private handleTeamGrantedCommand(session: Session, message: TelegramMessagePayload, roster: TeamRoster, link: ItemLinkRow, command: TeamItemGrantedCommand): void {
+    const owner = roster.members.find(member => member.botId === session.botId);
+    const member = roster.members.find(candidate => candidate.telegramUserId === message.transportUserId);
+    if (owner === undefined || member === undefined) return;
+    const isOwner = owner.personId === member.personId;
+    const has = (capability: ItemGrantCapability) => isOwner || workspaces.hasItemCapability(link.itemId, member.personId, capability);
+    const deny = (capability: ItemGrantCapability) => this.enqueueText(session, roster.groupChatId, null, `Ask ${owner.workstationLabel} to grant ${capability} on this item.`, itemSubject(link.itemId));
+    const enqueueCard = (title: string, detail: string, actions: Array<{ ref: string; action: TaskControlAction }>, allowance?: string | null) => {
+      workspaces.enqueueTelegramOutbox({
+        botId: session.botId,
+        chatId: roster.groupChatId,
+        payload: renderTeamItemActionCard({ itemId: link.itemId, title, detail, allowance, actions }),
+        subject: itemSubject(link.itemId),
+      });
+    };
+
+    if (command.command === "context") {
+      if (!has("context")) { deny("context"); return; }
+      const { summary } = this.teamItemPayload(session, roster, link);
+      workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId: roster.groupChatId, payload: renderTeamItemContext(summary), subject: itemSubject(link.itemId) });
+      return;
+    }
+    if (command.command === "grant" || command.command === "revoke") {
+      if (!isOwner) { this.enqueueText(session, roster.groupChatId, null, "Only the item owner can change access.", itemSubject(link.itemId)); return; }
+      const teammate = roster.members.find(candidate => candidate.personId !== owner.personId);
+      if (teammate === undefined) return;
+      const action = this.createTeamItemAction(session, roster, link, { actor: owner, action: command.command, capabilities: command.capabilities, targetPersonId: teammate.personId });
+      enqueueCard(command.command === "grant" ? "Grant item access" : "Revoke item access", `${command.command === "grant" ? "Grant" : "Revoke"} ${command.capabilities.join(", ")} for ${teammate.workstationLabel}.`, [action]);
+      return;
+    }
+    if (command.command === "close") {
+      if (!isOwner) { this.enqueueText(session, roster.groupChatId, null, "Only the item owner can close this thread.", itemSubject(link.itemId)); return; }
+      const action = this.createTeamItemAction(session, roster, link, { actor: owner, action: "close_thread" });
+      enqueueCard("Close item thread", "Close this item thread and end every active grant.", [action]);
+      return;
+    }
+    if (command.command === "answer") {
+      if (!has("answer")) { deny("answer"); return; }
+      if (!this.isAwaiting(link.promptId)) { this.enqueueText(session, roster.groupChatId, null, "This item does not currently need an answer.", itemSubject(link.itemId)); return; }
+      const target = this.resumeTarget(link.promptId);
+      const actions = [this.createTeamItemAction(session, roster, link, { actor: member, action: "save_human_response", content: command.answer })];
+      if (has("resume") && target.provider !== null) actions.push(this.createTeamItemAction(session, roster, link, { actor: member, action: "answer_and_resume", content: command.answer }));
+      enqueueCard("Answer item question", command.answer, actions, actions.some(action => action.action === "answer_and_resume") ? `Uses ${owner.workstationLabel}'s ${target.provider} allowance.` : null);
+      return;
+    }
+    if (!has("resume")) { deny("resume"); return; }
+    const saved = workspaces.humanInputState(link.promptId).savedResponseId;
+    if (saved === null) { this.enqueueText(session, roster.groupChatId, null, "There is no saved answer to resume with.", itemSubject(link.itemId)); return; }
+    const target = this.resumeTarget(link.promptId);
+    if (target.provider === null) { this.enqueueText(session, roster.groupChatId, null, "The item owner must choose a provider before this task can resume.", itemSubject(link.itemId)); return; }
+    const action = this.createTeamItemAction(session, roster, link, { actor: member, action: "resume_saved" });
+    enqueueCard("Resume item", "Resume with the saved answer.", [action], `Uses ${owner.workstationLabel}'s ${target.provider} allowance.`);
   }
 
   private handleTeamItemMessage(session: Session, message: TelegramMessagePayload, roster: TeamRoster): boolean {
@@ -895,6 +1030,10 @@ export class TelegramLiveRuntime {
     }
     const link = workspaces.itemLink(route.itemId);
     if (link === null) return true;
+    if (route.kind === "command") {
+      this.handleTeamGrantedCommand(session, message, roster, link, route.command);
+      return true;
+    }
     const { state, summary } = this.teamItemPayload(session, roster, link);
     workspaces.enqueueTelegramOutbox({
       botId: session.botId,
@@ -1086,6 +1225,7 @@ export class TelegramLiveRuntime {
 
   private async handleCallbackResult(session: Session, callback: { ref: string; transportUserId: string; chatId: string; topicId?: string | null; commandId: string; callbackQueryId?: string }, receipt: TaskControlReceipt): Promise<void> {
     try {
+      const action = workspaces.taskControlAction(callback.ref);
       const replay = receipt.state === "APPLIED" && receipt.commandId !== callback.commandId;
       const toast = replay ? "Already applied." : receipt.state === "APPLIED" ? receipt.message : `Not applied: ${receipt.message}`;
       if (callback.callbackQueryId !== undefined) {
@@ -1094,17 +1234,28 @@ export class TelegramLiveRuntime {
         void session.api.answerCallbackQuery(callback.callbackQueryId, toast)
           .catch(error => this.log.warn(this.safe(`answerCallbackQuery failed: ${error instanceof Error ? error.message : String(error)}`)));
       }
-      const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null });
+      const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null })
+        ?? (action?.subject_kind === "item" ? workspaces.taskControlTeamActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId }) : null);
       if (!actor || actor.enabled !== 1 || replay) return;
       // A result belongs to the task it decided, so it carries that task's tag and
       // replies to its card; a rejection that names no task is workstation-wide.
-      const subject = receipt.promptId > 0 ? taskSubject(receipt.promptId) : WORKSTATION_SUBJECT;
+      const subject = action?.subject_kind === "item" && action.item_id !== null ? itemSubject(action.item_id) : receipt.promptId > 0 ? taskSubject(receipt.promptId) : WORKSTATION_SUBJECT;
       if (receipt.state === "APPLIED") {
         this.enqueueText(session, callback.chatId, callback.topicId ?? null, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`, subject);
+        if (action?.subject_kind === "item" && action.item_id !== null && ["grant", "revoke", "close_thread"].includes(action.action)) {
+          const roster = this.teamRosterFor(session);
+          const link = workspaces.itemLink(action.item_id);
+          if (link !== null) this.syncTeamItemAccess(session, roster, link, true);
+        }
         runHub.operationsChanged();
         return;
       }
       this.enqueueText(session, callback.chatId, callback.topicId ?? null, `Not applied: ${receipt.message}`, subject);
+      if (action?.subject_kind === "item" && action.item_id !== null) {
+        // Team item buttons are never renewed automatically. The person who
+        // requested the action must issue the item command again.
+        return;
+      }
       if (receipt.errorCode !== null && REISSUE_CODES.has(receipt.errorCode) && receipt.promptId > 0 && this.isAwaiting(receipt.promptId)) {
         // An expired action shares its revision with the dead card, so it always
         // needs a fresh one; a changed question may already have been reposted.

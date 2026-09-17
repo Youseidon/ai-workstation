@@ -466,7 +466,7 @@ T1, seven for R-B plus three for handover, all on two environments:
 | TM-T1-2 | Team enabled on both: each person's private-chat question and tap work on their own machine, and neither inbox ever holds the other's private-chat update. |
 | TM-T1-3 | Group routing live: with both administrator bots receiving group updates, a command on an anchor is answered once by the owner, an unknown item gets one error from the typer's workstation, anchor and unanchored discussion get nothing, a non-roster member gets nothing. |
 | TM-T1-4 | jd grants answer and resume; Yousef answers and resumes: exactly one run on jd-laptop, and the card names jd's allowance. |
-| TM-T1-5 | Revoke while Yousef's card is open, and a tap after the action expired with jd-laptop stopped in between: both rejected, no run, card reissued. |
+| TM-T1-5 | Revoke while Yousef's card is open, and a tap after the action expired with jd-laptop stopped in between: both rejected, no run, and a fresh card requires Yousef to issue the command again. |
 | TM-T1-6 | Thread lifecycle: anchor pinned at start, updated and unpinned at completion, grants end, old buttons rejected, reopen posts a new anchor. |
 | TM-T1-7 | Yousef starts a thread on jd's item: request card only, anchor after jd confirms, nothing shared before that. |
 | TM-T1-H1 | Full handover with the fake agent: publish, accept, worktree run, a requirement question answered while jd-laptop is stopped, return, apply, task complete. |

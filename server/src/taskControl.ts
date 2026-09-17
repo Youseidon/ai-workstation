@@ -3,6 +3,7 @@ import type { ProviderId, QuotaWarning, TaskControlAction, TaskControlCapability
 import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
+import { decodeTeamItemActionPayload, requiredItemGrantCapabilities, type ItemGrantOperation } from "./teamGrants.ts";
 import { decodeTeamThreadRequestAction } from "./teamThreadRequests.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
@@ -209,7 +210,10 @@ export class TaskControlService {
     if (action.chat_id !== input.chatId || action.topic_id !== (input.topicId ?? null)) return this.reject(input, "wrong_chat", "This action belongs to another chat or topic.", action.ref);
     if (action.message_id !== null && input.messageId !== undefined && action.message_id !== input.messageId) return this.reject(input, "wrong_message", "This action belongs to another message.", action.ref);
     if (Date.parse(action.expires_at) <= Date.now()) return this.reject(input, "action_expired", "This action expired. Review the current task state.", action.ref);
-    const actor = workspaces.taskControlActorFor({ transport: this.config.transport, transportUserId: input.transportUserId, chatId: input.chatId, topicId: input.topicId ?? null });
+    const actor = workspaces.taskControlActorFor({ transport: this.config.transport, transportUserId: input.transportUserId, chatId: input.chatId, topicId: input.topicId ?? null })
+      ?? (action.subject_kind === "item"
+        ? workspaces.taskControlTeamActorFor({ transport: this.config.transport, transportUserId: input.transportUserId, chatId: input.chatId })
+        : null);
     if (!actor || actor.enabled !== 1 || actor.id !== action.actor_id) return this.reject(input, "actor_not_enrolled", "This Telegram actor is not authorized for the task action.", action.ref);
 
     try {
@@ -233,6 +237,62 @@ export class TaskControlService {
           state: "APPLIED",
           message: threadRequest.decision === "confirm" ? "Team thread confirmed." : "Team thread request declined.",
         });
+      }
+      if (action.subject_kind === "item") {
+        if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);
+        if (action.item_id === null || workspaces.itemLink(action.item_id)?.promptId !== action.prompt_id) {
+          return this.reject(input, "item_not_found", "This Team item is no longer available.", action.ref);
+        }
+        const roster = workspaces.teamRosters()
+          .map(entry => entry.record as { members?: Array<{ personId: string; telegramUserId: string; botId: string; workstationLabel: string }> })
+          .find(entry => entry.members?.some(member => member.botId === input.botId));
+        const owner = roster?.members?.find(member => member.botId === input.botId);
+        const actingPerson = roster?.members?.find(member => member.telegramUserId === input.transportUserId);
+        if (owner === undefined || actingPerson === undefined) return this.reject(input, "actor_not_enrolled", "This Telegram actor is not a current Team member.", action.ref);
+        const isOwner = actingPerson.personId === owner.personId;
+        const payload = decodeTeamItemActionPayload(action.payload_json);
+
+        if (action.action === "grant" || action.action === "revoke" || action.action === "close_thread") {
+          if (!isOwner) return this.reject(input, "owner_required", "Only the item owner can change access or close this thread.", action.ref);
+          workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);
+          if (action.action === "close_thread") {
+            workspaces.revokeItemGrants({ itemId: action.item_id, commandId: input.commandId });
+            return workspaces.recordTaskControlReceipt({ commandId: input.commandId, actionRef: action.ref, state: "APPLIED", message: "Thread closed; grants ended." });
+          }
+          if (payload === null || payload.capabilities.length === 0) return this.reject(input, "invalid_action", "This access action is incomplete.", action.ref);
+          if (action.action === "grant") {
+            for (const capability of payload.capabilities) workspaces.grantItemCapability({ itemId: action.item_id, personId: payload.personId, capability, commandId: input.commandId });
+            return workspaces.recordTaskControlReceipt({ commandId: input.commandId, actionRef: action.ref, state: "APPLIED", message: `Granted ${payload.capabilities.join(", ")}.` });
+          }
+          for (const capability of payload.capabilities) workspaces.revokeItemCapability({ itemId: action.item_id, personId: payload.personId, capability, commandId: input.commandId });
+          return workspaces.recordTaskControlReceipt({ commandId: input.commandId, actionRef: action.ref, state: "APPLIED", message: `Revoked ${payload.capabilities.join(", ")}.` });
+        }
+
+        const operation: ItemGrantOperation = action.action === "save_human_response"
+          ? "save_answer"
+          : action.action === "answer_and_resume"
+            ? "answer_and_resume"
+            : "resume_saved";
+        if (!isOwner) {
+          const missing = requiredItemGrantCapabilities(operation).filter(capability => !workspaces.hasItemCapability(action.item_id!, actingPerson.personId, capability));
+          if (missing.length > 0) return this.reject(input, "grant_required", `Ask ${owner.workstationLabel} to grant ${missing.join(" and ")} on this item.`, action.ref);
+        }
+        if (action.action === "resume_saved") {
+          workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);
+          const responseId = workspaces.humanInputState(action.prompt_id).savedResponseId;
+          if (responseId === null) return this.reject(input, "saved_answer_missing", "There is no saved answer to resume with.", action.ref);
+          const result = await respondAndContinue(action.prompt_id, { responseId, expectedRevision: action.expected_revision, provider: action.provider, model: action.model }, { source: "telegram" });
+          return workspaces.recordTaskControlReceipt({
+            commandId: input.commandId,
+            actionRef: action.ref,
+            state: "APPLIED",
+            responseId: result.responseId,
+            started: result.started,
+            runId: result.runId,
+            message: result.error ?? (result.started ? "Saved answer accepted and resume requested." : "Saved answer remains waiting."),
+            errorCode: result.error ? "resume_failed" : null,
+          });
+        }
       }
       if (action.action !== "save_human_response" && action.action !== "answer_and_resume") {
         return this.reject(input, "action_not_available", "This Team action is not available yet.", action.ref);

@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import Database from "better-sqlite3";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
-import { TaskControlService } from "./taskControl.ts";
 import { evaluateItemGrant, type ItemGrantCapability, type ItemGrantOperation } from "./teamGrants.ts";
 import { workspaces } from "./workspaces.ts";
 
@@ -78,9 +77,6 @@ test("T18 grant history permits one active item/person/capability and revocation
       assert.equal(stored.subject_kind, "item");
       assert.equal(stored.item_id, item.itemId);
       if (action === "grant" || action === "revoke") assert.deepEqual(JSON.parse(stored.payload_json!), { capabilities: ["answer"] });
-      const unavailable = await new TaskControlService({ enabled: true, teamEnabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "fake_telegram", botId: `grant-bot-${workspace.id}` })
-        .handleCallback({ ref, transportUserId: "101", chatId: actor.chat_id, botId: `grant-bot-${workspace.id}`, commandId: `tap-${action}` });
-      assert.equal(unavailable.errorCode, "action_not_available", `${action} cannot fall through to personal resume before T19`);
     }
     const first = workspaces.grantItemCapability({ itemId: item.itemId, personId: "yousef", capability: "answer", commandId: "grant-1" });
     assert.deepEqual(workspaces.grantItemCapability({ itemId: item.itemId, personId: "yousef", capability: "answer", commandId: "grant-retry" }), first);

@@ -22,6 +22,24 @@ export interface ItemGrantEvaluation {
   missing: ItemGrantCapability[];
 }
 
+export interface TeamItemActionPayload {
+  personId: string;
+  capabilities: ItemGrantCapability[];
+}
+
+export function decodeTeamItemActionPayload(value: string | null): TeamItemActionPayload | null {
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (typeof parsed.personId !== "string" || parsed.personId === "" || !Array.isArray(parsed.capabilities)) return null;
+    const capabilities = parsed.capabilities.filter(isItemGrantCapability);
+    if (capabilities.length !== parsed.capabilities.length) return null;
+    return { personId: parsed.personId, capabilities };
+  } catch {
+    return null;
+  }
+}
+
 export function evaluateItemGrant(input: {
   actorPersonId: string;
   ownerPersonId: string;
