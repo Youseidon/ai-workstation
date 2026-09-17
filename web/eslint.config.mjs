@@ -11,6 +11,8 @@ const eslintConfig = defineConfig([
     ".next/**",
     // The end-to-end harness production build (docs/e2e-harness-plan.md 4.1).
     ".next-e2e/**",
+    // Parallel Team harness workers use port-suffixed build directories.
+    ".next-e2e-*/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

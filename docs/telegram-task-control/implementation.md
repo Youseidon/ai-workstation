@@ -184,6 +184,33 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
   - No live Telegram credential, identifier or token handling changed. LT-3
     remains scheduled/deferred until the full Team build.
 
+Team track TM2 close-out, 2026-09-18:
+
+- T12-T15 delivered migration 25 and stable opaque item identities, owner item
+  anchors and read-only views, LT-1 broad-delivery routing, and owner-confirmed
+  cross-owner thread requests. The per-task focused evidence and fixture
+  corrections are recorded in the Team tracker.
+- Final verification on the merged TM2 tree:
+  - `npm run typecheck` passed all 4/4 workspaces: shared, server, web and e2e.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t16-full-server npm test
+    --workspace server` passed 264/264.
+  - `npm run e2e --workspace e2e` passed the full T1 suite 121/121 in 23.9
+    minutes.
+  - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/tm2-cross-owner-thread.spec.ts
+    tests/t1/tm2-group-routing.spec.ts tests/t1/tm2-item-anchors.spec.ts`
+    passed 12/12 in 7.7 minutes. TM-T1-2, TM-T1-3, TM-T1-6 and TM-T1-7 each
+    passed three times.
+  - The first post-E2E `npm run lint --workspace web` run scanned the harness's
+    ignored generated `.next-e2e-4121` and `.next-e2e-4122` trees because the
+    lint configuration ignored only the unnumbered directory. The harness lint
+    ignore now includes `.next-e2e-*/**`; the source rerun passed with 0 errors
+    and the 5 existing `PipelineHeader.tsx` warnings.
+  - `git diff --check` and the tracked-file credential-shape sweep passed.
+- No live Telegram credential, identifier, paid provider, remote write or push
+  was used. LT-3 remains scheduled/deferred under the operator's full-build
+  direction. LT-4 remains scheduled/deferred until the TM3/full-build close-out.
+
 Development is authorized. No further product decision is required for the local
 control foundation. G01-G04 remain evidence/deployment gates, not unanswered
 questions blocking all code. An unresolved gate never defaults to approval.
