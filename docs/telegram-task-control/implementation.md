@@ -173,9 +173,14 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     passed 43/43. The sandboxed attempt could not run the runtime file's child
     Git process and returned only `ERR_TEST_FAILURE`; the unrestricted local
     rerun supplied the valid subtest result.
-  - Server, web and e2e workspace typechecks passed. `npm run lint --workspace
-    web` passed with 0 errors and 5 existing warnings after generated harness
-    build directories were removed. `git diff --check` passed.
+  - Final gated-tree audit verification: `npm run typecheck` passed all 4/4
+    workspaces; `npm run lint --workspace web` passed with 0 errors and 5
+    existing warnings; `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-final-server
+    npm test --workspace server` passed 241/241; and `npm run e2e --workspace
+    e2e` passed 117/117. These final counts replace the pre-T10G 239/239 and
+    116/116 counts above as close-out evidence without changing that historical
+    T10V-tree record.
+  - `git diff --check` passed.
   - No live Telegram credential, identifier or token handling changed. LT-3
     remains scheduled/deferred until the full Team build.
 
