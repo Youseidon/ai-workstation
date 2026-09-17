@@ -3,11 +3,13 @@ import type { ProviderId, QuotaWarning, TaskControlAction, TaskControlCapability
 import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
+import { decodeTeamThreadRequestAction } from "./teamThreadRequests.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
 export interface TaskControlConfig {
   enabled: boolean;
+  teamEnabled?: boolean;
   notificationsEnabled: boolean;
   remoteActionsEnabled: boolean;
   transport: "fake_telegram" | "telegram";
@@ -211,6 +213,27 @@ export class TaskControlService {
     if (!actor || actor.enabled !== 1 || actor.id !== action.actor_id) return this.reject(input, "actor_not_enrolled", "This Telegram actor is not authorized for the task action.", action.ref);
 
     try {
+      const threadRequest = decodeTeamThreadRequestAction(workspaces.telegramActionContent(action.ref));
+      if (threadRequest !== null) {
+        if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);
+        if (threadRequest.ownerBotId !== input.botId || threadRequest.ownerTelegramUserId !== input.transportUserId || threadRequest.promptId !== action.prompt_id) {
+          return this.reject(input, "actor_not_enrolled", "This Telegram actor is not authorized for the Team thread request.", action.ref);
+        }
+        workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);
+        const decided = workspaces.teamThreadRequestAppliedReceipt(threadRequest.requestId);
+        if (decided !== null) return this.reject(input, "request_already_decided", "This Team thread request was already decided.", action.ref);
+        if (threadRequest.decision === "confirm") {
+          const existing = workspaces.itemLink(threadRequest.itemId);
+          if (existing !== null && existing.promptId !== action.prompt_id) return this.reject(input, "item_conflict", "This Team item identity belongs to another task.", action.ref);
+          if (existing === null) workspaces.createItemLink({ itemId: threadRequest.itemId, promptId: action.prompt_id, role: "requester", epoch: 1 });
+        }
+        return workspaces.recordTaskControlReceipt({
+          commandId: input.commandId,
+          actionRef: action.ref,
+          state: "APPLIED",
+          message: threadRequest.decision === "confirm" ? "Team thread confirmed." : "Team thread request declined.",
+        });
+      }
       const result = action.action === "save_human_response"
         ? await saveHumanResponse(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision }, { source: "telegram" })
         : await respondAndContinue(action.prompt_id, { content: input.content, expectedRevision: action.expected_revision, provider: action.provider, model: action.model }, { source: "telegram" });
@@ -277,6 +300,7 @@ export class TaskControlService {
 
 export const taskControl = new TaskControlService(() => ({
   enabled: settings.taskControl.enabled,
+  teamEnabled: settings.team.enabled,
   notificationsEnabled: settings.taskControl.notificationsEnabled,
   remoteActionsEnabled: settings.taskControl.remoteActionsEnabled,
   transport: settings.taskControl.transport,

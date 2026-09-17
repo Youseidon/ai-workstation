@@ -13,6 +13,7 @@ import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { renderTeamItemAnchor, renderTeamItemView, type TeamItemViewState } from "../../teamItemViews.ts";
 import { itemTag } from "../../teamItems.ts";
+import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
 import { routeTeamItemMessage } from "../../teamRouting.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
@@ -492,7 +493,7 @@ export class TelegramLiveRuntime {
     const api = this.options.createApi?.(token, contentForRef) ?? new HttpTelegramBotApi({ token, contentForRef });
     const control = new TaskControlService(() => {
       const current = this.settings();
-      return { enabled: current.enabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
+      return { enabled: current.enabled, teamEnabled: current.teamEnabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
     });
     const controller = new AbortController();
     const session: Session = { controller, botId, api, control, adapter: undefined as unknown as TelegramAdapter, done: Promise.resolve(), delivering: null };
@@ -904,6 +905,74 @@ export class TelegramLiveRuntime {
     return true;
   }
 
+  private handleTeamThreadRequest(session: Session, message: TelegramMessagePayload, roster: TeamRoster): boolean {
+    const request = parseTeamThreadRequest(message.text.trim());
+    if (request === null) return false;
+    const requester = roster.members.find(member => member.telegramUserId === message.transportUserId);
+    const owner = roster.members.find(member => member.botUsername.toLowerCase() === request.ownerBotUsername);
+    if (requester === undefined || owner === undefined || requester.botId === owner.botId) return true;
+    const identity = teamThreadRequestIdentity({
+      teamId: roster.teamId,
+      groupChatId: roster.groupChatId,
+      messageId: message.messageId,
+      requesterTelegramUserId: requester.telegramUserId,
+      ownerBotId: owner.botId,
+      promptId: request.promptId,
+    });
+
+    if (requester.botId === session.botId && !workspaces.hasTeamThreadRequestOutbox(session.botId, identity.requestId, "team_thread_request")) {
+      workspaces.enqueueTelegramOutbox({
+        botId: session.botId,
+        chatId: roster.groupChatId,
+        payload: renderTeamThreadRequest({ ...identity, requesterLabel: requester.workstationLabel, ownerLabel: owner.workstationLabel }),
+      });
+    }
+    if (owner.botId !== session.botId || workspaces.hasTeamThreadRequestActions(identity.requestId)) return true;
+
+    const activity = workspaces.promptActivity(request.promptId);
+    const actor = workspaces.taskControlPersonalActor("telegram", owner.telegramUserId);
+    if (actor === null || actor.enabled !== 1) return true;
+    const expectedRevision = activity.humanInput.revision;
+    const expiresAt = new Date(this.now() + (harnessSeams.actionTtlMs ?? 10 * 60_000)).toISOString();
+    const decisions: TeamThreadRequestDecision[] = ["confirm", "decline"];
+    const actions = decisions.map(decision => ({ ref: `tc_${randomBytes(18).toString("base64url")}`, decision }));
+    for (const action of actions) {
+      workspaces.createTaskControlAction({
+        ref: action.ref,
+        action: "save_human_response",
+        promptId: request.promptId,
+        actorId: actor.id,
+        chatId: actor.chat_id,
+        topicId: actor.topic_id,
+        botId: session.botId,
+        messageId: `thread-request-${identity.requestId}`,
+        expectedRevision,
+        expiresAt,
+      });
+      workspaces.setTelegramActionContent(action.ref, encodeTeamThreadRequestAction({
+        kind: "team_thread_request_action",
+        ...identity,
+        decision: action.decision,
+        ownerBotId: owner.botId,
+        ownerTelegramUserId: owner.telegramUserId,
+        promptId: request.promptId,
+      }));
+    }
+    workspaces.enqueueTelegramOutbox({
+      botId: session.botId,
+      chatId: actor.chat_id,
+      topicId: actor.topic_id,
+      payload: renderTeamThreadConfirmation({
+        ...identity,
+        requesterLabel: requester.workstationLabel,
+        title: activity.item.prompt.title,
+        expiresAt,
+        actions,
+      }),
+    });
+    return true;
+  }
+
   /** The question revision a card's buttons were issued for, or null when it has none. */
   private cardRevision(payload: unknown): string | null {
     const actions = (payload as { actions?: Array<{ ref?: unknown }> } | undefined)?.actions;
@@ -952,7 +1021,8 @@ export class TelegramLiveRuntime {
         return;
       }
       if (actor.topic_id === TEAM_GROUP_TOPIC_SENTINEL) {
-        this.handleTeamItemMessage(session, message, this.teamRosterFor(session));
+        const roster = this.teamRosterFor(session);
+        if (!this.handleTeamThreadRequest(session, message, roster)) this.handleTeamItemMessage(session, message, roster);
         return;
       }
       // Registered commands are read-only view requests, checked before the reply-to check so a

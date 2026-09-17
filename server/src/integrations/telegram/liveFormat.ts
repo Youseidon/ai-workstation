@@ -80,6 +80,23 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
       const entities = Array.isArray(data.entities) ? data.entities as CardEntity[] : [];
       return { text: str(data.text), replyMarkup: keyboard.length > 0 ? { inline_keyboard: keyboard } : null, entities };
     }
+    case "team_thread_request":
+      return { text: clip(str(data.text), MAX_TEXT), replyMarkup: null, entities: [] };
+    case "team_thread_confirmation": {
+      const buttons = Array.isArray(data.actions) ? data.actions.flatMap(entry => {
+        const action = record(entry);
+        if (action === null || typeof action.ref !== "string") return [];
+        if (action.decision !== "confirm" && action.decision !== "decline") return [];
+        return [{ text: action.decision === "confirm" ? "Confirm thread" : "Decline", callback_data: action.ref }];
+      }) : [];
+      const lines = [
+        "Team thread request",
+        "",
+        `${str(data.requesterLabel)} asked to discuss: ${str(data.title)}`,
+        "Confirming shares a sanitized Team summary in the team group.",
+      ];
+      return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null, entities: [] };
+    }
     case "personal_question": {
       const bound = actions(data.actions).map(entry => ({ ...entry, content: contentForRef(entry.ref) }));
       const draft = bound.find(entry => entry.action === "save_human_response" && entry.content !== null)?.content ?? null;

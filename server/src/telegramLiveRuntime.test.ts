@@ -908,3 +908,38 @@ test("TM-T1-gate (T0): Team stays disabled independently while personal Telegram
     await h.cleanup();
   }
 });
+
+test("T15 requester bot posts one sanitized cross-owner thread request card", async () => {
+  const h = harness();
+  const teamId = `team-thread-request-${h.stub.botUserId}`;
+  const groupChatId = "-1001500";
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    const roster = {
+      version: 1 as const,
+      teamId,
+      groupChatId,
+      remoteUrl: "https://example.invalid/team.git",
+      members: [
+        { personId: String(operator.id), telegramUserId: String(operator.id), botId: h.botId, botUsername: "l1_stub_bot", workstationId: h.botId, workstationLabel: "requester-workstation" },
+        { personId: "303", telegramUserId: "303", botId: "telegram-owner", botUsername: "owner_stub_bot", workstationId: "owner-workstation", workstationLabel: "owner-workstation" },
+      ],
+      usedInviteIds: [],
+      commandIds: [],
+      updatedAt: new Date().toISOString(),
+    };
+    workspaces.upsertTeamRoster({ teamId, groupChatId, remoteUrl: roster.remoteUrl, revision: "request-revision", record: roster });
+    workspaces.upsertTeamGroupActor({ id: `${teamId}-requester`, transport: "telegram", transportUserId: String(operator.id), chatId: groupChatId, label: "requester-workstation" });
+
+    h.stub.send(operator, { id: Number(groupChatId), type: "supergroup" }, "/discuss @owner_stub_bot 42");
+    const request = await waitFor(() => h.stub.messages.find(message => message.chatId === groupChatId && message.text.startsWith("Thread requested")), "Team thread request card");
+    assert.match(request.text, /#item_[a-f0-9]{24}/);
+    assert.doesNotMatch(request.text, /\/home\/|quota|question|answer|credential|token/i);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(h.stub.messages.filter(message => message.chatId === groupChatId && message.text.startsWith("Thread requested")).length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});

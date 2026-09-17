@@ -1421,6 +1421,30 @@ export const workspaces = {
   telegramActionContent(ref: string): string | null {
     return (db.prepare("SELECT content FROM telegram_action_content WHERE action_ref=?").get(ref) as { content: string } | undefined)?.content ?? null;
   },
+  hasTeamThreadRequestOutbox(botId: string, requestId: string, kind: "team_thread_request" | "team_thread_confirmation"): boolean {
+    return db.prepare(`SELECT 1 FROM telegram_outbox
+      WHERE bot_id=? AND json_extract(payload_json,'$.kind')=? AND json_extract(payload_json,'$.requestId')=? LIMIT 1`)
+      .get(requireText(botId, "botId", 120), kind, requireText(requestId, "requestId", 120)) !== undefined;
+  },
+  hasTeamThreadRequestActions(requestId: string): boolean {
+    return db.prepare(`SELECT 1 FROM telegram_action_content
+      WHERE json_extract(content,'$.kind')='team_thread_request_action'
+        AND json_extract(content,'$.requestId')=? LIMIT 1`)
+      .get(requireText(requestId, "requestId", 120)) !== undefined;
+  },
+  teamThreadRequestAppliedReceipt(requestId: string): TaskControlReceipt | null {
+    const row = db.prepare(`
+      SELECT r.command_id,r.action_ref,r.state,r.response_id,r.started,r.run_id,r.message,r.error_code,r.created_at,a.action,a.prompt_id
+      FROM task_control_receipt r
+      JOIN task_control_action a ON a.ref=r.action_ref
+      JOIN telegram_action_content c ON c.action_ref=a.ref
+      WHERE r.state='APPLIED'
+        AND json_extract(c.content,'$.kind')='team_thread_request_action'
+        AND json_extract(c.content,'$.requestId')=?
+      ORDER BY r.created_at LIMIT 1
+    `).get(requireText(requestId, "requestId", 120)) as TaskControlReceiptRow | undefined;
+    return row ? { commandId: row.command_id, state: row.state, action: row.action, promptId: row.prompt_id, message: row.message, responseId: row.response_id, started: row.started === 1, runId: row.run_id, errorCode: row.error_code, createdAt: row.created_at } : null;
+  },
   hasTaskControlActionForRevision(input: { promptId: number; actorId: string; botId: string; revision: string }): boolean {
     return db.prepare("SELECT 1 FROM task_control_action WHERE prompt_id=? AND actor_id=? AND bot_id=? AND expected_revision=? LIMIT 1")
       .get(input.promptId, input.actorId, input.botId, input.revision) !== undefined;
