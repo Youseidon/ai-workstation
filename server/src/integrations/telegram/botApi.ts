@@ -73,6 +73,8 @@ export interface LiveTelegramBotApi extends TelegramBotApi {
   pinChatMessage(chatId: string, messageId: string): Promise<void>;
   /** Team setup verifies the bot's explicit group rights before creating a roster. */
   getChatMember?(chatId: string, userId: string): Promise<{ status: string; canPinMessages: boolean; canInviteUsers: boolean }>;
+  /** Creates the one-person, one-hour invite used after a teammate joins the roster. */
+  createChatInviteLink?(chatId: string, expiresAt: number): Promise<{ inviteLink: string }>;
 }
 
 export type TelegramApiErrorKind =

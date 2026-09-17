@@ -113,6 +113,26 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     server-side T0 portion of TM-T1-1a exists. No three-repeat Team T1 burn-in
     is claimed; implementing those Playwright rows remains a separate audit
     evidence gap outside T10R.
+- T10V Playwright completion:
+  - Added the missing TM-T1-1, TM-T1-1a and TM-T1-1b Playwright rows using the
+    two-environment Team harness and fake Telegram/Git boundaries. The UI now
+    exposes read-only team status, explicit roster refresh, owner-only persisted
+    one-member invite issuance and corrective join guidance. `team.enabled`
+    remains default-off outside explicit harness setup.
+  - Focused commands from `e2e`: `npx playwright test
+    tests/t1/tm1-team-roster.spec.ts --project=t1 --grep=TM-T1-1a` passed 1/1
+    in 1.3 minutes; `--grep=TM-T1-1b` passed 1/1 in 23.6 seconds; and
+    `--grep=TM-T1-1:` passed 1/1 in 13.3 seconds.
+  - `npx playwright test tests/t1/tm1-team-roster.spec.ts --project=t1`
+    passed 3/3 in 20.0 seconds. The required burn-in, `npx playwright test
+    tests/t1/tm1-team-roster.spec.ts --project=t1 --repeat-each=3
+    --max-failures=1`, passed 9/9 in 2.0 minutes.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10v-server-escalated node
+    --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts
+    server/src/telegramLiveRuntime.test.ts` passed 28/28: roster 5/5 and runtime
+    23/23. Server, web and e2e workspace typechecks passed.
+  - LT-3 remains scheduled and deferred until the full Team build; no live
+    Telegram credentials or identifiers were used or recorded.
 - Not rerun by T10: full server suite and full T1 suite. Cite existing tracker
   summary only: T07/T08 full server suite passed 237/237, and T03F full T1
   passed 113/113. There is no verified 239/239 full-server count in this

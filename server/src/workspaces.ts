@@ -1079,6 +1079,10 @@ export const workspaces = {
     const row = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster WHERE team_id=?").get(requireText(teamId, "teamId", 120)) as Omit<TeamRosterCacheRow, "record"> & { record: string } | undefined;
     return row === undefined ? null : { ...row, record: JSON.parse(row.record) as unknown };
   },
+  teamRosters(): TeamRosterCacheRow[] {
+    const rows = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster ORDER BY updated_at DESC").all() as Array<Omit<TeamRosterCacheRow, "record"> & { record: string }>;
+    return rows.map(row => ({ ...row, record: JSON.parse(row.record) as unknown }));
+  },
   upsertTeamRoster(input: { teamId: string; groupChatId: string; remoteUrl: string; revision: string; record: unknown }): TeamRosterCacheRow {
     const teamId = requireText(input.teamId, "teamId", 120);
     const groupChatId = requireText(input.groupChatId, "groupChatId", 120);

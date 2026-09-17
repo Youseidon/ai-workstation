@@ -1,4 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { ProviderId, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
 import { isProviderId } from "@agent-console/shared";
 import { assertHarnessBot, isHarnessMode } from "../../harnessGuard.ts";
@@ -11,7 +13,7 @@ import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
-import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote } from "../../teamRoster.ts";
+import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
 import { TelegramAdapter } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
@@ -70,6 +72,17 @@ interface TeamCreateSession {
   observed: { chatId: string; transportUserId: string } | null;
 }
 interface TeamJoinSession { code: string; }
+
+export interface TeamPanelStatus {
+  teamId: string;
+  groupChatId: string;
+  members: TeamRoster["members"];
+  instruction: string | null;
+  inviteLink: string | null;
+}
+
+interface StoredTeamInvite { inviteLink: string; expiresAt: string; }
+type StoredTeamInvites = Record<string, StoredTeamInvite>;
 
 /**
  * Topics are unavailable to this bot (C0, recorded 2026-09-16: BotFather offers no
@@ -131,6 +144,7 @@ export class TelegramLiveRuntime {
   private sendPausedUntil = 0;
   private teamCreate: TeamCreateSession | null = null;
   private teamJoin: TeamJoinSession | null = null;
+  private readonly pendingTeamInvites = new Map<string, Promise<string>>();
   private pairing: PairingSession | null = null;
 
   constructor(private readonly options: TelegramRuntimeOptions) {
@@ -233,9 +247,97 @@ export class TelegramLiveRuntime {
     return { teamId, joinCode };
   }
 
+  teamStatus(): TeamPanelStatus | null {
+    const cached = workspaces.teamRosters()[0];
+    if (cached === undefined) return null;
+    return this.panelStatus(cached.record as TeamRoster);
+  }
+
+  async refreshTeam(): Promise<TeamPanelStatus | null> {
+    const cached = workspaces.teamRosters()[0];
+    if (cached === undefined) return null;
+    const session = this.requireSession();
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), cached.remoteUrl);
+    const current = await remote.read();
+    const roster = current?.roster ?? cached.record as TeamRoster;
+    if (current !== null) {
+      workspaces.upsertTeamRoster({ teamId: roster.teamId, groupChatId: roster.groupChatId, remoteUrl: roster.remoteUrl, revision: current.revision, record: roster });
+    }
+    for (const member of roster.members) {
+      workspaces.upsertTeamGroupActor({ id: `telegram-team-${roster.teamId}-${member.telegramUserId}`, transport: "telegram", transportUserId: member.telegramUserId, chatId: roster.groupChatId, label: member.workstationLabel });
+    }
+    const owner = roster.members[0];
+    const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
+    if (owner?.botId === session.botId && teammate !== null) await this.teamInvite(session, roster, teammate.botId);
+    return this.panelStatus(roster);
+  }
+
+  private panelStatus(roster: TeamRoster): TeamPanelStatus {
+    const owner = roster.members[0];
+    const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
+    const instruction = teammate === null || owner === undefined
+      ? null
+      : `Ask ${owner.workstationLabel} to add @${teammate.botUsername} to the team group and make it an administrator with Pin messages.`;
+    const inviteLink = teammate === null ? null : this.storedTeamInvite(`${roster.teamId}:${teammate.botId}`)?.inviteLink ?? null;
+    return { teamId: roster.teamId, groupChatId: roster.groupChatId, members: roster.members, instruction, inviteLink };
+  }
+
+  private async teamInvite(session: Session, roster: TeamRoster, memberBotId: string): Promise<string | null> {
+    if (session.api.createChatInviteLink === undefined) return null;
+    const key = `${roster.teamId}:${memberBotId}`;
+    const issued = this.storedTeamInvite(key);
+    if (issued !== null) return issued.inviteLink;
+    const expiresAt = this.now() + 60 * 60_000;
+    const pending = this.pendingTeamInvites.get(key) ?? session.api.createChatInviteLink(roster.groupChatId, Math.floor(expiresAt / 1000)).then(result => {
+      this.storeTeamInvite(key, { inviteLink: result.inviteLink, expiresAt: new Date(expiresAt).toISOString() });
+      return result.inviteLink;
+    });
+    this.pendingTeamInvites.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      this.pendingTeamInvites.delete(key);
+    }
+  }
+
+  private teamInviteFile(): string {
+    return joinPath(config.repoRoot, ".agent-console", "team", "invites.json");
+  }
+
+  private storedTeamInvites(): StoredTeamInvites {
+    const path = this.teamInviteFile();
+    if (!existsSync(path)) return {};
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as StoredTeamInvites : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private storedTeamInvite(key: string): StoredTeamInvite | null {
+    const invite = this.storedTeamInvites()[key];
+    return invite !== undefined && typeof invite.inviteLink === "string" && Date.parse(invite.expiresAt) > this.now() ? invite : null;
+  }
+
+  private storeTeamInvite(key: string, invite: StoredTeamInvite): void {
+    const path = this.teamInviteFile();
+    mkdirSync(joinPath(config.repoRoot, ".agent-console", "team"), { recursive: true, mode: 0o700 });
+    const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify({ ...this.storedTeamInvites(), [key]: invite }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  }
+
   startTeamJoin(code: unknown): { teamId: string; groupChatId: string } {
     if (typeof code !== "string") throw new WorkspaceError(422, "invalid_join_code", "A join code is required.");
     const join = decodeJoinCode(code);
+    const workspace = workspaces.list().find(candidate => {
+      const result = spawnSync("git", ["-C", candidate.workDirectory, "remote", "get-url", "--all", "origin"], { encoding: "utf8" });
+      return result.status === 0 && result.stdout.split(/\r?\n/).some(remote => remote.trim() === join.remoteUrl);
+    });
+    if (workspace === undefined) throw new WorkspaceError(409, "team_workspace_missing", "Add a local workspace that uses the team repository as its origin, then check the code again.");
+    const reachable = spawnSync("git", ["ls-remote", join.remoteUrl], { encoding: "utf8" });
+    if (reachable.status !== 0) throw new WorkspaceError(502, "team_remote_unreachable", "The team repository is not reachable with this workstation's Git credentials.");
     this.teamJoin = { code };
     return { teamId: join.teamId, groupChatId: join.groupChatId };
   }

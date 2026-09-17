@@ -202,6 +202,14 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     return { status, canPinMessages: member?.can_pin_messages === true, canInviteUsers: member?.can_invite_users === true };
   }
 
+  async createChatInviteLink(chatId: string, expiresAt: number): Promise<{ inviteLink: string }> {
+    const result = record(await this.call("createChatInviteLink", { chat_id: chatId, expire_date: expiresAt, member_limit: 1 }));
+    if (typeof result?.invite_link !== "string" || result.invite_link === "") {
+      throw new TelegramApiError("transient", "Telegram createChatInviteLink returned no invite link.");
+    }
+    return { inviteLink: result.invite_link };
+  }
+
   async answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {
     await this.call("answerCallbackQuery", { callback_query_id: callbackQueryId, text: text.slice(0, 200) });
   }

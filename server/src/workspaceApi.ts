@@ -87,6 +87,16 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else{const input=await body(req);json(res,200,{actor:telegramRuntime.confirmPairing(input.code),status:telegramRuntime.status()});}
       return true;
     }
+    if (url.pathname === "/api/task-control/team") {
+      if (method !== "GET") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else json(res, 200, { team: telegramRuntime.teamStatus() });
+      return true;
+    }
+    if (url.pathname === "/api/task-control/team/refresh") {
+      if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else json(res, 200, { team: await telegramRuntime.refreshTeam() });
+      return true;
+    }
     if (url.pathname === "/api/task-control/team/create") {
       if (method === "GET") json(res, 200, { team: telegramRuntime.teamCreateStatus() });
       else if (method === "POST") { const input = await body(req); json(res, 201, { team: telegramRuntime.startTeamCreate(input.remoteUrl) }); }

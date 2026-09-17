@@ -33,7 +33,7 @@ Preconditions:
 | T09 | TM1 | done | direct | `tm/T09-join-team` | `ffe3cc7` | Join-code validation, single-use roster publish, runtime/API join path and Agents join panel landed; focused roster suite passed 5/5 after Git sandbox escalation; server/web typecheck passed. | 2026-09-17 |
 | T10 | TM1 | done | `01a0ae6d-7273-7d93-bd87-1cd5d03bf039` | `tm/T10-tm1-closeout` | `b128876` | Close-out docs updated for audit 1 prep; `implementation.md` records TM0/TM1 commands/counts; H-TM-LG1 and deferred H-TM-LT3 rows present. Reruns: server typecheck passed, web typecheck passed, focused roster suite passed 5/5 after unsandboxed Git subprocess rerun, `git diff --check` passed. | 2026-09-17 |
 | T10R | TM1 | done | `01a0aeee-0443-7ec3-a249-3f8b7a584c36` | `tm/T10R-audit-remediation` | `acab820` | Fixed the stale S-L1-04 group-admin fixture and made harness builds use webpack under restricted local binding. Focused S-L1-04 passed 1/1 and burn-in 3/3; roster passed 5/5; existing TM-T1-1a T0 part passed 1/1. TM-T1-1/1a/1b Playwright rows remain absent and no Team T1 burn-in is claimed. | 2026-09-17 |
-| T10V | TM1 | in progress | `01a0aefa-1628-70c2-94b0-d5b7b7d5c6a4` | `tm/T10V-tm1-playwright` |  | Implement and burn in the missing TM-T1-1, TM-T1-1a and TM-T1-1b Playwright coverage required by T08-T10 and audit A3. | 2026-09-17 |
+| T10V | TM1 | ready to merge | `01a0aefa-1628-70c2-94b0-d5b7b7d5c6a4` | `tm/T10V-tm1-playwright` |  | Implemented TM-T1-1/1a/1b with the two-environment harness and product status/refresh/invite support. Focused rows passed 1/1 each; combined passed 3/3; three-repeat burn-in passed 9/9; roster/runtime passed 28/28; server/web/e2e typechecks passed. LT-3 remains deferred. | 2026-09-17 |
 | T11 | TM2 | pending |  |  |  | TM2 scenario table. |  |
 | T12 | TM2 | pending |  |  |  | Migration 25 and item ids. |  |
 | T13 | TM2 | pending |  |  |  | Anchors and read-only views. |  |
@@ -84,3 +84,4 @@ Preconditions:
 - 2026-09-17: T10R merged by fast-forward as `acab820`; its worktree and branch were removed.
 - 2026-09-17: T10V started to close the missing TM1 Playwright and three-repeat burn-in evidence before audit 1 is rerun.
 - 2026-09-17: T10V worker `01a0aefa-1628-70c2-94b0-d5b7b7d5c6a4` started for the three missing TM1 T1 rows and burn-in.
+- 2026-09-17: T10V completed the missing TM-T1-1, TM-T1-1a and TM-T1-1b rows. Focused results were 1/1 in 1.3 minutes, 1/1 in 23.6 seconds and 1/1 in 13.3 seconds respectively; the combined file passed 3/3 in 20.0 seconds and `--repeat-each=3 --max-failures=1` passed 9/9 in 2.0 minutes. The focused roster/runtime suites passed 28/28 (5/5 plus 23/23), and server/web/e2e typechecks passed. LT-3 remains scheduled/deferred until the full Team build.
