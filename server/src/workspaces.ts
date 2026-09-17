@@ -8,6 +8,7 @@ import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
+import { isItemId, mintItemId } from "./teamItems.ts";
 
 const databasePath = resolve(config.repoRoot, ".agent-console/console.sqlite");
 mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
@@ -623,6 +624,54 @@ db.transaction(() => {
   }
 })();
 
+{
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=25").get();
+  if (!applied) {
+    // telegram_outbox points back to telegram_thread. Keep foreign-key actions
+    // disabled during the atomic swap so dropping the old parent cannot clear
+    // existing thread_id values through ON DELETE SET NULL.
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE telegram_thread_v25 (
+            id INTEGER PRIMARY KEY,
+            bot_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            subject_kind TEXT NOT NULL CHECK(subject_kind IN ('task','workstation','item')),
+            subject_id TEXT NOT NULL,
+            topic_id TEXT,
+            status_message_id INTEGER REFERENCES telegram_outbox(id) ON DELETE SET NULL,
+            state TEXT NOT NULL CHECK(state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          INSERT INTO telegram_thread_v25
+            (id,bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at)
+          SELECT id,bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at
+          FROM telegram_thread;
+          DROP TABLE telegram_thread;
+          ALTER TABLE telegram_thread_v25 RENAME TO telegram_thread;
+          CREATE UNIQUE INDEX telegram_thread_subject_uq ON telegram_thread(bot_id, chat_id, subject_kind, subject_id);
+          CREATE TABLE item_link (
+            item_id TEXT PRIMARY KEY,
+            prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('requester','executor')),
+            epoch INTEGER NOT NULL CHECK(epoch >= 1),
+            control_head TEXT
+          );
+          CREATE INDEX item_link_prompt_idx ON item_link(prompt_id);
+        `);
+        db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(25,?)").run(new Date().toISOString());
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    const violations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+    if (violations.length > 0) throw new Error(`Migration 25 left ${violations.length} foreign-key violation(s)`);
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -697,16 +746,29 @@ export interface TeamRosterCacheRow {
   updatedAt: string;
 }
 
+export type ItemLinkRole = "requester" | "executor";
+export interface ItemLinkRow {
+  itemId: string;
+  promptId: number;
+  role: ItemLinkRole;
+  epoch: number;
+  controlHead: string | null;
+}
+
 /**
  * What a Telegram message is about (L3 C1). `task` is one saved task, `workstation`
  * everything that belongs to the workstation itself; `pipeline` and the L2 kinds are
  * added here when they exist.
  */
-export type TelegramSubjectKind = "task" | "workstation";
+export type TelegramSubjectKind = "task" | "workstation" | "item";
 export interface TelegramSubject { kind: TelegramSubjectKind; id: string }
 /** The one workstation subject of a chat: commands, help, pairing and quota all share it. */
 export const WORKSTATION_SUBJECT: TelegramSubject = { kind: "workstation", id: "workstation" };
 export const taskSubject = (promptId: number): TelegramSubject => ({ kind: "task", id: String(promptId) });
+export const itemSubject = (itemId: string): TelegramSubject => {
+  if (!isItemId(itemId)) throw new WorkspaceError(422, "validation_error", "A valid Team item id is required.");
+  return { kind: "item", id: itemId };
+};
 
 export interface TelegramThreadRow {
   id: number;
@@ -1094,6 +1156,27 @@ export const workspaces = {
       ON CONFLICT(team_id) DO UPDATE SET group_chat_id=excluded.group_chat_id,remote_url=excluded.remote_url,revision=excluded.revision,record_json=excluded.record_json,updated_at=excluded.updated_at`)
       .run(teamId, groupChatId, remoteUrl, revision, record, updatedAt);
     return { teamId, groupChatId, remoteUrl, revision, record: input.record, updatedAt };
+  },
+  createItemLink(input: { itemId?: string; promptId: number; role: ItemLinkRole; epoch: number; controlHead?: string | null }): ItemLinkRow { return sqliteGuard(() => db.transaction(() => {
+    if (input.itemId !== undefined && !isItemId(input.itemId)) throw new WorkspaceError(422, "validation_error", "A valid Team item id is required.");
+    if (input.role !== "requester" && input.role !== "executor") throw new WorkspaceError(422, "validation_error", "Item role must be requester or executor.");
+    if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) throw new WorkspaceError(422, "validation_error", "Item epoch must be a positive integer.");
+    const controlHead = input.controlHead === undefined || input.controlHead === null ? null : requireText(input.controlHead, "controlHead", 160);
+    if (input.itemId === undefined) {
+      const existing = db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE prompt_id=? AND role=? ORDER BY rowid LIMIT 1").get(input.promptId, input.role) as ItemLinkRow | undefined;
+      if (existing) return existing;
+    }
+    const itemId = input.itemId ?? mintItemId();
+    db.prepare("INSERT INTO item_link(item_id,prompt_id,role,epoch,control_head) VALUES(?,?,?,?,?)")
+      .run(itemId, input.promptId, input.role, input.epoch, controlHead);
+    return { itemId, promptId: input.promptId, role: input.role, epoch: input.epoch, controlHead };
+  })()); },
+  itemLink(itemId: string): ItemLinkRow | null {
+    if (!isItemId(itemId)) return null;
+    return (db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE item_id=?").get(itemId) as ItemLinkRow | undefined) ?? null;
+  },
+  itemLinksForPrompt(promptId: number): ItemLinkRow[] {
+    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE prompt_id=? ORDER BY rowid").all(promptId) as ItemLinkRow[];
   },
   createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string }): TaskControlActionReference { return sqliteGuard(() => {
     if (!["save_human_response", "answer_and_resume"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
