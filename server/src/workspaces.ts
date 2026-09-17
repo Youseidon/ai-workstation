@@ -602,6 +602,25 @@ db.transaction(() => {
     `);
     db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(23,?)").run(new Date().toISOString());
   }
+  if (pending(24)) {
+    // TM1: a team roster is a local cache of refs/aw/team. Group actors use a
+    // non-null topic sentinel because SQLite considers NULL values distinct in
+    // the existing actor uniqueness constraint.
+    db.exec(`
+      CREATE TABLE team_roster (
+        team_id TEXT PRIMARY KEY,
+        group_chat_id TEXT NOT NULL,
+        remote_url TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX task_control_actor_team_group_uq
+        ON task_control_actor(transport, transport_user_id, chat_id)
+        WHERE topic_id='__team_group__';
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(24,?)").run(new Date().toISOString());
+  }
 })();
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -668,6 +687,15 @@ type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; stat
 type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; execution_provider: string | null; execution_model: string | null; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null };
 type TaskControlActorRow = { id: string; transport: string; transport_user_id: string; chat_id: string; topic_id: string | null; label: string; enabled: number; created_at: string };
+export const TEAM_GROUP_TOPIC_SENTINEL = "__team_group__";
+export interface TeamRosterCacheRow {
+  teamId: string;
+  groupChatId: string;
+  remoteUrl: string;
+  revision: string;
+  record: unknown;
+  updatedAt: string;
+}
 
 /**
  * What a Telegram message is about (L3 C1). `task` is one saved task, `workstation`
@@ -1040,6 +1068,25 @@ export const workspaces = {
   },
   taskControlActorById(id: string): TaskControlActorRow | null {
     return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow | undefined) ?? null;
+  },
+  upsertTeamGroupActor(input: { id: string; transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; label: string; enabled?: boolean }): TaskControlActorRow {
+    return this.upsertTaskControlActor({ ...input, topicId: TEAM_GROUP_TOPIC_SENTINEL });
+  },
+  teamRoster(teamId: string): TeamRosterCacheRow | null {
+    const row = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster WHERE team_id=?").get(requireText(teamId, "teamId", 120)) as Omit<TeamRosterCacheRow, "record"> & { record: string } | undefined;
+    return row === undefined ? null : { ...row, record: JSON.parse(row.record) as unknown };
+  },
+  upsertTeamRoster(input: { teamId: string; groupChatId: string; remoteUrl: string; revision: string; record: unknown }): TeamRosterCacheRow {
+    const teamId = requireText(input.teamId, "teamId", 120);
+    const groupChatId = requireText(input.groupChatId, "groupChatId", 120);
+    const remoteUrl = requireText(input.remoteUrl, "remoteUrl", 4096);
+    const revision = requireText(input.revision, "revision", 120);
+    const updatedAt = new Date().toISOString();
+    const record = JSON.stringify(input.record);
+    db.prepare(`INSERT INTO team_roster(team_id,group_chat_id,remote_url,revision,record_json,updated_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(team_id) DO UPDATE SET group_chat_id=excluded.group_chat_id,remote_url=excluded.remote_url,revision=excluded.revision,record_json=excluded.record_json,updated_at=excluded.updated_at`)
+      .run(teamId, groupChatId, remoteUrl, revision, record, updatedAt);
+    return { teamId, groupChatId, remoteUrl, revision, record: input.record, updatedAt };
   },
   createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string }): TaskControlActionReference { return sqliteGuard(() => {
     if (!["save_human_response", "answer_and_resume"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
