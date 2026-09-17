@@ -108,6 +108,10 @@ export async function startTeamHarness(options: TeamHarnessOptions = {}): Promis
   const privateChatB: FakeChat & { type: "private" } = { id: userB.id, type: "private" };
   const groupChat: FakeChat = { id: -100_555_000_333, type: "supergroup", title: "Harness team" };
   fakeTelegram.registerChat(groupChat);
+  fakeTelegram.addChatMember(groupChat, userA);
+  fakeTelegram.addChatMember(groupChat, userB);
+  fakeTelegram.addChatMember(groupChat, botA, { administrator: true, canPinMessages: true, canInviteUsers: true });
+  fakeTelegram.addChatMember(groupChat, botB, { administrator: true, canPinMessages: true, canInviteUsers: true });
 
   const appA = new HarnessEnvironment({
     ...options.envA,

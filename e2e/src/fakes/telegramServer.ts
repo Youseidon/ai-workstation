@@ -68,6 +68,9 @@ export interface ApiCall {
   botId: number | null;
 }
 
+type ChatMember = { id: number; isBot: boolean; status: "member" | "administrator"; canPinMessages: boolean; canInviteUsers: boolean };
+type Invite = { chatId: number; memberLimit: number; uses: number };
+
 interface PendingPoll {
   botId: number;
   offset: number;
@@ -106,6 +109,9 @@ export class FakeTelegramServer {
   private readonly failures: ScriptedFailure[] = [];
   private readonly topics = new Map<string, { name: string; closed: boolean; deleted: boolean }>();
   private readonly pinnedMessages = new Map<number, number>();
+  private readonly members = new Map<number, Map<number, ChatMember>>();
+  private readonly invites = new Map<string, Invite>();
+  private nextInviteId = 1;
   readonly calls: ApiCall[] = [];
   private nextUpdateId = 100_000;
   private nextMessageId = 1;
@@ -134,6 +140,25 @@ export class FakeTelegramServer {
   addBot(bot: FakeBot): void {
     this.bots.set(bot.token, bot);
     this.updates.set(bot.id, []);
+  }
+
+  addChatMember(chat: FakeChat, user: FakeUser | FakeBot, options: { administrator?: boolean; canPinMessages?: boolean; canInviteUsers?: boolean } = {}): void {
+    this.registerChat(chat);
+    const roster = this.members.get(chat.id)!;
+    roster.set(user.id, { id: user.id, isBot: "token" in user, status: options.administrator ? "administrator" : "member", canPinMessages: options.canPinMessages ?? options.administrator ?? false, canInviteUsers: options.canInviteUsers ?? options.administrator ?? false });
+  }
+
+  removeChatMember(chatId: number, userId: number): void {
+    this.members.get(chatId)?.delete(userId);
+  }
+
+  async joinChatByInvite(user: FakeUser | FakeBot, inviteLink: string): Promise<void> {
+    const invite = this.invites.get(inviteLink);
+    if (!invite || invite.uses >= invite.memberLimit) throw apiError(400, "Bad Request: invite link expired");
+    const chat = this.knownChat(invite.chatId);
+    if (!chat) throw apiError(400, "Bad Request: chat not found");
+    this.addChatMember(chat, user);
+    invite.uses += 1;
   }
 
   get url(): string {
@@ -208,14 +233,20 @@ export class FakeTelegramServer {
     const { history: _history, ...wire } = message;
     // Telegram embeds the whole replied-to message (one level deep), not just its id.
     const repliedTo = options.replyToMessageId === undefined ? undefined : this.find(chat.id, options.replyToMessageId);
-    this.pushUpdate(bot.id, {
+    const update = {
       message: {
         ...wire,
         ...(repliedTo ? { reply_to_message: (({ reply_to_message: _nested, ...inner }) => inner)(wireMessage(repliedTo) as Json & { reply_to_message?: unknown }) } : {}),
         from: { id: user.id, is_bot: false, first_name: user.firstName, ...(user.lastName ? { last_name: user.lastName } : {}), ...(user.username ? { username: user.username } : {}) },
         chat: this.wireChat(chat, user),
       },
-    });
+    };
+    if (chat.type === "private") this.pushUpdate(bot.id, update);
+    else {
+      for (const member of this.members.get(chat.id)?.values() ?? []) {
+        if (member.isBot && member.status === "administrator") this.pushUpdate(member.id, update);
+      }
+    }
     return message;
   }
 
@@ -317,7 +348,11 @@ export class FakeTelegramServer {
       case "answerCallbackQuery":
         return this.answerCallbackQuery(body);
       case "pinChatMessage":
-        return this.pinChatMessage(body);
+        return this.pinChatMessage(bot, body);
+      case "getChatMember":
+        return this.getChatMember(body);
+      case "createChatInviteLink":
+        return this.createChatInviteLink(bot, body);
       case "setMyCommands":
         if (!Array.isArray(body.commands)) throw apiError(400, "Bad Request: commands must be an array");
         return true;
@@ -417,13 +452,34 @@ export class FakeTelegramServer {
   }
 
   /** Pins a message in a chat, as the control panel is pinned once (L3 C1). */
-  private pinChatMessage(body: Json): boolean {
+  private pinChatMessage(bot: FakeBot, body: Json): boolean {
     const chatId = Number(body.chat_id);
-    if (!this.knownChat(chatId)) throw apiError(400, "Bad Request: chat not found");
+    const chat = this.knownChat(chatId);
+    if (!chat) throw apiError(400, "Bad Request: chat not found");
     const message = this.find(chatId, Number(body.message_id));
     if (!message) throw apiError(400, "Bad Request: message to pin not found");
+    if (chat.type !== "private" && !this.can(bot.id, chatId, "canPinMessages")) throw apiError(403, "Forbidden: not enough rights to pin messages");
     this.pinnedMessages.set(chatId, message.message_id);
     return true;
+  }
+
+  private getChatMember(body: Json): Json {
+    const chatId = Number(body.chat_id);
+    if (!this.knownChat(chatId)) throw apiError(400, "Bad Request: chat not found");
+    const member = this.members.get(chatId)?.get(Number(body.user_id));
+    if (!member) throw apiError(400, "Bad Request: user not found");
+    return { user: { id: member.id, is_bot: member.isBot, first_name: member.isBot ? "Bot" : "User" }, status: member.status, ...(member.status === "administrator" ? { can_pin_messages: member.canPinMessages, can_invite_users: member.canInviteUsers } : {}) };
+  }
+
+  private createChatInviteLink(bot: FakeBot, body: Json): Json {
+    const chatId = Number(body.chat_id);
+    if (!this.knownChat(chatId)) throw apiError(400, "Bad Request: chat not found");
+    if (!this.can(bot.id, chatId, "canInviteUsers")) throw apiError(403, "Forbidden: not enough rights to invite users");
+    const memberLimit = typeof body.member_limit === "number" ? body.member_limit : 0;
+    if (memberLimit < 1) throw apiError(400, "Bad Request: member_limit must be positive");
+    const invite_link = `https://t.me/+fake${this.nextInviteId++}`;
+    this.invites.set(invite_link, { chatId, memberLimit, uses: 0 });
+    return { invite_link, creator: { id: bot.id, is_bot: true, first_name: bot.username, username: bot.username }, creates_join_request: false, is_primary: false, is_revoked: false, member_limit: memberLimit, pending_join_request_count: 0 };
   }
 
   /** Test control: the message currently pinned in a chat, if any. */
@@ -526,6 +582,12 @@ export class FakeTelegramServer {
 
   registerChat(chat: FakeChat): void {
     this.chats.set(chat.id, chat);
+    if (!this.members.has(chat.id)) this.members.set(chat.id, new Map());
+  }
+
+  private can(botId: number, chatId: number, right: "canPinMessages" | "canInviteUsers"): boolean {
+    const member = this.members.get(chatId)?.get(botId);
+    return member?.status === "administrator" && member[right];
   }
 
   private knownChat(chatId: number): FakeChat | undefined {
