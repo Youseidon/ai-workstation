@@ -43,7 +43,7 @@ Preconditions:
 | T15 | TM2 | done | `01a0afe3-0a01-7051-aeac-d1e44e9a96e6` | `tm/T15-cross-owner-thread` | `46bae6a` | Cross-owner requests publish one opaque requester-bot card and create no item link, owner anchor or control publication before an owner-bound, revision-checked confirmation. Confirm, decline, wrong-user, stale, expired and duplicate paths are covered. Focused request/action tests passed, runtime 25/25, affected server files 4/4, TM-T1-7 1/1, and server/e2e typechecks passed. | 2026-09-18 |
 | T16 | TM2 | done | `direct` | `tm/T16-tm2-closeout` | `ad23446` | Full server 264/264; full T1 121/121; TM2 three-repeat burn-in 12/12; typecheck 4/4; lint 0 errors/5 existing warnings after covering numbered harness build directories. LT-3/LT-4 remain scheduled/deferred. | 2026-09-18 |
 | T17 | TM3 | done | `direct` | `tm/T17-tm3-scenarios` | `19e30ba` | `tm3.md` defines the table-driven grant matrix, migration-26 compatibility, two-environment grant/revoke/expiry/removal rows, three-repeat burn-in and scheduled/deferred LT-4; standing progression instruction records the skim. | 2026-09-18 |
-| T18 | TM3 | pending |  |  |  | Migration 26 and grant model. |  |
+| T18 | TM3 | in progress | `direct` | `tm/T18-migration-grants` |  | Migration 26, preserved action compatibility, `item_grant` and table-driven grant evaluation; direct execution because worker capacity remains externally unavailable. | 2026-09-18 |
 | T19 | TM3 | pending |  |  |  | Grant cards and granted commands. |  |
 | T20 | TM3 | pending |  |  |  | TM3 close-out and audit 2. |  |
 
@@ -123,3 +123,4 @@ Preconditions:
 - 2026-09-18: T17 started directly because the available worker mechanism remains externally unavailable. Scope is the TM3 grant scenario table; jd's standing continuous-progression instruction authorizes the required skim without a task-boundary pause.
 - 2026-09-18: T17 is ready to merge. `tm3.md` specifies TM-T0-2, TM-T0-5-26, TM-T1-4, TM-T1-5 and LT-4 with tap-time authorization order, migration preservation, grant lifecycle, two-environment observables and three-repeat burn-in. `git diff --check`, exact-row/section checks and the changed-file credential-shape sweep passed. The standing continuous-progression instruction is recorded as jd's skim authorization; LT-4 remains scheduled/deferred and no live Telegram or credential was used.
 - 2026-09-18: T17 merged by fast-forward as `19e30ba`; its worktree and branch were removed.
+- 2026-09-18: T18 started directly because the available worker mechanism remains externally unavailable. Scope is migration 26, action-row compatibility, `item_grant`, grant evaluation, TM-T0-2 and TM-T0-5-26.
