@@ -11,8 +11,10 @@ import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
+import { renderTeamItemAnchor, renderTeamItemView, parseTeamItemCommand, type TeamItemViewState } from "../../teamItemViews.ts";
+import { itemTag } from "../../teamItems.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
-import { taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
+import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
 import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
 import { TelegramAdapter } from "./adapter.ts";
@@ -280,6 +282,41 @@ export class TelegramLiveRuntime {
     const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
     if (owner?.botId === session.botId && teammate !== null) await this.teamInvite(session, roster, teammate.botId);
     return this.panelStatus(roster);
+  }
+
+  openTeamItem(promptId: unknown): { itemId: string } {
+    this.requireTeamEnabled();
+    const session = this.requireSession();
+    if (!Number.isSafeInteger(promptId) || Number(promptId) <= 0) throw new WorkspaceError(422, "validation_error", "A saved task is required.");
+    workspaces.promptOutcome(Number(promptId));
+    const roster = this.teamRosterFor(session);
+    const link = workspaces.createItemLink({ promptId: Number(promptId), role: "requester", epoch: 1 });
+    this.syncTeamItem(session, roster, link);
+    return { itemId: link.itemId };
+  }
+
+  /** Harness-only lifecycle control used to prove a completed item creates a fresh anchor when reopened. */
+  harnessReopenTeamItem(itemId: unknown): void {
+    if (!isHarnessMode()) throw new WorkspaceError(404, "not_found", "Route not found");
+    this.requireTeamEnabled();
+    if (typeof itemId !== "string") throw new WorkspaceError(422, "validation_error", "A Team item id is required.");
+    const link = workspaces.itemLink(itemId);
+    if (link === null) throw new WorkspaceError(404, "item_not_found", "Team item was not found.");
+    workspaces.reopenPrompt(link.promptId, "Harness reopened Team item");
+  }
+
+  /** Harness-only normal agent transition used by TM-T1-6 to complete an item. */
+  harnessCompleteTeamItem(itemId: unknown): void {
+    if (!isHarnessMode()) throw new WorkspaceError(404, "not_found", "Route not found");
+    this.requireTeamEnabled();
+    if (typeof itemId !== "string") throw new WorkspaceError(422, "validation_error", "A Team item id is required.");
+    const link = workspaces.itemLink(itemId);
+    if (link === null) throw new WorkspaceError(404, "item_not_found", "Team item was not found.");
+    const home = workspaces.promptHome(link.promptId);
+    const runId = `team-harness-${randomBytes(10).toString("hex")}`;
+    workspaces.beginAgentRun({ runId, workspaceId: home.workspaceId, promptId: link.promptId, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(this.now() + 60_000).toISOString() });
+    workspaces.updateAgentStatus(runId, { requestId: `${runId}-done`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Team item completed", verificationSummary: "TM-T1-6 lifecycle fixture" });
+    workspaces.finishAgentRun(runId, "done");
   }
 
   private panelStatus(roster: TeamRoster): TeamPanelStatus {
@@ -594,11 +631,13 @@ export class TelegramLiveRuntime {
     let nextNotifyAt = 0;
     while (!signal.aborted) {
       try {
+        this.syncTeamItemAnchors(session);
         if (this.now() >= nextNotifyAt) {
           this.notifyWaitingTasks(session);
           nextNotifyAt = this.now() + this.notifyIntervalMs;
         }
         await this.sendDue(session);
+        await this.finishCompletedTeamItems(session);
         await this.pinControlPanels(session);
       } catch (error) {
         this.log.warn(this.safe(`delivery cycle failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -636,7 +675,7 @@ export class TelegramLiveRuntime {
   /** Posts each waiting task once per question revision to every enrolled chat. */
   private notifyWaitingTasks(session: Session): void {
     if (!this.settings().notificationsEnabled) return;
-    const actors = workspaces.taskControlActors("telegram");
+    const actors = workspaces.taskControlActors("telegram").filter(actor => actor.topic_id !== TEAM_GROUP_TOPIC_SENTINEL);
     if (actors.length === 0) return;
     for (const prompt of workspaces.promptsAwaitingResponse()) {
       const revision = workspaces.humanInputState(prompt.id).revision;
@@ -763,8 +802,93 @@ export class TelegramLiveRuntime {
    * never an edit of the anchor, so the record of what was decided cannot be overwritten.
    */
   private enqueueText(session: Session, chatId: string, topicId: string | null, text: string, subject: TelegramSubject = WORKSTATION_SUBJECT): void {
-    const tag = subject.kind === "task" ? taskTagFor(Number(subject.id)) : null;
+    const tag = subject.kind === "task" ? taskTagFor(Number(subject.id)) : subject.kind === "item" ? itemTag(subject.id) : null;
     workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId, topicId, payload: textPayload(tag === null ? text : `${text}\n${tag}`), subject });
+  }
+
+  private teamRosterFor(session: Session): TeamRoster {
+    const roster = workspaces.teamRosters().map(entry => entry.record as TeamRoster).find(entry => entry.members.some(member => member.botId === session.botId));
+    if (roster === undefined) throw new WorkspaceError(409, "team_not_joined", "Join or create a team before opening an item.");
+    return roster;
+  }
+
+  private teamItemViewState(session: Session, roster: TeamRoster, link: ItemLinkRow): TeamItemViewState {
+    const activity = workspaces.promptActivity(link.promptId);
+    const owner = roster.members.find(member => member.botId === session.botId);
+    if (owner === undefined) throw new WorkspaceError(409, "team_owner_missing", "This workstation is not in the Team roster.");
+    return {
+      promptStatus: activity.item.prompt.status,
+      operationalState: activity.item.operationalState,
+      ownerWorkstation: owner.workstationLabel,
+      memberLabels: roster.members.map(member => member.workstationLabel),
+      now: new Date(this.now()),
+    };
+  }
+
+  private teamItemPayload(session: Session, roster: TeamRoster, link: ItemLinkRow) {
+    const state = this.teamItemViewState(session, roster, link);
+    const summary = taskSummary(link.promptId, "team", { workstationLabel: state.ownerWorkstation, itemId: link.itemId });
+    return { state, summary, payload: renderTeamItemAnchor(summary, state) };
+  }
+
+  private syncTeamItemAnchors(session: Session): void {
+    if (!this.settings().teamEnabled) return;
+    let roster: TeamRoster;
+    try { roster = this.teamRosterFor(session); } catch { return; }
+    for (const link of workspaces.itemLinks()) this.syncTeamItem(session, roster, link);
+  }
+
+  private syncTeamItem(session: Session, roster: TeamRoster, link: ItemLinkRow): void {
+    const { state, payload } = this.teamItemPayload(session, roster, link);
+    const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
+    const completed = state.promptStatus === "DONE" || state.promptStatus === "SKIPPED";
+    if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") {
+      if (!completed) workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId: roster.groupChatId, payload, subject: itemSubject(link.itemId), anchor: { pin: true } });
+      return;
+    }
+    const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
+    if (anchor !== null && JSON.stringify(anchor.desiredPayload) !== JSON.stringify(payload)) {
+      workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: anchor.outboxId, payload });
+    }
+  }
+
+  private async finishCompletedTeamItems(session: Session): Promise<void> {
+    if (!this.settings().teamEnabled) return;
+    let roster: TeamRoster;
+    try { roster = this.teamRosterFor(session); } catch { return; }
+    for (const link of workspaces.itemLinks()) {
+      const { state, payload } = this.teamItemPayload(session, roster, link);
+      if (state.promptStatus !== "DONE" && state.promptStatus !== "SKIPPED") continue;
+      const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
+      if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") continue;
+      const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
+      if (anchor === null || anchor.messageId === null || anchor.pendingEdit || JSON.stringify(anchor.deliveredPayload) !== JSON.stringify(payload)) continue;
+      // Mark first: like pinning, a refused unpin is attempted once and never loops.
+      workspaces.markTelegramThreadAnchorGone(anchor.outboxId);
+      try {
+        await session.api.unpinChatMessage(roster.groupChatId, anchor.messageId);
+      } catch (error) {
+        this.log.warn(this.safe(`unpinChatMessage failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
+  }
+
+  private handleTeamItemMessage(session: Session, message: TelegramMessagePayload, roster: TeamRoster): boolean {
+    if (message.replyToMessageId === null) return true;
+    const thread = workspaces.telegramItemThreadForMessage(session.botId, message.chatId, message.replyToMessageId);
+    if (thread === null) return true;
+    const link = workspaces.itemLink(thread.subjectId);
+    if (link === null) return true;
+    const command = parseTeamItemCommand(message.text, this.bot?.username ?? null);
+    if (command === null || command === "other_bot") return true;
+    const { state, summary } = this.teamItemPayload(session, roster, link);
+    workspaces.enqueueTelegramOutbox({
+      botId: session.botId,
+      chatId: roster.groupChatId,
+      payload: renderTeamItemView(command, summary, state),
+      subject: itemSubject(link.itemId),
+    });
+    return true;
   }
 
   /** The question revision a card's buttons were issued for, or null when it has none. */
@@ -804,11 +928,18 @@ export class TelegramLiveRuntime {
         this.handlePairingCode(session, message, pairingCode);
         return;
       }
-      const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId, topicId: message.topicId });
+      const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId, topicId: message.topicId })
+        ?? ((message.chatType === "group" || message.chatType === "supergroup")
+          ? workspaces.taskControlTeamActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId })
+          : null);
       // Unknown users and chats are ignored without a reply (protocol section 7).
       if (!actor || actor.enabled !== 1) return;
       if (actor.topic_id === TEAM_GROUP_TOPIC_SENTINEL && !this.settings().teamEnabled) {
         this.enqueueText(session, message.chatId, message.topicId, TEAM_DISABLED_MESSAGE);
+        return;
+      }
+      if (actor.topic_id === TEAM_GROUP_TOPIC_SENTINEL) {
+        this.handleTeamItemMessage(session, message, this.teamRosterFor(session));
         return;
       }
       // Registered commands are read-only view requests, checked before the reply-to check so a

@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import type { AgentStatusOption, HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptRemark, PromptStatusEvent } from "@agent-console/shared";
+import { itemTag, isItemId } from "./teamItems.ts";
 import { workspaces } from "./workspaces.ts";
 
 /*
@@ -10,7 +11,7 @@ import { workspaces } from "./workspaces.ts";
  * Bot API call, and never the all-runs session loader.
  */
 
-export type SummaryAudience = "owner";
+export type SummaryAudience = "owner" | "team";
 
 export interface TaskSummaryBlocker {
   description: string;
@@ -231,6 +232,8 @@ const RECOMMENDATIONS: Record<HandoffRecommendation, string> = {
 export interface SummaryOptions {
   /** The workstation label setting; empty means the OS hostname. */
   workstationLabel?: string;
+  /** Team-wide identity used for the shared tag; required for the team audience. */
+  itemId?: string;
 }
 
 export function defaultWorkstationLabel(): string {
@@ -290,8 +293,7 @@ function ifYouWait(suite: OperationsSuite, item: OperationsPrompt): string {
 }
 
 export function taskSummary(promptId: number, audience: SummaryAudience = "owner", options: SummaryOptions = {}): TaskSummary {
-  // Team cards (L2) must hide account quota; until they exist only the owner audience is valid.
-  if (audience !== "owner") throw new Error(`task summaries support the owner audience only, not ${JSON.stringify(audience)}`);
+  if (audience === "team" && !isItemId(options.itemId)) throw new Error("team task summaries require a valid Team item id");
   const { suite, item } = locate(promptId);
   const enabled = suite.prompts.filter((entry) => entry.pipelineRule.enabled).sort((a, b) => a.pipelineRule.stepOrder - b.pipelineRule.stepOrder);
   const index = enabled.findIndex((entry) => entry.prompt.id === promptId);
@@ -321,11 +323,12 @@ export function taskSummary(promptId: number, audience: SummaryAudience = "owner
   const empty = { objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null };
 
   const brief = currentBrief(promptId);
+  let summary: TaskSummary;
   if (brief) {
     const human = brief.blockers.filter((blocker) => blocker.requiresHuman && blocker.description.trim() !== "");
     const passed = brief.verificationPassed.length;
     const failed = brief.verificationFailed.length;
-    return {
+    summary = {
       ...base,
       source: "brief",
       objective: brief.originalObjective.trim() === "" ? null : blockText(brief.originalObjective, 600),
@@ -336,10 +339,61 @@ export function taskSummary(promptId: number, audience: SummaryAudience = "owner
       importantFiles: list(brief.importantFiles, 300),
       recommendation: RECOMMENDATIONS[brief.recommendation] ?? null,
     };
+  } else {
+    const remark = latestBlockerRemark(promptId);
+    summary = remark && remark.content.trim() !== ""
+      ? { ...base, ...empty, source: "remark", blockers: [{ description: blockText(remark.content), requiredAction: null }] }
+      : { ...base, ...empty, source: "title" };
   }
-  const remark = latestBlockerRemark(promptId);
-  if (remark && remark.content.trim() !== "") {
-    return { ...base, ...empty, source: "remark", blockers: [{ description: blockText(remark.content), requiredAction: null }] };
-  }
-  return { ...base, ...empty, source: "title" };
+  if (audience === "owner") return summary;
+  return teamSummary(summary, options.itemId!);
+}
+
+const TEAM_LOCAL_PATH = /(^|[\s("'`])(?:\/(?:home|Users|tmp|var|private|mnt|workspace|workspaces)\/[^\s,;)\]}"']+|[A-Za-z]:\\[^\s,;)\]}"']+)/g;
+
+function teamText(value: string): string {
+  return value.replace(TEAM_LOCAL_PATH, "$1[local path]");
+}
+
+function teamList(values: string[] | null): string[] | null {
+  return values?.map(teamText) ?? null;
+}
+
+/** Removes owner-only machine detail while preserving facts needed for a Team decision. */
+function teamSummary(summary: TaskSummary, itemId: string): TaskSummary {
+  return {
+    ...summary,
+    key: itemId,
+    tag: itemTag(itemId),
+    breadcrumb: {
+      ...summary.breadcrumb,
+      workstation: teamText(summary.breadcrumb.workstation),
+      workspace: teamText(summary.breadcrumb.workspace),
+      program: teamText(summary.breadcrumb.program),
+      suite: teamText(summary.breadcrumb.suite),
+      nextStep: summary.breadcrumb.nextStep === null ? null : teamText(summary.breadcrumb.nextStep),
+    },
+    title: teamText(summary.title),
+    options: summary.options?.map((option) => ({
+      label: teamText(option.label),
+      advantages: option.advantages.map(teamText),
+      disadvantages: option.disadvantages.map(teamText),
+    })) ?? null,
+    history: {
+      ...summary.history,
+      runs: summary.history.runs.map((run) => ({ ...run, provider: teamText(run.provider) })),
+      previousAnswer: summary.history.previousAnswer === null ? null : { ...summary.history.previousAnswer, text: teamText(summary.history.previousAnswer.text) },
+    },
+    objective: summary.objective === null ? null : teamText(summary.objective),
+    completedWork: teamList(summary.completedWork),
+    blockers: summary.blockers?.map((blocker) => ({
+      description: teamText(blocker.description),
+      requiredAction: blocker.requiredAction === null ? null : teamText(blocker.requiredAction),
+    })) ?? null,
+    decisions: teamList(summary.decisions),
+    // File names and paths remain available to the owner, but never enter the shared group.
+    importantFiles: null,
+    recommendation: summary.recommendation === null ? null : teamText(summary.recommendation),
+    ifYouWait: teamText(summary.ifYouWait),
+  };
 }

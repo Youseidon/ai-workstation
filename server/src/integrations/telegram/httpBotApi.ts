@@ -196,6 +196,10 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     await this.call("pinChatMessage", { chat_id: chatId, message_id: Number(messageId), disable_notification: true });
   }
 
+  async unpinChatMessage(chatId: string, messageId: string): Promise<void> {
+    await this.call("unpinChatMessage", { chat_id: chatId, message_id: Number(messageId) });
+  }
+
   async getChatMember(chatId: string, userId: string): Promise<{ status: string; canPinMessages: boolean; canInviteUsers: boolean }> {
     const member = record(await this.call("getChatMember", { chat_id: chatId, user_id: Number(userId) }));
     const status = typeof member?.status === "string" ? member.status : "left";

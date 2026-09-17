@@ -349,6 +349,8 @@ export class FakeTelegramServer {
         return this.answerCallbackQuery(body);
       case "pinChatMessage":
         return this.pinChatMessage(bot, body);
+      case "unpinChatMessage":
+        return this.unpinChatMessage(bot, body);
       case "getChatMember":
         return this.getChatMember(body);
       case "createChatInviteLink":
@@ -460,6 +462,15 @@ export class FakeTelegramServer {
     if (!message) throw apiError(400, "Bad Request: message to pin not found");
     if (chat.type !== "private" && !this.can(bot.id, chatId, "canPinMessages")) throw apiError(403, "Forbidden: not enough rights to pin messages");
     this.pinnedMessages.set(chatId, message.message_id);
+    return true;
+  }
+
+  private unpinChatMessage(bot: FakeBot, body: Json): boolean {
+    const chatId = Number(body.chat_id);
+    const chat = this.knownChat(chatId);
+    if (!chat) throw apiError(400, "Bad Request: chat not found");
+    if (chat.type !== "private" && !this.can(bot.id, chatId, "canPinMessages")) throw apiError(403, "Forbidden: not enough rights to pin messages");
+    if (this.pinnedMessages.get(chatId) === Number(body.message_id)) this.pinnedMessages.delete(chatId);
     return true;
   }
 

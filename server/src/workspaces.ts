@@ -1128,6 +1128,10 @@ export const workspaces = {
     const topicId = input.topicId === undefined ? null : input.topicId;
     return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND transport_user_id=? AND chat_id=? AND topic_id IS ?").get(input.transport, input.transportUserId, input.chatId, topicId) as TaskControlActorRow | undefined) ?? null;
   },
+  taskControlTeamActorFor(input: { transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string }): TaskControlActorRow | null {
+    return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND transport_user_id=? AND chat_id=? AND topic_id=?")
+      .get(input.transport, input.transportUserId, input.chatId, TEAM_GROUP_TOPIC_SENTINEL) as TaskControlActorRow | undefined) ?? null;
+  },
   taskControlActorById(id: string): TaskControlActorRow | null {
     return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow | undefined) ?? null;
   },
@@ -1177,6 +1181,9 @@ export const workspaces = {
   },
   itemLinksForPrompt(promptId: number): ItemLinkRow[] {
     return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE prompt_id=? ORDER BY rowid").all(promptId) as ItemLinkRow[];
+  },
+  itemLinks(): ItemLinkRow[] {
+    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link ORDER BY rowid").all() as ItemLinkRow[];
   },
   createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string }): TaskControlActionReference { return sqliteGuard(() => {
     if (!["save_human_response", "answer_and_resume"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
@@ -1242,6 +1249,30 @@ export const workspaces = {
     return (botId === undefined
       ? db.prepare(`${THREAD_COLUMNS} ORDER BY id`).all()
       : db.prepare(`${THREAD_COLUMNS} WHERE bot_id=? ORDER BY id`).all(botId)) as TelegramThreadRow[];
+  },
+  telegramItemThreadForMessage(botId: string, chatId: string, sentMessageId: string): TelegramThreadRow | null {
+    const row = db.prepare(`SELECT t.id,t.bot_id botId,t.chat_id chatId,t.subject_kind subjectKind,t.subject_id subjectId,t.topic_id topicId,t.status_message_id statusMessageId,t.state
+      FROM telegram_thread t JOIN telegram_outbox o ON o.id=t.status_message_id
+      WHERE t.bot_id=? AND t.chat_id=? AND t.subject_kind='item'
+        AND t.state<>'ANCHOR_GONE' AND o.state='SENT' AND o.sent_message_id=?`)
+      .get(botId, chatId, sentMessageId) as TelegramThreadRow | undefined;
+    return row ?? null;
+  },
+  telegramThreadAnchorDelivery(threadId: number): { outboxId: number; messageId: string | null; desiredPayload: unknown; deliveredPayload: unknown | null; pendingEdit: boolean } | null {
+    const anchor = db.prepare(`SELECT o.id,o.payload_json payload,o.state,o.sent_message_id messageId
+      FROM telegram_thread t JOIN telegram_outbox o ON o.id=t.status_message_id WHERE t.id=?`).get(threadId) as { id: number; payload: string; state: string; messageId: string | null } | undefined;
+    if (!anchor) return null;
+    const latest = db.prepare("SELECT payload_json payload,state,next_attempt_at nextAttemptAt FROM telegram_outbox WHERE operation='edit' AND target_outbox_id=? ORDER BY id DESC LIMIT 1")
+      .get(anchor.id) as { payload: string; state: string; nextAttemptAt: string | null } | undefined;
+    const delivered = db.prepare("SELECT payload_json payload FROM telegram_outbox WHERE operation='edit' AND target_outbox_id=? AND state='SENT' ORDER BY id DESC LIMIT 1")
+      .get(anchor.id) as { payload: string } | undefined;
+    return {
+      outboxId: anchor.id,
+      messageId: anchor.messageId,
+      desiredPayload: JSON.parse(latest?.payload ?? anchor.payload) as unknown,
+      deliveredPayload: delivered !== undefined ? JSON.parse(delivered.payload) as unknown : anchor.state === "SENT" ? JSON.parse(anchor.payload) as unknown : null,
+      pendingEdit: latest !== undefined && (latest.state === "QUEUED" || (latest.state === "FAILED" && latest.nextAttemptAt !== null)),
+    };
   },
   /**
    * Records which outbox row carries a subject's anchor. `pin` asks for the one pin
@@ -2155,6 +2186,18 @@ export const workspaces = {
       db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?,'TODO',?,'SYSTEM',?)").run(promptId,prompt.status,reason,now);
       db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'SYSTEM',?)")
         .run(promptId,"Pipeline is retrying / recovering this station. Inspect the working tree and prior evidence; do not repeat resolved work.",now);
+    })());
+  },
+
+  reopenPrompt(promptId:number,reason:string):void {
+    sqliteGuard(()=>db.transaction(()=>{
+      const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+      if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+      if(prompt.status!=="DONE"&&prompt.status!=="SKIPPED")throw new WorkspaceError(409,"invalid_transition","Only completed work items can be reopened");
+      const now=new Date().toISOString();
+      db.prepare("UPDATE prompt SET status='TODO',result='',completed_at=NULL,updated_at=? WHERE id=?").run(now,promptId);
+      db.prepare("DELETE FROM human_response_hold WHERE prompt_id=?").run(promptId);
+      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,actor_type,created_at) VALUES(?,NULL,?,'TODO',?,'USER',?)").run(promptId,prompt.status,requireText(reason,"reason",1000),now);
     })());
   },
 

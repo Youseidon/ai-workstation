@@ -167,7 +167,53 @@ test("T12 item ids are short, opaque and do not embed local identifiers", () => 
   const second = mintItemId();
   assert.notEqual(first, second);
   assert.ok(first.length <= 32);
-  assert.equal(first.includes(String(process.pid)), false);
-  assert.equal(first.includes(process.cwd()), false);
+  for (const localIdentifier of [process.cwd(), "/tmp/team-item", "task-42", "telegram-user-101"]) {
+    assert.equal(first.includes(localIdentifier), false);
+  }
   assert.throws(() => itemTag("local/path/task-42"));
+});
+
+test("TM-T1-6 registry: one item anchor is edited in place and ANCHOR_GONE accepts one replacement", () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm2-item-anchor-"));
+  const workspace = workspaces.create({ name: "anchor-workspace", workDirectory: directory });
+  const botId = "telegram-item-anchor";
+  const chatId = "-100600";
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const prompt = workspaces.createChild("prompt", suite.id, { title: "Shared task", content: "Discuss it" }) as PromptRecord;
+    const link = workspaces.createItemLink({ promptId: prompt.id, role: "requester", epoch: 1 });
+    const subject = itemSubject(link.itemId);
+    const firstPayload = { kind: "view", text: `Open\n${itemTag(link.itemId)}`, entities: [], buttons: [] };
+    const first = workspaces.enqueueTelegramOutbox({ botId, chatId, payload: firstPayload, subject, anchor: { pin: true } });
+    const thread = workspaces.telegramThreadFor({ botId, chatId, subject });
+    assert.equal(thread.statusMessageId, first);
+    assert.equal(thread.state, "PIN_PENDING");
+    workspaces.markTelegramOutbox(first, "SENT", null, { sentMessageId: "701" });
+    workspaces.markTelegramThreadPinAttempted(thread.id);
+    assert.equal(workspaces.telegramItemThreadForMessage(botId, chatId, "701")?.subjectId, link.itemId);
+
+    const changedPayload = { ...firstPayload, text: `Blocked\n${itemTag(link.itemId)}` };
+    const edit = workspaces.enqueueTelegramEdit({ botId, targetOutboxId: first, payload: changedPayload });
+    assert.deepEqual(workspaces.telegramThreadAnchorDelivery(thread.id), {
+      outboxId: first,
+      messageId: "701",
+      desiredPayload: changedPayload,
+      deliveredPayload: firstPayload,
+      pendingEdit: true,
+    });
+    workspaces.markTelegramOutbox(edit, "SENT");
+    assert.deepEqual(workspaces.telegramThreadAnchorDelivery(thread.id)?.deliveredPayload, changedPayload);
+
+    assert.equal(workspaces.markTelegramThreadAnchorGone(first), 1);
+    assert.equal(workspaces.telegramItemThreadForMessage(botId, chatId, "701"), null);
+    const replacement = workspaces.enqueueTelegramOutbox({ botId, chatId, payload: changedPayload, subject, anchor: { pin: true } });
+    assert.notEqual(replacement, first);
+    assert.equal(workspaces.telegramThreadFor({ botId, chatId, subject }).statusMessageId, replacement);
+    assert.equal(workspaces.telegramOutboxRow(replacement)?.replyToMessageId, null, "an anchor never replies to itself");
+  } finally {
+    workspaces.removeTelegramRecordsForBot(botId);
+    workspaces.remove(workspace.id);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

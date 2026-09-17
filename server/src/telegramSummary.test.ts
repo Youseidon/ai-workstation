@@ -238,7 +238,7 @@ test("S-L3-F3-10: secrets and local addresses are redacted in both forms, includ
   }
 });
 
-test("S-L3-F3-11/12: building a summary writes nothing, is repeatable, refuses unknown tasks and non-owner audiences", () => {
+test("S-L3-F3-11/12: building an owner summary writes nothing, is repeatable and refuses unknown tasks", () => {
   const f = fixture();
   try {
     f.handoff("READY", fullBrief());
@@ -254,8 +254,35 @@ test("S-L3-F3-11/12: building a summary writes nothing, is repeatable, refuses u
     assert.deepEqual(taskSummary(f.prompt.id), taskSummary(f.prompt.id));
     assert.equal(snapshot(), before);
     assert.throws(() => taskSummary(99_999_999), /not found/i);
-    for (const audience of ["team", "", "OWNER"]) assert.throws(() => taskSummary(f.prompt.id, audience as "owner"), /owner audience only/);
+    for (const audience of ["", "OWNER"]) assert.throws(() => taskSummary(f.prompt.id, audience as "owner"));
     assert.equal(taskSummary(f.prompt.id).breadcrumb.workstation, lineText(hostname(), 64), "an empty label means the hostname");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("TM-T1-6 summary: team audience uses the item identity and removes local-only detail", () => {
+  const f = fixture({ workspace: "shared-work", title: "Choose the release approach" });
+  const itemId = "awi1_0123456789abcdef01234567";
+  const secret = ["sk", "live", "4f9a8b7c6d5e4f3a2b1c"].join("-");
+  try {
+    f.handoff("READY", fullBrief({
+      originalObjective: `Choose from /home/jd/private/plan.md using ${secret}`,
+      importantFiles: ["server/src/release.ts", "/tmp/private-notes.txt"],
+      decisionsAndAssumptions: ["Prefer the reversible release"],
+    }));
+    const owner = taskSummary(f.prompt.id, "owner", { workstationLabel: "jd-laptop" });
+    const team = taskSummary(f.prompt.id, "team", { workstationLabel: "jd-laptop", itemId });
+    const rendered = JSON.stringify(team);
+    assert.equal(team.key, itemId);
+    assert.equal(team.tag, "#item_0123456789abcdef01234567");
+    assert.equal(team.breadcrumb.workstation, "jd-laptop");
+    assert.deepEqual(team.decisions, ["Prefer the reversible release"]);
+    assert.equal(team.importantFiles, null);
+    assert.match(team.objective!, /\[local path\]/);
+    assert.doesNotMatch(rendered, /\/home\/jd|\/tmp\/|server\/src|4f9a8b7c|quota/i);
+    assert.deepEqual(owner.importantFiles, ["server/src/release.ts", "/tmp/private-notes.txt"], "owner detail is unchanged");
+    assert.throws(() => taskSummary(f.prompt.id, "team"), /valid Team item id/);
   } finally {
     f.cleanup();
   }
