@@ -12,7 +12,7 @@ import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
-import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
+import { taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
 import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
 import { TelegramAdapter } from "./adapter.ts";
@@ -24,6 +24,7 @@ import { COMMANDS, decodeNav, parseCommand, renderView, type ViewContext, type V
 
 export interface TelegramRuntimeSettings {
   enabled: boolean;
+  teamEnabled: boolean;
   notificationsEnabled: boolean;
   remoteActionsEnabled: boolean;
   transport: "fake_telegram" | "telegram";
@@ -83,6 +84,9 @@ export interface TeamPanelStatus {
 
 interface StoredTeamInvite { inviteLink: string; expiresAt: string; }
 type StoredTeamInvites = Record<string, StoredTeamInvite>;
+
+export const TEAM_DISABLED_CODE = "team_disabled";
+export const TEAM_DISABLED_MESSAGE = "Enable Team in Agents settings before using Team features.";
 
 /**
  * Topics are unavailable to this bot (C0, recorded 2026-09-16: BotFather offers no
@@ -212,15 +216,18 @@ export class TelegramLiveRuntime {
   }
 
   cancelTeamCreate(): void {
+    this.requireTeamEnabled();
     this.teamCreate = null;
   }
 
   teamCreateStatus(): { code: string; expiresAt: string; observed: boolean } | null {
+    this.requireTeamEnabled();
     if (this.teamCreate !== null && this.teamCreate.expiresAt <= this.now()) this.teamCreate = null;
     return this.teamCreate === null ? null : { code: this.teamCreate.code, expiresAt: new Date(this.teamCreate.expiresAt).toISOString(), observed: this.teamCreate.observed !== null };
   }
 
   startTeamCreate(remoteUrl: unknown): { code: string; expiresAt: string; observed: boolean } {
+    this.requireTeamEnabled();
     this.requireSession();
     if (typeof remoteUrl !== "string" || remoteUrl.trim() === "") throw new WorkspaceError(422, "invalid_team_remote", "A team repository URL is required.");
     this.teamCreate = { code: randomBytes(18).toString("base64url"), remoteUrl: remoteUrl.trim(), expiresAt: this.now() + 10 * 60_000, observed: null };
@@ -228,6 +235,7 @@ export class TelegramLiveRuntime {
   }
 
   async confirmTeamCreate(): Promise<{ teamId: string; joinCode: string }> {
+    this.requireTeamEnabled();
     const session = this.requireSession();
     const pending = this.teamCreate;
     if (pending === null || pending.expiresAt <= this.now()) throw new WorkspaceError(409, "team_create_not_observed", "Start team creation and send its command in the group first.");
@@ -248,12 +256,14 @@ export class TelegramLiveRuntime {
   }
 
   teamStatus(): TeamPanelStatus | null {
+    this.requireTeamEnabled();
     const cached = workspaces.teamRosters()[0];
     if (cached === undefined) return null;
     return this.panelStatus(cached.record as TeamRoster);
   }
 
   async refreshTeam(): Promise<TeamPanelStatus | null> {
+    this.requireTeamEnabled();
     const cached = workspaces.teamRosters()[0];
     if (cached === undefined) return null;
     const session = this.requireSession();
@@ -329,6 +339,7 @@ export class TelegramLiveRuntime {
   }
 
   startTeamJoin(code: unknown): { teamId: string; groupChatId: string } {
+    this.requireTeamEnabled();
     if (typeof code !== "string") throw new WorkspaceError(422, "invalid_join_code", "A join code is required.");
     const join = decodeJoinCode(code);
     const workspace = workspaces.list().find(candidate => {
@@ -343,6 +354,7 @@ export class TelegramLiveRuntime {
   }
 
   async confirmTeamJoin(): Promise<{ teamId: string; instruction: string }> {
+    this.requireTeamEnabled();
     const session = this.requireSession();
     const pending = this.teamJoin;
     if (pending === null) throw new WorkspaceError(409, "join_not_started", "Enter a join code before confirming.");
@@ -423,6 +435,10 @@ export class TelegramLiveRuntime {
   }
 
   private async apply(): Promise<void> {
+    if (!this.settings().teamEnabled) {
+      this.teamCreate = null;
+      this.teamJoin = null;
+    }
     if (this.wanted()) {
       if (this.session === null) this.startSession();
       return;
@@ -476,6 +492,12 @@ export class TelegramLiveRuntime {
       throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected. Check its status first.");
     }
     return this.session;
+  }
+
+  private requireTeamEnabled(): void {
+    if (!this.settings().teamEnabled) {
+      throw new WorkspaceError(403, TEAM_DISABLED_CODE, TEAM_DISABLED_MESSAGE);
+    }
   }
 
   private expirePairing(): void {
@@ -761,6 +783,11 @@ export class TelegramLiveRuntime {
       const text = message.text.trim();
       const teamCode = /^\/team(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text)?.[1];
       if (teamCode !== undefined && this.teamCreate !== null && sameSecret(teamCode, this.teamCreate.code)) {
+        if (!this.settings().teamEnabled) {
+          this.teamCreate = null;
+          this.enqueueText(session, message.chatId, message.topicId, TEAM_DISABLED_MESSAGE);
+          return;
+        }
         if (this.teamCreate.expiresAt <= this.now()) { this.teamCreate = null; return; }
         if (message.chatType !== "group" && message.chatType !== "supergroup") return;
         const rights = session.api.getChatMember === undefined ? null : await session.api.getChatMember(message.chatId, this.bot?.id ?? "");
@@ -780,6 +807,10 @@ export class TelegramLiveRuntime {
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: message.transportUserId, chatId: message.chatId, topicId: message.topicId });
       // Unknown users and chats are ignored without a reply (protocol section 7).
       if (!actor || actor.enabled !== 1) return;
+      if (actor.topic_id === TEAM_GROUP_TOPIC_SENTINEL && !this.settings().teamEnabled) {
+        this.enqueueText(session, message.chatId, message.topicId, TEAM_DISABLED_MESSAGE);
+        return;
+      }
       // Registered commands are read-only view requests, checked before the reply-to check so a
       // command sent as a reply still answers; any other text starting with "/" can be an answer.
       const command = parseCommand(text, this.bot?.username ?? null);
@@ -874,7 +905,7 @@ export class TelegramLiveRuntime {
 }
 
 export const telegramRuntime = new TelegramLiveRuntime({
-  settings: () => appSettings.taskControl,
+  settings: () => ({ ...appSettings.taskControl, teamEnabled: appSettings.team.enabled }),
   credential: bootTelegramCredential,
   ...(harnessSeams.telegramApiBaseUrl === null && harnessSeams.telegramPollTimeoutSeconds === null
     ? {}

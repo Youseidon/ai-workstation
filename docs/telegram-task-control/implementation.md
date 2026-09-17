@@ -86,10 +86,9 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     compare-and-swap, TM-T0-4 Git compare-and-swap to `refs/aw/team`,
     TM-T0-3 single-use invite consumption and TM-T0-5 migration 24 group-actor
     duplicate protection.
-  - `team.enabled` remains default-off by absence: the settings file exposes
-    only `taskControl.enabled`, `taskControl.notificationsEnabled` and
-    `taskControl.remoteActionsEnabled`, all with `fallback: false`; no
-    `team.enabled` setting or live token/identifier was added.
+  - T10 assumed Team remained default-off because the existing Task Control
+    switches defaulted off. Audit 1 later disproved that assumption: there was
+    no independent `team.enabled` gate. T10G below records the remediation.
 - T10R audit remediation:
   - The audit's `S-L1-04` timeout was a stale test fixture after T04. The fake
     now delivers group updates only to administrator bots, but the scenario had
@@ -117,8 +116,9 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
   - Added the missing TM-T1-1, TM-T1-1a and TM-T1-1b Playwright rows using the
     two-environment Team harness and fake Telegram/Git boundaries. The UI now
     exposes read-only team status, explicit roster refresh, owner-only persisted
-    one-member invite issuance and corrective join guidance. `team.enabled`
-    remains default-off outside explicit harness setup.
+    one-member invite issuance and corrective join guidance. Audit 1 later
+    found that the intended independent `team.enabled` default-off gate was
+    still missing; T10G below adds and verifies it.
   - Focused commands from `e2e`: `npx playwright test
     tests/t1/tm1-team-roster.spec.ts --project=t1 --grep=TM-T1-1a` passed 1/1
     in 1.3 minutes; `--grep=TM-T1-1b` passed 1/1 in 23.6 seconds; and
@@ -137,6 +137,47 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
   summary only: T07/T08 full server suite passed 237/237, and T03F full T1
   passed 113/113. There is no verified 239/239 full-server count in this
   close-out evidence.
+- Audit 1 rerun final evidence on the T10V tree:
+  - `npm run typecheck`: passed across all 4 workspaces (shared, server, web and
+    e2e).
+  - `npm run lint --workspace web`: passed with 0 errors and 5 existing
+    warnings.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-rerun-server npm test
+    --workspace server`: passed 239/239.
+  - `npm run e2e --workspace e2e`: passed 116/116.
+  - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: passed 3/3.
+  - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/tm1-team-roster.spec.ts`: passed 9/9.
+- T10G default-off remediation:
+  - Added `team.enabled` (`TEAM_ENABLED`) to the settings registry with
+    `fallback: false`. Team panels render only after the saved setting is on;
+    all `/api/task-control/team` routes and direct Team runtime methods return
+    `403 team_disabled` with the same actionable message while it is off.
+    Existing personal Telegram polling, pairing and UI remain available.
+  - The two-environment Team harness explicitly enables the gate. The focused
+    default-off Playwright row boots both environments with it off and proves
+    personal Telegram remains paired, Team panels are absent and all 8 Team
+    endpoint/method combinations are refused without mutation.
+  - `npm run e2e --workspace e2e -- --project=t1
+    tests/t1/tm1-team-default-off.spec.ts`: passed 1/1 in 1.2 minutes.
+    `npm run e2e --workspace e2e -- --project=t1
+    tests/t1/tm1-team-roster.spec.ts`: passed 3/3 in 46.1 seconds without
+    weakening the existing TM-T1-1, TM-T1-1a or TM-T1-1b rows.
+  - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/tm1-team-default-off.spec.ts
+    tests/t1/tm1-team-roster.spec.ts`: passed 12/12 in 1.3 minutes.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10g-relevant-escalated node
+    --import tsx --test --test-concurrency=1
+    server/src/telegramLiveRuntime.test.ts server/src/telegramSummary.test.ts`:
+    passed 43/43. The sandboxed attempt could not run the runtime file's child
+    Git process and returned only `ERR_TEST_FAILURE`; the unrestricted local
+    rerun supplied the valid subtest result.
+  - Server, web and e2e workspace typechecks passed. `npm run lint --workspace
+    web` passed with 0 errors and 5 existing warnings after generated harness
+    build directories were removed. `git diff --check` passed.
+  - No live Telegram credential, identifier or token handling changed. LT-3
+    remains scheduled/deferred until the full Team build.
 
 Development is authorized. No further product decision is required for the local
 control foundation. G01-G04 remain evidence/deployment gates, not unanswered

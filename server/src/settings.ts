@@ -78,6 +78,16 @@ const FIELDS: FieldDef[] = [
       "Enables local task-control services. With the Telegram transport and a bot token, this connects your own bot for personal control. It never enables teammate transfer.",
   },
   {
+    key: "team.enabled",
+    label: "Enable Team",
+    group: "Task Control",
+    type: "boolean",
+    envVar: "TEAM_ENABLED",
+    fallback: false,
+    description:
+      "Enables shared Team setup and roster controls. Personal Telegram task control remains available while this is off.",
+  },
+  {
     key: "taskControl.notificationsEnabled",
     label: "Notifications",
     group: "Task Control",
@@ -633,6 +643,12 @@ export const settings = {
     /** Empty means the OS hostname, applied by the phone summary. */
     get workstationLabel(): string {
       return text("taskControl.workstationLabel").trim();
+    },
+  },
+
+  team: {
+    get enabled(): boolean {
+      return flag("team.enabled");
     },
   },
 

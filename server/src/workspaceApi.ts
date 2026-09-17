@@ -9,8 +9,9 @@ import { startExecute } from "./runService.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 import { taskControl, withLiveTokenState } from "./taskControl.ts";
-import { telegramRuntime } from "./integrations/telegram/runtime.ts";
+import { TEAM_DISABLED_CODE, TEAM_DISABLED_MESSAGE, telegramRuntime } from "./integrations/telegram/runtime.ts";
 import { isHarnessMode } from "./harnessGuard.ts";
+import { settings } from "./settings.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
@@ -59,6 +60,9 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   }
   try {
     const method = req.method ?? "GET";
+    if ((url.pathname === "/api/task-control/team" || url.pathname.startsWith("/api/task-control/team/")) && !settings.team.enabled) {
+      throw new WorkspaceError(403, TEAM_DISABLED_CODE, TEAM_DISABLED_MESSAGE);
+    }
     if(url.pathname==="/api/operations"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}

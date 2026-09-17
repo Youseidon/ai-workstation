@@ -14,7 +14,7 @@ import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integration
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
 import { taskTagFor } from "./telegramSummary.ts";
-import { taskSubject, WORKSTATION_SUBJECT, workspaces } from "./workspaces.ts";
+import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
 /* -------------------------------------------------------------------------- */
 /* A stub Bot API: real HTTP client, fake api.telegram.org behind fetch        */
@@ -137,7 +137,7 @@ async function waitFor<T>(probe: () => T | null | undefined | false, label: stri
 
 function harness(options: { settings?: Partial<TelegramRuntimeSettings>; token?: "stub" | "none"; now?: () => number } = {}) {
   const stub = new StubTelegram(7_000_000_000 + Math.floor(Math.random() * 1_000_000));
-  const settings: TelegramRuntimeSettings = { enabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
+  const settings: TelegramRuntimeSettings = { enabled: true, teamEnabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
   const logs: string[] = [];
   const sleeps: number[] = [];
   const log = (level: string) => (message: string, extra?: unknown) => { logs.push(`${level} ${message} ${extra === undefined ? "" : String(extra)}`); };
@@ -874,5 +874,37 @@ test("TM-T1-1a (T0 part): team creation observes the group command, verifies rig
     await h.cleanup();
     rmSync(remote, { recursive: true, force: true });
     rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test("TM-T1-gate (T0): Team stays disabled independently while personal Telegram remains available", async () => {
+  const h = harness();
+  const refused = (error: unknown) => error instanceof WorkspaceError
+    && error.status === 403
+    && error.code === "team_disabled"
+    && error.message === "Enable Team in Agents settings before using Team features.";
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "personal Telegram polling");
+    const pending = h.runtime.startTeamCreate("unused");
+    h.settings.teamEnabled = false;
+    h.stub.send(operator, { id: -1002, type: "supergroup" }, `/team ${pending.code}`);
+    await waitFor(
+      () => h.stub.messages.find(message => message.text === "Enable Team in Agents settings before using Team features."),
+      "disabled Team command refusal",
+    );
+    assert.equal(h.runtime.status().state, "polling");
+    assert.doesNotThrow(() => h.runtime.startPairing());
+
+    assert.throws(() => h.runtime.teamStatus(), refused);
+    assert.throws(() => h.runtime.teamCreateStatus(), refused);
+    assert.throws(() => h.runtime.startTeamCreate("unused"), refused);
+    assert.throws(() => h.runtime.cancelTeamCreate(), refused);
+    assert.throws(() => h.runtime.startTeamJoin("unused"), refused);
+    await assert.rejects(h.runtime.refreshTeam(), refused);
+    await assert.rejects(h.runtime.confirmTeamCreate(), refused);
+    await assert.rejects(h.runtime.confirmTeamJoin(), refused);
+  } finally {
+    await h.cleanup();
   }
 });

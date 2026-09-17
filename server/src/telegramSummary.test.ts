@@ -286,6 +286,26 @@ test("S-L3-F3-13 (T0): the workstation label defaults to the hostname, refuses l
   }
 });
 
+test("TM-T1-gate (T0): the Team setting defaults off and resets independently", async () => {
+  const { resetSettings, settings, snapshot, updateSettings } = await import("./settings.ts");
+  resetSettings(["team.enabled"]);
+  try {
+    const field = snapshot().fields.find((entry: { key: string }) => entry.key === "team.enabled");
+    assert.ok(field);
+    assert.equal(field.group, "Task Control");
+    assert.equal(field.type, "boolean");
+    assert.equal(field.defaultValue, false);
+    assert.equal(field.value, false);
+    assert.equal(settings.team.enabled, false);
+
+    assert.ok(updateSettings({ "team.enabled": true }).ok);
+    assert.equal(settings.team.enabled, true);
+  } finally {
+    resetSettings(["team.enabled"]);
+  }
+  assert.equal(settings.team.enabled, false);
+});
+
 /* ---- L3 slice A2 (docs/e2e-scenarios/l3-a2.md): options, history, where it fits and the tag ---- */
 
 let statuses = 0;

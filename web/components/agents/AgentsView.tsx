@@ -129,6 +129,7 @@ export function AgentsView() {
   // The panel follows the transport the operator has chosen, saved or not, so choosing
   // Telegram gives immediate feedback (live status, missing token) instead of nothing.
   const taskControlTransport = drafts["taskControl.transport"] ?? taskControlFields.find((field) => field.key === "taskControl.transport")?.value;
+  const teamEnabled = taskControlFields.find((field) => field.key === "team.enabled")?.value === true;
 
   useEffect(() => {
     void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
@@ -350,8 +351,10 @@ export function AgentsView() {
               </div>
             )}
             {taskControlTransport === "telegram" && (
+              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+            )}
+            {taskControlTransport === "telegram" && teamEnabled && (
               <>
-                <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
                 <TeamStatusPanel />
                 <TeamCreatePanel />
                 <TeamJoinPanel />

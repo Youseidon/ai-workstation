@@ -115,11 +115,13 @@ export async function startTeamHarness(options: TeamHarnessOptions = {}): Promis
 
   const appA = new HarnessEnvironment({
     ...options.envA,
+    settings: { "team.enabled": true, ...options.envA?.settings },
     portOffset: portOffsetA,
     telegram: { backend: "fake", sharedFake: { server: fakeTelegram, bot: botA, user: userA, chat: privateChatA } },
   });
   const appB = new HarnessEnvironment({
     ...options.envB,
+    settings: { "team.enabled": true, ...options.envB?.settings },
     portOffset: portOffsetB,
     telegram: { backend: "fake", sharedFake: { server: fakeTelegram, bot: botB, user: userB, chat: privateChatB } },
   });
