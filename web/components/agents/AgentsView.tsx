@@ -35,6 +35,7 @@ import { useProviderUsage } from "@/lib/providerUsage";
 import { useSettings } from "@/lib/useSettings";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { TelegramSetupPanel } from "./TelegramSetupPanel";
+import { TeamCreatePanel } from "./TeamCreatePanel";
 import { UsageBlock } from "./usage";
 
 const CAPABILITY_BADGE: Record<TaskControlCapability["setup"], { label: string; tone: Tone }> = {
@@ -347,7 +348,10 @@ export function AgentsView() {
               </div>
             )}
             {taskControlTransport === "telegram" && (
-              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+              <>
+                <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+                <TeamCreatePanel />
+              </>
             )}
           </section>
         )}

@@ -5,11 +5,14 @@ import { assertHarnessBot, isHarnessMode } from "../../harnessGuard.ts";
 import { harnessSeams } from "../../harnessSeams.ts";
 import { createLogger, type Logger } from "../../lib/logger.ts";
 import { runHub } from "../../runHub.ts";
+import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
+import { encodeJoinCode, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote } from "../../teamRoster.ts";
+import { join } from "node:path";
 import { TelegramAdapter } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
@@ -58,6 +61,13 @@ interface PairingSession {
   expiresAt: number;
   challenge: string | null;
   observed: TelegramPairingState["observed"];
+}
+
+interface TeamCreateSession {
+  code: string;
+  remoteUrl: string;
+  expiresAt: number;
+  observed: { chatId: string; transportUserId: string } | null;
 }
 
 /**
@@ -118,6 +128,7 @@ export class TelegramLiveRuntime {
   private lastError: string | null = null;
   private nextRetryAt: string | null = null;
   private sendPausedUntil = 0;
+  private teamCreate: TeamCreateSession | null = null;
   private pairing: PairingSession | null = null;
 
   constructor(private readonly options: TelegramRuntimeOptions) {
@@ -182,6 +193,42 @@ export class TelegramLiveRuntime {
 
   cancelPairing(): void {
     this.pairing = null;
+  }
+
+  cancelTeamCreate(): void {
+    this.teamCreate = null;
+  }
+
+  teamCreateStatus(): { code: string; expiresAt: string; observed: boolean } | null {
+    if (this.teamCreate !== null && this.teamCreate.expiresAt <= this.now()) this.teamCreate = null;
+    return this.teamCreate === null ? null : { code: this.teamCreate.code, expiresAt: new Date(this.teamCreate.expiresAt).toISOString(), observed: this.teamCreate.observed !== null };
+  }
+
+  startTeamCreate(remoteUrl: unknown): { code: string; expiresAt: string; observed: boolean } {
+    this.requireSession();
+    if (typeof remoteUrl !== "string" || remoteUrl.trim() === "") throw new WorkspaceError(422, "invalid_team_remote", "A team repository URL is required.");
+    this.teamCreate = { code: randomBytes(18).toString("base64url"), remoteUrl: remoteUrl.trim(), expiresAt: this.now() + 10 * 60_000, observed: null };
+    return this.teamCreateStatus()!;
+  }
+
+  async confirmTeamCreate(): Promise<{ teamId: string; joinCode: string }> {
+    const session = this.requireSession();
+    const pending = this.teamCreate;
+    if (pending === null || pending.expiresAt <= this.now()) throw new WorkspaceError(409, "team_create_not_observed", "Start team creation and send its command in the group first.");
+    if (pending.observed === null) throw new WorkspaceError(409, "team_create_not_observed", "Send the team command in the group before confirming locally.");
+    const actor = workspaces.taskControlPersonalActor("telegram", pending.observed.transportUserId);
+    if (actor === null || actor.enabled !== 1) throw new WorkspaceError(403, "team_creator_not_paired", "Create a team from the Telegram account paired to this workstation.");
+    const bot = this.bot;
+    if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
+    const teamId = `awt1_${randomBytes(12).toString("base64url")}`;
+    const roster = newTeamRoster({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl, members: [{ personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: actor.label }] });
+    const remote = new RemoteGitTeamRosterRemote(join(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
+    await publishRoster(remote, null, roster, `create_${randomBytes(12).toString("base64url")}`);
+    workspaces.upsertTeamGroupActor({ id: `telegram-team-${teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: pending.observed.chatId, label: actor.label });
+    const joinCode = encodeJoinCode({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl });
+    this.enqueueText(session, pending.observed.chatId, null, "Team created. Keep the join code in a private channel.");
+    this.teamCreate = null;
+    return { teamId, joinCode };
   }
 
   confirmPairing(code: unknown): { id: string } {
@@ -585,6 +632,19 @@ export class TelegramLiveRuntime {
   private async handleMessage(session: Session, message: TelegramMessagePayload): Promise<void> {
     try {
       const text = message.text.trim();
+      const teamCode = /^\/team(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text)?.[1];
+      if (teamCode !== undefined && this.teamCreate !== null && sameSecret(teamCode, this.teamCreate.code)) {
+        if (this.teamCreate.expiresAt <= this.now()) { this.teamCreate = null; return; }
+        if (message.chatType !== "group" && message.chatType !== "supergroup") return;
+        const rights = session.api.getChatMember === undefined ? null : await session.api.getChatMember(message.chatId, this.bot?.id ?? "");
+        if (rights === null || !["administrator", "creator", "owner"].includes(rights.status) || !rights.canPinMessages || !rights.canInviteUsers) {
+          this.enqueueText(session, message.chatId, null, "Team setup needs this bot to be an administrator with Pin messages and Invite users.");
+          return;
+        }
+        this.teamCreate.observed = { chatId: message.chatId, transportUserId: message.transportUserId };
+        this.enqueueText(session, message.chatId, null, "Team group verified. Confirm team creation in the local app.");
+        return;
+      }
       const pairingCode = /^\/start(?:@\w+)?\s+([A-Za-z0-9_-]+)$/.exec(text)?.[1];
       if (pairingCode !== undefined) {
         this.handlePairingCode(session, message, pairingCode);

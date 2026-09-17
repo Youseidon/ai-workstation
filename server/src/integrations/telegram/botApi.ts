@@ -71,6 +71,8 @@ export interface LiveTelegramBotApi extends TelegramBotApi {
   setMyCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void>;
   /** Pins the control panel (L3 C1). Attempted once per panel: a refusal never holds up a message. */
   pinChatMessage(chatId: string, messageId: string): Promise<void>;
+  /** Team setup verifies the bot's explicit group rights before creating a roster. */
+  getChatMember?(chatId: string, userId: string): Promise<{ status: string; canPinMessages: boolean; canInviteUsers: boolean }>;
 }
 
 export type TelegramApiErrorKind =

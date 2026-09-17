@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,8 @@ class StubTelegram {
       case "pinChatMessage":
         this.pinned.push({ chatId: String(body.chat_id), messageId: Number(body.message_id) });
         return json(200, { ok: true, result: true });
+      case "getChatMember":
+        return json(200, { ok: true, result: { status: "administrator", can_pin_messages: true, can_invite_users: true } });
       default:
         return json(404, { ok: false, error_code: 404, description: "Not Found" });
     }
@@ -847,5 +850,29 @@ test("S-L3-C1-04 (T0): a pin Telegram refuses is attempted once and never holds 
     assert.equal(h.runtime.status().state, "polling");
   } finally {
     await h.cleanup();
+  }
+});
+
+test("TM-T1-1a (T0 part): team creation observes the group command, verifies rights, confirms locally and writes the roster", async () => {
+  const h = harness();
+  const remote = mkdtempSync(join(tmpdir(), "team-create-remote-"));
+  const cache = join(config.repoRoot, ".agent-console", "team");
+  try {
+    execFileSync("git", ["init", "--bare", "-q", remote]);
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    const pending = h.runtime.startTeamCreate(remote);
+    h.stub.send(operator, { id: -1001, type: "supergroup" }, `/team ${pending.code}`);
+    await waitFor(() => h.runtime.teamCreateStatus()?.observed === true, "team group observation");
+    const result = await h.runtime.confirmTeamCreate();
+    assert.match(result.teamId, /^awt1_/);
+    assert.match(result.joinCode, /^awj1\./);
+    assert.equal(workspaces.teamRoster(result.teamId)?.groupChatId, "-1001");
+    assert.equal(workspaces.taskControlActorFor({ transport: "telegram", transportUserId: String(operator.id), chatId: "-1001", topicId: "__team_group__" })?.enabled, 1);
+  } finally {
+    await h.cleanup();
+    rmSync(remote, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
   }
 });

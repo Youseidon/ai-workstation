@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const JOIN_CODE_PREFIX = "awj1.";
@@ -191,6 +193,31 @@ export class BareGitTeamRosterRemote implements TeamRosterRemote {
     const expected = expectedRevision ?? "0000000000000000000000000000000000000000";
     const result = spawnSync("git", ["--git-dir", this.bareDirectory, "update-ref", TEAM_REF, revision, expected], { encoding: "utf8" });
     return result.status === 0 ? { revision } : "conflict";
+  }
+}
+
+/** A private bare clone which fetches and compare-and-swap pushes only refs/aw/team. */
+export class RemoteGitTeamRosterRemote implements TeamRosterRemote {
+  constructor(private readonly bareDirectory: string, private readonly remoteUrl: string) {
+    if (!existsSync(bareDirectory)) {
+      mkdirSync(dirname(bareDirectory), { recursive: true, mode: 0o700 });
+      const result = spawnSync("git", ["clone", "--bare", "--no-checkout", remoteUrl, bareDirectory], { encoding: "utf8" });
+      if (result.status !== 0) throw new WorkspaceError(502, "team_git_failed", (result.stderr || "Could not clone the team repository.").trim());
+    } else git(bareDirectory, ["remote", "set-url", "origin", remoteUrl]);
+  }
+
+  async read(): Promise<{ roster: TeamRoster; revision: string } | null> {
+    spawnSync("git", ["--git-dir", this.bareDirectory, "fetch", "-q", "origin", `${TEAM_REF}:${TEAM_REF}`], { encoding: "utf8" });
+    return new BareGitTeamRosterRemote(this.bareDirectory).read();
+  }
+
+  async compareAndSwap(expectedRevision: string | null, roster: TeamRoster): Promise<{ revision: string } | "conflict"> {
+    const current = await this.read();
+    if ((current?.revision ?? null) !== expectedRevision) return "conflict";
+    const revision = git(this.bareDirectory, ["hash-object", "-w", "--stdin"], JSON.stringify(validateRoster(roster)));
+    const lease = `--force-with-lease=${TEAM_REF}:${expectedRevision ?? "0000000000000000000000000000000000000000"}`;
+    const pushed = spawnSync("git", ["--git-dir", this.bareDirectory, "push", "origin", `${revision}:${TEAM_REF}`, lease], { encoding: "utf8" });
+    return pushed.status === 0 ? { revision } : "conflict";
   }
 }
 

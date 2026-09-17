@@ -31,6 +31,9 @@ export const workspaceApi = {
   cancelTelegramPairing(serverUrl:string){return request<void>(serverUrl,"/api/task-control/telegram/pairing",{method:"DELETE"});},
   confirmTelegramPairing(serverUrl:string,code:string){return request<{status:TelegramLiveStatus}>(serverUrl,"/api/task-control/telegram/pairing/confirm",{method:"POST",...json({code})}).then(r=>r.status);},
   removeTelegramActor(serverUrl:string,actorId:string){return request<void>(serverUrl,`/api/task-control/telegram/actors/${encodeURIComponent(actorId)}`,{method:"DELETE"});},
+  teamCreateStatus(serverUrl:string){return request<{team:{code:string;expiresAt:string;observed:boolean}|null}>(serverUrl,"/api/task-control/team/create").then(r=>r.team);},
+  startTeamCreate(serverUrl:string,remoteUrl:string){return request<{team:{code:string;expiresAt:string;observed:boolean}}>(serverUrl,"/api/task-control/team/create",{method:"POST",...json({remoteUrl})}).then(r=>r.team);},
+  confirmTeamCreate(serverUrl:string){return request<{team:{teamId:string;joinCode:string}}>(serverUrl,"/api/task-control/team/create/confirm",{method:"POST",...json({})}).then(r=>r.team);},
   operations(serverUrl:string,workspaceId?:number){return request<OperationsSnapshot>(serverUrl,`/api/operations${workspaceId===undefined?"":`?workspace=${workspaceId}`}`);},
   /** Records a fresh audit of what the orchestration records already claim. */
   auditSuite(serverUrl:string,suiteId:number){return request<{verification:SuiteVerificationRecord}>(serverUrl,`/api/suites/${suiteId}/verification`,{method:"POST",body:"{}"}).then(r=>r.verification);},

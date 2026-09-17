@@ -1069,6 +1069,9 @@ export const workspaces = {
   taskControlActorById(id: string): TaskControlActorRow | null {
     return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE id=?").get(id) as TaskControlActorRow | undefined) ?? null;
   },
+  taskControlPersonalActor(transport: "fake_telegram" | "telegram", transportUserId: string): TaskControlActorRow | null {
+    return (db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND transport_user_id=? AND topic_id IS NULL ORDER BY created_at LIMIT 1").get(transport, requireText(transportUserId, "transportUserId", 120)) as TaskControlActorRow | undefined) ?? null;
+  },
   upsertTeamGroupActor(input: { id: string; transport: "fake_telegram" | "telegram"; transportUserId: string; chatId: string; label: string; enabled?: boolean }): TaskControlActorRow {
     return this.upsertTaskControlActor({ ...input, topicId: TEAM_GROUP_TOPIC_SENTINEL });
   },
