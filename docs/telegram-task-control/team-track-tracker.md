@@ -37,7 +37,7 @@ Preconditions:
 | T10G | TM1 | done | `01a0af63-b4ca-7cb1-a931-7b12a8d4b920` | `tm/T10G-team-default-off` | `4cc84b8..b2de1b6` | Added the independent default-off `team.enabled` gate across settings, UI, every Team API and runtime path; personal Telegram remains available. Final gated-tree evidence: typecheck 4/4 workspaces; lint 0 errors/5 warnings; server 241/241; full T1 117/117; S-L1-04 burn-in 3/3; combined Team/default-off burn-in 12/12; focused gate coverage 43/43. Final commands and counts are recorded in `implementation.md`. | 2026-09-17 |
 | T10E | TM1 | done | `01a0af94-7873-7043-b8c1-089e8dcb3f3d` | `tm/T10E-final-counts` | `260c6cf` | Documentation-only correction records final gated-tree server 241/241 and full T1 117/117 while preserving the historical T10V-tree 239/239 and 116/116 counts. Retained close-out evidence: S-L1-04 3/3, combined Team/default-off 12/12, focused gate 43/43, typecheck 4/4 and lint 0 errors/5 warnings. No tests rerun. | 2026-09-17 |
 | T11 | TM2 | done | `01a0af9d-2521-7c83-b79a-52c3510d3f7f` | `tm/T11-tm2-scenarios` | `89104b4` | `tm2.md` test-design pass covers migration 25/item identity, C1 preservation, lifecycle/views, LT-1 routing, private isolation, owner confirmation, default-off regression and explicit 12/12 burn-in; jd skim authorized by the standing continuous-progression instruction. | 2026-09-17 |
-| T12 | TM2 | in progress |  | `tm/T12-migration-item-ids` |  | Migration 25 and item ids. | 2026-09-17 |
+| T12 | TM2 | in progress | `01a0afa4-860d-77c3-a2f8-14059c26e5aa` | `tm/T12-migration-item-ids` |  | Migration 25 and item ids. | 2026-09-17 |
 | T13 | TM2 | pending |  |  |  | Anchors and read-only views. |  |
 | T14 | TM2 | pending |  |  |  | Group routing rules. |  |
 | T15 | TM2 | pending |  |  |  | Starting a thread on the other person's item. |  |
@@ -102,3 +102,4 @@ Preconditions:
 - 2026-09-17: T11 documentation verification passed `git diff --check` and the exact-id/table-structure check for TM-T0-1, TM-T0-5-25, TM-T1-2, TM-T1-3, TM-T1-6 and TM-T1-7. The available coverage matrix was also run with `--scope TM --tiers T0,T1`; its parser accepts only `S-*` ids and reported 0 scenarios, so no implementation coverage is claimed from that command.
 - 2026-09-17: T11 merged by fast-forward as `89104b4`; its worktree and branch were removed.
 - 2026-09-17: T12 started for migration 25, preserved C1 thread state and indexes, `item_link`, stable opaque item ids and item-derived tags.
+- 2026-09-17: T12 worker `01a0afa4-860d-77c3-a2f8-14059c26e5aa` started in the isolated task worktree.
