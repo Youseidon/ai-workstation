@@ -11,8 +11,8 @@ import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type TelegramSubject } from "../../workspaces.ts";
-import { encodeJoinCode, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote } from "../../teamRoster.ts";
-import { join } from "node:path";
+import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote } from "../../teamRoster.ts";
+import { join as joinPath } from "node:path";
 import { TelegramAdapter } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
@@ -69,6 +69,7 @@ interface TeamCreateSession {
   expiresAt: number;
   observed: { chatId: string; transportUserId: string } | null;
 }
+interface TeamJoinSession { code: string; }
 
 /**
  * Topics are unavailable to this bot (C0, recorded 2026-09-16: BotFather offers no
@@ -129,6 +130,7 @@ export class TelegramLiveRuntime {
   private nextRetryAt: string | null = null;
   private sendPausedUntil = 0;
   private teamCreate: TeamCreateSession | null = null;
+  private teamJoin: TeamJoinSession | null = null;
   private pairing: PairingSession | null = null;
 
   constructor(private readonly options: TelegramRuntimeOptions) {
@@ -222,13 +224,36 @@ export class TelegramLiveRuntime {
     if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
     const teamId = `awt1_${randomBytes(12).toString("base64url")}`;
     const roster = newTeamRoster({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl, members: [{ personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: actor.label }] });
-    const remote = new RemoteGitTeamRosterRemote(join(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
     await publishRoster(remote, null, roster, `create_${randomBytes(12).toString("base64url")}`);
     workspaces.upsertTeamGroupActor({ id: `telegram-team-${teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: pending.observed.chatId, label: actor.label });
     const joinCode = encodeJoinCode({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl });
     this.enqueueText(session, pending.observed.chatId, null, "Team created. Keep the join code in a private channel.");
     this.teamCreate = null;
     return { teamId, joinCode };
+  }
+
+  startTeamJoin(code: unknown): { teamId: string; groupChatId: string } {
+    if (typeof code !== "string") throw new WorkspaceError(422, "invalid_join_code", "A join code is required.");
+    const join = decodeJoinCode(code);
+    this.teamJoin = { code };
+    return { teamId: join.teamId, groupChatId: join.groupChatId };
+  }
+
+  async confirmTeamJoin(): Promise<{ teamId: string; instruction: string }> {
+    const session = this.requireSession();
+    const pending = this.teamJoin;
+    if (pending === null) throw new WorkspaceError(409, "join_not_started", "Enter a join code before confirming.");
+    const join = decodeJoinCode(pending.code);
+    const actor = workspaces.taskControlActors("telegram").find(candidate => candidate.topic_id === null && candidate.enabled === 1);
+    if (actor === undefined) throw new WorkspaceError(403, "joiner_not_paired", "Pair this bot in a private chat before joining a team.");
+    const bot = this.bot;
+    if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), join.remoteUrl);
+    await joinTeam(remote, pending.code, { personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: actor.label }, `join_${randomBytes(12).toString("base64url")}`);
+    workspaces.upsertTeamGroupActor({ id: `telegram-team-${join.teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: join.groupChatId, label: actor.label });
+    this.teamJoin = null;
+    return { teamId: join.teamId, instruction: `Ask the team owner to add @${bot.username ?? "this bot"} as an administrator with Pin messages, then send your one-member invite link.` };
   }
 
   confirmPairing(code: unknown): { id: string } {

@@ -36,6 +36,7 @@ import { useSettings } from "@/lib/useSettings";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { TelegramSetupPanel } from "./TelegramSetupPanel";
 import { TeamCreatePanel } from "./TeamCreatePanel";
+import { TeamJoinPanel } from "./TeamJoinPanel";
 import { UsageBlock } from "./usage";
 
 const CAPABILITY_BADGE: Record<TaskControlCapability["setup"], { label: string; tone: Tone }> = {
@@ -351,6 +352,7 @@ export function AgentsView() {
               <>
                 <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
                 <TeamCreatePanel />
+                <TeamJoinPanel />
               </>
             )}
           </section>

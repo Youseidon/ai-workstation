@@ -99,6 +99,16 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res, 201, { team: await telegramRuntime.confirmTeamCreate() });
       return true;
     }
+    if (url.pathname === "/api/task-control/team/join") {
+      if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else { const input = await body(req); json(res, 201, { team: telegramRuntime.startTeamJoin(input.code) }); }
+      return true;
+    }
+    if (url.pathname === "/api/task-control/team/join/confirm") {
+      if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else json(res, 201, { team: await telegramRuntime.confirmTeamJoin() });
+      return true;
+    }
     // Harness seam (docs/e2e-scenarios/l3-f1-f2.md question 1): until a product path issues edits
     // (slice B), end-to-end scenarios queue a send and edits of it through the real outbox. These
     // routes do not exist outside AGENT_CONSOLE_HARNESS=1.

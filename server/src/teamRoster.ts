@@ -170,6 +170,20 @@ export async function publishRoster(remote: TeamRosterRemote, expectedRevision: 
   throw new WorkspaceError(409, "roster_conflict", "Team roster changed; review it before trying again.");
 }
 
+/** Applies a credential-free, single-use join code to the current roster. */
+export async function joinTeam(remote: TeamRosterRemote, code: string, member: TeamMember, commandId: string): Promise<{ roster: TeamRoster; revision: string }> {
+  const join = decodeJoinCode(code);
+  const current = await remote.read();
+  if (current === null) throw new WorkspaceError(404, "team_not_found", "The team roster was not found in the repository.");
+  if (current.roster.teamId !== join.teamId || current.roster.groupChatId !== join.groupChatId || current.roster.remoteUrl !== join.remoteUrl) {
+    throw new WorkspaceError(409, "wrong_team", "Join code does not match the team roster.");
+  }
+  if (current.roster.usedInviteIds.includes(join.inviteId)) throw new WorkspaceError(409, "join_code_used", "Join code was already used.");
+  const validMember = validateRoster({ ...current.roster, members: [...current.roster.members, member] }).members.at(-1)!;
+  const next: TeamRoster = { ...current.roster, members: [...current.roster.members, validMember], usedInviteIds: [...current.roster.usedInviteIds, join.inviteId] };
+  return publishRoster(remote, current.revision, next, commandId);
+}
+
 function git(directory: string, args: string[], stdin?: string): string {
   const result = spawnSync("git", ["--git-dir", directory, ...args], { input: stdin, encoding: "utf8" });
   if (result.status !== 0) throw new WorkspaceError(502, "team_git_failed", (result.stderr || result.stdout || "Git team roster operation failed.").trim());

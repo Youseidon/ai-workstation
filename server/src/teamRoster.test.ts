@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { TEAM_GROUP_TOPIC_SENTINEL, WorkspaceError, workspaces } from "./workspaces.ts";
-import { BareGitTeamRosterRemote, decodeJoinCode, encodeJoinCode, newTeamRoster, publishRoster } from "./teamRoster.ts";
+import { BareGitTeamRosterRemote, decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster } from "./teamRoster.ts";
 
 function roster() {
   return newTeamRoster({
@@ -58,6 +58,18 @@ test("TM-T0-4 writes refs/aw/team with a Git compare-and-swap", async () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("TM-T0-3 join consumes one invite id exactly once", async () => {
+  let current: { roster: ReturnType<typeof roster>; revision: string } | null = null;
+  const remote = { async read() { return current; }, async compareAndSwap(expected: string | null, next: ReturnType<typeof roster>) { if ((current?.revision ?? null) !== expected) return "conflict" as const; current = { roster: next, revision: `r${next.commandIds.length}` }; return { revision: current.revision }; } };
+  const published = await publishRoster(remote, null, roster(), "create");
+  const code = encodeJoinCode({ teamId: "team-1", groupChatId: "group-1", remoteUrl: "https://example.test/team.git", inviteId: "invite-join" });
+  const member = { personId: "yousef", telegramUserId: "202", botId: "bot-b", botUsername: "bot_b", workstationId: "yousef-desktop", workstationLabel: "Yousef desktop" };
+  const joined = await joinTeam(remote, code, member, "join");
+  assert.equal(joined.roster.members.length, 2);
+  await assert.rejects(() => joinTeam(remote, code, member, "join-again"), (error: unknown) => error instanceof WorkspaceError && error.code === "join_code_used");
+  assert.equal(published.roster.members.length, 1);
 });
 
 test("TM-T0-5 migration 24 persists a roster and prevents duplicate group actors", () => {
