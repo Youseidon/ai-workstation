@@ -7,6 +7,17 @@ bots, send messages or run another person's subscription.
 
 ## 0. Current implementation status
 
+Team track TM1 defaults accepted by jd, 2026-09-17:
+
+- Team action cards expire after 10 minutes.
+- An item grant lasts until it is revoked, the item thread closes or handover starts.
+- A join code is single use and expires after 24 hours.
+- An item id is short and opaque. Its group tag is built from that id and follows C1's tag rules.
+
+The corresponding implementation scenarios are in
+[`tm1.md`](../e2e-scenarios/tm1.md). LT-3, the real two-person join check, is
+parked until the full team build at jd's direction.
+
 Development is authorized. No further product decision is required for the local
 control foundation. G01-G04 remain evidence/deployment gates, not unanswered
 questions blocking all code. An unresolved gate never defaults to approval.
