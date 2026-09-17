@@ -39,7 +39,7 @@ Preconditions:
 | T11 | TM2 | done | `01a0af9d-2521-7c83-b79a-52c3510d3f7f` | `tm/T11-tm2-scenarios` | `89104b4` | `tm2.md` test-design pass covers migration 25/item identity, C1 preservation, lifecycle/views, LT-1 routing, private isolation, owner confirmation, default-off regression and explicit 12/12 burn-in; jd skim authorized by the standing continuous-progression instruction. | 2026-09-17 |
 | T12 | TM2 | done | `01a0afa4-860d-77c3-a2f8-14059c26e5aa` | `tm/T12-migration-item-ids` | `d81faf3` | Migration 25 atomically widens C1 threads for `item`, preserves rows/anchors/indexes and adds `item_link`, opaque ids and item-derived tags. Focused T12 3/3, C1 4/4, relevant server 32/32, full server 244/244 and server typecheck passed. | 2026-09-18 |
 | T13 | TM2 | done | `01a0afb2-3524-7ec2-98ae-c3776625b347` | `tm/T13-anchors-views` | `245a413` | Owner item anchors post/pin once, edit in place, complete/unpin once, recreate on reopen and replace after `ANCHOR_GONE`; item messages carry the item tag and reply to the current anchor. Team summaries identify the owner and omit quota, credentials and local paths; owner `/task`, `/status`, `/access`, `/help` are read only. Focused registry/summary 24/24; relevant runtime/outbox/roster 38/38 (62/62 combined); TM-T1-6 1/1; server/e2e typechecks and web lint passed. Corrected one PID-sensitive T12 assertion exposed by the focused run. | 2026-09-18 |
-| T14 | TM2 | pending |  |  |  | Group routing rules. |  |
+| T14 | TM2 | in progress |  | `tm/T14-group-routing` |  | Group routing rules. | 2026-09-18 |
 | T15 | TM2 | pending |  |  |  | Starting a thread on the other person's item. |  |
 | T16 | TM2 | pending |  |  |  | TM2 close-out. |  |
 | T17 | TM3 | pending |  |  |  | TM3 scenario table. |  |
@@ -108,3 +108,4 @@ Preconditions:
 - 2026-09-18: T13 started for item-anchor lifecycle, `team` summary rendering and owner read-only item views.
 - 2026-09-18: T13 worker `01a0afb2-3524-7ec2-98ae-c3776625b347` started in the isolated task worktree.
 - 2026-09-18: T13 merged by fast-forward as `245a413`; its worktree and branch were removed.
+- 2026-09-18: T14 started for LT-1 broad-delivery routing, private-chat isolation and silent group discussion handling.
