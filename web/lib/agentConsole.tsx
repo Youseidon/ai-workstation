@@ -104,6 +104,8 @@ function sourceText(source: RunSource): string {
       return source.revision === true
         ? `Proposing changes to ${source.programName ?? "a program"} (draft ${source.draftId}): ${source.goal}`
         : `Drafting a program (draft ${source.draftId}): ${source.goal}`;
+    case "instructions":
+      return `Proposing changes to ${source.file} (proposal ${source.proposalId}): ${source.goal}`;
   }
 }
 

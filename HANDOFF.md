@@ -162,9 +162,12 @@ Outside the redesign plan:
    `pipelineScheduler.ts`. Keep it idempotent under replay: a late end event for a run the rail
    has already moved past must no-op.
 
-4. **`BLOCKED` is a question, not unfinished work.** It parks immediately with
-   `wait_reason = "human_question"` and is never continued, never reviewed past, never audited
-   past. A machine deciding it would overrule a request for a human decision.
+4. **`BLOCKED` is a genuine external question, not unfinished or repairable work.** A valid
+   blocker parks immediately with `wait_reason = "human_question"` and is never continued,
+   reviewed past, or audited past. The agent door refuses blocker posts whose requested action
+   is a source/test/config edit or a Verify-recipe repair; those stay live so the agent can use
+   `repair-verify` or post `continue`. Credentials, approvals, choices and external dependencies
+   still park.
 
 5. **The database stays out of reach.** `workspaces.assertDatabaseOutOfReach()` refuses to boot if
    the file sits inside any workspace directory. Do not soften it to a warning.

@@ -514,6 +514,62 @@ test("a second done after the Verify command passes closes with RUNNER evidence"
   } finally { ctx.cleanup(); }
 });
 
+test("an active agent can repair one observed-broken Verify command without weakening its target", async () => {
+  const ctx = fixture();
+  try {
+    const oldCommand = "test -f ok.marker && exit 1";
+    const newCommand = "test -f ok.marker";
+    workspaces.updateChild("prompt", ctx.prompt.id, {
+      content: `## Task\ndo it\n\n## Verify\n\`\`\`sh\n${oldCommand}\n\`\`\`\n`,
+    });
+    await runDefinitionOfDoneCommands(ctx.prompt.id, null);
+    assert.equal(workspaces.agentDoneVerificationFailures(ctx.prompt.id)?.[0]?.command, oldCommand);
+
+    const runId = newId("run");
+    const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+    workspaces.beginAgentRun({
+      runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null,
+      tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute",
+    });
+    workspaces.markAgentRunRunning(runId);
+    writeFileSync(join(ctx.dir, "ok.marker"), "ready\n");
+    workspaces.repairAgentVerifyCommand(runId, {
+      requestId: unique("repair"), oldCommand, newCommand,
+      reason: "The final unconditional exit made a present marker fail.",
+    });
+    await runDefinitionOfDoneCommands(ctx.prompt.id, runId);
+
+    assert.equal(workspaces.agentDoneVerificationFailures(ctx.prompt.id), null);
+    assert.match((workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).content), /test -f ok\.marker\n```/);
+    const revisions = workspaces.promptRevisions(ctx.prompt.id);
+    assert.equal(revisions[0]?.actorType, "AGENT");
+    assert.match(String(revisions[0]?.reason), /Verify repair/);
+  } finally { ctx.cleanup(); }
+});
+
+test("a Verify repair cannot replace a real check with unconditional success", async () => {
+  const ctx = fixture();
+  try {
+    const oldCommand = "test -f required.marker";
+    workspaces.updateChild("prompt", ctx.prompt.id, { content: `## Verify\n\`\`\`sh\n${oldCommand}\n\`\`\`\n` });
+    await runDefinitionOfDoneCommands(ctx.prompt.id, null);
+    const runId = newId("run");
+    const credential = runContexts.create(runId, ctx.workspace.id, ctx.prompt.id);
+    workspaces.beginAgentRun({
+      runId, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null,
+      tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute",
+    });
+    workspaces.markAgentRunRunning(runId);
+    assert.throws(
+      () => workspaces.repairAgentVerifyCommand(runId, {
+        requestId: unique("repair"), oldCommand, newCommand: "test -f required.marker || true", reason: "make it green",
+      }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "unsafe_verify_repair",
+    );
+    assert.match(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).content, /test -f required\.marker/);
+  } finally { ctx.cleanup(); }
+});
+
 test("an unmet definition of done lands on NEEDS_REVIEW with a recorded cause", async () => {
   // The status alone does not say why; the ledger trigger does. Continuation
   // treats NEEDS_REVIEW like UNREPORTED, and Resume after a park still sees

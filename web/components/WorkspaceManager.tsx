@@ -20,7 +20,7 @@ import { TextArea, TextInput } from "./ui/Field";
 import { Modal } from "./ui/Modal";
 import { Skeleton } from "./ui/Spinner";
 import { useDialogs } from "./ui/Dialogs";
-import { ProgramAgentPanel } from "./programs/ProgramAgentPanel";
+import { AgentRequestBar } from "./requests/AgentRequestBar";
 import { ProgramDraftPanel } from "./programs/ProgramDraftPanel";
 import { useToast } from "./ui/Toast";
 
@@ -56,9 +56,9 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const [expandedPrompts, setExpandedPrompts] = useState<Set<number>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
-  // Bumped when a revision is opened from a program: remounts the drafts panel
-  // with that draft open, and scrolls to it.
-  const [draftsFocus, setDraftsFocus] = useState<{ generation: number; draftId: number | null }>({ generation: 0, draftId: null });
+  // Bumped when the request bar opens a proposal: remounts the proposals panel
+  // with that proposal open, and scrolls to it.
+  const [draftsFocus, setDraftsFocus] = useState<{ generation: number; key: string | null }>({ generation: 0, key: null });
   const draftsPanel = useRef<HTMLDivElement>(null);
 
   const program = tree?.programs.find((x) => x.id === programId) ?? null;
@@ -262,6 +262,18 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
           <p className="text-sm text-fg-dim">Create a workspace to get started.</p>
         ) : (
           <>
+            <div className="mb-5">
+              <AgentRequestBar
+                key={tree.id}
+                serverUrl={serverUrl}
+                tree={tree}
+                selection={{ instructionField, programId, suiteId, promptId }}
+                onProposalOpened={(key) => {
+                  setDraftsFocus((current) => ({ generation: current.generation + 1, key }));
+                  requestAnimationFrame(() => draftsPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                }}
+              />
+            </div>
             <WorkspaceEditor
               key={`${tree.id}:${tree.updatedAt}`}
               value={tree}
@@ -284,11 +296,12 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
                 key={`${tree.id}:${draftsFocus.generation}`}
                 serverUrl={serverUrl}
                 workspaceId={tree.id}
+                instructions={{ claudeMd: tree.claudeMd, agentsMd: tree.agentsMd }}
                 onApplied={async () => {
                   await refresh();
                   await refreshGlobal();
                 }}
-                initialOpenId={draftsFocus.draftId}
+                initialOpenKey={draftsFocus.key}
               />
             </div>
 
@@ -387,27 +400,6 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
                 />
               ) : (
                 <EmptyDetail />
-              )}
-              {instructionField === null && program !== null && (
-                <div className="mt-4">
-                  <ProgramAgentPanel
-                    key={program.id}
-                    serverUrl={serverUrl}
-                    workDirectory={tree.workDirectory}
-                    program={program}
-                    focus={
-                      prompt !== null
-                        ? `work item ${prompt.externalKey === null ? "" : `${prompt.externalKey} — `}${prompt.title}`
-                        : suite !== null
-                          ? `suite ${suite.externalKey === null ? "" : `${suite.externalKey} — `}${suite.name}`
-                          : null
-                    }
-                    onRevisionStarted={(draftId) => {
-                      setDraftsFocus((current) => ({ generation: current.generation + 1, draftId }));
-                      requestAnimationFrame(() => draftsPanel.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-                    }}
-                  />
-                </div>
               )}
               </div>
             </div>

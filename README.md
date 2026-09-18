@@ -67,7 +67,7 @@ When a station's run ends, the scheduler has exactly three answers:
 | The run ended… | Decision | What the rail does |
 |---|---|---|
 | Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
-| Agent posted **BLOCKED** with a concrete human action | **park** `human_question` | the only human stop — answer it, then Resume |
+| Agent posted **BLOCKED** with a concrete external action only a human can take | **park** `human_question` | the only human stop — answer it, then Resume |
 | Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
 | Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
 
@@ -320,9 +320,17 @@ the run ends), and tells the agent to use it:
 ```bash
 agent-step remark     --kind PROGRESS --text "What changed or was verified"
 agent-step done       --verification "The commands you ran and what you observed"
+agent-step repair-verify --file repair.json  # one observed-failing Verify line; audited and re-run
 agent-step continue   --remaining "What is left, as instructions for the next run on this tree"
 agent-step blocked    --reason "Observed evidence" --action "What only a human can do"
 ```
+
+`repair.json` contains `oldCommand`, `newCommand`, and `reason`. The server only
+accepts the exact command it most recently observed failing, revisions the old
+work-item text, refuses unconditional-success replacements or replacements that
+drop the original targets/tools, and immediately runs the corrected criterion.
+Requests for a human to edit source, tests, config, or that Verify recipe are
+refused as recoverable work; the agent must repair it or post `continue`.
 
 The credential is per-run rather than per-process because the Claude adapter
 runs its SDK in-process, so environment variables would be shared by every

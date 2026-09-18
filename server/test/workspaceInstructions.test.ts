@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import { materialize, readBack } from "../src/workspaceInstructions.ts";
+import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstructionFile } from "../src/workspaceInstructions.ts";
 import { workspaces } from "../src/workspaces.ts";
 
 let seq = 0;
@@ -79,52 +79,67 @@ describe("materialising instruction files", () => {
   });
 });
 
-describe("reading instruction edits back", () => {
-  test("an agent's edit on disk becomes the stored value, with the old text kept", () => {
+describe("instruction edits made during a run", () => {
+  test("an agent's edit on disk becomes a proposal, and the stored text goes back on disk", () => {
     const ctx = fixture({ claudeMd: "# original" });
     try {
       materialize(ctx.workspace);
       writeFileSync(ctx.claude, "# rewritten by the agent\n");
-      readBack(ctx.workspace.id);
+      const proposed = proposeFromWorkingTree(ctx.workspace.id, "run-1");
 
-      // Stored text is trimmed, as every text field here is; materialize
-      // re-appends the newline, so the value round-trips without drifting.
-      assert.equal(ctx.reload().claudeMd, "# rewritten by the agent");
-      const revisions = workspaces.workspaceRevisions(ctx.workspace.id, "claudeMd");
-      assert.equal(revisions[0]!.content, "# original");
-      assert.equal(revisions[0]!.actorType, "AGENT");
+      assert.equal(proposed.length, 1);
+      assert.equal(proposed[0]!.field, "claudeMd");
+      assert.equal(proposed[0]!.origin, "run");
+      assert.equal(proposed[0]!.runId, "run-1");
+      assert.equal(proposed[0]!.baseline, "# original");
+      assert.equal(proposed[0]!.content, "# rewritten by the agent");
+      // Nothing a run writes reaches the workspace until someone applies it.
+      assert.equal(ctx.reload().claudeMd, "# original");
+      assert.equal(readFileSync(ctx.claude, "utf8"), "# original\n");
     } finally { ctx.cleanup(); }
   });
 
-  test("an unchanged file records nothing", () => {
+  test("the same edit is not proposed twice, even after it was discarded", () => {
     const ctx = fixture({ claudeMd: "# original" });
     try {
       materialize(ctx.workspace);
-      const before = workspaces.workspaceRevisions(ctx.workspace.id).length;
-      readBack(ctx.workspace.id);
-      assert.equal(workspaces.workspaceRevisions(ctx.workspace.id).length, before);
+      writeFileSync(ctx.claude, "# same edit\n");
+      const [first] = proposeFromWorkingTree(ctx.workspace.id, null);
+      workspaces.discardInstructionProposal(first!.id);
+      writeFileSync(ctx.claude, "# same edit\n");
+      assert.equal(proposeFromWorkingTree(ctx.workspace.id, null).length, 0);
+      assert.equal(workspaces.instructionProposals(ctx.workspace.id).length, 1);
     } finally { ctx.cleanup(); }
   });
 
-  test("a deleted file leaves the stored value alone", () => {
+  test("an unchanged file proposes nothing", () => {
     const ctx = fixture({ claudeMd: "# original" });
+    try {
+      materialize(ctx.workspace);
+      assert.equal(proposeFromWorkingTree(ctx.workspace.id, null).length, 0);
+    } finally { ctx.cleanup(); }
+  });
+
+  test("a deleted or blanked file proposes nothing and leaves the stored value alone", () => {
+    const ctx = fixture({ claudeMd: "# original", agentsMd: "# agents" });
     try {
       materialize(ctx.workspace);
       unlinkSync(ctx.claude);
-      readBack(ctx.workspace.id);
-      // Blanking the field here would silently disarm every later run in this
-      // workspace, which is never what deleting one file meant.
+      writeFileSync(ctx.agents, "   \n");
+      // Proposing an empty file would invite the operator to disarm every later
+      // run in this workspace, which is never what deleting one file meant.
+      assert.equal(proposeFromWorkingTree(ctx.workspace.id, null).length, 0);
       assert.equal(ctx.reload().claudeMd, "# original");
     } finally { ctx.cleanup(); }
   });
 
-  test("a file emptied to whitespace is treated as a deletion, not as new content", () => {
-    const ctx = fixture({ claudeMd: "# original" });
+  test("a file found where the workspace has no text is proposed but not removed", () => {
+    const ctx = fixture();
     try {
-      materialize(ctx.workspace);
-      writeFileSync(ctx.claude, "   \n");
-      readBack(ctx.workspace.id);
-      assert.equal(ctx.reload().claudeMd, "# original");
+      writeFileSync(ctx.claude, "# the user's own file\n");
+      const [proposal] = proposeFromWorkingTree(ctx.workspace.id, null);
+      assert.equal(proposal!.content, "# the user's own file");
+      assert.equal(readFileSync(ctx.claude, "utf8"), "# the user's own file\n", "materialize never deletes a file, and neither does this");
     } finally { ctx.cleanup(); }
   });
 
@@ -136,6 +151,73 @@ describe("reading instruction edits back", () => {
       workspaces.restoreWorkspaceRevision(ctx.workspace.id, first!.id);
       assert.equal(ctx.reload().claudeMd, "# v1");
       assert.equal(workspaces.workspaceRevisions(ctx.workspace.id, "claudeMd")[0]!.content, "# v2");
+    } finally { ctx.cleanup(); }
+  });
+});
+
+describe("instruction proposals", () => {
+  test("applying writes the proposed text and keeps the replaced text as a revision", () => {
+    const ctx = fixture({ agentsMd: "# before" });
+    try {
+      const opened = workspaces.createInstructionProposal({ workspaceId: ctx.workspace.id, field: "agentsMd", goal: "tighten it" });
+      assert.equal(opened.content, "# before", "a new proposal starts as the stored text");
+      workspaces.saveInstructionProposal(opened.id, { content: "# after\n" });
+      const applied = workspaces.applyInstructionProposal(opened.id);
+
+      assert.equal(applied.proposal.state, "APPLIED");
+      assert.equal(ctx.reload().agentsMd, "# after");
+      const [revision] = workspaces.workspaceRevisions(ctx.workspace.id, "agentsMd");
+      assert.equal(revision!.content, "# before");
+      assert.match(revision!.reason, /Applied proposal/);
+      assert.throws(() => workspaces.saveInstructionProposal(opened.id, { content: "again" }), /already applied/);
+    } finally { ctx.cleanup(); }
+  });
+
+  test("applying over a file that changed since is refused unless forced", () => {
+    const ctx = fixture({ claudeMd: "# v1" });
+    try {
+      const proposal = workspaces.createInstructionProposal({ workspaceId: ctx.workspace.id, field: "claudeMd", goal: "g" });
+      workspaces.saveInstructionProposal(proposal.id, { content: "# proposed" });
+      workspaces.update(ctx.workspace.id, { claudeMd: "# someone else's v2" });
+      assert.throws(() => workspaces.applyInstructionProposal(proposal.id), (error: Error & { code?: string }) => error.code === "instructions_changed");
+      assert.equal(ctx.reload().claudeMd, "# someone else's v2");
+      workspaces.applyInstructionProposal(proposal.id, { force: true });
+      assert.equal(ctx.reload().claudeMd, "# proposed");
+    } finally { ctx.cleanup(); }
+  });
+
+  test("a proposal that would empty a file is refused", () => {
+    const ctx = fixture({ claudeMd: "# rules" });
+    try {
+      const proposal = workspaces.createInstructionProposal({ workspaceId: ctx.workspace.id, field: "claudeMd", goal: "g" });
+      workspaces.saveInstructionProposal(proposal.id, { content: "" });
+      assert.throws(() => workspaces.applyInstructionProposal(proposal.id), (error: Error & { code?: string }) => error.code === "proposal_empty");
+    } finally { ctx.cleanup(); }
+  });
+
+  test("a requested run's edit is captured into its proposal and the file is put back", () => {
+    const ctx = fixture({ claudeMd: "# stored" });
+    try {
+      materialize(ctx.workspace);
+      const before = readInstructionFile(ctx.dir, "claudeMd");
+      const proposal = workspaces.createInstructionProposal({ workspaceId: ctx.workspace.id, field: "claudeMd", goal: "add a rule" });
+      writeFileSync(ctx.claude, "# stored\n\n- new rule\n");
+      captureInstructionRun(proposal.id, ctx.dir, "claudeMd", before);
+
+      assert.equal(workspaces.instructionProposal(proposal.id).content, "# stored\n\n- new rule");
+      assert.equal(readFileSync(ctx.claude, "utf8"), "# stored\n");
+      assert.equal(ctx.reload().claudeMd, "# stored");
+    } finally { ctx.cleanup(); }
+  });
+
+  test("a file a requested run created from nothing is removed again once captured", () => {
+    const ctx = fixture();
+    try {
+      const proposal = workspaces.createInstructionProposal({ workspaceId: ctx.workspace.id, field: "agentsMd", goal: "write one" });
+      writeFileSync(ctx.agents, "# brand new\n");
+      captureInstructionRun(proposal.id, ctx.dir, "agentsMd", null);
+      assert.equal(workspaces.instructionProposal(proposal.id).content, "# brand new");
+      assert.equal(existsSync(ctx.agents), false);
     } finally { ctx.cleanup(); }
   });
 });

@@ -309,6 +309,7 @@ ${cmd}
 
 ${cmd} remark --kind PROGRESS --text "What changed or was verified"
 ${cmd} done --verification "Commands run and observable results"
+${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
 ${cmd} blocked --reason "Observed evidence" --action "Exact human action"
 ${decompose}Every requestId must be unique for this run.
@@ -328,6 +329,7 @@ Post through the Progress API (no launcher available for this provider):
 
 curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"…"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
+curl -fsS -X POST ${auth} ${base}/repair-verify -d '{"requestId":"unique-repair-id","oldCommand":"exact failing command","newCommand":"corrected command","reason":"why the recipe itself is wrong"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'
 ${decompose}Every requestId must be unique for this run.

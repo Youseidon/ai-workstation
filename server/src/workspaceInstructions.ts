@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { WorkspaceRecord } from "@agent-console/shared";
+import { INSTRUCTION_FILE_NAMES, type InstructionProposalRecord, type WorkspaceInstructionField, type WorkspaceRecord } from "@agent-console/shared";
 import { createLogger } from "./lib/logger.ts";
 import { workspaces } from "./workspaces.ts";
 
@@ -19,8 +19,8 @@ const log = createLogger("instructions");
  * summarise away and a subagent will never see.
  *
  * So the database stays the source of truth and these files are its projection,
- * rewritten before every run and read back after one that could have edited
- * them.
+ * rewritten before every run. An edit a run makes to one is not read back into
+ * the workspace: it becomes a proposal the operator applies.
  *
  * Claude Code reads only CLAUDE.md; codex, cursor and grok read only AGENTS.md.
  * Neither file substitutes for the other, which is why both are kept.
@@ -102,40 +102,104 @@ export function materialize(workspace: Pick<WorkspaceRecord, "workDirectory" | "
   if (wrote) ensureIgnored(workspace.workDirectory);
 }
 
+/** Where a workspace's instruction file lives in its working tree. */
+export function instructionFilePath(workDirectory: string, field: WorkspaceInstructionField): string {
+  return join(workDirectory, INSTRUCTION_FILE_NAMES[field]);
+}
+
+/** The file as it is on disk, or null when there is none. */
+export function readInstructionFile(workDirectory: string, field: WorkspaceInstructionField): string | null {
+  const path = instructionFilePath(workDirectory, field);
+  try {
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
+  } catch (error) {
+    log.warn(`could not read ${INSTRUCTION_FILE_NAMES[field]}`, error);
+    return null;
+  }
+}
+
+/** Puts the file back the way it was: rewritten, or removed if there was none. */
+function restoreInstructionFile(workDirectory: string, field: WorkspaceInstructionField, before: string | null): void {
+  const path = instructionFilePath(workDirectory, field);
+  try {
+    if (before === null) {
+      if (existsSync(path)) unlinkSync(path);
+    } else if (!existsSync(path) || readFileSync(path, "utf8") !== before) {
+      writeFileSync(path, before, "utf8");
+    }
+  } catch (error) {
+    log.warn(`could not restore ${INSTRUCTION_FILE_NAMES[field]}`, error);
+  }
+}
+
 /**
- * Folds an agent's edits to those files back into the workspace record.
+ * Turns a run's edits to the instruction files into proposals.
  *
- * A deleted file is left alone rather than blanking the field: an agent that
- * removes CLAUDE.md has almost certainly not decided the workspace should have
- * no instructions, and a blank field would silently disarm every later run.
+ * A run that rewrites CLAUDE.md changes what every later run is told, so the
+ * edit is held for the operator the way any other proposal is, and the stored
+ * text goes back on disk. Two cases leave the file alone rather than restore it:
+ * a field with no stored text (the file may be the user's own, and materialize
+ * never deletes one), and a file that was deleted or emptied (see below).
+ *
+ * The same text is not proposed twice: a proposal with identical content, in
+ * any state, means the operator has already seen it — including one they
+ * discarded.
  */
-export function readBack(workspaceId: number): void {
+export function proposeFromWorkingTree(workspaceId: number, runId: string | null): InstructionProposalRecord[] {
   let workspace: WorkspaceRecord;
   try {
     workspace = workspaces.get(workspaceId);
   } catch {
-    return;
+    return [];
   }
-  if (!existsSync(workspace.workDirectory)) return;
-  const patch: Record<string, unknown> = {};
+  if (!existsSync(workspace.workDirectory)) return [];
+  const proposed: InstructionProposalRecord[] = [];
   for (const file of FILES) {
-    const path = join(workspace.workDirectory, file.name);
-    if (!existsSync(path)) continue;
+    const onDisk = readInstructionFile(workspace.workDirectory, file.field);
+    // A deleted or blanked file is not a proposal to empty the workspace's
+    // instructions: an agent that removes CLAUDE.md has almost certainly not
+    // decided every later run should go without it.
+    if (onDisk === null || onDisk.trim() === "") continue;
+    const content = onDisk.trim();
+    const stored = workspace[file.field];
+    if (content === stored) continue;
     try {
-      const onDisk = readFileSync(path, "utf8");
-      const stored = workspace[file.field];
-      const normalized = stored.endsWith("\n") || stored === "" ? stored : `${stored}\n`;
-      if (onDisk === normalized || onDisk.trim() === "") continue;
-      patch[file.field] = onDisk;
+      if (workspaces.latestInstructionProposalWithContent(workspaceId, file.field, content) === null) {
+        proposed.push(workspaces.createInstructionProposal({
+          workspaceId,
+          field: file.field,
+          goal: stored === "" ? `${file.name} found in the working tree` : `${file.name} was edited during a run`,
+          origin: "run",
+          runId,
+          content,
+        }));
+        log.info(`held an edit to ${file.name} in ${workspace.workDirectory} as a proposal`);
+      }
     } catch (error) {
-      log.warn(`could not read ${file.name}`, error);
+      log.warn(`could not propose the edit to ${file.name}`, error);
+      continue;
+    }
+    if (stored !== "") restoreInstructionFile(workspace.workDirectory, file.field, `${stored}\n`);
+  }
+  return proposed;
+}
+
+/**
+ * Stores what an instruction run left in its file, then puts the file back.
+ *
+ * `before` is the file as it was just before the run started. The run edits the
+ * real file because that is the one it can read in context and edit with its
+ * ordinary tools; the working tree is not where the proposal lives, so it is
+ * returned to exactly what it was.
+ */
+export function captureInstructionRun(proposalId: number, workDirectory: string, field: WorkspaceInstructionField, before: string | null): void {
+  const after = readInstructionFile(workDirectory, field);
+  if (after !== null && after.trim() !== "" && after !== before) {
+    try {
+      workspaces.recordInstructionRunResult(proposalId, after);
+    } catch (error) {
+      log.warn(`could not store proposal ${proposalId}`, error);
     }
   }
-  if (Object.keys(patch).length === 0) return;
-  try {
-    workspaces.update(workspaceId, { ...patch, actorType: "AGENT", reason: "Edited in the working tree during a run" });
-    log.info(`read back ${Object.keys(patch).join(", ")} from ${workspace.workDirectory}`);
-  } catch (error) {
-    log.warn("could not store instruction edits", error);
-  }
+  restoreInstructionFile(workDirectory, field, before);
 }

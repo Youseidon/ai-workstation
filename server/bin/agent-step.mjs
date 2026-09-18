@@ -31,6 +31,9 @@ const USAGE = `agent-step — record progress and status for this work item.
   agent-step state                          Everything recorded against it so far
   agent-step remark --kind KIND --text "…"  Bank what you just verified
   agent-step done --verification "…"        Finish: what you ran and what you observed
+  agent-step repair-verify --file repair.json
+                                            Replace one demonstrably broken Verify
+                                            command, then have the server re-run it
   agent-step blocked --reason "…" --action "…"
                                             Stop for a human: evidence, and the exact
                                             action only they can take
@@ -118,7 +121,8 @@ const ADVICE = {
   request_id_conflict: "That requestId was already used for a different call.",
   invalid_run_token: "This run's credential has expired. The run is over; stop working.",
   consult_read_only: "This is a read-only run. It cannot post remarks or status.",
-  verification_failed: "The server ran this item's Verify commands and at least one failed. Fix them, then post done again — or continue with what remains.",
+  verification_failed: "The server ran this item's Verify commands and at least one failed. Fix the implementation and post done again. If the command itself is defective, use 'agent-step repair-verify --file repair.json'.",
+  recoverable_blocker: "This is work the pipeline can perform. Repair the Verify command, fix the workspace, or post continue; do not ask a human to do it.",
   decompose_title_conflict: "Rename the conflicting titles and post again; existing sub-steps are kept.",
   decompose_depth_exceeded: "Finish this sub-step, or post continue with what remains.",
   author_only: "This run works a work item; it cannot propose a program.",
@@ -247,6 +251,13 @@ switch (command) {
       reason: typeof args.reason === "string" ? args.reason : "Completed",
       verificationSummary: verification,
     });
+    break;
+  }
+  case "repair-verify": {
+    if (typeof args.file !== "string") fail("agent-step repair-verify needs --file repair.json\n  The file is {\"oldCommand\":\"the failing command exactly\",\"newCommand\":\"the corrected command\",\"reason\":\"evidence that the recipe, not the implementation, is wrong\"}.");
+    let payload;
+    try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
+    await post("/repair-verify", payload);
     break;
   }
   case "blocked": {

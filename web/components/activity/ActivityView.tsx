@@ -111,6 +111,8 @@ function titleFromSource(source: RunSource): string {
       return source.displayText.split("\n")[0]?.slice(0, 80) || "(custom)";
     case "author":
       return `Draft · ${source.programName ?? source.goal.slice(0, 60)}`;
+    case "instructions":
+      return `Proposal · ${source.file}`;
   }
 }
 
@@ -119,6 +121,7 @@ function displayTextFromSource(source: RunSource): string | null {
     case "custom":
       return source.displayText;
     case "author":
+    case "instructions":
       return source.goal;
     case "consult":
     case "clarification":

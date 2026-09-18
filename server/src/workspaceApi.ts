@@ -4,11 +4,13 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
-import { isProviderId, programDraftPreview } from "@agent-console/shared";
-import { startConsult, startProgramAuthor } from "./runService.ts";
+import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDraftPreview, type AgentRequest, type ProviderId } from "@agent-console/shared";
+import { startConsult, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
+/** A whole instruction file, as a proposal edit PATCHes it. Two 64k fields' worth with headroom for escaping. */
+const MAX_PROPOSAL_BODY_BYTES = 512 * 1024;
 /*
  * An operator editing a drafted program PATCHes the whole body back: every
  * suite, every work item, every page of instructions. That is legitimately
@@ -87,7 +89,78 @@ export function isWorkspaceApiPath(pathname: string): boolean {
     || pathname.startsWith("/api/definition-of-done/")
     || pathname.startsWith("/api/workspaces")
     || pathname.startsWith("/api/program-drafts")
+    || pathname.startsWith("/api/instruction-proposals")
     || /^\/api\/(programs|suites|prompts|runs|verifications|pipelines)\//.test(pathname);
+}
+
+export type AgentRequestResult =
+  | { kind: "consult"; runId: string }
+  | { kind: "program-draft"; draft: ReturnType<typeof workspaces.programDraft>; preview: ReturnType<typeof programDraftPreview>; runId: string | null }
+  | { kind: "instruction-proposal"; proposal: ReturnType<typeof workspaces.instructionProposal>; runId: string | null };
+
+/**
+ * "Regarding suite S2 — Endpoints", for a request narrowed inside a program, so
+ * "this" in the operator's text means what they had selected. Also checks that
+ * every id belongs where the request says it does.
+ */
+function programFocus(workspaceId:number,target:{programId:number;suiteId?:number|null;promptId?:number|null}):string|null {
+  const program=workspaces.tree(workspaceId).programs.find(entry=>entry.id===target.programId);
+  if(program===undefined)throw new WorkspaceError(404,"not_found","Program not found in this workspace");
+  const label=(key:string|null,name:string)=>key===null?name:`${key} — ${name}`;
+  if(target.promptId!=null){
+    for(const suite of program.suites){
+      const prompt=suite.prompts.find(entry=>entry.id===target.promptId);
+      if(prompt!==undefined)return `work item ${label(prompt.externalKey,prompt.title)}`;
+    }
+    throw new WorkspaceError(404,"not_found","Work item not found in this program");
+  }
+  if(target.suiteId!=null){
+    const suite=program.suites.find(entry=>entry.id===target.suiteId);
+    if(suite===undefined)throw new WorkspaceError(404,"not_found","Suite not found in this program");
+    return `suite ${label(suite.externalKey,suite.name)}`;
+  }
+  return null;
+}
+
+async function routeAgentRequest(workspaceId:number,request:AgentRequest):Promise<AgentRequestResult> {
+  workspaces.get(workspaceId);
+  const {target,mode,text,model=null}=request;
+  const provider=():ProviderId=>{
+    if(!isProviderId(request.provider))throw new WorkspaceError(422,"validation_error","Choose an agent",{provider:"Unknown provider"});
+    return request.provider;
+  };
+  switch(target.kind){
+    case "workspace":
+      return {kind:"consult",...await startConsult({workspaceId,provider:provider(),model,question:text})};
+    case "instructions":{
+      const file=INSTRUCTION_FILE_NAMES[target.field];
+      if(mode==="ask"){
+        const question=`About ${file}, this workspace's agent instruction file (./${file} in the working directory):\n\n${text}`;
+        return {kind:"consult",...await startConsult({workspaceId,provider:provider(),model,question})};
+      }
+      if(mode==="edit")return {kind:"instruction-proposal",proposal:workspaces.createInstructionProposal({workspaceId,field:target.field,goal:text}),runId:null};
+      return {kind:"instruction-proposal",...await startInstructionAuthor({workspaceId,field:target.field,goal:text,provider:provider(),model})};
+    }
+    case "program":{
+      const focus=programFocus(workspaceId,target);
+      const framed=focus===null?text:`Regarding ${focus}:\n\n${text}`;
+      if(mode==="ask")return {kind:"consult",...await startConsult({workspaceId,programId:target.programId,provider:provider(),model,question:framed})};
+      if(mode==="edit"){
+        const draft=workspaces.createProgramRevision({workspaceId,programId:target.programId,goal:framed});
+        return {kind:"program-draft",draft,preview:programDraftPreview(draft.body),runId:null};
+      }
+      const started=await startProgramAuthor({workspaceId,programId:target.programId,goal:framed,provider:provider(),model});
+      return {kind:"program-draft",draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId};
+    }
+    case "new-program":{
+      if(mode==="edit"){
+        const draft=workspaces.createProgramDraft({workspaceId,goal:text});
+        return {kind:"program-draft",draft,preview:programDraftPreview(draft.body),runId:null};
+      }
+      const started=await startProgramAuthor({workspaceId,goal:text,provider:provider(),model});
+      return {kind:"program-draft",draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId};
+    }
+  }
 }
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -425,6 +498,56 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose an agent to make the changes",{provider:"Unknown provider"});
       const started=await startProgramAuthor({workspaceId,programId,goal,provider:input.provider,model});
       json(res,201,{draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId});
+      return true;
+    }
+    /*
+     * The request bar: one door for asking an agent anything about a workspace.
+     *
+     * Every request is a target and a mode (see `shared/src/agentRequest.ts`),
+     * and this only routes it to the run or proposal that already exists for
+     * that pair. Nothing here changes the workspace: `ask` is a read-only
+     * consult, and the other modes open a proposal the operator applies.
+     */
+    const agentRequestMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/agent-requests$/);
+    if(agentRequestMatch){
+      if(method!=="POST"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
+      const workspaceId=id(agentRequestMatch[1]!);
+      const parsed=normalizeAgentRequest(await body(req));
+      if(!parsed.ok)throw new WorkspaceError(422,"validation_error","That request cannot be sent",parsed.errors);
+      const result=await routeAgentRequest(workspaceId,parsed.value);
+      json(res,result.kind==="consult"?202:201,result);
+      return true;
+    }
+    const proposalsMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/instruction-proposals$/);
+    if(proposalsMatch){
+      if(method==="GET")json(res,200,{proposals:workspaces.instructionProposals(id(proposalsMatch[1]!))});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    const proposalMatch=url.pathname.match(/^\/api\/instruction-proposals\/(\d+)(?:\/(apply|discard|revise))?$/);
+    if(proposalMatch){
+      const proposalId=id(proposalMatch[1]!);
+      const action=proposalMatch[2];
+      if(action===undefined&&method==="GET")json(res,200,{proposal:workspaces.instructionProposal(proposalId)});
+      else if(action===undefined&&method==="PATCH")json(res,200,{proposal:workspaces.saveInstructionProposal(proposalId,await body(req,MAX_PROPOSAL_BODY_BYTES))});
+      else if(action===undefined&&method==="DELETE"){workspaces.removeInstructionProposal(proposalId);res.writeHead(204);res.end();}
+      else if(action==="apply"&&method==="POST"){
+        const input=await body(req);
+        json(res,200,workspaces.applyInstructionProposal(proposalId,{force:input.force===true}));
+      }
+      else if(action==="discard"&&method==="POST")json(res,200,{proposal:workspaces.discardInstructionProposal(proposalId)});
+      else if(action==="revise"&&method==="POST"){
+        const input=await body(req);
+        if(!isProviderId(input.provider))throw new WorkspaceError(422,"validation_error","Choose an agent to rework it with",{provider:"Unknown provider"});
+        const proposal=workspaces.instructionProposal(proposalId);
+        const started=await startInstructionAuthor({
+          workspaceId:proposal.workspaceId,proposalId,provider:input.provider,
+          model:typeof input.model==="string"&&input.model!==""?input.model:null,
+          ...(typeof input.feedback==="string"?{feedback:input.feedback}:{}),
+        });
+        json(res,202,started);
+      }
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
     const draftMatch=url.pathname.match(/^\/api\/program-drafts\/(\d+)$/);

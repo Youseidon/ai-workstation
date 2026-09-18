@@ -320,6 +320,8 @@ test("every route this module answers is one the HTTP server will hand it", () =
     "/api/definition-of-done/suite/1", "/api/workspaces", "/api/workspaces/1/tree",
     "/api/workspaces/1/program-drafts", "/api/program-drafts/1",
     "/api/program-drafts/1/apply", "/api/program-drafts/1/discard", "/api/program-drafts/1/revise",
+    "/api/workspaces/1/agent-requests", "/api/workspaces/1/instruction-proposals",
+    "/api/instruction-proposals/1", "/api/instruction-proposals/1/apply",
     "/api/programs/1", "/api/suites/1/prompts", "/api/prompts/1/history",
     "/api/pipelines", "/api/pipelines/1/play", "/api/runs/run_1/interrupt", "/api/verifications/1",
   ]) {
@@ -331,4 +333,82 @@ test("every route this module answers is one the HTTP server will hand it", () =
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.match(source, /isWorkspaceApiPath\(url\.pathname\)/);
   assert.doesNotMatch(source, /pathname\.startsWith\("\/api\/definition-of-done\//);
+});
+
+test("the request bar refuses a mode that does not fit its target, and says which fields", async () => {
+  const ctx = fixture();
+  try {
+    const refused = await call("POST", `/api/workspaces/${ctx.workspace.id}/agent-requests`, {
+      target: { kind: "workspace" }, mode: "change", text: "rewrite everything", provider: "claude",
+    });
+    assert.equal(refused.status, 422);
+    const fields = (refused.body.error as { fields: Record<string, string> }).fields;
+    assert.ok(fields.mode, "the mode is named as the problem");
+
+    const noText = await call("POST", `/api/workspaces/${ctx.workspace.id}/agent-requests`, {
+      target: { kind: "new-program" }, mode: "edit", text: "  ",
+    });
+    assert.equal(noText.status, 422);
+    assert.ok((noText.body.error as { fields: Record<string, string> }).fields.text);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("'edit myself' opens the right kind of proposal for every target, with no agent", async () => {
+  const ctx = fixture();
+  try {
+    const path = `/api/workspaces/${ctx.workspace.id}/agent-requests`;
+    const instructions = await call("POST", path, { target: { kind: "instructions", field: "claudeMd" }, mode: "edit", text: "add a testing rule" });
+    assert.equal(instructions.status, 201);
+    assert.equal(instructions.body.kind, "instruction-proposal");
+    assert.equal(instructions.body.runId, null);
+
+    const revision = await call("POST", path, {
+      target: { kind: "program", programId: ctx.suite.programId, suiteId: ctx.suite.id }, mode: "edit", text: "split it",
+    });
+    assert.equal(revision.body.kind, "program-draft");
+    const draft = revision.body.draft as { targetProgramId: number; goal: string };
+    assert.equal(draft.targetProgramId, ctx.suite.programId);
+    assert.match(draft.goal, /^Regarding suite .+:\n\nsplit it$/, "the selection is framed into the request");
+
+    const fresh = await call("POST", path, { target: { kind: "new-program" }, mode: "edit", text: "a new plan" });
+    assert.equal((fresh.body.draft as { targetProgramId: number | null }).targetProgramId, null);
+
+    const wrongSuite = await call("POST", path, {
+      target: { kind: "program", programId: ctx.suite.programId, suiteId: 999999 }, mode: "edit", text: "x",
+    });
+    assert.equal(wrongSuite.status, 404);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("an instruction proposal is edited, applied and listed through its routes", async () => {
+  const ctx = fixture();
+  try {
+    workspaces.update(ctx.workspace.id, { agentsMd: "# old" });
+    const opened = await call("POST", `/api/workspaces/${ctx.workspace.id}/agent-requests`, {
+      target: { kind: "instructions", field: "agentsMd" }, mode: "edit", text: "modernise",
+    });
+    const proposalId = (opened.body.proposal as { id: number }).id;
+
+    const saved = await call("PATCH", `/api/instruction-proposals/${proposalId}`, { content: "# new" });
+    assert.equal((saved.body.proposal as { content: string }).content, "# new");
+
+    const listed = await call("GET", `/api/workspaces/${ctx.workspace.id}/instruction-proposals`);
+    assert.equal((listed.body.proposals as unknown[]).length, 1);
+
+    const applied = await call("POST", `/api/instruction-proposals/${proposalId}/apply`, {});
+    assert.equal(applied.status, 200);
+    assert.equal((applied.body.workspace as { agentsMd: string }).agentsMd, "# new");
+
+    const again = await call("POST", `/api/instruction-proposals/${proposalId}/apply`, {});
+    assert.equal(again.status, 409);
+
+    const removed = await call("DELETE", `/api/instruction-proposals/${proposalId}`);
+    assert.equal(removed.status, 204);
+  } finally {
+    ctx.cleanup();
+  }
 });

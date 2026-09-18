@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  InstructionProposalRecord,
   ProgramDraftBody,
   ProgramDraftPreview,
   ProgramDraftPrompt,
@@ -11,9 +12,11 @@ import type {
   ProviderId,
   ProviderInfo,
 } from "@agent-console/shared";
-import { canApplyProgramDraft, diffProgramRevision, parseVerifyBlock, programDraftPreview } from "@agent-console/shared";
+import { INSTRUCTION_FILE_NAMES, canApplyProgramDraft, diffLineCounts, diffLines, diffProgramRevision, parseVerifyBlock, programDraftPreview } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
+import { useAgentConsole } from "@/lib/useAgentConsole";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { InstructionProposalEditor } from "../requests/InstructionProposalEditor";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Select, TextArea, TextInput } from "../ui/Field";
@@ -25,55 +28,68 @@ import { useProviders } from "./useProviders";
 interface Props {
   serverUrl: string;
   workspaceId: number;
+  /** The stored instruction files, to tell whether a proposal against one is stale. */
+  instructions: { claudeMd: string; agentsMd: string };
   /** Called after an apply, so the tree beside this panel repaints. */
   onApplied(): void | Promise<void>;
   /**
-   * A draft to open on mount, e.g. the revision just started from a program.
-   * The caller remounts the panel (by `key`) to show one opened elsewhere.
+   * A proposal to open on mount — `program:<id>` or `instructions:<id>` — e.g.
+   * the one just opened from the request bar. The caller remounts the panel (by
+   * `key`) to show one opened elsewhere.
    */
-  initialOpenId?: number | null;
+  initialOpenKey?: string | null;
 }
 
 type Entry = { draft: ProgramDraftRecord; preview: ProgramDraftPreview };
+
+type Row =
+  | { key: string; createdAt: string; kind: "program"; entry: Entry }
+  | { key: string; createdAt: string; kind: "instructions"; proposal: InstructionProposalRecord };
 
 const STATE_TONE = { PENDING: "info", APPLIED: "success", DISCARDED: "neutral" } as const;
 
 const CHANGE_TONE = { added: "success", changed: "info", moved: "violet", removed: "danger" } as const;
 
 /**
- * Ask an agent to plan a program, then decide what to do with what it wrote.
+ * Everything agents (or the operator) have proposed in this workspace: new
+ * programs, changes to programs, and changes to CLAUDE.md and AGENTS.md.
  *
- * The screen is arranged around the one fact that matters: a draft is a
- * proposal. The agent fills it in, the operator edits it in place, and nothing
- * exists in the library until Apply — which is why Apply is the only primary
- * button here and why the issues list sits directly above it.
+ * Requests are made from the request bar; this is where their results are read
+ * and decided on. The screen is arranged around the one fact that matters: a
+ * proposal is not a change. Nothing is created or modified until Apply, which
+ * is why Apply is the only primary button in each one.
  */
-export function ProgramDraftPanel({ serverUrl, workspaceId, onApplied, initialOpenId = null }: Props) {
+export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onApplied, initialOpenKey = null }: Props) {
   const toast = useToast();
   const dialogs = useDialogs();
+  const console_ = useAgentConsole();
   const [entries, setEntries] = useState<Entry[] | null>(null);
-  const { providers, firstAvailable } = useProviders(serverUrl);
-  const [goal, setGoal] = useState("");
-  const [picked, setProvider] = useState<ProviderId | "">("");
-  const provider = picked !== "" ? picked : firstAvailable;
-  const [openId, setOpenId] = useState<number | null>(initialOpenId);
+  const [proposals, setProposals] = useState<InstructionProposalRecord[] | null>(null);
+  const { providers } = useProviders(serverUrl);
+  const [openKey, setOpenKey] = useState<string | null>(initialOpenKey);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setEntries(await workspaceApi.programDrafts(serverUrl, workspaceId));
+      const [drafts, instructionProposals] = await Promise.all([
+        workspaceApi.programDrafts(serverUrl, workspaceId),
+        workspaceApi.instructionProposals(serverUrl, workspaceId),
+      ]);
+      setEntries(drafts);
+      setProposals(instructionProposals);
     } catch (error) {
-      toast.error("Could not load drafts", error instanceof Error ? error.message : String(error));
+      toast.error("Could not load proposals", error instanceof Error ? error.message : String(error));
       setEntries([]);
+      setProposals([]);
     }
   }, [serverUrl, workspaceId, toast]);
 
   useEffect(() => {
-    setOpenId(initialOpenId);
+    setOpenKey(initialOpenKey);
     void load();
-  }, [load, initialOpenId]);
+  }, [load, initialOpenKey]);
 
-  // While an author run is filling one in, its suites appear a post at a time.
+  // While an author run is filling a draft in, its suites appear a post at a time.
   // Polling rather than the run socket: this panel is not the console, and a
   // five-second refresh is enough to watch a plan take shape.
   const authoring = (entries ?? []).some((entry) => entry.draft.state === "PENDING" && entry.draft.runId !== null);
@@ -82,6 +98,16 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, onApplied, initialOp
     const timer = setInterval(() => { void load(); }, 5000);
     return () => clearInterval(timer);
   }, [authoring, load]);
+
+  // An instruction proposal is written when its run ends, and any execute run
+  // can leave one behind, so the list reloads whenever the set of live runs
+  // changes — debounced, since a pipeline can start and end runs in a burst.
+  const liveRunIds = console_.runs.map((run) => run.runId);
+  const liveRuns = liveRunIds.join(",");
+  useEffect(() => {
+    const timer = setTimeout(() => { void load(); }, 300);
+    return () => clearTimeout(timer);
+  }, [liveRuns, load]);
 
   const act = async (operation: () => Promise<unknown>, success?: string) => {
     setBusy(true);
@@ -98,166 +124,136 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, onApplied, initialOp
     }
   };
 
-  const start = async (withAgent: boolean) => {
-    if (goal.trim() === "") {
-      toast.error("Say what to plan", "Describe the outcome you want a program for.");
-      return;
-    }
-    if (withAgent && provider === "") {
-      toast.error("No provider", "No agent is available to draft with. Write the draft by hand instead.");
-      return;
-    }
-    const started = await act(async () => {
-      const result = await workspaceApi.startProgramDraft(serverUrl, workspaceId, {
-        goal: goal.trim(),
-        ...(withAgent ? { provider: provider as ProviderId } : {}),
-      });
-      setOpenId(result.draft.id);
-      return result;
-    }, withAgent ? "The agent is reading the workspace" : "Empty draft opened");
-    if (started) setGoal("");
-  };
+  const rows: Row[] | null = entries === null || proposals === null
+    ? null
+    : [
+        ...entries.map((entry): Row => ({ key: `program:${entry.draft.id}`, createdAt: entry.draft.createdAt, kind: "program", entry })),
+        ...proposals.map((proposal): Row => ({ key: `instructions:${proposal.id}`, createdAt: proposal.createdAt, kind: "instructions", proposal })),
+      ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const pendingCount = rows?.filter((row) => (row.kind === "program" ? row.entry.draft.state : row.proposal.state) === "PENDING").length ?? 0;
 
-  const open = entries?.find((entry) => entry.draft.id === openId) ?? null;
+  const toggle = (key: string) => setOpenKey(openKey === key ? null : key);
 
   return (
     <section className="rounded-panel border border-line bg-surface-1">
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3">
         <div>
-          <h3 className="text-[13px] font-medium text-fg">Draft a program with an agent</h3>
+          <h3 className="text-[13px] font-medium text-fg">Proposals</h3>
           <p className="mt-0.5 text-[11px] leading-relaxed text-fg-dim">
-            An agent reads this workspace and proposes suites of work items. Changes proposed to an existing program land here too. Nothing is created or changed until you apply it.
+            New programs, changes to programs, and changes to CLAUDE.md and AGENTS.md, written by an agent or by you. Nothing is created or changed until you apply it.
           </p>
         </div>
-        {entries !== null && entries.length > 0 && (
-          <span className="text-[11px] text-fg-dim">{entries.length} draft{entries.length === 1 ? "" : "s"}</span>
+        {rows !== null && rows.length > 0 && (
+          <span className="text-[11px] text-fg-dim">{pendingCount} pending · {rows.length} total</span>
         )}
       </header>
 
-      <div className="space-y-3 border-b border-line p-4">
-        <TextArea
-          label="What should the program achieve?"
-          rows={3}
-          value={goal}
-          onChange={(event) => setGoal(event.target.value)}
-          placeholder="e.g. Move the API off the legacy host, one endpoint at a time, without downtime."
-          hint="Say the outcome and any constraints. The agent decides the suites and the work items."
-        />
-        <div className="flex flex-wrap items-end gap-2">
-          <Select
-            label="Agent"
-            fieldClassName="w-52"
-            value={provider}
-            onChange={(event) => setProvider(event.target.value as ProviderId | "")}
-          >
-            {providers.length === 0 && <option value="">no provider detected</option>}
-            {providers.map((entry) => (
-              <option key={entry.id} value={entry.id} disabled={!entry.available}>
-                {entry.id}{entry.available ? "" : " — unavailable"}
-              </option>
-            ))}
-          </Select>
-          <Button variant="primary" loading={busy} onClick={() => void start(true)}>
-            Draft it
-          </Button>
-          <Button variant="ghost" disabled={busy} onClick={() => void start(false)}>
-            Write one myself
-          </Button>
-        </div>
-      </div>
-
-      {entries === null ? (
-        <div className="flex items-center gap-2 p-4 text-xs text-fg-dim"><Spinner /> Loading drafts…</div>
-      ) : entries.length === 0 ? (
-        <p className="p-4 text-xs leading-relaxed text-fg-dim">No drafts yet.</p>
+      {rows === null ? (
+        <div className="flex items-center gap-2 p-4 text-xs text-fg-dim"><Spinner /> Loading proposals…</div>
+      ) : rows.length === 0 ? (
+        <p className="p-4 text-xs leading-relaxed text-fg-dim">No proposals yet. Ask for one above with Change, Draft or Edit myself.</p>
       ) : (
         <ul className="divide-y divide-line">
-          {entries.map((entry) => (
-            <li key={entry.draft.id}>
-              <button
-                type="button"
-                onClick={() => setOpenId(openId === entry.draft.id ? null : entry.draft.id)}
-                className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2"
-              >
-                <Badge tone={STATE_TONE[entry.draft.state]}>{entry.draft.state.toLowerCase()}</Badge>
-                {entry.draft.targetProgramId !== null && <Badge tone="violet">changes</Badge>}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] text-fg">
-                    {entry.draft.targetProgramId !== null
-                      ? `${entry.draft.baseline?.name ?? entry.draft.body.name}: ${entry.draft.goal}`
-                      : entry.draft.body.name === "" ? entry.draft.goal : entry.draft.body.name}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[11px] text-fg-dim">
-                    {entry.draft.targetProgramId !== null && entry.draft.baseline !== null
-                      ? `${diffProgramRevision(entry.draft.baseline, entry.draft.body).length} change(s) to an existing program`
-                      : `${entry.preview.filledSuites}/${entry.preview.suites} suites · ${entry.preview.prompts} work items${entry.preview.verifiable > 0 ? ` · ${entry.preview.verifiable} verifiable` : ""}`}
-                    {entry.draft.runId !== null && entry.draft.state === "PENDING" && " · an agent is writing"}
-                  </span>
-                </span>
-                <span className="text-[11px] text-fg-dim">{openId === entry.draft.id ? "hide" : "open"}</span>
-              </button>
-              {openId === entry.draft.id && open !== null && (
-                <DraftEditor
-                  key={`${entry.draft.id}:${entry.draft.updatedAt}`}
-                  serverUrl={serverUrl}
-                  entry={open}
+          {rows.map((row) => row.kind === "instructions" ? (
+            <li key={row.key}>
+              <InstructionProposalRow
+                proposal={row.proposal}
+                open={openKey === row.key}
+                writing={row.proposal.origin === "request" && row.proposal.runId !== null && liveRunIds.includes(row.proposal.runId)}
+                onToggle={() => toggle(row.key)}
+              />
+              {openKey === row.key && (
+                <InstructionProposalEditor
+                  key={`${row.proposal.id}:${row.proposal.updatedAt}`}
+                  proposal={row.proposal}
+                  current={instructions[row.proposal.field]}
+                  writing={row.proposal.origin === "request" && row.proposal.runId !== null && liveRunIds.includes(row.proposal.runId)}
                   providers={providers}
                   busy={busy}
-                  onSave={(body) => act(() => workspaceApi.saveProgramDraft(serverUrl, entry.draft.id, body), "Draft saved")}
-                  onApply={async (withPipeline, changes) => {
-                    const revision = entry.draft.targetProgramId !== null;
-                    const confirmed = await dialogs.confirm(revision
+                  onSave={(content) => act(() => workspaceApi.saveInstructionProposal(serverUrl, row.proposal.id, content), "Proposal saved")}
+                  onApply={async (force) => {
+                    const name = INSTRUCTION_FILE_NAMES[row.proposal.field];
+                    const confirmed = await dialogs.confirm(force
                       ? {
-                          title: "Apply these changes to the program?",
-                          description: `${changes} change(s) will be written into "${entry.draft.baseline?.name ?? entry.draft.body.name}". Changed work items keep their status and history, and each edit is saved as a revision you can restore. Removed items are deleted.`,
-                          confirmLabel: "Apply changes",
+                          title: `Apply over the newer ${name}?`,
+                          description: `${name} was changed after this proposal was opened. Applying replaces it with the proposed text, undoing that change. The replaced text is kept in the file's history.`,
+                          confirmLabel: "Apply anyway",
+                          tone: "danger",
                         }
                       : {
-                          title: "Create this program?",
-                          description: `${entry.preview.prompts} work items in ${entry.preview.suites} suites will be added to this workspace. The draft is kept as a record.`,
-                          confirmLabel: "Create program",
+                          title: `Apply these changes to ${name}?`,
+                          description: `Every later run in this workspace reads the new ${name}. The current text is kept in the file's history, so it can be restored.`,
+                          confirmLabel: "Apply",
                         });
                     if (!confirmed) return;
-                    const ok = await act(async () => {
-                      const result = await workspaceApi.applyProgramDraft(serverUrl, entry.draft.id, { withPipeline });
-                      if (result.pipelineError !== null) {
-                        toast.error(revision ? "The changes were applied; a new item was not added to a pipeline" : "The program was created; its pipeline was not", result.pipelineError);
-                      }
-                      if (result.revision !== null) {
-                        const r = result.revision;
-                        toast.success("Changes applied", `${r.added} added · ${r.updated} updated · ${r.moved} moved · ${r.removed} removed${r.pipelineSteps > 0 ? ` · ${r.pipelineSteps} pipeline station(s) added` : ""}`);
-                      }
-                      return result;
-                    }, entry.draft.targetProgramId !== null ? undefined : "Program created");
+                    const ok = await act(() => workspaceApi.applyInstructionProposal(serverUrl, row.proposal.id, { force }), `${name} updated`);
                     if (ok) await onApplied();
                   }}
-                  onRevise={(feedback, reviseProvider) =>
+                  onRework={(feedback, provider) =>
                     act(
-                      () => workspaceApi.reviseProgramDraft(serverUrl, entry.draft.id, { provider: reviseProvider, feedback }),
-                      "The agent is revising the draft",
+                      () => workspaceApi.reviseInstructionProposal(serverUrl, row.proposal.id, { provider, feedback }),
+                      "The agent is reworking the proposal",
                     )
                   }
                   onDiscard={async () => {
                     const confirmed = await dialogs.confirm({
-                      title: "Discard this draft?",
-                      description: "It is kept as a record, but it can no longer be applied or written to.",
+                      title: "Discard this proposal?",
+                      description: "It is kept as a record, but it can no longer be applied. The same edit will not be proposed again.",
                       confirmLabel: "Discard",
                       tone: "danger",
                     });
-                    if (confirmed) await act(() => workspaceApi.discardProgramDraft(serverUrl, entry.draft.id), "Discarded");
+                    if (confirmed) await act(() => workspaceApi.discardInstructionProposal(serverUrl, row.proposal.id), "Discarded");
                   }}
                   onDelete={async () => {
                     const confirmed = await dialogs.confirm({
-                      title: "Delete this draft?",
-                      description: "It is removed outright. Any program already created from it is untouched.",
+                      title: "Delete this proposal?",
+                      description: "It is removed outright. If it was applied, the file keeps the applied text.",
                       confirmLabel: "Delete",
                       tone: "danger",
                     });
                     if (confirmed) {
-                      setOpenId(null);
-                      await act(() => workspaceApi.removeProgramDraft(serverUrl, entry.draft.id), "Deleted");
+                      setOpenKey(null);
+                      await act(() => workspaceApi.removeInstructionProposal(serverUrl, row.proposal.id), "Deleted");
                     }
                   }}
+                />
+              )}
+            </li>
+          ) : (
+            <li key={row.key}>
+              <button
+                type="button"
+                onClick={() => toggle(row.key)}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2"
+              >
+                <Badge tone={STATE_TONE[row.entry.draft.state]}>{row.entry.draft.state.toLowerCase()}</Badge>
+                <Badge tone={row.entry.draft.targetProgramId !== null ? "violet" : "accent"}>
+                  {row.entry.draft.targetProgramId !== null ? "program changes" : "new program"}
+                </Badge>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] text-fg">
+                    {row.entry.draft.targetProgramId !== null
+                      ? `${row.entry.draft.baseline?.name ?? row.entry.draft.body.name}: ${row.entry.draft.goal}`
+                      : row.entry.draft.body.name === "" ? row.entry.draft.goal : row.entry.draft.body.name}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-fg-dim">
+                    {row.entry.draft.targetProgramId !== null && row.entry.draft.baseline !== null
+                      ? `${diffProgramRevision(row.entry.draft.baseline, row.entry.draft.body).length} change(s) to an existing program`
+                      : `${row.entry.preview.filledSuites}/${row.entry.preview.suites} suites · ${row.entry.preview.prompts} work items${row.entry.preview.verifiable > 0 ? ` · ${row.entry.preview.verifiable} verifiable` : ""}`}
+                    {row.entry.draft.runId !== null && row.entry.draft.state === "PENDING" && liveRunIds.includes(row.entry.draft.runId) && " · an agent is writing"}
+                  </span>
+                </span>
+                <span className="text-[11px] text-fg-dim">{openKey === row.key ? "hide" : "open"}</span>
+              </button>
+              {openKey === row.key && (
+                <ProgramDraftEntry
+                  serverUrl={serverUrl}
+                  entry={row.entry}
+                  providers={providers}
+                  busy={busy}
+                  act={act}
+                  onApplied={onApplied}
+                  onDeleted={() => setOpenKey(null)}
                 />
               )}
             </li>
@@ -265,6 +261,102 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, onApplied, initialOp
         </ul>
       )}
     </section>
+  );
+}
+
+function InstructionProposalRow({ proposal, open, writing, onToggle }: { proposal: InstructionProposalRecord; open: boolean; writing: boolean; onToggle(): void }) {
+  const counts = useMemo(() => diffLineCounts(diffLines(proposal.baseline, proposal.content)), [proposal.baseline, proposal.content]);
+  return (
+    <button type="button" onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2">
+      <Badge tone={STATE_TONE[proposal.state]}>{proposal.state.toLowerCase()}</Badge>
+      <Badge tone="caution">{INSTRUCTION_FILE_NAMES[proposal.field]}</Badge>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] text-fg">{proposal.goal === "" ? `Changes to ${INSTRUCTION_FILE_NAMES[proposal.field]}` : proposal.goal}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-fg-dim">
+          {writing ? "an agent is writing" : `+${counts.added} −${counts.removed} lines`}
+          {proposal.origin === "run" && " · edited during a run"}
+        </span>
+      </span>
+      <span className="text-[11px] text-fg-dim">{open ? "hide" : "open"}</span>
+    </button>
+  );
+}
+
+/** One program draft, opened: its editor wired to the draft routes. */
+function ProgramDraftEntry({ serverUrl, entry, providers, busy, act, onApplied, onDeleted }: {
+  serverUrl: string;
+  entry: Entry;
+  providers: ProviderInfo[];
+  busy: boolean;
+  act(operation: () => Promise<unknown>, success?: string): Promise<boolean>;
+  onApplied(): void | Promise<void>;
+  onDeleted(): void;
+}) {
+  const toast = useToast();
+  const dialogs = useDialogs();
+  return (
+    <DraftEditor
+      key={`${entry.draft.id}:${entry.draft.updatedAt}`}
+      serverUrl={serverUrl}
+      entry={entry}
+      providers={providers}
+      busy={busy}
+      onSave={(body) => act(() => workspaceApi.saveProgramDraft(serverUrl, entry.draft.id, body), "Draft saved")}
+      onApply={async (withPipeline, changes) => {
+        const revision = entry.draft.targetProgramId !== null;
+        const confirmed = await dialogs.confirm(revision
+          ? {
+              title: "Apply these changes to the program?",
+              description: `${changes} change(s) will be written into "${entry.draft.baseline?.name ?? entry.draft.body.name}". Changed work items keep their status and history, and each edit is saved as a revision you can restore. Removed items are deleted.`,
+              confirmLabel: "Apply changes",
+            }
+          : {
+              title: "Create this program?",
+              description: `${entry.preview.prompts} work items in ${entry.preview.suites} suites will be added to this workspace. The draft is kept as a record.`,
+              confirmLabel: "Create program",
+            });
+        if (!confirmed) return;
+        const ok = await act(async () => {
+          const result = await workspaceApi.applyProgramDraft(serverUrl, entry.draft.id, { withPipeline });
+          if (result.pipelineError !== null) {
+            toast.error(revision ? "The changes were applied; a new item was not added to a pipeline" : "The program was created; its pipeline was not", result.pipelineError);
+          }
+          if (result.revision !== null) {
+            const r = result.revision;
+            toast.success("Changes applied", `${r.added} added · ${r.updated} updated · ${r.moved} moved · ${r.removed} removed${r.pipelineSteps > 0 ? ` · ${r.pipelineSteps} pipeline station(s) added` : ""}`);
+          }
+          return result;
+        }, entry.draft.targetProgramId !== null ? undefined : "Program created");
+        if (ok) await onApplied();
+      }}
+      onRevise={(feedback, reviseProvider) =>
+        act(
+          () => workspaceApi.reviseProgramDraft(serverUrl, entry.draft.id, { provider: reviseProvider, feedback }),
+          "The agent is revising the draft",
+        )
+      }
+      onDiscard={async () => {
+        const confirmed = await dialogs.confirm({
+          title: "Discard this draft?",
+          description: "It is kept as a record, but it can no longer be applied or written to.",
+          confirmLabel: "Discard",
+          tone: "danger",
+        });
+        if (confirmed) await act(() => workspaceApi.discardProgramDraft(serverUrl, entry.draft.id), "Discarded");
+      }}
+      onDelete={async () => {
+        const confirmed = await dialogs.confirm({
+          title: "Delete this draft?",
+          description: "It is removed outright. Any program already created from it is untouched.",
+          confirmLabel: "Delete",
+          tone: "danger",
+        });
+        if (confirmed) {
+          onDeleted();
+          await act(() => workspaceApi.removeProgramDraft(serverUrl, entry.draft.id), "Deleted");
+        }
+      }}
+    />
   );
 }
 

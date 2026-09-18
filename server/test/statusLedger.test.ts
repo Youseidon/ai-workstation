@@ -16,7 +16,7 @@ import { STATUS_TRIGGERS } from "@agent-console/shared";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { newId } from "../src/lib/ids.ts";
 import { runContexts } from "../src/runContext.ts";
-import { workspaces } from "../src/workspaces.ts";
+import { workspaces, WorkspaceError } from "../src/workspaces.ts";
 import { decide, endOfRunReason, endOfRunSignal } from "../src/statusTransition.ts";
 
 let seq = 0;
@@ -98,6 +98,23 @@ test("a crashed process is FAILED, and a clean exit never is", () => {
   } finally {
     clean.cleanup();
   }
+});
+
+test("an agent cannot turn an in-workspace repair into a human blocker", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    assert.throws(
+      () => workspaces.updateAgentStatus(runId, {
+        requestId: unique("status"), expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+        reason: "The verification script has a fixed-sleep race.",
+        verificationSummary: "Update the Verify command in the work-item database and requeue it.",
+      }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "recoverable_blocker",
+    );
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "IN_PROGRESS");
+  } finally { ctx.cleanup(); }
 });
 
 test("a budget stop is resumable, not a crash", () => {

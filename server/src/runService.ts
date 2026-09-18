@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { isProviderId, type ProgramDraftRecord, type ProviderId, type ProviderInfo } from "@agent-console/shared";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
 import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
@@ -12,7 +14,8 @@ import { runHub } from "./runHub.ts";
 import { createAgentShim, removeAgentShim } from "./agentShim.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
-import { materialize, readBack } from "./workspaceInstructions.ts";
+import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstructionFile } from "./workspaceInstructions.ts";
+import { instructionAuthorPrompt } from "./instructionAuthor.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -53,6 +56,20 @@ export interface StartProgramAuthorArgs {
   /** Open a revision of this existing program instead of a new-program draft. */
   programId?: number;
   /** What the operator wants changed about that draft. */
+  feedback?: string;
+}
+
+export interface StartInstructionAuthorArgs {
+  workspaceId: number;
+  provider: string;
+  model: string | null;
+  /** Open a new proposal for this file. */
+  field?: WorkspaceInstructionField;
+  /** What the operator wants changed. Required for a new proposal. */
+  goal?: string;
+  /** Rework an existing proposal instead of opening one. */
+  proposalId?: number;
+  /** What the operator wants changed about that proposal. */
   feedback?: string;
 }
 
@@ -263,7 +280,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         );
       }
       runHub.end(runId, state);
-      if (mode === "execute") readBack(endedWorkspaceId);
+      if (mode === "execute") proposeFromWorkingTree(endedWorkspaceId, runId);
       const tellPipeline = () => {
         if (mode !== "execute" || endedPromptId === undefined) return;
         // Always the *source* run id: the scheduler's `currentRunId` guard keys
@@ -831,6 +848,126 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
   });
   void handle.done.catch((error: unknown) => log.error("program author failed", error));
   return { runId: handle.runId, draft: workspaces.programDraft(draft.id) };
+}
+
+/**
+ * Has an agent rewrite CLAUDE.md or AGENTS.md into a proposal.
+ *
+ * The agent edits the real file in the working tree — that is the copy it can
+ * read in context and change with its ordinary tools — and when the run ends
+ * the file's contents are stored as the proposal and the file is put back as
+ * it was. So, like a program draft, the guarantee is structural: the workspace
+ * record, which every later run is written from, only changes on apply.
+ *
+ * It holds the workspace's writer lock like an author run, and for the same
+ * reason: it needs normal permissions to edit a file, and a second writer in
+ * the tree could see the half-edited file or have its own edit captured here.
+ */
+export async function startInstructionAuthor(args: StartInstructionAuthorArgs): Promise<{ runId: string; proposal: InstructionProposalRecord }> {
+  const workspace = workspaces.get(args.workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  if (workspaces.activePipelineForWorkspace(args.workspaceId) !== null) {
+    throw new WorkspaceError(409, "workspace_busy", "A pipeline is already active in this workspace.", {
+      detail: "Stop or finish it before changing the instruction files it runs with.",
+    });
+  }
+  const busy = runHub.activeForWorkspace(args.workspaceId);
+  if (busy !== undefined) {
+    throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`, {
+      detail: "Stop the running agent before changing an instruction file in the same working directory.",
+    });
+  }
+  const provider = await requireAvailableProvider(args.provider);
+
+  const existing = args.proposalId === undefined ? null : workspaces.instructionProposal(args.proposalId);
+  if (existing !== null && existing.workspaceId !== args.workspaceId) {
+    throw new WorkspaceError(404, "not_found", "That proposal belongs to another workspace");
+  }
+  if (existing === null && args.field === undefined) {
+    throw new WorkspaceError(422, "validation_error", "Choose CLAUDE.md or AGENTS.md", { field: "Required" });
+  }
+  const proposal = existing ?? workspaces.createInstructionProposal({ workspaceId: args.workspaceId, field: args.field!, goal: args.goal ?? "" });
+  const file = INSTRUCTION_FILE_NAMES[proposal.field];
+
+  const plannedRunId = newId("run");
+  const credential = runContexts.create(plannedRunId, args.workspaceId, null, undefined, proposal.goal);
+  try {
+    workspaces.beginAuthorRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      provider,
+      model: args.model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText: `Change ${file}: ${proposal.goal}`,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  try {
+    workspaces.attachInstructionProposalRun(proposal.id, plannedRunId);
+  } catch (error) {
+    workspaces.finishAgentRun(plannedRunId, "error");
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  // The file as the tree has it once the stored text is projected, which is
+  // what the run's end puts back. Reworking a proposal starts the agent from
+  // the proposal, not from the stored text it already moved away from.
+  materialize(workspace);
+  const before = readInstructionFile(workspace.workDirectory, proposal.field);
+  const reworking = existing !== null && existing.content !== existing.baseline;
+  if (reworking) writeFileSync(join(workspace.workDirectory, file), `${existing.content}\n`, "utf8");
+
+  const feedback = typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null;
+  const prompt = instructionAuthorPrompt({
+    workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+    field: proposal.field,
+    goal: proposal.goal,
+    exists: reworking || before !== null,
+    reworking,
+    feedback,
+  });
+
+  let handle: ReturnType<typeof startRun>;
+  try {
+    handle = startRun({
+      runId: plannedRunId,
+      adapter: getAdapter(provider),
+      prompt,
+      cwd: workspace.workDirectory,
+      model: args.model,
+      role: "author",
+      permissionOverride: "inherit",
+      onEvent: (event) => {
+        workspaces.recordAgentEvent(plannedRunId, event);
+        runHub.event(plannedRunId, event);
+      },
+      onEnd: (runId, state, metrics) => {
+        captureInstructionRun(proposal.id, workspace.workDirectory, proposal.field, before);
+        workspaces.finishAgentRun(runId, state, "", metrics);
+        runContexts.complete(runId);
+        runHub.end(runId, state);
+      },
+    });
+  } catch (error) {
+    captureInstructionRun(proposal.id, workspace.workDirectory, proposal.field, before);
+    throw error;
+  }
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: { type: "instructions", proposalId: proposal.id, file, goal: proposal.goal },
+    role: "author",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("instruction author failed", error));
+  return { runId: handle.runId, proposal: workspaces.instructionProposal(proposal.id) };
 }
 
 /**

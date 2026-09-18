@@ -1,4 +1,5 @@
 import type {
+  AgentRequest, InstructionProposalRecord,
   ProgramDraftBody, ProgramDraftRecord, ProgramDraftPreview,
   StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
@@ -75,6 +76,19 @@ export const workspaceApi = {
   reviseProgramDraft(serverUrl:string,id:number,value:{provider:ProviderId;model?:string|null;feedback?:string}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string}>(serverUrl,`/api/program-drafts/${id}/revise`,{method:"POST",...json(value)});},
   /* An existing program: ask about it (a read-only consult whose answer is its
      transcript), or open a revision draft of it, with or without an agent. */
+  /* The request bar: one call for every target and mode. `ask` answers as a
+     consult run; every other mode returns the proposal it opened. */
+  agentRequest(serverUrl:string,workspaceId:number,value:AgentRequest){return request<
+    | {kind:"consult";runId:string}
+    | {kind:"program-draft";draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string|null}
+    | {kind:"instruction-proposal";proposal:InstructionProposalRecord;runId:string|null}
+  >(serverUrl,`/api/workspaces/${workspaceId}/agent-requests`,{method:"POST",...json(value)});},
+  instructionProposals(serverUrl:string,workspaceId:number){return request<{proposals:InstructionProposalRecord[]}>(serverUrl,`/api/workspaces/${workspaceId}/instruction-proposals`).then(r=>r.proposals);},
+  saveInstructionProposal(serverUrl:string,id:number,content:string){return request<{proposal:InstructionProposalRecord}>(serverUrl,`/api/instruction-proposals/${id}`,{method:"PATCH",...json({content})}).then(r=>r.proposal);},
+  applyInstructionProposal(serverUrl:string,id:number,value:{force?:boolean}={}){return request<{proposal:InstructionProposalRecord;workspace:WorkspaceRecord}>(serverUrl,`/api/instruction-proposals/${id}/apply`,{method:"POST",...json(value)});},
+  discardInstructionProposal(serverUrl:string,id:number){return request<{proposal:InstructionProposalRecord}>(serverUrl,`/api/instruction-proposals/${id}/discard`,{method:"POST",body:"{}"}).then(r=>r.proposal);},
+  removeInstructionProposal(serverUrl:string,id:number){return request<void>(serverUrl,`/api/instruction-proposals/${id}`,{method:"DELETE"});},
+  reviseInstructionProposal(serverUrl:string,id:number,value:{provider:ProviderId;model?:string|null;feedback?:string}){return request<{proposal:InstructionProposalRecord;runId:string}>(serverUrl,`/api/instruction-proposals/${id}/revise`,{method:"POST",...json(value)});},
   askAboutProgram(serverUrl:string,programId:number,value:{question:string;provider:ProviderId;model?:string|null}){return request<{runId:string}>(serverUrl,`/api/programs/${programId}/ask`,{method:"POST",...json(value)});},
   startProgramRevision(serverUrl:string,programId:number,value:{goal:string;provider?:ProviderId;model?:string|null}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string|null}>(serverUrl,`/api/programs/${programId}/revisions`,{method:"POST",...json(value)});},
   history(serverUrl:string,id:number){return request<{events:PromptStatusEvent[];remarks:PromptRemark[];runs:unknown[]}>(serverUrl,`/api/prompts/${id}/history`);},

@@ -147,7 +147,7 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|decompose|propose-program|propose-suite|revise-program)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|decompose|repair-verify|propose-program|propose-suite|revise-program)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
@@ -159,7 +159,7 @@ const httpServer = createServer((req, res) => {
       // no work item to post about. A consult run has neither.
       const authoring=operation==="propose-program"||operation==="propose-suite"||operation==="revise-program";
       if(authoring&&persisted.role!=="author")throw new WorkspaceError(403,"author_only","Only an author run can propose a program.");
-      if(!authoring&&persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose")){
+      if(!authoring&&persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose"||operation==="repair-verify")){
         throw persisted.role==="author"
           ? new WorkspaceError(403,"author_only","An author run drafts a program; it has no work item to report on.")
           : new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks, status, or decompose.");
@@ -207,7 +207,7 @@ const httpServer = createServer((req, res) => {
         recordDbAccess(runId,describeRead({operation:"state",summary:`read ${(history.events as unknown[]).length} status events and ${(history.remarks as unknown[]).length} remarks`,durationMs:Date.now()-startedAt}));
         return;
       }
-      if((operation==="remarks"||operation==="status"||operation==="decompose"||authoring)&&req.method==="POST"){
+      if((operation==="remarks"||operation==="status"||operation==="decompose"||operation==="repair-verify"||authoring)&&req.method==="POST"){
         void readJsonBody(req,authoring?MAX_AUTHOR_BODY_BYTES:MAX_BODY_BYTES).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
@@ -243,7 +243,12 @@ const httpServer = createServer((req, res) => {
             :operation==="revise-program"?workspaces.reviseProgram(runId,body)
             :operation==="remarks"?workspaces.addAgentRemark(runId,body)
             :operation==="status"?workspaces.updateAgentStatus(runId,body)
+            :operation==="repair-verify"?workspaces.repairAgentVerifyCommand(runId,body)
             :workspaces.decomposePrompt(runId,body);
+          if(operation==="repair-verify"&&memory.promptId!==null){
+            await runDefinitionOfDoneCommands(memory.promptId,runId);
+            (result as Record<string,unknown>).failures=workspaces.agentDoneVerificationFailures(memory.promptId)??[];
+          }
           // The agent cannot see the runner's counters. Riding the reply it is
           // already making is the one channel that reaches every provider, so a
           // run learns to bank its work before the budget stops it.

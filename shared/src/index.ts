@@ -776,7 +776,7 @@ interface EventBase {
 export interface DbAccessPayload {
   /** Whether this read the app's state or changed it. */
   direction: "read" | "write";
-  operation: "context" | "state" | "remarks" | "status" | "decompose" | "propose-program" | "propose-suite" | "revise-program";
+  operation: "context" | "state" | "remarks" | "status" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program";
   method: string;
   /** Accepted, refused, or replayed from the idempotency ledger. */
   outcome: "accepted" | "rejected" | "replayed";
@@ -1689,7 +1689,9 @@ export type RunSource =
   | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
   | { type: "wrapup"; promptId: number; promptKey: string | null; title: string; sourceRunId: string; stopReason: string | null }
   | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string }
-  | { type: "author"; draftId: number; goal: string; programName: string | null; /** True when changing an existing program. */ revision?: boolean };
+  | { type: "author"; draftId: number; goal: string; programName: string | null; /** True when changing an existing program. */ revision?: boolean }
+  /** An agent editing CLAUDE.md or AGENTS.md into a proposal the operator applies. */
+  | { type: "instructions"; proposalId: number; file: string; goal: string };
 
 export interface ServerRunStartedMessage {
   kind: "run_started";
@@ -1984,6 +1986,29 @@ export type {
   RevisionOperation,
   RevisionResult,
 } from "./programRevision";
+export {
+  AGENT_REQUEST_MODES,
+  AGENT_REQUEST_MODE_LABELS,
+  AGENT_REQUEST_TEXT_MAX,
+  INSTRUCTION_CONTENT_MAX,
+  INSTRUCTION_FILE_NAMES,
+  INSTRUCTION_PROPOSAL_STATES,
+  agentRequestModeBlock,
+  allowedAgentRequestModes,
+  diffLineCounts,
+  diffLines,
+  isInstructionField,
+  normalizeAgentRequest,
+} from "./agentRequest";
+export type {
+  AgentRequest,
+  AgentRequestMode,
+  AgentRequestTarget,
+  DiffLine,
+  InstructionProposalOrigin,
+  InstructionProposalRecord,
+  InstructionProposalState,
+} from "./agentRequest";
 import type { StatusDefinition, StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
 
 export type {

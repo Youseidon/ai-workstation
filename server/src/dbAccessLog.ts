@@ -13,10 +13,10 @@
 
 import type { DbAccessPayload } from "@agent-console/shared";
 
-export type DbOperation = "context" | "state" | "remarks" | "status" | "decompose" | "propose-program" | "propose-suite" | "revise-program";
+export type DbOperation = "context" | "state" | "remarks" | "status" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program";
 
 /** The endpoints that change state. Everything else is a read. */
-const WRITES = new Set<DbOperation>(["remarks", "status", "decompose", "propose-program", "propose-suite", "revise-program"]);
+const WRITES = new Set<DbOperation>(["remarks", "status", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"]);
 
 /**
  * What an accepted call touched.
@@ -31,6 +31,7 @@ const TABLES: Record<DbOperation, string[]> = {
   remarks: ["prompt_remark"],
   status: ["prompt", "prompt_status_event"],
   decompose: ["prompt", "prompt_status_event"],
+  "repair-verify": ["prompt", "prompt_revision", "definition_of_done", "dod_criterion", "dod_result", "prompt_remark"],
   // A proposal touches the draft and nothing else. That is the whole point of
   // it, and naming the table is how the operator can see that it is true.
   "propose-program": ["program_draft"],
@@ -68,6 +69,8 @@ export function describeAcceptedWrite(args: AcceptedWrite): DbAccessPayload {
       ? `+1 ${args.remarkKind ?? "PROGRESS"} remark`
       : args.operation === "decompose"
         ? "split into sub-steps"
+        : args.operation === "repair-verify"
+          ? "repaired and re-ran a failing Verify command"
         : args.operation === "propose-program"
           ? "proposed a program and its suites"
           : args.operation === "propose-suite"

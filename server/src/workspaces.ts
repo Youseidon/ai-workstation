@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { INSTRUCTION_CONTENT_MAX, INSTRUCTION_FILE_NAMES, isInstructionField, type InstructionProposalOrigin, type InstructionProposalRecord, type InstructionProposalState, type WorkspaceInstructionField } from "@agent-console/shared";
 import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
@@ -1319,6 +1320,40 @@ if (afterThirtyFour < 35) {
   migrate35();
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(35,?)").run(new Date().toISOString());
 }
+const afterThirtyFive = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyFive < 36) {
+  // A proposed rewrite of CLAUDE.md or AGENTS.md, held for the operator to
+  // apply. Either asked for from the request bar, or found in the working tree
+  // after a run edited the file on its own — which used to be written into the
+  // workspace without anyone reading it.
+  //
+  // `baseline` is the stored text when the proposal opened; apply refuses once
+  // the field has moved on, rather than silently reverting an edit made since.
+  //
+  // No foreign key to `agent_run`, for the reason `program_draft` has none.
+  //
+  // Additive: one CREATE TABLE and one index. No rebuild, no DROP.
+  const migrate36 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE instruction_proposal (
+        id INTEGER PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        field TEXT NOT NULL CHECK(field IN ('claudeMd','agentsMd')),
+        state TEXT NOT NULL DEFAULT 'PENDING' CHECK(state IN ('PENDING','APPLIED','DISCARDED')),
+        origin TEXT NOT NULL CHECK(origin IN ('request','run')),
+        goal TEXT NOT NULL DEFAULT '',
+        run_id TEXT,
+        baseline TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX instruction_proposal_workspace_idx ON instruction_proposal(workspace_id, id);
+    `);
+  });
+  migrate36();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(36,?)").run(new Date().toISOString());
+}
 
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
@@ -1527,6 +1562,65 @@ function requireText(value: unknown, field: string, max: number, allowEmpty = fa
   if (!allowEmpty && text === "") throw new WorkspaceError(422, "validation_error", `${field} is required`, { [field]: "Required" });
   if (text.length > max) throw new WorkspaceError(422, "validation_error", `${field} is too long`, { [field]: `Maximum ${max} characters` });
   return text;
+}
+
+const VERIFY_TIMEOUT_SUFFIX=/\s+#\s*timeout\s*=\s*\d+(?:\.\d+)?(?:s|ms|m)?\s*$/i;
+const VERIFY_EXECUTABLES=["cargo","curl","docker","dotnet","git","go","grep","node","npm","pnpm","pytest","python","rg","test","yarn"] as const;
+
+function commandText(line:string):string{return line.trim().replace(VERIFY_TIMEOUT_SUFFIX,"").trim();}
+
+/**
+ * Replace one command in the last Verify fence, which is the same section
+ * `parseVerifyBlock` treats as authoritative. A textual replacement over the
+ * whole prompt could silently alter an example or an earlier, superseded
+ * Verify section; locating the fence first keeps this capability as narrow as
+ * its name.
+ */
+function replaceVerifyCommand(content:string,oldCommand:string,newCommand:string):string {
+  const lines=content.replace(/\r\n/g,"\n").split("\n");
+  let heading=-1;
+  for(let i=0;i<lines.length;i++)if(/^##\s+Verify\b/i.test(lines[i]!))heading=i;
+  if(heading<0)throw new WorkspaceError(409,"verify_command_changed","This work item no longer has a Verify section. Re-read its context.");
+  let open=-1;let close=-1;
+  for(let i=heading+1;i<lines.length&&!/^##\s+/.test(lines[i]!);i++){
+    if(open<0&&/^```(?:sh|bash)[ \t]*$/i.test(lines[i]!)){open=i;continue;}
+    if(open>=0&&/^```[ \t]*$/.test(lines[i]!)){close=i;break;}
+  }
+  if(open<0||close<0)throw new WorkspaceError(409,"verify_command_changed","This work item's Verify shell block changed. Re-read its context.");
+  const matches:number[]=[];
+  for(let i=open+1;i<close;i++)if(commandText(lines[i]!)===oldCommand)matches.push(i);
+  if(matches.length!==1)throw new WorkspaceError(409,"verify_command_changed","The failing command is no longer present exactly once. Re-read context and use the current command.");
+  lines[matches[0]!] = newCommand;
+  return lines.join("\n");
+}
+
+/** Stable subjects a repaired recipe must continue to exercise. */
+function verificationAnchors(command:string):string[] {
+  const matches=command.match(/https?:\/\/[^\s'";]+|(?:[\w.@$(){}+-]+\/)+[\w.@$(){}:+-]+|[\w.-]+\.(?:csproj|slnx|json|ya?ml|toml|sh|mjs|cjs|js|ts|tsx|cs|py)/gi) ?? [];
+  return [...new Set(matches.map(value=>value.replace(/[),;&]+$/,"")))];
+}
+
+function validateVerifyRepair(oldCommand:string,newCommand:string):void {
+  if(newCommand.includes("\n")||newCommand.includes("\r"))throw new WorkspaceError(422,"validation_error","newCommand must be one shell line",{newCommand:"Use semicolons or && inside one line"});
+  if(newCommand===oldCommand)throw new WorkspaceError(422,"validation_error","newCommand is identical to the failing command",{newCommand:"Nothing changed"});
+  if(/(?:^|[;&|]\s*)(?:true|:|exit\s+0)(?:\s*(?:[;&|]|$))/i.test(newCommand)||/^echo\b.*$/i.test(newCommand))throw new WorkspaceError(422,"unsafe_verify_repair","A Verify repair must still test the work; it cannot contain an unconditional-success branch.");
+  if(newCommand.length<Math.min(40,Math.ceil(oldCommand.length/4)))throw new WorkspaceError(422,"unsafe_verify_repair","The replacement removes too much of the original verification recipe.");
+  const missingAnchors=verificationAnchors(oldCommand).filter(anchor=>!newCommand.includes(anchor));
+  const missingExecutables=VERIFY_EXECUTABLES.filter(name=>new RegExp(`(?:^|[;&|()\\s])${name}(?:[;&|()\\s]|$)`).test(oldCommand)&&!new RegExp(`(?:^|[;&|()\\s])${name}(?:[;&|()\\s]|$)`).test(newCommand));
+  if(missingAnchors.length>0||missingExecutables.length>0){
+    throw new WorkspaceError(422,"unsafe_verify_repair","The replacement must preserve what the original command verifies.",{
+      newCommand:`Keep these targets and tools: ${[...missingAnchors,...missingExecutables].join(", ")}`,
+    });
+  }
+}
+
+function recoverableBlocker(reason:string,action:string):boolean {
+  const text=`${reason}\n${action}`.toLowerCase();
+  const external=/credential|secret|password|api key|approval|legal|billing|account owner|physical access|choose|decision|confirm requirement/.test(text);
+  if(external)return false;
+  const verifyRecipe=/(verify|verification|acceptance).{0,80}(command|script|recipe)|(?:command|script|recipe).{0,80}(verify|verification|acceptance)|tracker database|work-item database/.test(text);
+  const workspaceWork=/(edit|change|modify|fix|update|add|remove|rewrite).{0,80}(source|code|file|test|config|script)/.test(text);
+  return verifyRecipe||workspaceWork;
 }
 
 function directory(value: unknown): string {
@@ -1784,6 +1878,11 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   if(target==="DONE"&&verification==="")throw new WorkspaceError(422,"validation_error","DONE requires a verification summary");
   if(target==="BLOCKED"&&reason==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires an evidence-based reason");
   if(target==="BLOCKED"&&verification==="")throw new WorkspaceError(422,"validation_error","BLOCKED requires verificationSummary to state the exact action only the human can take");
+  if(target==="BLOCKED"&&recoverableBlocker(reason,verification))throw new WorkspaceError(
+    409,
+    "recoverable_blocker",
+    "The requested action is a workspace or Verify-recipe change, not an external dependency only a human can clear. Repair the failing Verify command, fix the workspace, or post CONTINUE with what remains.",
+  );
   const now=new Date().toISOString();const result=target==="DONE"?verification:`${reason}\n\nRequired human action: ${verification}`;
   // The agent posting for itself is the most direct evidence there is, so the
   // row that records it is the one the transition table locks against override.
@@ -1802,6 +1901,36 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
   const gate=written.to===target?null:workspaces.definitionOfDoneEvaluation(run.prompt_id);
   return{eventId,promptId:run.prompt_id,previousStatus:prompt.status,status:written.to,requestedStatus:target,result,createdAt:now,
     ...(gate===null?{}:{definitionOfDone:{satisfied:false,unmet:unmetCriteria(gate).map(entry=>({criterion:entry.text,result:entry.result,evidence:entry.evidence}))}})};
+}));
+
+/**
+ * Let an active agent repair one command only after the server itself observed
+ * that exact command fail. The outgoing prompt is revisioned, the replacement
+ * keeps the original command's concrete targets/tools, and the HTTP layer runs
+ * the new definition immediately. This is deliberately not a general prompt
+ * editor: task scope and prose still belong to the operator.
+ */
+const agentVerifyRepairTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"repair-verify",()=>{
+  const run=requireActiveExecuteRun(runId);
+  const oldCommand=requireText(input.oldCommand,"oldCommand",DOD_COMMAND_MAX_LENGTH);
+  const newCommand=requireText(input.newCommand,"newCommand",DOD_COMMAND_MAX_LENGTH);
+  const reason=requireText(input.reason,"reason",2000);
+  const failures=workspaces.agentDoneVerificationFailures(run.prompt_id)??[];
+  if(!failures.some(entry=>entry.result==="FAILED"&&entry.command===oldCommand)){
+    throw new WorkspaceError(409,"verify_not_failed","The server has not observed that exact current Verify command fail. Post done first, then repair only the command named in the refusal.");
+  }
+  validateVerifyRepair(oldCommand,newCommand);
+  const row=db.prepare("SELECT title,content FROM prompt WHERE id=?").get(run.prompt_id) as {title:string;content:string}|undefined;
+  if(row===undefined)throw new WorkspaceError(404,"not_found","Work item not found");
+  const content=replaceVerifyCommand(row.content,oldCommand,newCommand);
+  const now=new Date().toISOString();
+  db.prepare("INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) VALUES(?,?,?,'AGENT',?,?)")
+    .run(run.prompt_id,row.title,row.content,`Verify repair: ${reason}`.slice(0,500),now);
+  db.prepare("UPDATE prompt SET content=?,updated_at=? WHERE id=?").run(content,now,run.prompt_id);
+  syncPromptVerifyCriteria(run.prompt_id,content);
+  db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'VERIFICATION',?,'AGENT',?)")
+    .run(run.prompt_id,runId,`Repaired a failing Verify command.\n\nReason: ${reason}\n\nBefore:\n$ ${oldCommand}\n\nAfter:\n$ ${newCommand}`.slice(0,20000),now);
+  return {promptId:run.prompt_id,oldCommand,newCommand,reason};
 }));
 
 /**
@@ -2050,6 +2179,32 @@ const importProgramTransaction = db.transaction((workspaceId: number, pack: Impo
 /* ------------------------------------------------------------------------- */
 /* Agent-authored programs                                                    */
 /* ------------------------------------------------------------------------- */
+
+type InstructionProposalRow = {
+  id:number; workspace_id:number; field:WorkspaceInstructionField; state:InstructionProposalState; origin:InstructionProposalOrigin;
+  goal:string; run_id:string|null; baseline:string; content:string; created_at:string; updated_at:string;
+};
+
+function instructionProposalRecord(row:InstructionProposalRow):InstructionProposalRecord {
+  return {
+    id:row.id, workspaceId:row.workspace_id, field:row.field, state:row.state, origin:row.origin, goal:row.goal,
+    runId:row.run_id, baseline:row.baseline, content:row.content, createdAt:row.created_at, updatedAt:row.updated_at,
+  };
+}
+
+function instructionProposalRow(id:number):InstructionProposalRow {
+  const row=db.prepare("SELECT * FROM instruction_proposal WHERE id=?").get(id) as InstructionProposalRow|undefined;
+  if(row===undefined)throw new WorkspaceError(404,"not_found","Proposal not found");
+  return row;
+}
+
+/** A proposal whose own run is still writing it cannot be edited or applied underneath that run. */
+function requireIdleProposal(row:InstructionProposalRow):void {
+  if(row.state!=="PENDING")throw new WorkspaceError(409,"proposal_settled",`This proposal was already ${row.state.toLowerCase()}.`);
+  if(row.origin!=="request"||row.run_id===null)return;
+  const live=db.prepare("SELECT id FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(row.run_id) as {id:string}|undefined;
+  if(live!==undefined)throw new WorkspaceError(409,"proposal_busy",`An agent is still writing this proposal (${live.id}). Wait for it to finish or stop it.`);
+}
 
 type ProgramDraftRow = {
   id:number; workspace_id:number; run_id:string|null; state:ProgramDraftState; goal:string;
@@ -3200,7 +3355,7 @@ export const workspaces = {
       "",
       ...blocks,
       "",
-      "Fix this and post `done` again. If it cannot be fixed in this run, post `continue` with what remains.",
+      "Fix the implementation and post `done` again. If the command itself is defective, use `agent-step repair-verify --file repair.json`. If the work cannot finish in this run, post `continue` with what remains.",
     ].join("\n").slice(0, 20000);
     const now = new Date().toISOString();
     sqliteGuard(() => {
@@ -3601,6 +3756,108 @@ export const workspaces = {
   /** Agent door: a list of changes to a revision draft. */
   reviseProgram(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>reviseProgramTransaction(runId,input)); },
 
+  /* ---------------------------------------------------------------- */
+  /* Instruction proposals                                             */
+  /* ---------------------------------------------------------------- */
+
+  instructionProposals(workspaceId:number):InstructionProposalRecord[] {
+    this.get(workspaceId);
+    return (db.prepare("SELECT * FROM instruction_proposal WHERE workspace_id=? ORDER BY id DESC").all(workspaceId) as InstructionProposalRow[]).map(instructionProposalRecord);
+  },
+
+  instructionProposal(id:number):InstructionProposalRecord { return instructionProposalRecord(instructionProposalRow(id)); },
+
+  /**
+   * Opens a proposal. It starts as the stored text, so a proposal nobody has
+   * touched yet applies as no change at all.
+   */
+  createInstructionProposal(args:{workspaceId:number;field:WorkspaceInstructionField;goal:string;origin?:InstructionProposalOrigin;runId?:string|null;content?:string}):InstructionProposalRecord { return sqliteGuard(()=>{
+    if(!isInstructionField(args.field))throw new WorkspaceError(422,"validation_error","Choose CLAUDE.md or AGENTS.md",{field:"Unknown file"});
+    const workspace=this.get(args.workspaceId);
+    const origin=args.origin??"request";
+    const goal=origin==="run"?args.goal.slice(0,DRAFT_GOAL_MAX):requireText(args.goal,"goal",DRAFT_GOAL_MAX);
+    const baseline=workspace[args.field];
+    const content=args.content===undefined?baseline:requireText(args.content,"content",INSTRUCTION_CONTENT_MAX,true);
+    const now=new Date().toISOString();
+    const id=Number(db.prepare("INSERT INTO instruction_proposal(workspace_id,field,state,origin,goal,run_id,baseline,content,created_at,updated_at) VALUES(?,?,'PENDING',?,?,?,?,?,?,?)")
+      .run(args.workspaceId,args.field,origin,goal,args.runId??null,baseline,content,now,now).lastInsertRowid);
+    return instructionProposalRecord(instructionProposalRow(id));
+  }); },
+
+  /** The newest proposal for a file with exactly this content, in any state. */
+  latestInstructionProposalWithContent(workspaceId:number,field:WorkspaceInstructionField,content:string):InstructionProposalRecord|null {
+    const row=db.prepare("SELECT * FROM instruction_proposal WHERE workspace_id=? AND field=? AND content=? ORDER BY id DESC LIMIT 1").get(workspaceId,field,content) as InstructionProposalRow|undefined;
+    return row===undefined?null:instructionProposalRecord(row);
+  },
+
+  /** Points a proposal at the run about to write it. One writer at a time. */
+  attachInstructionProposalRun(id:number,runId:string):InstructionProposalRecord { return sqliteGuard(()=>{
+    const row=instructionProposalRow(id);
+    if(row.origin!=="request")throw new WorkspaceError(409,"proposal_from_run","This proposal was found in the working tree. Edit it by hand, or ask for a new change.");
+    requireIdleProposal(row);
+    db.prepare("UPDATE instruction_proposal SET run_id=?,updated_at=? WHERE id=?").run(runId,new Date().toISOString(),id);
+    return instructionProposalRecord(instructionProposalRow(id));
+  }); },
+
+  /**
+   * What a run left in the file, stored as the proposal's content.
+   *
+   * Not `saveInstructionProposal`: this is called as the run ends, while its
+   * row may still read RUNNING, so the busy check would refuse the run's own
+   * result.
+   */
+  recordInstructionRunResult(id:number,content:string):InstructionProposalRecord|null { return sqliteGuard(()=>{
+    const row=instructionProposalRow(id);
+    if(row.state!=="PENDING")return null;
+    const text=content.trim().slice(0,INSTRUCTION_CONTENT_MAX);
+    db.prepare("UPDATE instruction_proposal SET content=?,updated_at=? WHERE id=?").run(text,new Date().toISOString(),id);
+    return instructionProposalRecord(instructionProposalRow(id));
+  }); },
+
+  /** The operator's edit. */
+  saveInstructionProposal(id:number,input:Record<string,unknown>):InstructionProposalRecord { return sqliteGuard(()=>{
+    const row=instructionProposalRow(id);
+    requireIdleProposal(row);
+    const content=requireText(input.content,"content",INSTRUCTION_CONTENT_MAX,true);
+    db.prepare("UPDATE instruction_proposal SET content=?,updated_at=? WHERE id=?").run(content,new Date().toISOString(),id);
+    return instructionProposalRecord(instructionProposalRow(id));
+  }); },
+
+  discardInstructionProposal(id:number):InstructionProposalRecord { return sqliteGuard(()=>{
+    const row=instructionProposalRow(id);
+    if(row.state==="APPLIED")throw new WorkspaceError(409,"proposal_settled","This proposal has already been applied. Restore an earlier version of the file instead.");
+    db.prepare("UPDATE instruction_proposal SET state='DISCARDED',updated_at=? WHERE id=?").run(new Date().toISOString(),id);
+    return instructionProposalRecord(instructionProposalRow(id));
+  }); },
+
+  removeInstructionProposal(id:number):void {
+    if(db.prepare("DELETE FROM instruction_proposal WHERE id=?").run(id).changes===0)throw new WorkspaceError(404,"not_found","Proposal not found");
+  },
+
+  /**
+   * The operator's approval: the proposed text becomes the stored file.
+   *
+   * Refuses when the stored text is no longer the proposal's baseline, unless
+   * `force` — applying over an edit made since would revert it without anyone
+   * having seen that edit in the diff. The replaced text is kept as a workspace
+   * revision either way, so an apply can be undone.
+   */
+  applyInstructionProposal(id:number,options:{force?:boolean}={}):{proposal:InstructionProposalRecord;workspace:WorkspaceRecord} { return sqliteGuard(()=>db.transaction(()=>{
+    const row=instructionProposalRow(id);
+    requireIdleProposal(row);
+    const current=this.get(row.workspace_id);
+    const name=INSTRUCTION_FILE_NAMES[row.field];
+    if(row.content.trim()===""&&current[row.field]!==""){
+      throw new WorkspaceError(422,"proposal_empty",`This proposal would empty ${name}. Discard it instead, or clear the file in its editor.`);
+    }
+    if(current[row.field]!==row.baseline&&options.force!==true){
+      throw new WorkspaceError(409,"instructions_changed",`${name} has changed since this proposal was opened. The diff is against the old text, so applying would undo that change.`);
+    }
+    const workspace=this.update(row.workspace_id,{[row.field]:row.content,actorType:row.origin==="run"?"AGENT":"USER",reason:`Applied proposal ${id}${row.goal===""?"":`: ${row.goal}`}`});
+    db.prepare("UPDATE instruction_proposal SET state='APPLIED',updated_at=? WHERE id=?").run(new Date().toISOString(),id);
+    return {proposal:instructionProposalRecord(instructionProposalRow(id)),workspace};
+  })()); },
+
   /**
    * Everything an agent needs to reason about a whole program: its items in
    * order with status, dependencies, gates and definition of done, and the
@@ -3913,6 +4170,7 @@ export const workspaces = {
   authorizeAgentRun(runId:string,tokenHash:string):{workspaceId:number;promptId:number|null;state:string;role:RunRole} { const row=db.prepare("SELECT workspace_id workspaceId,prompt_id promptId,state,role FROM agent_run WHERE id=? AND context_token_hash=? AND token_expires_at>?").get(runId,tokenHash,new Date().toISOString()) as {workspaceId:number;promptId:number|null;state:string;role:RunRole}|undefined;if(!row)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");return row; },
   addAgentRemark(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentRemarkTransaction(runId,input)); },
   updateAgentStatus(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentStatusTransaction(runId,input)); },
+  repairAgentVerifyCommand(runId:string,input:Record<string,unknown>):Record<string,unknown> { return sqliteGuard(()=>agentVerifyRepairTransaction(runId,input)) as Record<string,unknown>; },
   decomposePrompt(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentDecomposeTransaction(runId,input)); },
   /**
    * Newest first, unbounded — the UI wants the whole record.
