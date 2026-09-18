@@ -80,7 +80,7 @@ runs both without watch mode.
 
 ### Requirements
 
-- Node.js ≥ 20.10 (developed on 24.x)
+- Node.js >= 22 (developed on 24.x)
 - At least one provider installed and authenticated — see below. The console
   runs fine with only one; unavailable providers are shown greyed out with the
   reason.

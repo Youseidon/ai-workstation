@@ -117,6 +117,13 @@ export async function setupTeamPilot({
 }) {
   const envPath = resolve(root, ".env");
   const statePath = resolve(root, ".agent-console");
+  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
+
+  if (!Number.isSafeInteger(nodeMajor) || nodeMajor < 22) {
+    throw new Error(`Node.js 22 or newer is required; found ${process.versions.node}.`);
+  }
+  const npmVersion = spawnSync("npm", ["--version"], { encoding: "utf8" });
+  if (npmVersion.status !== 0) throw new Error("npm is required but was not available on PATH.");
 
   if (await exists(envPath)) {
     throw new Error("Refusing to replace .env. Run this command in a fresh, separate checkout.");
