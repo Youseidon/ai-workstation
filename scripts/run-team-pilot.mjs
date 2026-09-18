@@ -7,6 +7,41 @@ import { resolve } from "node:path";
 const repoRoot = resolve(import.meta.dirname, "..");
 const envPath = resolve(repoRoot, ".env");
 
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function waitForWeb(url, child) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 90_000) {
+    if (child.exitCode !== null) throw new Error("The pilot stopped before the Agents page was ready.");
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (response.ok) return;
+    } catch {
+      // Startup is still in progress.
+    }
+    await sleep(500);
+  }
+  throw new Error(`Timed out waiting for ${url}.`);
+}
+
+async function openBrowser(url) {
+  const command = process.platform === "darwin"
+    ? ["open", [url]]
+    : process.platform === "win32"
+      ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
+  await new Promise((resolveOpen, reject) => {
+    const opener = spawn(command[0], command[1], { detached: true, stdio: "ignore" });
+    opener.once("error", reject);
+    opener.once("spawn", () => {
+      opener.unref();
+      resolveOpen();
+    });
+  });
+}
+
 function parseEnv(source) {
   const values = {};
   for (const line of source.split(/\r?\n/)) {
@@ -66,6 +101,18 @@ const child = spawn("npm", ["run", "dev"], {
   env: childEnv,
   stdio: "inherit",
 });
+
+const agentsUrl = `http://localhost:${values.WEB_PORT}/agents`;
+console.log(`Starting the isolated Team pilot. Agents page: ${agentsUrl}`);
+void waitForWeb(agentsUrl, child).then(async () => {
+  console.log(`Team pilot ready: ${agentsUrl}`);
+  if (process.env.TEAM_PILOT_NO_OPEN === "1") return;
+  try {
+    await openBrowser(agentsUrl);
+  } catch {
+    console.log("Could not open a browser automatically; open the Agents page URL above.");
+  }
+}).catch((error) => console.error(error instanceof Error ? error.message : String(error)));
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => child.kill(signal));

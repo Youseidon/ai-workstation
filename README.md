@@ -58,12 +58,12 @@ npm run setup:team-pilot -- --label "Teammate pilot"
 The setup command refuses an existing `.env`, `.agent-console` directory or
 tracked local changes. It installs the locked dependencies, configures frontend
 port 3100 and backend port 4100, enables only personal Telegram setup, and keeps
-notifications, remote actions, Team and host access off. It never asks for or
-prints a bot token.
+notifications, remote actions, Team and host access off. It requests the
+dedicated pilot-bot token through a hidden terminal prompt, never prints it or
+passes it on a command line, and writes it only to the private local `.env`.
+It then starts the pilot, waits for readiness and opens the Agents page.
 
-The teammate then creates their own dedicated pilot bot, sets
-`TELEGRAM_BOT_TOKEN` only in this checkout's `.env`, and starts the isolated
-installation:
+For later starts, run:
 
 ```bash
 npm run dev:team-pilot
