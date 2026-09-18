@@ -211,6 +211,32 @@ Team track TM2 close-out, 2026-09-18:
   was used. LT-3 remains scheduled/deferred under the operator's full-build
   direction. LT-4 remains scheduled/deferred until the TM3/full-build close-out.
 
+Team track TM3 close-out, 2026-09-18:
+
+- T17-T19 delivered migration 26, owner-issued item grants, teammate action
+  authorization, revocation, expiry and teammate-removal enforcement. Expired
+  Team action buttons reject without automatic renewal; the requester must send
+  the command again to create a fresh action.
+- Final verification on the T20 tree:
+  - `npm run typecheck` passed all 4/4 workspaces: shared, server, web and e2e.
+  - `npm run lint --workspace web` passed with 0 errors and the 5 existing
+    `PipelineHeader.tsx` warnings.
+  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t20-full-server npm test
+    --workspace server` passed 274/274.
+  - `npm run e2e --workspace e2e` passed the full T1 suite 123/123 in 22.0
+    minutes.
+  - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
+    tests/t1/tm3-grants.spec.ts` passed 6/6 in 5.0 minutes. TM-T1-4 and
+    TM-T1-5 each passed three times.
+  - Fixture-settling corrections were independently verified: TM-T1-3 passed
+    1/1 and TM-T1-6 passed 1/1 before the final full-suite pass.
+  - `git diff --check` and the tracked-file credential-shape sweep passed.
+- No live Telegram credential, identifier, token, paid provider, remote write
+  or push was used. LT-3 and LT-4 remain scheduled/deferred; automated checks
+  are not recorded as live passes.
+- Release baseline R-B is ready to enable for two-person item threads and
+  grants. `team.enabled` remains off by default and must be explicitly enabled.
+
 Development is authorized. No further product decision is required for the local
 control foundation. G01-G04 remain evidence/deployment gates, not unanswered
 questions blocking all code. An unresolved gate never defaults to approval.

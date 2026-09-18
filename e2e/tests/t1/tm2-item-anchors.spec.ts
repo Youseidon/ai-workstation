@@ -58,6 +58,7 @@ test("TM-T1-6: owner item anchor lifecycle, recovery and read-only Team views", 
       return matches.length === 1 ? matches[0] : undefined;
     });
     await eventually("the owner anchor to be pinned once", async () => calls("pinChatMessage").length === 1 && team.fakeTelegram.pinnedMessageId(team.groupChat.id) === anchor.message_id);
+    await eventually("the item access message", async () => group().find(message => message.from.id === team.envA.bot.id && message.text.startsWith("Item access") && message.text.includes(tag) && message.reply_to_message?.message_id === anchor.message_id));
     expect(anchor.reply_to_message).toBeUndefined();
     expect(anchor.text).toContain("Owner: Team A");
     expect(anchor.text).toContain("[local path]");
@@ -65,7 +66,7 @@ test("TM-T1-6: owner item anchor lifecycle, recovery and read-only Team views", 
 
     await teamApi(team.envA, "PATCH", `/api/prompts/${task.promptId}`, { title: "Choose the reversible release" });
     await eventually("the same anchor to be edited", async () => anchor.history.length === 2 && anchor.text.includes("Choose the reversible release"));
-    expect(group().filter(message => message.from.id === team.envA.bot.id && message.text.includes(tag))).toHaveLength(1);
+    expect(group().filter(message => message.from.id === team.envA.bot.id && message.text.includes(tag) && message.reply_to_message === undefined)).toHaveLength(1);
     expect(calls("pinChatMessage")).toHaveLength(1);
 
     const beforeViews = durableReadOnlyCounts(team.envA);
@@ -109,7 +110,7 @@ test("TM-T1-6: owner item anchor lifecycle, recovery and read-only Team views", 
     expect(reopened.reply_to_message).toBeUndefined();
     expect(calls("unpinChatMessage")).toHaveLength(1);
     const replyTargets = group().filter(message => message.from.id === team.envA.bot.id && message.text.includes(tag) && message.reply_to_message !== undefined).map(message => message.reply_to_message!.message_id);
-    expect(replyTargets).toEqual([anchor.message_id, anchor.message_id, anchor.message_id, anchor.message_id, replacement.message_id]);
+    expect(replyTargets).toEqual([anchor.message_id, anchor.message_id, anchor.message_id, anchor.message_id, anchor.message_id, replacement.message_id]);
   } finally {
     await team.dispose();
   }

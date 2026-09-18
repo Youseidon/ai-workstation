@@ -90,6 +90,8 @@ test("TM-T1-3: broad group delivery produces one owner response and quiet non-ow
     const group = () => team.fakeTelegram.transcript(team.groupChat.id);
     const anchorA = await eventually("A anchor", async () => group().find(message => message.from.id === team.envA.bot.id && message.text.includes(tagA) && message.reply_to_message === undefined));
     const anchorB = await eventually("B anchor", async () => group().find(message => message.from.id === team.envB.bot.id && message.text.includes(tagB) && message.reply_to_message === undefined));
+    await eventually("A access message", async () => group().find(message => message.from.id === team.envA.bot.id && message.text.startsWith("Item access") && message.text.includes(tagA)));
+    await eventually("B access message", async () => group().find(message => message.from.id === team.envB.bot.id && message.text.startsWith("Item access") && message.text.includes(tagB)));
     const beforeA = durableCounts(team.envA);
     const beforeB = durableCounts(team.envB);
     const remoteBefore = remoteRoster(team).head;
