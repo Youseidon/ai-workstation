@@ -38,7 +38,7 @@ test("S-H6-13/14 (refuse, fake): the server backs off with a sanitized error, th
   await inboxDrained(harness);
   const rows = harness.query<{ n: number }>("SELECT COUNT(*) n FROM telegram_inbox WHERE json_extract(payload_json, '$.text') = ?", "sent while the workstation is cut off");
   expect(rows[0]!.n).toBe(1);
-  expect(server.pendingUpdateCount(bot.id)).toBe(0);
+  await eventually("the upstream update queue to drain", async () => server.pendingUpdateCount(bot.id) === 0 || undefined);
 });
 
 test("S-H6-13 (hang, fake): requests are held and never forwarded until the client times out; restore resumes polling", covers("H6, 4.2-proxy"), async ({ harness }) => {
