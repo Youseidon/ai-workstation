@@ -26,8 +26,9 @@ counts, all rendered as a scrolling terminal-style log.
 
 ## Quick start
 
-Telegram task control: personal control from your own phone (L1, off by default) is implemented and verified against real Telegram by the end-to-end harness; the phone look check is still pending.
-Teammate takeover and per-task topics are planned, not available.
+Telegram task control supports personal control and default-off two-person Team
+item threads and grants. Team handover is not included. Real two-person join and
+thread/grant phone checks remain explicit human checks.
 See the [Telegram task control and teammate takeover design](docs/telegram-task-control/README.md).
 
 ```bash
@@ -40,6 +41,39 @@ Open <http://localhost:3000>. The backend listens on <http://127.0.0.1:4000>
 (`/api/providers`, `/api/health`, and the WebSocket at `/ws`).
 
 Run them separately if you prefer: `npm run dev:server` and `npm run dev:web`.
+
+### Side-by-side Team pilot
+
+Do not update an existing AI Workstation checkout for the first Team test. Clone
+the Team feature branch into a separate directory so its `.env`,
+`.agent-console/console.sqlite`, settings and ports cannot affect the existing
+installation:
+
+```bash
+git clone --branch <team-feature-branch> --single-branch <source-repository-url> ai-workstation-team-pilot
+cd ai-workstation-team-pilot
+npm run setup:team-pilot -- --label "Teammate pilot"
+```
+
+The setup command refuses an existing `.env`, `.agent-console` directory or
+tracked local changes. It installs the locked dependencies, configures frontend
+port 3100 and backend port 4100, enables only personal Telegram setup, and keeps
+notifications, remote actions, Team and host access off. It never asks for or
+prints a bot token.
+
+The teammate then creates their own dedicated pilot bot, sets
+`TELEGRAM_BOT_TOKEN` only in this checkout's `.env`, and starts the isolated
+installation:
+
+```bash
+npm run dev:team-pilot
+```
+
+Open <http://localhost:3100/agents>, pair the teammate privately, and only then
+enable Team for the LT-3 join check. Use a separate throwaway private Git
+repository as the shared Team/workspace repository; it is distinct from the
+source repository carrying this application branch. Do not copy another
+workstation's `.env`, `.agent-console`, bot token or provider credentials.
 
 `npm run build` typechecks the server and builds the frontend; `npm run start`
 runs both without watch mode.

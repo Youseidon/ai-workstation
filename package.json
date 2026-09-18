@@ -11,8 +11,11 @@
   ],
   "scripts": {
     "dev": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:team-pilot": "node scripts/run-team-pilot.mjs",
     "dev:server": "npm run dev --workspace server",
     "dev:web": "npm run dev --workspace web -- --port ${WEB_PORT:-3000}",
+    "setup:team-pilot": "node scripts/setup-team-pilot.mjs",
+    "test:team-pilot-setup": "node --test scripts/setup-team-pilot.test.mjs",
     "build": "npm run build --workspace shared && npm run build --workspace server && npm run build --workspace web",
     "start": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:start:server\" \"npm:start:web\"",
     "start:server": "npm run start --workspace server",
