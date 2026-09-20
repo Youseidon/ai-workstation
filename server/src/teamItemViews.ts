@@ -240,6 +240,25 @@ export function renderTeamItemAccessMessage(input: {
   };
 }
 
+/**
+ * What a button that starts the owner's run costs, stated on the card that offers
+ * it (B18).
+ *
+ * While a teammate holds both `answer` and `resume`, `/answer <text>` mints two
+ * buttons: `Save answer`, which leaves the task waiting, and `Answer and resume`,
+ * which saves the answer and starts the run. A run that reaches the end of the
+ * task closes the item and revokes every grant, so one of the two taps can end
+ * the session and the other cannot. That is the capability model working as
+ * written; what the card never said was which tap does it. The footer named whose
+ * credits were spent and nothing else, and the two labels sit side by side.
+ *
+ * `/resume` mints one button with the same consequence, so it says the same.
+ */
+const RUN_OUTCOME: Partial<Record<"answer_and_resume" | "resume_saved", string>> = {
+  answer_and_resume: "Answer and resume starts the run. If the task completes, the item closes and every grant ends.",
+  resume_saved: "Resuming starts the run. If the task completes, the item closes and every grant ends.",
+};
+
 export function renderTeamItemActionCard(input: {
   itemId: string;
   title: string;
@@ -252,6 +271,7 @@ export function renderTeamItemActionCard(input: {
     itemId: input.itemId,
     title: lineText(input.title, 120),
     detail: lineText(input.detail, 1000),
+    outcome: input.actions.map(action => RUN_OUTCOME[action.action as keyof typeof RUN_OUTCOME]).find(line => line !== undefined) ?? null,
     allowance: input.allowance ? lineText(input.allowance, 200) : null,
     actions: input.actions,
   } as const;

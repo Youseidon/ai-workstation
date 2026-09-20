@@ -53,9 +53,8 @@ test("B18 (T0): the two-button answer card says what Answer and resume does, not
   }), () => null);
   assert.deepEqual(both.replyMarkup?.inline_keyboard.flat().map(button => button.text), ["Save answer", "Answer and resume"]);
   assert.match(both.text, /Uses jd's claude allowance/, "whose credits are spent is still stated");
-  assert.match(both.text, /Answer and resume completes the task/, "and so is what the tap does");
-  assert.match(both.text, /the item closes/, "including that the item closes");
-  assert.match(both.text, /every grant ends/, "and that every grant ends with it");
+  assert.match(both.text, /Answer and resume starts the run\./, "and so is what the tap does");
+  assert.match(both.text, /If the task completes, the item closes and every grant ends\./, "including what it costs when the run reaches the end of the task");
 
   // A card whose only button saves the answer completes nothing, and must not say it does.
   const saveOnly = formatTelegramMessage(renderTeamItemActionCard({
@@ -66,7 +65,7 @@ test("B18 (T0): the two-button answer card says what Answer and resume does, not
     actions: [{ ref: "save", action: "save_human_response" }],
   }), () => null);
   assert.deepEqual(saveOnly.replyMarkup?.inline_keyboard.flat().map(button => button.text), ["Save answer"]);
-  assert.doesNotMatch(saveOnly.text, /completes the task/, "saving an answer completes nothing");
+  assert.doesNotMatch(saveOnly.text, /starts the run|the item closes/, "saving an answer starts nothing and closes nothing");
   assert.doesNotMatch(saveOnly.text, /allowance/, "and spends nothing");
 });
 

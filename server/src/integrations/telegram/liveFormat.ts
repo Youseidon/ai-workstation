@@ -141,7 +141,9 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
         return label === undefined ? [] : [{ text: label, callback_data: action.ref }];
       }) : [];
       const lines = [str(data.title), "", str(data.detail)];
-      if (typeof data.allowance === "string" && data.allowance !== "") lines.push("", str(data.allowance));
+      // The footer: what the tap does, then what it spends. B18 stated only the second.
+      const footer = [str(data.outcome), str(data.allowance)].filter(line => line !== "");
+      if (footer.length > 0) lines.push("", ...footer);
       return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup: buttons.length > 0 ? { inline_keyboard: buttons.map(button => [button]) } : null, entities: [] };
     }
     case "personal_question": {
