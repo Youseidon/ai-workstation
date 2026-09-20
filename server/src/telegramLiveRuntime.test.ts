@@ -944,6 +944,10 @@ test("B1 (T0): a created team whose join code was lost issues a fresh one, and t
     assert.equal(fresh.groupChatId, lost.groupChatId);
     assert.equal(fresh.remoteUrl, lost.remoteUrl);
     assert.notEqual(fresh.inviteId, lost.inviteId, "a reissue mints a fresh invite id");
+    // A join code carries no credential (T09), and the reissued one is no exception.
+    const payload = JSON.parse(Buffer.from(reissued.joinCode.slice("awj1.".length), "base64url").toString("utf8")) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(payload).sort(), ["expiresAt", "groupChatId", "inviteId", "remoteUrl", "teamId", "version"]);
+    assert.doesNotMatch(reissued.joinCode, /:[A-Za-z0-9_-]{30,}/, "no bot token shape reaches the code");
 
     const after = workspaces.teamRoster(created.teamId)!;
     const record = after.record as TeamRoster;
@@ -1036,6 +1040,7 @@ test("TM-T1-gate (T0): Team stays disabled independently while personal Telegram
     await assert.rejects(h.runtime.refreshTeam(), refused);
     await assert.rejects(h.runtime.confirmTeamCreate(), refused);
     await assert.rejects(h.runtime.confirmTeamJoin(), refused);
+    await assert.rejects(h.runtime.reissueTeamJoinCode(), refused);
   } finally {
     await h.cleanup();
   }
