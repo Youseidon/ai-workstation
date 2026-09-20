@@ -153,6 +153,9 @@ That changes when the action is offered and how the card reads, not how the hand
 Both wordings are jd's to amend, the way R-B was on 2026-09-20; neither is amended yet.
 Its scope, from the [engineering plan](engineering-plan.md) TM4 row: a snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, a worktree run, requirement questions across workstations, return, and apply by ordinary merge.
 
+[handover-rules.md](handover-rules.md) maps the states, the invariants and every eventuality phase by phase, marking each as settled by the design or proposed and awaiting jd.
+Read it before H01; its section 7 says which slice owns each new rule.
+
 Two things are worth stating plainly before anyone starts.
 
 Neither of TM4's two Git records exists yet.
@@ -169,7 +172,7 @@ Building TM4 is blocked by none of them.
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
 | G01 | Record the handover governance decision. | **Done 2026-09-20.** Recorded in [implementation.md](implementation.md) section 6b: the handover delegates nothing, so a receiver who accepts a task and resumes it under their own login is ordinary use. It holds only while acceptance stays an explicit human action and no credential is ever shared, so a move to auto-accept re-opens it. | |
-| H01 | TM4 scenario table. | `docs/e2e-scenarios/tm4.md` committed, specifying TM-T0-6, TM-T0-7 and TM-T1-H1 to TM-T1-H3 in the shape the TM3 table uses. No product code in the commit. | **jd**: skim. |
+| H01 | TM4 scenario table. | Settle the five open items in section 8 of [handover-rules.md](handover-rules.md) with jd first, then commit `docs/e2e-scenarios/tm4.md` written from that document, specifying TM-T0-6, TM-T0-7 and TM-T1-H1 to TM-T1-H3 in the shape the TM3 table uses. No product code in the commit. | **jd**: the five rulings, then skim. |
 | H02 | The item control record. | `refs/aw/items/<item>/control` with `state.json` and `events/<command id>.json`, fetch and compare-and-swap write, fast-forward or rejection only; `item_link.control_head` finally written and read. On an uncertain push, fetch and look for the command id before retrying; on a lost race, re-read and re-validate rather than re-applying. TM-T0-6 passes. | |
 | H03 | Capture and offer. | Snapshot commit through a temporary index, branch `aw/handover/<item>` pushed, then the control record written as `OFFERED` with epoch 1, the named receiver and the requested provider and model. TM-T0-7 passes. | |
 | H04 | Accept, claim and run. | Receiver accepts and claims, runs in a worktree under their own provider, and requirement questions cross workstations while the requester is stopped. TM-T1-H1 and TM-T1-H2 pass. | |

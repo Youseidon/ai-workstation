@@ -35,7 +35,7 @@ Still open. None of it blocks building, and none of it blocks the F track:
 | Enterprise deployment | **G04**, jd's one-time governance note: Telegram audience, Git host and storage location, retention. Does not block local development. |
 | `H-TM-LT3`, `H-TM-LT4` | Real two-person runs with Yousef. The solo pilot is explicitly not a substitute, so **TM3 is not honestly done** until these run. |
 | jd's call | `main` is far ahead of `origin/main` and nothing is pushed. |
-| H01 | Skim the TM4 scenario table once written. A step, not a blocker. |
+| H01 | Five rulings in section 8 of [handover-rules.md](handover-rules.md): named offer or open call, the trigger wording, whether a receiver may release work unfinished, whether a requester may reclaim a claimed item, and how capture treats secrets in untracked files. H01 settles these before writing `tm4.md`. |
 
 One standing warning that cost time twice: three tests in this suite take timestamps from the wall clock and assume they will differ, so they fail under load on a fast machine.
 `h6-route-proxy.spec.ts` was repaired as T20A, the migration 26 fixture as F00A, and `S-L1-33` failed once under full-suite load then passed in isolation with and without the change.
