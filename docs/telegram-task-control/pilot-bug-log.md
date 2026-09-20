@@ -370,6 +370,21 @@ the owner sees `Done: Granted resume.` followed by the access line reverting to
 It does not loop, because the pass only refreshes when it actually revoked
 something.
 
+The buttons are delivered, but they are hard to reach, which caps how often this
+is hit in practice.
+The access message is edited in place, which case 5 requires, so every refresh
+rewrites the original message rather than posting a new one, and `editMessageText`
+does forward the keyboard
+([httpBotApi.ts:162](../../server/src/integrations/telegram/httpBotApi.ts#L162)).
+The consequence is positional: the buttons appear on a message sitting wherever
+the access message was first posted, not at the bottom of the group.
+Observed 2026-09-20: all four refreshes of that item's access message, outbox 140,
+143, 151 and 156, edited message 41, which was first sent at 13:54:30Z the day
+before, so the fresh buttons never showed up in the current conversation and jd
+could not find them while looking for them.
+They are reachable by scrolling back, which is how the two expired taps at 14:31Z
+on 2026-09-19 happened, so this is friction rather than protection.
+
 Suggested fix: refresh the access message with no actions when the refresh is
 the one that closes the item.
 
