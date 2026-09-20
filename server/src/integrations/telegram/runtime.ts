@@ -260,6 +260,28 @@ export class TelegramLiveRuntime {
     return { teamId, joinCode };
   }
 
+  /**
+   * B1: creation hands the join code over exactly once and nothing persists it,
+   * so a page reload stranded a created team with no way to invite anyone, and
+   * creating again was refused because refs/aw/team already held the team.
+   * The recovery is a fresh invite id, minted the way creation mints one and
+   * published through the same roster compare-and-swap. The swap is against the
+   * revision this workstation holds, so a code is only ever minted from the
+   * roster the panel is showing; a roster that moved underneath is refused as
+   * roster_conflict rather than overwritten, and "Refresh team" clears it.
+   * The previous code keeps working until it is used or expires, because the
+   * roster records the invite ids a join consumed and never the ones issued.
+   */
+  async reissueTeamJoinCode(): Promise<{ teamId: string; joinCode: string }> {
+    this.requireTeamEnabled();
+    const cached = workspaces.teamRosters()[0];
+    if (cached === undefined) throw new WorkspaceError(404, "team_not_found", "Create or join a team before issuing a join code.");
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), cached.remoteUrl);
+    const published = await publishRoster(remote, cached.revision, cached.record as TeamRoster, `reissue_${randomBytes(12).toString("base64url")}`);
+    const { teamId, groupChatId, remoteUrl } = published.roster;
+    return { teamId, joinCode: encodeJoinCode({ teamId, groupChatId, remoteUrl }) };
+  }
+
   teamStatus(): TeamPanelStatus | null {
     this.requireTeamEnabled();
     const cached = workspaces.teamRosters()[0];

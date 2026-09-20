@@ -113,6 +113,13 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res, 201, { team: await telegramRuntime.confirmTeamCreate() });
       return true;
     }
+    // B1: the join code is returned once and nothing persists it, so the owner of
+    // an existing roster mints a fresh one here rather than being stranded.
+    if (url.pathname === "/api/task-control/team/join-code") {
+      if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else json(res, 201, { team: await telegramRuntime.reissueTeamJoinCode() });
+      return true;
+    }
     if (url.pathname === "/api/task-control/team/join") {
       if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
       else { const input = await body(req); json(res, 201, { team: telegramRuntime.startTeamJoin(input.code) }); }
