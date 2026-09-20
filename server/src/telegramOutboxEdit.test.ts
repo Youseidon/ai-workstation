@@ -365,3 +365,43 @@ test("S-L3-F1-04: migration 21 keeps every L1 outbox row as a send, unchanged, a
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("B9 (T0): a thread reports the anchor it is still waiting on, and counts the ones that failed for good", withBot(async (botId) => {
+  const chatId = "-1009001";
+  const subject = { kind: "item" as const, id: "awi1_0123456789abcdef01234567" };
+  const thread = workspaces.telegramThreadFor({ botId, chatId, subject });
+  assert.equal(workspaces.telegramThreadAnchorSend(thread.id), null, "a thread that was never offered an anchor holds nothing back");
+
+  // An anchor that is queued, or waiting on its own retry, is the anchor: while one
+  // of those exists no second anchor may be offered beside it (B9).
+  const first = workspaces.enqueueTelegramOutbox({ botId, chatId, payload: { kind: "view", text: "anchor", entities: [], buttons: [] }, subject, anchor: { pin: true } });
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: true, delivered: false, failures: 0 });
+  workspaces.markTelegramOutbox(first, "FAILED", "Telegram is unreachable", { nextAttemptAt: new Date(Date.now() + 30_000).toISOString() });
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: true, delivered: false, failures: 0 });
+
+  // Failed for good: the thread's pointer is cleared, so the failure count is the
+  // only thing left that says the anchor about to be queued is the one that failed.
+  workspaces.markTelegramOutbox(first, "FAILED", "Bad Request: chat not found", { nextAttemptAt: null });
+  workspaces.markTelegramThreadAnchorGone(first);
+  assert.equal(workspaces.telegramThreadFor({ botId, chatId, subject }).statusMessageId, null);
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: false, delivered: false, failures: 1 });
+
+  // An ordinary message in the same thread is not an anchor and never counts.
+  workspaces.enqueueTelegramOutbox({ botId, chatId, payload: { kind: "text", text: "Item not found." }, subject });
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: false, delivered: false, failures: 1 });
+
+  // A second anchor that fails the same way makes the wait longer, not equal.
+  const second = workspaces.enqueueTelegramOutbox({ botId, chatId, payload: { kind: "view", text: "anchor", entities: [], buttons: [] }, subject, anchor: { pin: true } });
+  workspaces.markTelegramOutbox(second, "FAILED", "Bad Request: chat not found", { nextAttemptAt: null });
+  workspaces.markTelegramThreadAnchorGone(second);
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: false, delivered: false, failures: 2 });
+
+  // A delivered anchor resets it, so the operator deleting one is replaced at once (C1).
+  const third = workspaces.enqueueTelegramOutbox({ botId, chatId, payload: { kind: "view", text: "anchor", entities: [], buttons: [] }, subject, anchor: { pin: true } });
+  workspaces.markTelegramOutbox(third, "SENT", null, { sentMessageId: "9001" });
+  assert.deepEqual(pick(workspaces.telegramThreadAnchorSend(thread.id)), { pending: false, delivered: true, failures: 0 });
+}));
+
+function pick(state: ReturnType<typeof workspaces.telegramThreadAnchorSend>) {
+  return state === null ? null : { pending: state.pending, delivered: state.delivered, failures: state.failures };
+}

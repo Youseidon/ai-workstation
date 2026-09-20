@@ -750,6 +750,23 @@ db.transaction(() => {
   }
 }
 
+{
+  // F07: which outbox rows were offered as a subject's anchor. Without it a
+  // retired anchor is indistinguishable from any other message in the thread,
+  // so the producer could not tell that the anchor it is about to queue is the
+  // one that just failed, and queued another on every pass (B9). One column with
+  // a default, so it goes in place rather than rebuilding the table.
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=28").get();
+  if (!applied) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE telegram_outbox ADD COLUMN anchor INTEGER NOT NULL DEFAULT 0;");
+      // Rows still pointed at by a thread were that thread's anchor; the rest were not.
+      db.exec("UPDATE telegram_outbox SET anchor=1 WHERE id IN (SELECT status_message_id FROM telegram_thread WHERE status_message_id IS NOT NULL);");
+      db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(28,?)").run(new Date().toISOString());
+    })();
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1497,6 +1514,32 @@ export const workspaces = {
     return db.prepare("UPDATE telegram_thread SET status_message_id=NULL,state='ANCHOR_GONE',updated_at=? WHERE status_message_id=?")
       .run(new Date().toISOString(), outboxId).changes;
   },
+  /**
+   * How the last anchor this thread was offered has gone (B9). `markTelegramThreadAnchorGone`
+   * clears the thread's pointer, so without this the producer cannot see that the anchor it
+   * is about to queue is the one that just failed, and queues another on every pass of the
+   * deliver loop. `failures` counts back from the newest, so a delivery resets it.
+   */
+  telegramThreadAnchorSend(threadId: number): { pending: boolean; delivered: boolean; failures: number; lastAttemptAt: string } | null {
+    const rows = db.prepare(`SELECT state,sent_message_id sentMessageId,next_attempt_at nextAttemptAt,updated_at updatedAt
+      FROM telegram_outbox WHERE thread_id=? AND operation='send' AND anchor=1 ORDER BY id DESC LIMIT 32`)
+      .all(threadId) as Array<{ state: string; sentMessageId: string | null; nextAttemptAt: string | null; updatedAt: string }>;
+    const latest = rows[0];
+    if (latest === undefined) return null;
+    let failures = 0;
+    for (const row of rows) {
+      // An anchor still owed a retry has not failed yet; `pending` is what holds
+      // a second one back while that is true.
+      if (row.state !== "FAILED" || row.sentMessageId !== null || row.nextAttemptAt !== null) break;
+      failures += 1;
+    }
+    return {
+      pending: latest.state === "QUEUED" || (latest.state === "FAILED" && latest.nextAttemptAt !== null),
+      delivered: latest.sentMessageId !== null,
+      failures,
+      lastAttemptAt: latest.updatedAt,
+    };
+  },
   /** Anchors whose one pin is still owed and whose message has been delivered. */
   telegramThreadsAwaitingPin(botId: string): Array<{ id: number; chatId: string; messageId: string }> {
     return db.prepare(`SELECT t.id,t.chat_id chatId,o.sent_message_id messageId FROM telegram_thread t JOIN telegram_outbox o ON o.id=t.status_message_id
@@ -1517,10 +1560,10 @@ export const workspaces = {
   enqueueTelegramOutbox(input: { botId: string; chatId: string; topicId?: string | null; payload: unknown; subject?: TelegramSubject; anchor?: { pin?: boolean } }): number { return sqliteGuard(() => db.transaction(() => {
     const thread = input.subject === undefined ? null : this.telegramThreadFor({ botId: input.botId, chatId: input.chatId, subject: input.subject });
     const now = new Date().toISOString();
-    const id = Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at,thread_id) VALUES(?,?,?,?, 'QUEUED',?,?,?)")
+    const id = Number(db.prepare("INSERT INTO telegram_outbox(bot_id,chat_id,topic_id,payload_json,state,created_at,updated_at,thread_id,anchor) VALUES(?,?,?,?, 'QUEUED',?,?,?,?)")
       // The thread owns the destination; while it has no topic of its own (C1: this bot
       // has none), a reply still lands in the topic of the message it answers (F2).
-      .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), thread?.topicId ?? input.topicId ?? null, JSON.stringify(input.payload), now, now, thread?.id ?? null).lastInsertRowid);
+      .run(requireText(input.botId, "botId", 120), requireText(input.chatId, "chatId", 120), thread?.topicId ?? input.topicId ?? null, JSON.stringify(input.payload), now, now, thread?.id ?? null, input.anchor === undefined ? 0 : 1).lastInsertRowid);
     if (thread !== null && input.anchor !== undefined && (thread.statusMessageId === null || thread.state === "ANCHOR_GONE")) {
       this.setTelegramThreadAnchor(thread.id, id, input.anchor);
     }

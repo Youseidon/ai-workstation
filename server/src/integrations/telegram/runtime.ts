@@ -103,6 +103,9 @@ const TELEGRAM_TOPICS = { available: false, note: "Topics are not available for 
 
 const AUTH_RETRY_MS = 5 * 60_000;
 const MAX_BACKOFF_MS = 60_000;
+/** How long a thread waits before offering another anchor after one failed for good (B9). */
+const ANCHOR_RETRY_BASE_MS = 60_000;
+const ANCHOR_RETRY_MAX_MS = 60 * 60_000;
 /** Rejections after which the phone gets the current question again (user-flows B12). */
 const REISSUE_CODES = new Set(["action_expired", "question_changed", "wrong_message"]);
 
@@ -1053,6 +1056,35 @@ export class TelegramLiveRuntime {
     }
   }
 
+  /**
+   * Whether this thread may be offered another anchor (B9). `syncTeamItemAnchors`
+   * runs for every item link on every pass of the deliver loop, and a send that
+   * failed for good retires the anchor, so the producer used to queue a fresh row
+   * every pass: the pilot watched outbox rows 11 to 36 appear in about 64 seconds,
+   * all FAILED against the same chat, with no upper bound. The per-row logic
+   * correctly declines to retry, which is exactly what hid it.
+   *
+   * An anchor still queued or still waiting on its own retry is the anchor, so a
+   * second one is never offered beside it. After a failure the thread waits, and
+   * the wait doubles, so an unreachable group costs a handful of rows a day rather
+   * than one a pass. A delivered anchor resets the count, which keeps C1 recovery
+   * immediate: an anchor the operator deleted is replaced on the next pass.
+   *
+   * This gates the producer only. A send refused because the group became a
+   * supergroup (B8, F05) keeps its thread's anchor pointer and is re-delivered as
+   * the same row by `sendDue` once the chat id is repaired, so a migration repair
+   * never waits on this back-off.
+   */
+  private anchorSendDue(threadId: number): boolean {
+    const last = workspaces.telegramThreadAnchorSend(threadId);
+    if (last === null) return true;
+    if (last.pending) return false;
+    if (last.failures === 0) return true;
+    const wait = Math.min(ANCHOR_RETRY_MAX_MS, ANCHOR_RETRY_BASE_MS * 2 ** Math.min(last.failures - 1, 16));
+    const failedAt = Date.parse(last.lastAttemptAt);
+    return Number.isNaN(failedAt) || this.now() >= failedAt + wait;
+  }
+
   private syncTeamItem(session: Session, roster: TeamRoster, link: ItemLinkRow): void {
     // A closed item neither gains an anchor nor keeps paying for one. The thread
     // row stays routable on purpose, so a reply into it still earns a refusal
@@ -1063,7 +1095,9 @@ export class TelegramLiveRuntime {
     const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
     const completed = state.promptStatus === "DONE" || state.promptStatus === "SKIPPED";
     if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") {
-      if (!completed) workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId: roster.groupChatId, payload, subject: itemSubject(link.itemId), anchor: { pin: true } });
+      if (!completed && this.anchorSendDue(thread.id)) {
+        workspaces.enqueueTelegramOutbox({ botId: session.botId, chatId: roster.groupChatId, payload, subject: itemSubject(link.itemId), anchor: { pin: true } });
+      }
       return;
     }
     const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
