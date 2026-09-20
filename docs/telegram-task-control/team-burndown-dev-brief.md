@@ -1,8 +1,8 @@
 # Dev brief: Team defect burn-down and handover
 
 Written 2026-09-20 for the agent session that closes out the Team feature.
-You are the **orchestrator**: you run the numbered tasks below with a fresh worker agent per task, and you merge, track and report.
-You do not write product code yourself.
+You are the **orchestrator**: you run the numbered tasks below, and you merge, track and report.
+You implement Phase A yourself and give every later task to a fresh worker agent, per jd's decision in section 2.
 jd is the operator and reviewer; Yousef is jd's teammate and the second person in every team scenario.
 
 This brief follows [team-track-dev-brief.md](team-track-dev-brief.md), which built TM0 to TM3 and closed after audit 2.
@@ -20,7 +20,7 @@ The F track comes first, because two of its items are unmet `must` requirements 
   Until it lands, the ids this brief cites do not exist on main.
 - `git status` on main is clean, and no other session is running the harness on this machine.
 - Both pilot instances are stopped, since several F tasks touch files that `tsx watch` reloads under a live pilot.
-  They were stopped at 2026-09-20 03:0xZ by signalling the `concurrently` supervisors directly, because B10 means signalling the launcher alone does nothing.
+  They were stopped on 2026-09-20 by signalling the `concurrently` supervisors directly, because B10 means signalling the launcher alone does nothing.
 - Record the starting commit of main and of `origin/main` in the tracker; the audits use them.
 
 ## 1. Read first
