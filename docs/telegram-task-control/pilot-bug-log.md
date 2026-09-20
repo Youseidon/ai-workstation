@@ -5,9 +5,11 @@ Defects found while running the solo two-account Team checks on 2026-09-19 and
 See [solo-team-join-check.md](solo-team-join-check.md) and
 [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) for the
 checks that exposed them.
-None of these is fixed yet.
 [team-burndown-dev-brief.md](team-burndown-dev-brief.md) is the plan that closes
-them, and names the task that owns each one.
+them, and names the task that owns each one; progress is in
+[team-burndown-tracker.md](team-burndown-tracker.md).
+Fixed so far: B12 by F01.
+Everything else is still open.
 
 ## B1 - a created team's join code cannot be recovered
 
@@ -301,6 +303,16 @@ state actually changes. Refreshing the age on real changes, and otherwise on a
 much coarser schedule, would keep the display useful without the churn.
 
 ## B12 - `/help` does not reflect granted capabilities
+
+**Fixed 2026-09-20 by F01, commits `506ea0a` and `7cca9cd`.**
+`/help` now lists the read-only commands, the ones the asking member's grants
+unlock, and the owner's own set when the owner asks.
+The root cause was narrower than this entry assumed: `renderTeamItemView` was
+never told which member was asking, so it could not branch on grants even in
+principle. The view state carries `askingPersonId` now.
+TM-T1-4 gained the `/help` and `/access` assertions it always claimed, and
+`server/src/teamItemViews.test.ts` pins the rendering; before F01 the command had
+no coverage at any tier, which is how this survived burn-in and two audits.
 
 Severity: low, but it leaves the granted commands undiscoverable.
 
