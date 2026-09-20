@@ -37,6 +37,8 @@ export const workspaceApi = {
   startTeamCreate(serverUrl:string,remoteUrl:string){return request<{team:{code:string;expiresAt:string;observed:boolean}}>(serverUrl,"/api/task-control/team/create",{method:"POST",...json({remoteUrl})}).then(r=>r.team);},
   cancelTeamCreate(serverUrl:string){return request<void>(serverUrl,"/api/task-control/team/create",{method:"DELETE"});},
   confirmTeamCreate(serverUrl:string){return request<{team:{teamId:string;joinCode:string}}>(serverUrl,"/api/task-control/team/create/confirm",{method:"POST",...json({})}).then(r=>r.team);},
+  /** B1: mints a fresh join code for the roster this workstation already holds, since creation returns its code once and nothing persists it. */
+  reissueTeamJoinCode(serverUrl:string){return request<{team:{teamId:string;joinCode:string}}>(serverUrl,"/api/task-control/team/join-code",{method:"POST",...json({})}).then(r=>r.team);},
   startTeamJoin(serverUrl:string,code:string){return request<{team:{teamId:string;groupChatId:string}}>(serverUrl,"/api/task-control/team/join",{method:"POST",...json({code})}).then(r=>r.team);},
   confirmTeamJoin(serverUrl:string){return request<{team:{teamId:string;instruction:string}}>(serverUrl,"/api/task-control/team/join/confirm",{method:"POST",...json({})}).then(r=>r.team);},
   /** Opens a Team item thread on the owner's own work item (R-B). Refused with prompt_already_complete once the task is finished. */
