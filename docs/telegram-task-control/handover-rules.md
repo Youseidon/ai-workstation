@@ -39,6 +39,14 @@ These hold in every case below. A rule that would break one of these is wrong, h
 7. **Distinct stop reasons stay distinct** (B05). Quota exhaustion, a tool failure, a human blocker and an unknown stop are never collapsed into each other.
 8. **The requester's local task keeps its pipeline hold** until the work is applied or the handover ends, so nothing downstream advances on a half-finished item.
 
+## 2b. The action set the design already fixes
+
+TM4's own migration adds exactly these seven actions ([teammate-design.md:337](teammate-design.md)): `publish_offer`, `accept_offer`, `decline_offer`, `withdraw_offer`, `return_work`, `apply_result`, `request_changes`.
+Each is a tap with a receipt, like every other action in this product.
+
+Two things follow. `decline_offer` exists, so declining is a recorded decision rather than silence.
+And there is **no release action**, which is the clearest evidence that a receiver handing back unfinished work was never designed for; that is open item 3 in section 8, and adding it means adding an eighth action in the same migration.
+
 ## 3. States
 
 The control record's state, with who may move it and what must be true.
@@ -52,7 +60,7 @@ The control record's state, with who may move it and what must be true.
 | `WITHDRAWN` | Offer ended before anyone claimed | Terminal for that epoch | new epoch `OFFERED` |
 | `RELEASED` | Receiver gave it back unfinished | Requester re-offers or resumes locally | new epoch `OFFERED`, or local resume |
 
-**Proposed:** `RELEASED` is new. The design has withdraw and return but no way for a receiver to hand back work they could not finish, which is the single most likely real outcome after quota exhaustion on the receiving side.
+**Proposed:** `RELEASED` is new, and so is the eighth action it needs. The design has `withdraw_offer` for the requester and `return_work` for finished work, but nothing for a receiver handing back work they could not finish, which is the single most likely real outcome after quota exhaustion on the receiving side.
 
 Every transition writes `events/<command id>.json` and bumps nothing but its own state; **epoch** increases only when the requester re-offers after `RETURNED`, `WITHDRAWN` or `RELEASED`.
 
@@ -91,7 +99,7 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | Receiver's settings differ | Their workstation compares requested provider, model, Host access and sandbox mode with its own workspace settings before offering to run. Within limits it starts; a delta is prompted locally; a hard deny is rejected (B18). | Settled, 5.4 step 4 and B18 |
 | Claim races a withdraw | The claim fails with the current state, and the loser re-validates rather than retrying blindly. A claim that lost stays lost. | Settled, 5.4 step 5 |
 | **Two receivers claim at once** | Only possible under an open call. Compare-and-swap makes exactly one win; the loser is told who holds it and their card goes inert. This is why the control record must exist before the offer does. | **Proposed** |
-| Receiver declines | The offer stays `OFFERED` for others, or returns to the requester as unclaimed under a named offer. Declining is recorded, so the requester can see it was seen and refused. | **Proposed** |
+| Receiver declines | `decline_offer` is one of the designed actions, so declining is recorded rather than silent. What follows is not specified: the offer stays `OFFERED` for others under an open call, or returns to the requester as unclaimed under a named one. | Action settled, outcome **Proposed** |
 | Receiver busy, offline or unprepared | Queue and prepare transparently, and re-validate settings immediately before starting rather than at claim time (B19). | Settled, B19 |
 | Teammate removed from the roster while `OFFERED` | Their group actor is disabled and their grants revoked, so their Accept card goes inert. The offer stays open for a remaining member, or is withdrawn. | **Proposed** |
 | Team disabled on either side mid-offer | Team routes answer 403 and cards stop applying. The record is untouched, so the handover resumes when Team is re-enabled. Personal control is unaffected. | **Proposed** |
@@ -156,7 +164,7 @@ None of them blocks building TM4 behind the disabled capability.
 | Slice | Gains |
 | --- | --- |
 | H01 | Writes `tm4.md` from this document, and settles the open items in section 8 first. |
-| H02 | The control record, its states including `RELEASED`, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. |
+| H02 | TM4's migration, which adds the seven designed actions plus an eighth if `RELEASED` is confirmed, and the control record: its states, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. Migration number is 28 or later, because F02 took 27. |
 | H03 | Capture with the secret and size rules, the preview listing untracked files, refusal on a closed or completed item, and publish. |
 | H04 | Discovery, settings re-validation, claim races, decline, release, receiver quota exhaustion, and the no-unilateral-reclaim rule. |
 | H05 | Return, apply, conflict, idempotent re-apply, request changes and the new epoch. |
