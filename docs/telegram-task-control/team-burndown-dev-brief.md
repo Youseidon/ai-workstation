@@ -37,28 +37,41 @@ The F track comes first, because two of its items are unmet `must` requirements 
 Unchanged from [team-track-dev-brief.md](team-track-dev-brief.md) sections 2.1 to 2.4: the same worker card template, the same report shape, no worker merges or pushes.
 Three changes for this track.
 
-jd's decision of 2026-09-20 splits the work.
-Phase A, tasks F01 and F02, is implemented directly by the orchestrator, because both defects are assertion gaps whose diagnosis is fresh and whose fix depends on understanding how they escaped.
-Everything from Phase B onward goes to one worker per task in its own worktree, as the earlier brief describes.
+jd's decision of 2026-09-20 splits the work, and Phase A is already done.
+F01 and F02 were implemented directly by the orchestrator, because both defects were assertion gaps whose diagnosis was fresh.
+**Every remaining task goes to one worker agent per task**, in its own worktree, started from its own task card, reporting in the shape section 2.4 of the earlier brief fixes.
+The orchestrator composes the cards, verifies each report, merges, updates the tracker, and asks jd at the stop points; it does not write product code from here on.
 
 The tracker is `docs/telegram-task-control/team-burndown-tracker.md`, created before task F01, with one row per task: id, track, status, worker agent id, branch, merged commits, evidence summary, date.
 
 Branches are `fix/<id>-<slug>` on the F track and `tm/<id>-<slug>` on the H track.
 
-### 2.1 Every bug fix starts with a failing test
+### 2.1 Testing is parked until the end, with one exception
 
-This is the rule that matters most on the F track, and it is why B12 and B17 shipped.
-For each defect, the worker first writes the check that should already have caught it, at the tier the defect lives at, and shows it failing on unmodified main.
-Only then does it fix the product code and show the same check passing.
-The report must carry both results, the red one and the green one, as separate command outputs.
+jd's instruction of 2026-09-20: run only minimal unit tests while implementing, and park the rest until implementation is finished.
+That is Phase V in section 6, and it holds the full server suite, the full T1 suite, every burn-in, both audits and the LT-4 re-run.
 
-A worker that cannot make the check fail first stops and reports BLOCKED rather than writing the fix, because a defect nobody can reproduce is not understood well enough to fix.
+**During a task, a worker runs only:** the typecheck for the workspaces it touched, and the narrow unit tests covering the code it wrote or changed.
+It does not run the full server suite, the T1 suite or any burn-in, and it does not wait on them to report DONE.
+
+**The one exception is reproducing a defect.**
+On the F track a worker still shows the defect happening before it fixes it, because a defect nobody has reproduced is not understood well enough to fix, and because an unasserted `must` clause is exactly how B12 and B17 reached production past two audits.
+That reproduction is a unit test wherever the defect can be reached at that tier, which for both Phase A tasks it was.
+Where a defect can only be reached through a scenario suite, the worker writes that scenario, records that it is unverified, and Phase V runs it.
+So the red-then-green evidence stays, at the cheap tier only.
+
+**The risk jd is accepting, recorded once.**
+Parking the suites means a regression introduced in an early task is not discovered until Phase V, with several tasks stacked on top of it, and the bisect cost lands there rather than in the task that caused it.
+The mitigation is that every task keeps its own branch and merges separately, so Phase V can bisect by task.
 
 ## 3. F track: defect burn-down
 
-Every task also carries the standing criteria: typecheck and lint clean, no test that passed before now fails, `team.enabled` still off by default, and the token sweep still passes.
+Every task also carries the standing criteria: typecheck clean for the workspaces it touched, `team.enabled` still off by default, and the changed-file credential sweep still passes.
+Lint, the full suites and the burn-ins belong to Phase V, per section 2.1.
 
-### Phase 0, make the suite trustworthy
+### Phase 0, make the suite trustworthy (runs in Phase V as V1)
+
+F00B is listed here because it belongs with the F track conceptually, but by jd's instruction of 2026-09-20 it runs at the start of Phase V rather than before F03, since its whole purpose is to make the parked suites trustworthy when they finally run.
 
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
@@ -180,22 +193,36 @@ It cannot run until F10 gives instance B its own clone.
 ## 6. Ordering and gates
 
 ```
-F00B              wall-clock fixture sweep, so later reds mean something
-F01, F02          unmet must requirements  (done)
-F03               make R-B true            (F04 done)
-F05, F06          stop a live team bricking
-F07, F08          anchor lifecycle
-F09               papercuts
-  audit 3         after F09
-LT-4 re-run       cases 2, 3 and 11
-F10               rig, only needed before LT-5
-G01               done, recorded 2026-09-20
-H01 to H05        TM4  (G02 gates enabling, not building)
-  audit 4         after H05
-LT-5              optional
+implementation, minimal unit tests only (section 2.1)
+  F01, F02        unmet must requirements            (done)
+  F04             R-B amended                        (done)
+  F03             make R-B true
+  F05, F06        stop a live team bricking
+  F07, F08        anchor lifecycle
+  F09             papercuts
+  H01             TM4 scenario table
+  H02             the item control record + migration 28
+  H03             capture and offer
+  H04             accept, claim, run, partial return
+  H05             return and apply
+
+Phase V, verification, once implementation is finished
+  V1              F00B, the wall-clock fixture sweep
+  V2              full server suite, full T1 suite, typecheck, lint
+  V3              burn-ins: TM-T1-4, TM-T1-5, the closed-thread case, TM-T1-H1 to H3
+  V4              audit 3 over the F track, audit 4 over the H track
+  V5              LT-4 re-run, cases 2, 3, 11 and 12
+
+deferred, needs people or a rig change
+  F10             pilot rig isolation, only needed before LT-5
+  LT-3, LT-4      real two-person runs with Yousef
+  LT-5            optional, after F10 and H05
 ```
 
-Run **audit 3** after F09 and **audit 4** after H05, using section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) unchanged.
+Phase V is where every parked suite runs, and it is not optional: no task in the list above is done in the sense the standing criteria mean until V2 and V3 have passed over it.
+V1 comes first inside Phase V, because until the wall-clock fixtures are deterministic a red in V2 cannot be trusted to mean a real regression.
+
+Run **audit 3** over the F track and **audit 4** over the H track, both inside Phase V, using section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) unchanged.
 
 Phases A to E are independent of each other and could be reordered, with one exception: F02 owns migration 27, so any later task needing a migration takes 28 and up.
 Do not run two harness tasks at once.
