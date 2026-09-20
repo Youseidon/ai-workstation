@@ -1116,13 +1116,54 @@ stands: the bot token in `.env` is readable by any process running as the same
 user. G03 applies to the control record and is supported by
 the LG-1 pass of 2026-09-17. G04 remains jd's one-time governance note.
 
+## 6c. G02 draft record: secret isolation for team execution
+
+**Drafted 2026-09-20 for jd's confirmation. Not yet a decision.**
+Gate G02 asks for tested isolation of provider, bot, Git and signing credentials for team execution, and warns that same-user file modes or prompt rules are insufficient evidence.
+This draft separates what the product can evidence from what only jd can decide.
+
+**What handover actually adds.**
+Nothing of the requester's credentials travels: each workstation runs its own agent under its own provider login, its own bot token and its own Git credentials, which is the finding G01 rests on.
+The new exposure is the other direction. A receiver who accepts a handover runs the requester's code and the requester's context file on their own machine, with their own credentials present in that environment.
+That is the risk G02 exists to make explicit, and it is sharper than the file-mode question.
+
+**Evidence the product provides.** Three of these exist; the fourth is produced by TM4 itself.
+
+1. No credential crosses a machine. Each side uses its own login, and no roster or record field carries a secret.
+2. A token never appears in an API response, a log, a DTO or a database dump. This is RTC-18's criterion and the changed-file credential sweep that every task in the Team track ran.
+3. The receiver's workstation compares the requested provider, model, Host access and sandbox mode with its own workspace settings before it runs anything, and starts within limits, prompts locally for a delta, or rejects a hard deny (B18, design 5.4 step 4). A handover cannot quietly widen the receiver's own access.
+4. RTC-12's capability matrix, with tests for within-limit, delta prompt, hard deny and unknown enforcement, is scheduled in TM4 and is what turns point 3 from a design statement into tested isolation.
+
+**Residual limits, recorded rather than hidden.**
+
+- The bot token in `.env` is readable by any process running as the same user. This is the known L1 limit and it is unchanged by handover.
+- Accepting a handover means executing another member's code with your own credentials in the environment. No sandbox in this product prevents a determined malicious teammate from reading them.
+
+**The decision jd is asked to record.**
+That the roster is the trust boundary: both members are trusted parties, a malicious roster member is out of scope, and the residual limits above are accepted for a two-person personal team.
+With that, points 1 to 4 are the tested isolation G02 asks for, and the gate closes when RTC-12's tests pass in TM4.
+
+**What reopens it.** A member outside that trust circle, automatic acceptance, removing the Host access and sandbox comparison, or any change that carries a credential between machines.
+
+## 6d. G04 draft record: governance
+
+**Drafted 2026-09-20 for jd's confirmation. Not yet a decision.**
+G04 asks for Telegram audience, Git host and storage location, retention, operational owner and enterprise data policy.
+Items 1, 2 and 5 write down what is already true; items 3 and 4 are genuine choices and are the two jd should look at hardest.
+
+1. **Audience.** The team group contains exactly the roster's members and their bots. Group members who are not on the roster are ignored (R-G). Telegram carries human messaging and cards only; the repository carries files and the three machine records.
+2. **Git host and storage.** GitHub, in the private repository recorded as the roster's remote. It holds `refs/aw/team`, `refs/aw/items/<item>/control` and `aw/handover/<item>` branches. LG-1 confirmed on 2026-09-17 that this host accepts custom refs and rejects a divergent non-fast-forward update.
+3. **Retention.** Proposed: a handover branch and its control record are kept while the item is open, and are deleted by the requester once the item is applied or cancelled. Event files under the control record are kept with it. Local databases are retained on each workstation indefinitely and are never shared. Telegram message history follows Telegram's own retention, which neither workstation controls.
+4. **Operational owner.** Proposed: jd. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members.
+5. **Enterprise data policy.** None applies. This is personal use by a two-person trusted team, and no customer or third-party data is expected in handed-over work. If that ever changes, retention and audience are the two items to revisit first.
+
 ## 7. Evidence still required
 
 At this implementation checkpoint, no Telegram bot has been connected, no peer
 handoff protocol has been implemented, no remote deployment has been configured,
 and no provider delegation or security boundary has been certified. The docs are
 ready to guide phased implementation; they are not evidence that G01-G04 passed.
-G01 was subsequently recorded on 2026-09-20; see section 6b. G02 to G04 remain.
+G01 was recorded on 2026-09-20; see section 6b. G02 and G04 are drafted in sections 6c and 6d and await jd's confirmation. G03 is largely supported by the LG-1 pass of 2026-09-17.
 
 Do not convert undecided governance values into fabricated requirements. G04
 requires the team to choose storage location and retention before enterprise
