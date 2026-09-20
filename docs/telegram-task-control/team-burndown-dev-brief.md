@@ -142,11 +142,15 @@ Neither of TM4's two Git records exists yet.
 The control record is the harder half, because it carries state, epoch, requester, executor, branch and last command id, and its compare-and-swap rests on the host rejecting a non-fast-forward update of a ref outside `refs/heads`.
 LG-1 already proved that holds on GitHub, recorded as task T05.
 
-TM4 is gated on G01, which is jd's decision and not an engineering question.
+TM4's gates are not only G01, which an earlier version of this brief got wrong.
+[engineering-plan.md:411-412](engineering-plan.md#L411-L412) requires the G01 record and G02 as revised, with G03 applying to the control record and G04 as jd's governance note.
+G01 was recorded on 2026-09-20 and no longer blocks anything: the receiver accepts the task and resumes under their own login, so nothing is delegated and no credential is shared.
+**G02 is what now gates enabling handover**, and it asks a different question, whether provider, bot, Git and signing credentials are isolated on each machine; a known gap is already recorded, the `.env` bot token being readable by any same-user process.
+Building TM4 is blocked by none of them.
 
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
-| G01 | Record the handover governance decision. | jd records whether a teammate running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use of that subscription. TM4 may be built behind the disabled handover capability before this exists, but handover is enabled only after it. | **jd**: the decision, blocking enablement. |
+| G01 | Record the handover governance decision. | **Done 2026-09-20.** Recorded in [implementation.md](implementation.md) section 6b: the handover delegates nothing, so a receiver who accepts a task and resumes it under their own login is ordinary use. It holds only while acceptance stays an explicit human action and no credential is ever shared, so a move to auto-accept re-opens it. | |
 | H01 | TM4 scenario table. | `docs/e2e-scenarios/tm4.md` committed, specifying TM-T0-6, TM-T0-7 and TM-T1-H1 to TM-T1-H3 in the shape the TM3 table uses. No product code in the commit. | **jd**: skim. |
 | H02 | The item control record. | `refs/aw/items/<item>/control` with `state.json` and `events/<command id>.json`, fetch and compare-and-swap write, fast-forward or rejection only; `item_link.control_head` finally written and read. On an uncertain push, fetch and look for the command id before retrying; on a lost race, re-read and re-validate rather than re-applying. TM-T0-6 passes. | |
 | H03 | Capture and offer. | Snapshot commit through a temporary index, branch `aw/handover/<item>` pushed, then the control record written as `OFFERED` with epoch 1, the named receiver and the requested provider and model. TM-T0-7 passes. | |
@@ -168,8 +172,8 @@ F09               papercuts
   audit 3         after F09
 LT-4 re-run       cases 2, 3 and 11
 F10               rig, only needed before LT-5
-G01               jd, blocking enablement
-H01 to H05        TM4
+G01               done, recorded 2026-09-20
+H01 to H05        TM4  (G02 gates enabling, not building)
   audit 4         after H05
 LT-5              optional
 ```
@@ -208,7 +212,7 @@ Treat each of these as one worker task with its own branch, and expect the test 
 | F08 | medium | Turns on a race the current code loses; the test is the hard part. |
 | F09 | medium | Four unrelated small fixes, each its own commit, and jd must choose the B6 option. |
 | F10 | medium | Rig only, no product code, and only needed before LT-5. |
-| G01 | jd | A decision, not work. |
+| G01 | done | Recorded 2026-09-20. |
 | H01 to H05 | very large | TM4 in five tasks. Neither of its two Git records exists yet, and the control record is the harder half. Budget more than the whole F track. |
 
 Two standing constraints carried from every prior task: no live Telegram credential, no paid provider, no remote write and no push, and never two harness runs at once.
