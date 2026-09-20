@@ -58,6 +58,12 @@ A worker that cannot make the check fail first stops and reports BLOCKED rather 
 
 Every task also carries the standing criteria: typecheck and lint clean, no test that passed before now fails, `team.enabled` still off by default, and the token sweep still passes.
 
+### Phase 0, make the suite trustworthy
+
+| Id | Task | Acceptance criteria | jd |
+| --- | --- | --- | --- |
+| F00B | Sweep the wall-clock fixtures. | Three tests here take timestamps from the wall clock and assume they will differ, so they fail under load on a fast machine: `h6-route-proxy.spec.ts` (repaired as T20A), the migration 26 fixture (repaired as F00A) and `S-L1-33`, which failed once under full-suite load then passed in isolation with and without the change. Find the rest, make each deterministic by deriving the later timestamp from the earlier one rather than from `Date.now()` twice, and prove it by running the full server suite and the full T1 suite three times each with no failure. Audit 2 recorded the server suite at 274/274 and that figure does not reproduce on this machine, so audit 3 cannot honestly claim a green suite until this lands. Test code only; any product change found necessary stops the task and is reported. | |
+
 ### Phase A, unmet must requirements
 
 These two are not ordinary bugs.
@@ -77,7 +83,7 @@ jd decided on 2026-09-19 that the teammate-initiated direction is not a real sce
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
 | F03 | Owner-side control to open an item thread (B2, B7). | An "Open Team thread" action on the work-item detail, enabled when a roster exists and the task is awaiting a response, calling `POST /api/task-control/team/items` through a new client method in `workspacesApi.ts`. The route refuses a prompt that is already `DONE` or `SKIPPED` with a specific error instead of returning 201 and creating unusable rows. Server tests cover both the success and the refusal; the UI is checked at both widths. | |
-| F04 | Amend R-B to owner-initiated (B15). | Documentation only, no product code. R-B in [teammate-design.md](teammate-design.md) is amended to owner-initiated threads, with jd's 2026-09-19 decision and its reasoning recorded, so the written requirement matches what is built. B15 is closed as resolved by decision, and the note that `/discuss` becomes reachable again if cross-member task visibility is ever built is kept. | **jd**: confirm the amended wording. |
+| F04 | Amend R-B to owner-initiated (B15). | **Done 2026-09-20 by the orchestrator**, since the wording was approved verbatim and the change is one table row. R-B in [teammate-design.md](teammate-design.md) now reads owner-initiated, and B15 is closed as resolved by decision. | |
 
 ### Phase C, the two defects that can brick a live team
 
@@ -101,7 +107,7 @@ One task, several small fixes, each in its own commit.
 
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
-| F09 | Wording and small behaviour (B5, B6, B18, and the age pluralization). | B5: carry both the person's name and the configured workstation label, and render each where it belongs. B6: either exclude expired actions from the notifier's dedupe so a still-waiting task gets a fresh card, or say on the card that replying with an answer produces fresh buttons. B18: name the outcome, not only the allowance, on the `Answer and resume` button or its footer. Age pluralization: [card.ts:88](../../server/src/integrations/telegram/card.ts#L88) renders `blocked 1 hours ago` for any item aged 90 to 119 minutes; fix the singular and assert `at(90)`. | **jd**: choose the B6 option. |
+| F09 | Wording and small behaviour (B5, B6, B18, and the age pluralization). | B5: carry both the person's name and the configured workstation label, and render each where it belongs. B6: **jd chose on 2026-09-20 to say it on the card**, not to change the dedupe. Name the recovery path on the personal question card so replying with an answer is known to produce fresh buttons. Do not touch `notifyWaitingTasks`' dedupe: the task may still sit with dead buttons, and that is the accepted trade for no extra posting and no re-post loop. B18: name the outcome, not only the allowance, on the `Answer and resume` button or its footer. Age pluralization: [card.ts:88](../../server/src/integrations/telegram/card.ts#L88) renders `blocked 1 hours ago` for any item aged 90 to 119 minutes; fix the singular and assert `at(90)`. | |
 
 ### Phase F, the pilot rig
 
@@ -153,8 +159,9 @@ It cannot run until F10 gives instance B its own clone.
 ## 6. Ordering and gates
 
 ```
-F01, F02          unmet must requirements, first
-F03, F04          make R-B true
+F00B              wall-clock fixture sweep, so later reds mean something
+F01, F02          unmet must requirements  (done)
+F03               make R-B true            (F04 done)
 F05, F06          stop a live team bricking
 F07, F08          anchor lifecycle
 F09               papercuts

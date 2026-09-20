@@ -9,6 +9,7 @@ checks that exposed them.
 them, and names the task that owns each one; progress is in
 [team-burndown-tracker.md](team-burndown-tracker.md).
 Fixed so far: B12 by F01; B14 and B17 by F02, except B17's pinned anchor.
+Closed by decision: B15 (R-B amended), B16 (merged into B11), B19 (rig note only).
 Everything else is still open.
 
 ## B1 - a created team's join code cannot be recovered
@@ -437,6 +438,13 @@ Suggested fix: refresh the access message with no actions when the refresh is
 the one that closes the item.
 
 ## B15 - R-B is unreachable in both directions, so `/discuss` has no usable entry point
+
+**Closed 2026-09-20 as resolved by decision.**
+R-B was amended to owner-initiated threads, in the wording jd approved on
+2026-09-20, so the written requirement now matches what is built.
+The owner's route is the control that F03 adds; the teammate-initiated direction
+is deliberately not built, and `/discuss` keeps no usable human entry point until
+cross-member task visibility exists.
 
 Severity: scope note rather than a defect. Recorded because R-B is an accepted
 requirement that nothing currently satisfies, not because the teammate flow is

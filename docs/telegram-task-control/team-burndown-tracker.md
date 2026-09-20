@@ -13,16 +13,23 @@ State as of 2026-09-20:
 - The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, already merged into main. It is the test rig, not where product code goes.
 - Both pilot instances are stopped and nothing listens on 3100, 3200, 4100 or 4200.
 - **Phase A is done.** F00A, F01 and F02 are merged; B12, B14 and B17 are closed, B17 apart from its pinned anchor.
-- **Next task is F03**, the owner-side control to open an item thread, and the first task jd assigned to a worker agent rather than the orchestrator.
+- **Next task is F00B**, the wall-clock fixture sweep, then F03. F00B comes first so that any red in a later task means something. Both go to worker agents; F04 is already done.
 
-Four decisions are waiting on jd, and only the second one blocks a task that is next in line:
+Decisions jd settled on 2026-09-20, all now recorded in the plan:
 
-| Needed for | Decision |
+| Decision | Ruling |
 | --- | --- |
-| F04, pairs with F03 | Confirm the amended R-B wording, owner-initiated threads only. The orchestrator can draft it for approval. |
-| F09 | Choose the B6 approach: exclude expired actions from the notifier's dedupe so a still-waiting task gets a fresh card, or leave the dedupe and say on the card that replying mints fresh buttons. |
-| H track, blocks enablement not building | G01: whether a teammate running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. |
-| H01 | Skim the TM4 scenario table once written. |
+| R-B wording | Approved as drafted. F04 is **done**: R-B reads owner-initiated, and B15 is closed as resolved by decision. |
+| B6 approach (F09) | Say it on the card. Name the recovery path on the personal question card; do **not** change `notifyWaitingTasks`' dedupe. A waiting task may still sit with dead buttons, and that is the accepted trade. |
+| Wall-clock fixtures | Add **F00B**, a sweep before audit 3, because audit 2's 274/274 does not reproduce here. |
+| Execution model | Orchestrator does Phase A; every task from Phase B onward goes to one worker agent each. |
+
+Still open, and the only thing waiting on jd:
+
+| Needed for | Open item |
+| --- | --- |
+| H track, blocks enablement not building | **G01.** jd chose to record it rather than defer, but has not yet given the ruling. Until the sentence exists, TM4 may be built behind the disabled handover capability and handover must not be enabled. |
+| H01 | Skim the TM4 scenario table once it is written. A step, not a blocker. |
 
 One standing warning that cost time twice: three tests in this suite take timestamps from the wall clock and assume they will differ, so they fail under load on a fast machine.
 `h6-route-proxy.spec.ts` was repaired as T20A, the migration 26 fixture as F00A, and `S-L1-33` failed once under full-suite load then passed in isolation with and without the change.
@@ -49,6 +56,7 @@ Execution model, by jd's decision of 2026-09-20: the orchestrator implements Pha
 | Id | Track | Status | Worker agent id | Branch | Merged commits | Evidence summary | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | F00A | F | done | orchestrator | `fix/F00A-migration-26-fixture-timing` | `b72f21e` | Pre-existing failure found on main at `dc3e9de`, not caused by F01: TM-T0-5-26 rejected its card as `prompt_not_blocked` because the fixture seeded the prior answer and the handoff's `completedAt` from the wall clock back to back, and both landed in the same millisecond (observed `04:04:39.166Z` for each). Fixture now completes the question strictly after the prior answer; test only, no product code. Stable 3/3. | 2026-09-20 |
+| F04 | F | done | orchestrator | none, applied on main | `(with this commit)` | Documentation only. R-B amended to owner-initiated in the wording jd approved on 2026-09-20, and B15 closed as resolved by decision. Done by the orchestrator rather than a worker because the text was approved verbatim and the change is one table row. | 2026-09-20 |
 | F02 | F | done | orchestrator | `fix/F02-close-the-thread` | `32ce63c..cfb9d55` | Closes B17 apart from its pinned anchor, and closes B14. Owns migration 27, which adds `closed_at` and `closed_command_id` to `item_link` in place, no rebuild needed. Behavioural red first at the T1 tier: 8 actions stayed armed on the item after a close where 0 were expected. Two design corrections found while building: retiring the anchor the way completion does makes the thread unroutable, because `telegramItemThreadForMessage` skips `ANCHOR_GONE`, so a reply would meet silence instead of a refusal; and marking a completed link closed would stop the anchor retiring at all, so the access message reads completion from the prompt instead. Green: new closed-thread T1 case, whole TM3 file 3/3 in 1.8m, TM-T0-5-27 across two boots, full server suite 279/279, typecheck clean. T15's expected item link row updated for the two new columns. | 2026-09-20 |
 | F01 | F | done | orchestrator | `fix/F01-help-capabilities` | `506ea0a..7cca9cd` | Closes B12. Red proven at both tiers first: TM-T1-4 failed at `tm3-grants.spec.ts:137` and the new `teamItemViews.test.ts` failed 2/5. `/help` had no coverage at any tier beforehand. Root cause was that `renderTeamItemView` was never told who asked, so `askingPersonId` was added to the view state and threaded from `message.transportUserId`. Green: unit 5/5, TM-T1-4 1/1 in 1.2m, TM-T1-4 burn-in 3/3 in 1.9m, full server suite 279/279, typecheck 4/4 workspaces, web lint 0 errors and the 5 existing warnings. No live Telegram, credential, paid provider, remote write or push. | 2026-09-20 |
 
