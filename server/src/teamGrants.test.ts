@@ -116,9 +116,14 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       const runId = 'm26-source-run';
       workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: 'claude', model: null, tokenHash: 'm26', expiresAt: '2099-01-01T00:00:00.000Z', role: 'execute' });
       workspaces.finishAgentRun(runId, 'done');
-      workspaces.respondToBlockedPrompt(prompt.id, { content: 'Prior answer' });
+      const priorAnswer = workspaces.respondToBlockedPrompt(prompt.id, { content: 'Prior answer' });
       const handoff = workspaces.createHandoff({ id: 'm26-handoff', workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: 'claude', model: null });
-      workspaces.updateHandoff(handoff.id, { state: 'READY', recommendation: 'WAIT_FOR_HUMAN', completedAt: new Date().toISOString() });
+      // The new question must complete strictly after the prior answer, because
+      // pendingHumanQuestion counts a response at or after completedAt as having
+      // answered it. Seeding both from the wall clock puts them in the same
+      // millisecond on a fast machine, which leaves the prompt with no pending
+      // question and rejects the card below as prompt_not_blocked.
+      workspaces.updateHandoff(handoff.id, { state: 'READY', recommendation: 'WAIT_FOR_HUMAN', completedAt: new Date(Date.parse(priorAnswer.createdAt) + 1).toISOString() });
       workspaces.addPipelineStep(prompt.id, { provider: 'claude' });
       const pipeline = workspaces.createPipelineRun({ id: 'm26-pipeline', suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
       workspaces.updatePipelineRun(pipeline.id, { state: 'WAITING_HUMAN', currentPromptId: prompt.id });
