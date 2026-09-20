@@ -141,16 +141,12 @@ Once a teammate accepts, that teammate checks out the branch and works on it wit
 
 H01 writes the scenario table from that description, and must reconcile two differences from the design of record before it does.
 
-The design says the offer is **named**: R-A calls it "a named handover" and RTC-11 is "Named offer and receiver claim", where the requester picks the receiver and that person claims it without a second approval.
-jd describes an **open call** to whoever is available, with the first to accept taking it.
-With the two members this track is scoped to, and a third deliberately excluded, the two collapse to the same flow, so this need not be settled before building.
-It must be settled before a third member exists, because an open call makes simultaneous accepts possible, and the item control record's compare-and-swap is then the only thing deciding who actually holds the work.
-Building the control record first, as H02 does, keeps both readable: post the offer without naming a receiver, and keep the receiver field in the record for a named offer later.
+jd settled the open questions on 2026-09-20 and the design was amended to match, so nothing here is contradictory any more.
+The offer is an **open call**: it names no receiver, any available teammate may accept, and the first accept wins by the shared update rather than by which tap reached the bot first.
+B17, R-A, RTC-11 and protocol.md were all amended.
+The control record is therefore what arbitrates a simultaneous accept, which is why H02 comes before H03.
 
-The design also ties the trigger to allowance: R-A reads "when one person's LLM allowance is about to run out".
-jd describes the trigger as needing help, which is broader.
-That changes when the action is offered and how the card reads, not how the handover works.
-Both wordings are jd's to amend, the way R-B was on 2026-09-20; neither is amended yet.
+The trigger is needing help, not only an allowance about to run out, and R-A now names both the quota warning and `/handover` on the anchor.
 Its scope, from the [engineering plan](engineering-plan.md) TM4 row: a snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, a worktree run, requirement questions across workstations, return, and apply by ordinary merge.
 
 [handover-rules.md](handover-rules.md) maps the states, the invariants and every eventuality phase by phase, marking each as settled by the design or proposed and awaiting jd.
@@ -174,7 +170,7 @@ Building TM4 is blocked by none of them.
 | G01 | Record the handover governance decision. | **Done 2026-09-20.** Recorded in [implementation.md](implementation.md) section 6b: the handover delegates nothing, so a receiver who accepts a task and resumes it under their own login is ordinary use. It holds only while acceptance stays an explicit human action and no credential is ever shared, so a move to auto-accept re-opens it. | |
 | H01 | TM4 scenario table. | Commit `docs/e2e-scenarios/tm4.md` written from [handover-rules.md](handover-rules.md), whose five decisions jd settled on 2026-09-20, specifying TM-T0-6, TM-T0-7 and TM-T1-H1 to TM-T1-H3 in the shape the TM3 table uses. Cover the open call's simultaneous accept, `release_work`, the absence of any reclaim, and the capture preview's secret warning. No product code in the commit. | **jd**: skim. |
 | H02 | The item control record. | `refs/aw/items/<item>/control` with `state.json` and `events/<command id>.json`, fetch and compare-and-swap write, fast-forward or rejection only; `item_link.control_head` finally written and read. On an uncertain push, fetch and look for the command id before retrying; on a lost race, re-read and re-validate rather than re-applying. Owns TM4's migration, number 28 or later because F02 took 27, adding the seven designed actions plus `release_work`, and the states including `RELEASED`. TM-T0-6 passes. | |
-| H03 | Capture and offer. | Snapshot commit through a temporary index, branch `aw/handover/<item>` pushed, then the control record written as `OFFERED` with epoch 1, the named receiver and the requested provider and model. TM-T0-7 passes. | |
+| H03 | Capture and offer. | Snapshot commit through a temporary index, branch `aw/handover/<item>` pushed, then the control record written as `OFFERED` with epoch 1 and the requested provider and model, naming no receiver. The capture preview lists every uncommitted file by path and flags credential shapes, which take their own confirmation. TM-T0-7 passes. | |
 | H04 | Accept, claim and run. | Receiver accepts and claims, runs in a worktree under their own provider, and requirement questions cross workstations while the requester is stopped. TM-T1-H1 and TM-T1-H2 pass. | |
 | H05 | Return and apply. | Return, then apply by ordinary merge, then task complete. TM-T1-H3 passes; the full T1 suite passes; burn-in at 3 repeats on the H scenarios. | |
 

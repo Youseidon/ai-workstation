@@ -294,7 +294,7 @@ The shape is settled:
 2. jd-laptop holds the task and its pipeline, waits until no run owns the workspace, and creates a snapshot commit of tracked and untracked non-ignored files through a temporary index, so HEAD, index and worktree are untouched, plus a context file (objective, requirements, answers, open questions, completed and pending work, verification, recommended provider).
    Unsupported content (symlinks escaping the tree, submodule contents, LFS objects) stops the capture with a named reason.
 3. jd reviews a preview and taps Publish offer.
-   jd-laptop pushes branch `aw/handover/<item>`, then the control record as `OFFERED` (epoch 1, named receiver, requested provider and model).
+   jd-laptop pushes branch `aw/handover/<item>`, then the control record as `OFFERED` (epoch 1, no named receiver since 2026-09-20, requested provider and model).
 4. yousef-desktop discovers it on the next shared-record read (5 seconds, the recorded default), compares the requested provider, model, Host access and sandbox mode with its own workspace settings, and posts its own Accept and run card from its own bot.
 5. Yousef taps Accept; yousef-desktop claims by compare-and-swap push (`CLAIMED`). A withdraw that won first makes the claim fail with the current state, and the loser re-validates rather than retrying blindly: a claim that lost stays lost.
 6. yousef-desktop creates a worktree of the branch, links it to a local task, runs it through the normal start path, and posts progress on the anchor.
@@ -399,7 +399,7 @@ These become H-TM rows in `human-verification.md` as their slices land.
 ## 9. Build slices
 
 The slices, their order, what each proves and when each is done are in the [engineering plan, section 3b](engineering-plan.md#3b-team-track-tm): TM0 harness, TM1 team and roster, TM2 item threads, TM3 grants, TM4 handover.
-Release points: after TM3, item threads and grants can be enabled with no gate; after TM4 and jd's G01 record, handover can be enabled.
+Release points: after TM3, item threads and grants can be enabled with no gate; after TM4, handover can be enabled once G02 passes. G01 was recorded on 2026-09-20 and no longer gates it; the engineering plan requires G01 and G02, and is the stricter and authoritative list.
 
 ## 10. Open items
 

@@ -50,25 +50,36 @@ These hold in every case below. A rule that would break one of these is wrong, h
 TM4's own migration adds exactly these seven actions ([teammate-design.md:337](teammate-design.md)): `publish_offer`, `accept_offer`, `decline_offer`, `withdraw_offer`, `return_work`, `apply_result`, `request_changes`.
 Each is a tap with a receipt, like every other action in this product.
 
-Two things follow. `decline_offer` exists, so declining is a recorded decision rather than silence.
-And there is **no release action**, which is the clearest evidence that a receiver handing back unfinished work was never designed for; that is open item 3 in section 8, and adding it means adding an eighth action in the same migration.
+`decline_offer` exists, so declining is a recorded decision rather than silence.
+
+There is deliberately **no release action**, and an earlier draft of this document was wrong to propose adding one.
+A receiver who cannot finish uses `return_work` and the result is labelled partial, which [protocol.md](protocol.md) already specifies and which releases the executor.
+Seven actions remain the whole set.
 
 ## 3. States
 
-The control record's state, with who may move it and what must be true.
+**The lifecycle is already specified, in [protocol.md](protocol.md), and that table is authoritative.**
+An earlier draft of this document invented a six-state machine of its own before that table had been read, which was wrong twice over: it duplicated an existing specification, and it proposed a `RELEASED` state that protocol.md already covers by other means.
 
-| State | Meaning | May move it | Leaves to |
-| --- | --- | --- | --- |
-| `OFFERED` | Branch pushed, help requested, nobody holds it | Requester withdraws; receiver claims | `CLAIMED`, `WITHDRAWN` |
-| `CLAIMED` | One receiver holds it and may run | Receiver returns or releases. The requester has no reclaim; they may only cancel the item | `RETURNED`, `RELEASED` |
-| `RETURNED` | Receiver pushed result commits and stopped | Requester applies or requests changes | `APPLIED`, next epoch `OFFERED` |
-| `APPLIED` | Merged into the requester's checkout, task complete | Terminal | terminal |
-| `WITHDRAWN` | Offer ended before anyone claimed | Terminal for that epoch | new epoch `OFFERED` |
-| `RELEASED` | Receiver gave it back unfinished | Requester re-offers or resumes locally | new epoch `OFFERED`, or local resume |
+Its states are `LOCAL`, `PREPARING`, `OFFERED`, `CLAIMED`, `STARTING`, `RUNNING`, `WAITING_INPUT`, `PAUSED`, `STOP_REQUESTED`, `RETURNED`, `APPLYING`, `COMPLETED`, `CANCELLED` and `WITHDRAWN`, with the authorized actor and the required condition on every transition.
+H02 builds that table, not a summary of it.
 
-**Ruled 2026-09-20:** `RELEASED` is confirmed, and so is the eighth action it needs, `release_work`. The design has `withdraw_offer` for the requester and `return_work` for finished work, but nothing for a receiver handing back work they could not finish, which is the single most likely real outcome after quota exhaustion on the receiving side.
+Three of its rules matter enough to restate here, because the rest of this document leans on them.
 
-Every transition writes `events/<command id>.json` and bumps nothing but its own state; **epoch** increases only when the requester re-offers after `RETURNED`, `WITHDRAWN` or `RELEASED`.
+**A receiver who cannot finish returns partial work; there is no separate release.**
+`PAUSED` to `RETURNED` is "Return work, executor. Immutable result and release evidence published; **incomplete work labelled partial**."
+`RETURNED` then goes to `OFFERED` again by the requester's Request changes, with a new revision and fresh acceptance.
+So the capability jd asked for on 2026-09-20 exists already and needs no new state and no eighth action.
+
+**Returning is itself the release.**
+"WITHDRAWN and RETURNED release an offer/executor, not the original pipeline hold."
+The requester's own pipeline hold survives, which is invariant 8.
+
+**Reacquisition is possible but must be proven, not asserted.**
+"The source may reacquire ownership only through a validated shared update when no other executor can still start/run. Failure to acquire leaves the source held."
+That is B20, ownership transfer needs confirmed release.
+The requester is not powerless: either party may request Pause or Cancel, but "only the current executor can acknowledge physical stop or release", and requester actions cannot override an executor's local pause or denied permission.
+
 
 ## 4. Phase by phase
 
@@ -117,10 +128,10 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | Normal run | A worktree of the branch, linked to a local task, started through the normal start path, with progress posted on the anchor. | Settled, 5.4 step 6 |
 | Requirement question mid-run | Posted by the receiver's workstation and issued to the requester as actor, so it applies while the requester is offline. Access, provider and allowance questions are asked to the receiver locally. | Settled, 5.4 step 6 |
 | Mid-run instruction, provider or access change | Record the revision and check scope before applying (B22). | Settled, B22 |
-| Receiver exhausts their own quota | The run stops with quota as its distinct reason (B05), and the receiver is offered Release, which returns the work unfinished with its commits so far. Never silently re-offered, and never passed to a third party, because further handoff beyond a return is excluded. | Ruled |
+| Receiver exhausts their own quota | The run stops with quota as its distinct reason (B05), and the receiver returns the work with its commits so far, **labelled partial**, which releases them. The requester then applies what is usable or requests changes, which re-offers it. Never silently re-offered, and never passed to a third party, because further handoff beyond a return is excluded. | Settled, protocol.md |
 | **Receiver goes silent indefinitely** | The requester cannot seize a claimed item, because that would run two agents on one item. The requester may ask, and the receiver's workstation may release; a claim only ends by the receiver's action or by the receiver's workstation reporting its run dead. | **Proposed** |
 | Receiver's run crashes or the process is orphaned | No release until writing has stopped, and uncertain external effects require inspection (B13). An unknown start is not retried automatically (B23). | Settled, B13 and B23 |
-| Requester regains quota and wants it back | They ask; they do not take. The requester may cancel the item outright, which ends the handover, or wait for a release. There is **no reclaim action at all**, because two agents on one item is the one thing the invariants forbid and a forced reclaim would have to stop another machine's run and prove it stopped. | Ruled |
+| Requester regains quota and wants it back | They may request Pause or Cancel, but **only the current executor acknowledges physical stop or release**, and a requester action never overrides an executor's local pause or denied permission. Reacquiring ownership needs a validated shared update proving no other executor can still start or run; failing that, the requester stays held. That is B20, ownership transfer needs confirmed release. No seizing, and no reclaim that skips the proof. | Settled, protocol.md |
 | **Requester's task is completed locally while claimed** | The receiver's work becomes irrelevant. The item ends, the receiver is told plainly that the requester completed it, and their run is stopped. The branch is kept until the requester deletes it. | **Proposed** |
 | **Both sides push to the branch** | The receiver owns the branch while `CLAIMED`. The requester does not push to it; if they have, the receiver's push is rejected non-fast-forward, and the receiver reports the divergence rather than force-pushing. Force-push is never used by the product. | **Proposed** |
 | **A human force-pushes or deletes the branch on GitHub** | Detected on the next fetch. The handover stops with a named reason and the record is not advanced; recovery is a fresh epoch, because the captured state is gone. | **Proposed** |
@@ -170,7 +181,7 @@ None of them blocks building TM4 behind the disabled capability.
 | Slice | Gains |
 | --- | --- |
 | H01 | Writes `tm4.md` from this document, and settles the open items in section 8 first. |
-| H02 | TM4's migration, which adds the seven designed actions plus an eighth if `RELEASED` is confirmed, and the control record: its states, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. Migration number is 28 or later, because F02 took 27. |
+| H02 | TM4's migration, which adds the seven designed actions, and the control record built to [protocol.md](protocol.md)'s lifecycle table: its states, authorized actors, required conditions, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. Migration number is 28 or later, because F02 took 27. |
 | H03 | Capture with the secret and size rules, the preview listing untracked files, refusal on a closed or completed item, and publish. |
 | H04 | Discovery, settings re-validation, claim races, decline, release, receiver quota exhaustion, and the no-unilateral-reclaim rule. |
 | H05 | Return, apply, conflict, idempotent re-apply, request changes and the new epoch. |
@@ -179,8 +190,8 @@ None of them blocks building TM4 behind the disabled capability.
 
 1. **Open call, not a named receiver.** The offer names nobody and the first accept wins. Amended in B17 ([user-flows.md](user-flows.md)), R-A ([teammate-design.md](teammate-design.md)) and RTC-11 ([engineering-plan.md](engineering-plan.md)), so the design no longer contradicts the build.
 2. **The trigger is needing help, not only a quota warning.** R-A amended to name both the quota warning and `/handover` on the anchor. This was never a blocker, because 5.4 step 1 already offered both.
-3. **A receiver may release work unfinished.** New state `RELEASED` and new action `release_work`, returning to the requester and never to a third party. H02 adds both in TM4's migration.
-4. **No reclaim of a claimed item.** The requester asks, or cancels the item. No reclaim action is built, so two agents can never hold one item.
+3. **A receiver may hand work back unfinished.** jd ruled yes, and it turned out to need nothing new: [protocol.md](protocol.md) already returns partial work with `return_work`, labels it partial and releases the executor. The `RELEASED` state and `release_work` action this document first proposed were withdrawn on the same day, before any code was written, because they duplicated that.
+4. **No seizing a claimed item.** jd ruled the requester cannot take it back. protocol.md is more precise and is what H04 builds: either party may request Pause or Cancel, only the executor acknowledges stop or release, and reacquiring ownership needs a validated shared update proving no executor can still run (B20).
 5. **Capture warns about secrets rather than refusing.** jd's decision, against the recommendation in the first draft of this document, which was to refuse. The preview lists every uncommitted file by path and flags credential shapes, and a flagged match takes its own confirmation. The accepted risk is recorded in section 4.1: a secret reaching a shared remote stays in its history.
 
 No decision blocks implementation. The rows still marked **Proposed** are derived rules rather than open questions, as the note at the top explains; H01 raises any jd wants changed.

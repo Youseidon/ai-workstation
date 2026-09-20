@@ -61,7 +61,7 @@ maintained schema validator or existing repository pattern, not regex parsing.
 | Record | Required information |
 | --- | --- |
 | Task | Global task/project/source IDs; requester; local mapping; requirements revision; current epoch; lifecycle; executor; package reference; open questions; result reference. |
-| Offer | Offer/task IDs; named receiver person/workstation/workspace; task revision; package hash; requested provider/model/auth mode; access requirements; start deadline; source-release evidence. |
+| Offer | Offer/task IDs; no named receiver since 2026-09-20, the offer being open to any available teammate; task revision; package hash; requested provider/model/auth mode; access requirements; start deadline; source-release evidence. |
 | Package | Schema version; base commit; checkpoint commit; staged/working-tree manifests; file hashes/modes; explicit exclusions; context blob/hash; setup requirements; unresolved side effects; creator/epoch. |
 | Question | ID and revision; task requirements revision/epoch; decision type; allowed respondent; evidence; options; required/optional flag; answer and resolution state. |
 | Approval | Actor evidence; offer/task/question scope; package hash; provider/model/auth mode; local policy fingerprint; accepted limits; creation/deadline; originating message/action IDs. |
@@ -133,9 +133,9 @@ shared handoff lifecycle. A quota warning can coexist with RUNNING.
 | From | Event and authorized actor | To | Required condition |
 | --- | --- | --- | --- |
 | LOCAL | Request takeover, current authorized owner | PREPARING | Persist source pipeline/workspace hold before interrupting. |
-| PREPARING | Checkpoint/release published, source executor | OFFERED | Managed writers stopped; package verified; named recipient authorized. |
+| PREPARING | Checkpoint/release published, source executor | OFFERED | Managed writers stopped; package verified; roster membership authorized rather than a named recipient (amended 2026-09-20). |
 | PREPARING | User abandons preparation | LOCAL | No executable offer exists; resume requires explicit user instruction. |
-| OFFERED | Accept and run, named receiver | CLAIMED | Current offer/package, valid deadline, roster and successful shared update. |
+| OFFERED | Accept and run, any available teammate | CLAIMED | Current offer/package, valid deadline, roster and successful shared update. The update is what decides a simultaneous accept: the first to land wins and the loser re-validates (amended 2026-09-20). |
 | OFFERED | Decline / withdraw / expire | WITHDRAWN | Receiver may decline; requester may withdraw; expiry cannot affect an existing claim. |
 | CLAIMED | Preparation complete, executor | STARTING | Policy/capability checks, idle workspace reservation, durable start intent. |
 | CLAIMED | Busy/offline dependency | CLAIMED | No spawned run; show reason; revalidate on retry. |
