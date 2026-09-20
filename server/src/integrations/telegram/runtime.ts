@@ -1113,6 +1113,24 @@ export class TelegramLiveRuntime {
     if (contentChanged || ageRefreshDue) workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: anchor.outboxId, payload });
   }
 
+  /**
+   * Whether the work this item's card describes has actually stopped (B13). The
+   * prompt reading DONE is the agent's last word, not its run's: the pilot's
+   * `agent_run` row kept `ended_at` null for four more seconds, and the anchor was
+   * retired inside that window, freezing a card rendered from a state the run had
+   * already left behind. Retiring is the last edit the group will ever see, so it
+   * waits for the rows the card is rendered from to be final.
+   *
+   * An execute run that never ends - a process killed between its DONE status and
+   * its own bookkeeping - leaves the anchor pinned and live rather than frozen and
+   * wrong: `syncTeamItem` keeps it in step, F07's comparison keeps it quiet, and
+   * the first pass after that row resolves retires it.
+   */
+  private teamItemRunEnded(promptId: number): boolean {
+    const runs = workspaces.promptHistory(promptId).runs as Array<{ role: string; endedAt: string | null }>;
+    return !runs.some(run => run.role === "execute" && run.endedAt === null);
+  }
+
   private async finishCompletedTeamItems(session: Session): Promise<void> {
     if (!this.settings().teamEnabled) return;
     let roster: TeamRoster;
@@ -1124,7 +1142,13 @@ export class TelegramLiveRuntime {
       if (revoked > 0) this.syncTeamItemAccess(session, roster, link, true);
       const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
       if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") continue;
+      // Grants end the moment the item does, but the anchor waits for the run, so
+      // the message frozen in the group is rendered from a settled state (B13).
+      if (!this.teamItemRunEnded(link.promptId)) continue;
       const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
+      // Whole-payload equality on both sides, which is correct for retiring: the
+      // anchor goes only when what the group can see is exactly what this state
+      // renders, and both sides are rendered on F07's grid so it still settles.
       if (anchor === null || anchor.messageId === null || anchor.pendingEdit || JSON.stringify(anchor.deliveredPayload) !== JSON.stringify(payload)) continue;
       // Mark first: like pinning, a refused unpin is attempted once and never loops.
       workspaces.markTelegramThreadAnchorGone(anchor.outboxId);
