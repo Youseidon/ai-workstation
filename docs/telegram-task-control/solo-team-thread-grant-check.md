@@ -6,6 +6,24 @@ This is the LT-4 scope from [tm3.md](../e2e-scenarios/tm3.md): a real item
 thread, real grants, and a real resume that starts exactly one run on the
 owner's workstation.
 
+What Git carries, and what this check does not reach.
+The design gives the remote three machine records
+([teammate-design.md](teammate-design.md), section 8.3): the roster
+`refs/aw/team`, the item control record `refs/aw/items/<item>/control`, and the
+handover branch `aw/handover/<item>`.
+Only the roster exists in the code today, and it is genuinely remote-mediated:
+each instance keeps its own bare mirror at `.agent-console/team/remote.git` and
+compare-and-swap pushes with `--force-with-lease`
+([teamRoster.ts:213-236](../../server/src/teamRoster.ts#L213-L236)), so case 1
+does exercise a real round trip through GitHub.
+`refs/aw/items` and `aw/handover` are referenced nowhere in `server/src`, and
+`item_link.control_head` is never written; they belong to TM4 and are checked by
+LT-5, not here.
+So no case below touches Git, and the absence of a handover test in this document
+is scope rather than an omission.
+Before LT-5 can run at all, the rig needs fixing: both instances currently share
+one working tree, which is B19.
+
 Roles: account A is the owner (workstation label `Jj`, bot `@aiws_helper_bot`,
 instance A on ports 3100/4100), account B is the teammate (label `Junaid`, bot
 `@ai_test_pilot_1_bot`, instance B on ports 3200/4200).
@@ -229,7 +247,7 @@ rather than from the transcript.
 | 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Jj to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
 | 12 default-off regression | not run | | |
 
-Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B18.
+Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B19.
 B16 was merged into B11 on 2026-09-20 and is kept as a pointer.
 
 ## Resuming in a fresh session

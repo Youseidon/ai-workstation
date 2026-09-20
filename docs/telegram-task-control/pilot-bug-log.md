@@ -585,6 +585,45 @@ Suggested fix: extend that footer, or the button label, to name the outcome as
 well as the allowance, so the two buttons are distinguishable by consequence and
 not only by wording.
 
+## B19 - both pilot instances share one working tree, so no Git exchange between them can be tested
+
+Severity: high for the pilot rig rather than for the product. It does not affect
+any TM3 case, and it blocks LT-5 outright.
+
+`setup:team-pilot` isolates ports, bot tokens and the SQLite database, and each
+instance keeps its own bare roster mirror at
+`.agent-console/team/remote.git`, so the roster really does travel through the
+remote.
+It does not isolate the workspace: both instances' workspace 1 has
+`work_directory` `/home/junaid/ai-workstation-team-workspace`, instance A as
+`Team pilot workspace` and instance B as `pilot-project`, the same checkout with
+the same `origin`.
+
+D05 says "Do not use a network-mounted working directory or share a live SQLite
+file" ([teammate-design.md](teammate-design.md)). The database is properly split;
+the working tree is not. One directory shared by two workstations is the same
+mistake in local form.
+
+Two consequences.
+
+The rig cannot validate any file-level exchange between the two sides, because
+there is nothing to exchange: whatever one instance writes, the other already
+sees without fetching. Anything built on the handover branch would appear to work
+here while proving nothing.
+
+It is also a live hazard whenever both sides run an agent. Two servers running
+agents in one working tree share one index and one checkout, so they can race on
+`.git/index.lock` and overwrite each other's files. No case has hit this only
+because instance B has never started a run: case 7 checks that a teammate's
+resume starts exactly one run on the owner's workstation, which verifies bot and
+callback routing, not filesystem isolation. The two are easy to confuse, since
+"instance B started nothing" reads like isolation and is not.
+
+Suggested fix: give instance B its own clone of the team remote and point its
+workspace at that, so the two sides exchange work the way two workstations
+actually would. Until then, record that the pilot proves Telegram-side team
+behaviour and roster replication, and nothing about Git-mediated work exchange.
+
 ## Unconfirmed
 
 - The `Goal:` line on the personal card may truncate without the ellipsis that
