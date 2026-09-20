@@ -145,6 +145,33 @@ in settings that a key came from the environment rather than from this pilot.
 
 ## B5 - the Team roster stores a person's Telegram name as the workstation label
 
+**Fixed 2026-09-21 by F09, commits `6596e57` and `8b93dd9`.**
+A roster member now carries both: `workstationLabel`, this machine's
+`TASK_CONTROL_WORKSTATION_LABEL` resolved exactly as the personal card resolves
+it and falling back to the hostname, and `personLabel`, the paired Telegram
+display name. The slots were then split. Workstation slots: the anchor
+breadcrumb, `Item status - <x>` and `Owner workstation: <x>`. Person slots: the
+anchor footer `Owner:`, `/access`, `/help`'s member list, the grant and revoke
+cards, the allowance line, the thread request and its confirmation, the group
+actor label and both "Ask X to grant" refusals.
+
+No migration was needed, so 29 stays reserved for H02. A roster published before
+this change holds one label per member, the person's display name, and it is read
+back with `personLabel` filled in from `workstationLabel`. So an old roster says
+exactly what it said before - the workstation slots keep showing the person's
+name, as they did - and nothing regresses. The next publish from either
+workstation, whether create, join, reissue, refresh or the supergroup repair,
+writes both fields, so a roster self-heals on its next write. Both read paths are
+covered by their own test: the ref read through `validateRoster`, with legacy
+JSON written straight into `refs/aw/team` because every ordinary write path would
+otherwise fill the field in, and the cache read through `cachedTeamRoster`.
+
+That second path was a real crash, not a hypothetical: the composition run found
+`teamItemViewState` reading `personLabel` straight off a cached record and
+throwing `Cannot read properties of undefined (reading 'replace')` on the first
+anchor. That is exactly what an upgraded install with an existing `team_roster`
+row would have hit, and `8b93dd9` is the fix.
+
 Severity: low, but it makes every Team card disagree with every personal card.
 
 `confirmTeamCreate` and `confirmTeamJoin` both set
@@ -169,6 +196,17 @@ Suggested fix: carry both, and render the configured workstation label where a
 workstation is named and the person's name where a person is named.
 
 ## B6 - an expired personal question card is never replaced
+
+**Fixed 2026-09-21 by F09, commit `4628ec7`, in the form jd chose on 2026-09-20.**
+Every personal question card, in both the current layout and the legacy L1 one,
+now ends with "These buttons expire; a reply with your answer always brings a
+fresh card." So the recovery path that already existed is no longer
+undiscoverable.
+
+`notifyWaitingTasks`' dedupe is untouched, and so is the `expires_at`-blind check
+at `workspaces.ts:1598-1601`. **This is the accepted trade, not an oversight:** a
+waiting task may still sit with dead buttons, in exchange for no extra posting and
+no re-post loop. The suggested fix below offers both options; jd took the second.
 
 Severity: medium; a task can sit awaiting a response with no usable card.
 
@@ -784,6 +822,22 @@ completion does, and refresh the access message with no actions on the pass that
 closes it (which is also B14's fix).
 
 ## B18 - a teammate holding answer and resume is one tap from completing the owner's task
+
+**Fixed 2026-09-21 by F09, commit `711780c`.**
+The two-button card now names the consequence above the allowance line:
+
+```
+Answer and resume starts the run. If the task completes, the item closes and every grant ends.
+Uses Junaid's claude allowance.
+```
+
+A card whose only button is `Save answer` states neither line, so the two cards
+are now distinguishable by consequence rather than only by wording. The same
+sentence was added to the `/resume` card, which the F09 worker flagged as going
+one entry beyond this entry's text: `resume_saved` has exactly the same
+consequence as `answer_and_resume`, and stating it on one card but not the other
+would have been an inconsistent surface. The behaviour is unchanged and remains
+correct; only the card says more.
 
 Severity: low as designed, but it is a sharp edge worth stating, and it is
 undocumented outside the command surface table.
