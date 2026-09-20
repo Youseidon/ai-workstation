@@ -8,7 +8,7 @@ checks that exposed them.
 [team-burndown-dev-brief.md](team-burndown-dev-brief.md) is the plan that closes
 them, and names the task that owns each one; progress is in
 [team-burndown-tracker.md](team-burndown-tracker.md).
-Fixed so far: B12 by F01.
+Fixed so far: B12 by F01; B14 and B17 by F02, except B17's pinned anchor.
 Everything else is still open.
 
 ## B1 - a created team's join code cannot be recovered
@@ -382,6 +382,12 @@ retire the anchor only once the run has actually ended.
 
 ## B14 - closing an item arms fresh grant buttons on the closed item
 
+**Fixed 2026-09-20 by F02, commits `32ce63c` and `cfb9d55`.**
+A finished item's access message carries no actions at all, on both paths: the
+explicit close reads `closed_at` from the link, and completion reads `DONE` or
+`SKIPPED` from the prompt. Nothing is armed, so nothing can restore a grant on an
+item that has ended, which also removes the high-severity case below.
+
 Severity: low when the item closed because its task completed, high when it was
 closed by `/close` on a task that is still blocked.
 The "revoked again on the next pass" reasoning below holds only in the first
@@ -482,6 +488,32 @@ The second recording of the anchor edit churn, kept as a pointer because the
 number was already cited elsewhere. See B11.
 
 ## B17 - `/close` ends the grants but does not close the thread
+
+**Fixed 2026-09-20 by F02, commits `32ce63c` and `cfb9d55`, apart from the pin.**
+Migration 27 gives `item_link` a `closed_at` and a `closed_command_id`, added in
+place because the table carries no CHECK constraint. `close_thread` now writes
+that state, a closed link refuses every item action at tap time with
+`item_closed`, granted commands are refused before a card is minted, the access
+message renders with no actions, and the anchor stops being edited.
+
+Two corrections to the suggested fix below, both found while building it.
+
+Retiring the anchor the way completion does would have been wrong.
+`telegramItemThreadForMessage` skips `ANCHOR_GONE` threads and joins on
+`status_message_id`, which retirement nulls, so a retired anchor makes the item
+unreachable and a reply into the closed thread meets silence instead of a
+refusal. The thread row is therefore left routable on purpose.
+
+Completion must not mark the link closed either, even though that looked like
+tidy convergence. `syncTeamItem` skips a closed item, so the final completed
+payload would never be delivered, `finishCompletedTeamItems` would never see the
+payload equality it waits for, and the anchor would never retire at all. The
+access message reads completion from the prompt instead.
+
+**Still open:** the closed item's anchor stays pinned, showing whatever it last
+said. Unpinning exactly once needs a marker, and the only existing marker is
+`ANCHOR_GONE`, which is the thing that breaks routing. That belongs with the
+anchor lifecycle work in F07 and F08 rather than here.
 
 Severity: high; the command reports `Thread closed; grants ended.` while the
 thread stays open, keeps churning, and can have its access restored permanently
