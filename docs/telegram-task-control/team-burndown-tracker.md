@@ -24,12 +24,18 @@ Decisions jd settled on 2026-09-20, all now recorded in the plan:
 | Wall-clock fixtures | Add **F00B**, a sweep before audit 3, because audit 2's 274/274 does not reproduce here. |
 | Execution model | Orchestrator does Phase A; every task from Phase B onward goes to one worker agent each. |
 
-Still open, and the only thing waiting on jd:
+| G01 | **Recorded 2026-09-20**, see [implementation.md](implementation.md) section 6b. The handover delegates nothing: the receiver asks to take the task over, accepts it, and resumes under their own login on their own machine, with no credential shared and no cross-account usage. Holds while acceptance stays an explicit human action. |
+
+Still open. None of it blocks building, and none of it blocks the F track:
 
 | Needed for | Open item |
 | --- | --- |
-| H track, blocks enablement not building | **G01.** jd chose to record it rather than defer, but has not yet given the ruling. Until the sentence exists, TM4 may be built behind the disabled handover capability and handover must not be enabled. |
-| H01 | Skim the TM4 scenario table once it is written. A step, not a blocker. |
+| Enabling handover | **G02**, tested isolation for provider, bot, Git and signing credentials. A known gap is already recorded: the `.env` bot token is readable by any process running as the same user. This, not G01, is what now gates turning handover on. |
+| The control record, H02 | **G03**, Git host policy and signing verification. Largely supported already by the LG-1 pass of 2026-09-17, which proved custom refs and non-fast-forward rejection. |
+| Enterprise deployment | **G04**, jd's one-time governance note: Telegram audience, Git host and storage location, retention. Does not block local development. |
+| `H-TM-LT3`, `H-TM-LT4` | Real two-person runs with Yousef. The solo pilot is explicitly not a substitute, so **TM3 is not honestly done** until these run. |
+| jd's call | `main` is far ahead of `origin/main` and nothing is pushed. |
+| H01 | Skim the TM4 scenario table once written. A step, not a blocker. |
 
 One standing warning that cost time twice: three tests in this suite take timestamps from the wall clock and assume they will differ, so they fail under load on a fast machine.
 `h6-route-proxy.spec.ts` was repaired as T20A, the migration 26 fixture as F00A, and `S-L1-33` failed once under full-suite load then passed in isolation with and without the change.

@@ -26,7 +26,7 @@ current source and tests support the claimed behaviour.
 | Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. The L3 `/status` and `/quota` views deliver it to the phone; the `/status` quota headline passed T3 on 2026-09-15 (H-L3-40). |
 | Shared Git control history and package/result refs | Not implemented | No administrative checkout, roster validation, signed control branches, package manifests, result application or force-rewrite detection exist. |
 | Named teammate transfer | Not implemented | No offer, claim, receiver-local policy comparison, isolated checkout, return/apply or further-handoff lifecycle is implemented. |
-| Personal-subscription teammate execution | Blocked by external evidence | Gate G01 requires provider-supported delegation and quota/billing evidence. Development may use fixtures, but affected production execution must remain disabled. |
+| Personal-subscription teammate execution | **Recorded 2026-09-20; no longer blocking** | Gate G01 asked for provider-supported delegation and quota/billing evidence. The record in [implementation.md](implementation.md) section 6b finds that the handover as designed delegates nothing: the receiver accepts the task themselves and resumes it under their own login on their own machine, no credential is shared, and each person's usage lands on their own account. It holds only while acceptance stays an explicit human action and credentials are never shared. G02 still gates enabling handover. |
 | Provider/runtime secret isolation for unattended team execution | Blocked by external evidence | Gate G02 requires tested isolation for provider, bot, Git and signing credentials. Existing same-user file modes or prompt rules are insufficient evidence. |
 | Remote integrity and governance | Blocked by external evidence | Gates G03-G04 require Git host policy, signing verification, roster authority, data audience, storage, retention and owner decisions. |
 | CI workflows | Not implemented in this checkout | No `.github` directory exists locally. Mandatory checks must therefore be documented and run manually until CI is added. |
@@ -722,10 +722,11 @@ tracker), and a final "publish a release report" step duplicating
    TM1 and LT-4 after TM3. R-B can then be enabled; no gate applies.
 
 9. Record G01 for handover, then build TM4.
-   jd records whether a teammate running a handed-over task on their own login
-   and subscription, after personally accepting it, counts as ordinary use.
-   TM4 may be built behind the disabled handover capability before that record
-   exists, but handover is enabled only after it. Required evidence: TM-T0-6,
+   **G01 was recorded on 2026-09-20**; see [implementation.md](implementation.md)
+   section 6b. A teammate who accepts a task and resumes it under their own login
+   is ordinary use, because nothing is delegated and no credential is shared.
+   TM4 may therefore be built and, as far as G01 is concerned, enabled; G02 still
+   gates enabling it. Required evidence: TM-T0-6,
    TM-T0-7 and TM-T1-H1 to H3, with LT-5 optional.
 
 10. Numbers 10 to 17 of the earlier plan (M3, M4, L2 and M5 with their G03,

@@ -1080,12 +1080,49 @@ more servers. The baseline remains one trusted team and local execution.
 6. Update these docs and release notes with implemented versus deferred behaviour.
    Mark the phase complete only when runtime evidence meets its exit criteria.
 
+## 6b. G01 record: teammate execution on the receiver's own subscription
+
+Recorded 2026-09-20 on jd's decision. This is the record the
+[engineering plan](engineering-plan.md) requires before handover may be enabled
+(TM4, plan section 3b and the definition of done for R-A).
+
+**Decision: this is ordinary use, and G01 does not block enabling handover.**
+
+The reason is that the handover, as designed, contains no delegation to decide
+about. The person whose allowance is running out asks the other to take the task
+over. The receiver accepts it themselves, and only then is the incomplete work
+carried to the receiver's workstation on a Git branch, where the receiver resumes
+it with their own agent under their own provider login. No credential is shared,
+no workstation dispatches work to another person's subscription, and no usage is
+attributed across accounts: each person's usage lands on the account they are
+signed in to. Two people with their own subscriptions working one repository is
+ordinary use, and this is that, plus a branch to carry the work across.
+
+Conditions this record depends on. G01 is answered only while all of these hold,
+and re-opens if any is removed:
+
+- The receiver performs an explicit human acceptance before anything runs on
+  their workstation. An auto-accept, or a queue that claims work without a human
+  action, would put the earlier question back.
+- No provider credential is ever shared, forwarded or stored for another member.
+  Each workstation uses its own login.
+- Each side's usage is spent by the person signed in on that machine, so quota
+  and billing need no cross-account attribution.
+
+What this record does not cover: G02 still gates enabling handover, because it
+asks a different question, whether provider, bot, Git and signing credentials are
+isolated on each machine, and the known L1 limit recorded earlier in this document
+stands: the bot token in `.env` is readable by any process running as the same
+user. G03 applies to the control record and is supported by
+the LG-1 pass of 2026-09-17. G04 remains jd's one-time governance note.
+
 ## 7. Evidence still required
 
 At this implementation checkpoint, no Telegram bot has been connected, no peer
 handoff protocol has been implemented, no remote deployment has been configured,
 and no provider delegation or security boundary has been certified. The docs are
 ready to guide phased implementation; they are not evidence that G01-G04 passed.
+G01 was subsequently recorded on 2026-09-20; see section 6b. G02 to G04 remain.
 
 Do not convert undecided governance values into fabricated requirements. G04
 requires the team to choose storage location and retention before enterprise
