@@ -253,7 +253,7 @@ export class TaskControlService {
           return this.reject(input, "item_closed", "This item thread is closed.", action.ref);
         }
         const roster = workspaces.teamRosters()
-          .map(entry => entry.record as { members?: Array<{ personId: string; telegramUserId: string; botId: string; workstationLabel: string }> })
+          .map(entry => entry.record as { members?: Array<{ personId: string; telegramUserId: string; botId: string; workstationLabel: string; personLabel?: string }> })
           .find(entry => entry.members?.some(member => member.botId === input.botId));
         const owner = roster?.members?.find(member => member.botId === input.botId);
         const actingPerson = roster?.members?.find(member => member.telegramUserId === input.transportUserId);
@@ -285,7 +285,7 @@ export class TaskControlService {
             : "resume_saved";
         if (!isOwner) {
           const missing = requiredItemGrantCapabilities(operation).filter(capability => !workspaces.hasItemCapability(action.item_id!, actingPerson.personId, capability));
-          if (missing.length > 0) return this.reject(input, "grant_required", `Ask ${owner.workstationLabel} to grant ${missing.join(" and ")} on this item.`, action.ref);
+          if (missing.length > 0) return this.reject(input, "grant_required", `Ask ${owner.personLabel ?? owner.workstationLabel} to grant ${missing.join(" and ")} on this item.`, action.ref);
         }
         if (action.action === "resume_saved") {
           workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);

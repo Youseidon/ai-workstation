@@ -86,3 +86,36 @@ test("TM-T0-5 migration 24 persists a roster and prevents duplicate group actors
     workspaces.removeTaskControlActor(actor.id);
   }
 });
+
+test("B5: a roster published before the two labels were separated reads back exactly as it did", async () => {
+  // Rosters already in refs/aw/team carry one label per member, and that label is
+  // the person's Telegram display name. It reads back as both, so every view says
+  // what it said before, and nothing is migrated: the next publish from either
+  // workstation writes both fields.
+  const bare = mkdtempSync(join(tmpdir(), "team-roster-legacy-"));
+  try {
+    execFileSync("git", ["init", "--bare", "-q", bare]);
+    const remote = new BareGitTeamRosterRemote(bare);
+    const legacy = JSON.parse(JSON.stringify(roster())) as { members: Array<Record<string, unknown>> };
+    for (const member of legacy.members) delete member.personLabel;
+    assert.equal("personLabel" in legacy.members[0]!, false, "the fixture really is a roster from before the change");
+    // Written straight into refs/aw/team, because every write path validates and
+    // would fill the field in; what is on the ref here is what the pilot published.
+    const blob = execFileSync("git", ["--git-dir", bare, "hash-object", "-w", "--stdin"], { input: JSON.stringify(legacy), encoding: "utf8" }).trim();
+    execFileSync("git", ["--git-dir", bare, "update-ref", "refs/aw/team", blob]);
+    assert.equal(execFileSync("git", ["--git-dir", bare, "show", "refs/aw/team"], { encoding: "utf8" }).includes("personLabel"), false, "the ref really holds a roster with one label");
+
+    const read = (await remote.read())!.roster;
+    assert.equal(read.members[0]!.workstationLabel, "jd laptop");
+    assert.equal(read.members[0]!.personLabel, "jd laptop", "the one label it has answers for both");
+
+    // A member joining such a roster carries both, and the member already there is
+    // left as it was rather than guessed at.
+    const joined = await joinTeam(remote, encodeJoinCode({ teamId: "team-1", groupChatId: "group-1", remoteUrl: "https://example.test/team.git", inviteId: "invite-legacy" }), {
+      personId: "yousef", telegramUserId: "202", botId: "bot-b", botUsername: "bot_b", workstationId: "ws-yousef", workstationLabel: "yousef-desktop", personLabel: "Yousef",
+    }, "join-legacy");
+    assert.deepEqual(joined.roster.members.map(member => [member.workstationLabel, member.personLabel]), [["jd laptop", "jd laptop"], ["yousef-desktop", "Yousef"]]);
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+  }
+});

@@ -13,7 +13,11 @@ export interface ParsedTeamItemCommand {
 export interface TeamItemViewState {
   promptStatus: string;
   operationalState: string;
+  /** The owning machine's own name, for the slots that name a workstation (B5). */
   ownerWorkstation: string;
+  /** The owning person's Telegram display name, for the slots that name a person. */
+  ownerPerson: string;
+  /** Every member, by person. */
   memberLabels: string[];
   memberAccess?: Array<{ personId: string; label: string; capabilities: ItemGrantCapability[]; owner: boolean }>;
   /** Who asked, so `/help` can list what that member may actually run (TM-T1-4). */
@@ -123,7 +127,9 @@ export function completedSummary(summary: TaskSummary): TaskSummary {
 export function renderTeamItemAnchor(summary: TaskSummary, state: TeamItemViewState): RenderedView {
   const completed = state.promptStatus === "DONE" || state.promptStatus === "SKIPPED";
   const card = formatCard(completed ? completedSummary(summary) : summary, {
-    hint: `${completed ? "Completed" : `State: ${stateLabel(state.operationalState)}`} · Owner: ${lineText(state.ownerWorkstation, 64)}`,
+    // The breadcrumb above already names the workstation, from the summary; the
+    // owner of an item is a person, so the footer names the person (B5).
+    hint: `${completed ? "Completed" : `State: ${stateLabel(state.operationalState)}`} · Owner: ${lineText(state.ownerPerson, 64)}`,
     now: state.now,
   });
   return { kind: "view", text: card.text, entities: card.entities, buttons: [] };

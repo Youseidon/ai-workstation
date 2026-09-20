@@ -14,8 +14,19 @@ export interface TeamMember {
   botId: string;
   botUsername: string;
   workstationId: string;
+  /** The machine's own name: `TASK_CONTROL_WORKSTATION_LABEL`, as the personal card shows it. */
   workstationLabel: string;
+  /** The person's Telegram display name, for every view that names a person (B5). */
+  personLabel: string;
 }
+
+/**
+ * What a caller hands in. `personLabel` is optional because a roster published
+ * before B5 was fixed carries only the one label, and that label was the person's
+ * name; it reads back as both, so such a roster says exactly what it said before
+ * and nothing has to be migrated. Every write from here on carries both.
+ */
+export type TeamMemberInput = Omit<TeamMember, "personLabel"> & { personLabel?: string };
 
 export interface TeamRoster {
   version: 1;
@@ -83,13 +94,17 @@ function validateRoster(value: unknown): TeamRoster {
   const members = source.members.map((entry) => {
     if (entry === null || typeof entry !== "object") throw new WorkspaceError(422, "invalid_team_roster", "Team member is invalid.");
     const member = entry as Record<string, unknown>;
+    const workstationLabel = text(member.workstationLabel, "workstationLabel");
     return {
       personId: text(member.personId, "personId"),
       telegramUserId: text(member.telegramUserId, "telegramUserId"),
       botId: text(member.botId, "botId"),
       botUsername: text(member.botUsername, "botUsername"),
       workstationId: text(member.workstationId, "workstationId"),
-      workstationLabel: text(member.workstationLabel, "workstationLabel"),
+      workstationLabel,
+      personLabel: member.personLabel === undefined || member.personLabel === null
+        ? workstationLabel
+        : text(member.personLabel, "personLabel"),
     };
   });
   const unique = (values: string[], field: string) => {
@@ -114,7 +129,7 @@ function validateRoster(value: unknown): TeamRoster {
   };
 }
 
-export function newTeamRoster(input: Omit<TeamRoster, "version" | "usedInviteIds" | "commandIds" | "updatedAt"> & { now?: Date }): TeamRoster {
+export function newTeamRoster(input: Omit<TeamRoster, "version" | "usedInviteIds" | "commandIds" | "updatedAt" | "members"> & { members: TeamMemberInput[]; now?: Date }): TeamRoster {
   return validateRoster({ ...input, version: 1, usedInviteIds: [], commandIds: [], updatedAt: (input.now ?? new Date()).toISOString() });
 }
 
@@ -171,7 +186,7 @@ export async function publishRoster(remote: TeamRosterRemote, expectedRevision: 
 }
 
 /** Applies a credential-free, single-use join code to the current roster. */
-export async function joinTeam(remote: TeamRosterRemote, code: string, member: TeamMember, commandId: string): Promise<{ roster: TeamRoster; revision: string }> {
+export async function joinTeam(remote: TeamRosterRemote, code: string, member: TeamMemberInput, commandId: string): Promise<{ roster: TeamRoster; revision: string }> {
   const join = decodeJoinCode(code);
   const current = await remote.read();
   if (current === null) throw new WorkspaceError(404, "team_not_found", "The team roster was not found in the repository.");

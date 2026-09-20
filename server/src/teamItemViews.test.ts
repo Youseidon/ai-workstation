@@ -36,6 +36,7 @@ function state(capabilities: TeamItemViewState["memberAccess"], askingPersonId: 
     promptStatus: "BLOCKED",
     operationalState: "AWAITING_RESPONSE",
     ownerWorkstation: "jd-laptop",
+    ownerPerson: "Jj",
     memberLabels: ["Jj", "Junaid"],
     memberAccess: capabilities,
     askingPersonId,
@@ -115,14 +116,14 @@ test("B13: an open item's anchor still states the block, the options and what wa
   assert.ok(text.includes("Blocked on:"), "the blocker is what the group is being asked about");
   assert.ok(text.includes("Action: Choose whether amounts are recalculated."), "with the action only a human can take");
   assert.ok(text.includes("If you wait: This task and its pipeline stay paused"), "and what waiting costs");
-  assert.ok(text.includes("State: awaiting response · Owner: jd-laptop"), "the hint line states the operational state");
+  assert.ok(text.includes("State: awaiting response · Owner: Jj"), "the hint line states the operational state and who owns the item");
   assert.ok(/- [\d: -]+claude \(running\)/.test(text), "a running run is stated as running");
 });
 
 for (const promptStatus of ["DONE", "SKIPPED"]) {
   test(`B13: a ${promptStatus} item's anchor is rendered from the completed state`, () => {
     const text = anchor(promptStatus);
-    assert.ok(text.includes("Completed · Owner: jd-laptop"), "the card says the item is complete");
+    assert.ok(text.includes("Completed · Owner: Jj"), "the card says the item is complete");
     assert.ok(!text.includes("Blocked on:"), "a completed item is not blocked on a decision");
     assert.ok(!text.includes("Action: Choose"), "and asks the group for no action");
     assert.ok(!text.includes("If you wait:"), "nothing is waiting on the reader");
@@ -134,6 +135,21 @@ for (const promptStatus of ["DONE", "SKIPPED"]) {
     assert.ok(text.includes("Blocked once."), "the block count reads in the past tense, not as a block the reader is standing in");
   });
 }
+
+test("B5: a Team view names the workstation where a workstation belongs and the person where a person does", () => {
+  // The roster carries both, because the paired Telegram account's display name
+  // and the machine's own label are different things and the pilot's group said
+  // the first wherever it meant the second.
+  const owner = state(access(["answer"]), OWNER);
+  assert.ok(renderTeamItemAnchor(blocked, owner).text.includes("Owner: Jj"), "the anchor footer names the person who owns the item");
+  assert.ok(renderTeamItemAnchor(blocked, owner).text.includes("jd-laptop · ai-workstation"), "and its breadcrumb names the workstation");
+  const status = renderTeamItemView("status", blocked, owner).text;
+  assert.ok(status.includes("Owner workstation: jd-laptop"), "the workstation line names the workstation");
+  assert.ok(!status.includes("Jj"), "and never the person");
+  const list = renderTeamItemView("access", blocked, owner).text;
+  assert.ok(list.includes("Jj: owner") && list.includes("Junaid: answer"), "access is a list of people");
+  assert.ok(!list.includes("jd-laptop"), "and never of workstations");
+});
 
 test("B13: the completed summary changes nothing but the completed state's own fields", () => {
   const completed = completedSummary(blocked);

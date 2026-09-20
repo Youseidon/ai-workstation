@@ -10,7 +10,7 @@ import { runHub } from "../../runHub.ts";
 import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
-import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
+import { defaultWorkstationLabel, taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { renderTeamItemAccessMessage, renderTeamItemActionCard, renderTeamItemAnchor, renderTeamItemContext, renderTeamItemView, teamItemAnchorAge, teamItemAnchorMaterial, type TeamItemAccessAction, type TeamItemGrantedCommand, type TeamItemViewState } from "../../teamItemViews.ts";
 import type { ItemGrantCapability } from "../../teamGrants.ts";
 import { itemTag } from "../../teamItems.ts";
@@ -243,6 +243,15 @@ export class TelegramLiveRuntime {
     return this.teamCreateStatus()!;
   }
 
+  /**
+   * This machine's own name for the roster (B5). It is resolved exactly as the
+   * personal question card resolves it, so the roster and the card never disagree
+   * about the same workstation; an unset label means the hostname in both.
+   */
+  private workstationLabel(): string {
+    return appSettings.taskControl.workstationLabel || defaultWorkstationLabel();
+  }
+
   async confirmTeamCreate(): Promise<{ teamId: string; joinCode: string }> {
     this.requireTeamEnabled();
     const session = this.requireSession();
@@ -254,7 +263,7 @@ export class TelegramLiveRuntime {
     const bot = this.bot;
     if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
     const teamId = `awt1_${randomBytes(12).toString("base64url")}`;
-    const roster = newTeamRoster({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl, members: [{ personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: actor.label }] });
+    const roster = newTeamRoster({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl, members: [{ personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: this.workstationLabel(), personLabel: actor.label }] });
     const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
     await publishRoster(remote, null, roster, `create_${randomBytes(12).toString("base64url")}`);
     workspaces.upsertTeamGroupActor({ id: `telegram-team-${teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: pending.observed.chatId, label: actor.label });
@@ -313,7 +322,7 @@ export class TelegramLiveRuntime {
       workspaces.disableTaskControlActor(actor.id);
     }
     for (const member of roster.members) {
-      workspaces.upsertTeamGroupActor({ id: `telegram-team-${roster.teamId}-${member.telegramUserId}`, transport: "telegram", transportUserId: member.telegramUserId, chatId: roster.groupChatId, label: member.workstationLabel });
+      workspaces.upsertTeamGroupActor({ id: `telegram-team-${roster.teamId}-${member.telegramUserId}`, transport: "telegram", transportUserId: member.telegramUserId, chatId: roster.groupChatId, label: member.personLabel });
     }
     const owner = roster.members[0];
     const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
@@ -368,7 +377,7 @@ export class TelegramLiveRuntime {
     const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
     const instruction = teammate === null || owner === undefined
       ? null
-      : `Ask ${owner.workstationLabel} to add @${teammate.botUsername} to the team group and make it an administrator with Pin messages.`;
+      : `Ask ${owner.personLabel} to add @${teammate.botUsername} to the team group and make it an administrator with Pin messages.`;
     const inviteLink = teammate === null ? null : this.storedTeamInvite(`${roster.teamId}:${teammate.botId}`)?.inviteLink ?? null;
     return { teamId: roster.teamId, groupChatId: roster.groupChatId, members: roster.members, instruction, inviteLink };
   }
@@ -445,7 +454,7 @@ export class TelegramLiveRuntime {
     const bot = this.bot;
     if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
     const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), join.remoteUrl);
-    await joinTeam(remote, pending.code, { personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: actor.label }, `join_${randomBytes(12).toString("base64url")}`);
+    await joinTeam(remote, pending.code, { personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: this.workstationLabel(), personLabel: actor.label }, `join_${randomBytes(12).toString("base64url")}`);
     workspaces.upsertTeamGroupActor({ id: `telegram-team-${join.teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: join.groupChatId, label: actor.label });
     this.teamJoin = null;
     return { teamId: join.teamId, instruction: `Ask the team owner to add @${bot.username ?? "this bot"} as an administrator with Pin messages, then send your one-member invite link.` };
@@ -954,10 +963,11 @@ export class TelegramLiveRuntime {
       promptStatus: activity.item.prompt.status,
       operationalState: activity.item.operationalState,
       ownerWorkstation: owner.workstationLabel,
-      memberLabels: roster.members.map(member => member.workstationLabel),
+      ownerPerson: owner.personLabel,
+      memberLabels: roster.members.map(member => member.personLabel),
       memberAccess: roster.members.map(member => ({
         personId: member.personId,
-        label: member.workstationLabel,
+        label: member.personLabel,
         owner: member.botId === session.botId,
         capabilities: workspaces.itemGrants(link.itemId, { activeOnly: true, personId: member.personId }).map(grant => grant.capability),
       })),
@@ -1028,7 +1038,7 @@ export class TelegramLiveRuntime {
         capability,
       };
     });
-    return renderTeamItemAccessMessage({ itemId: link.itemId, ownerLabel: owner.workstationLabel, teammateLabel: teammate.workstationLabel, capabilities: active, actions });
+    return renderTeamItemAccessMessage({ itemId: link.itemId, ownerLabel: owner.personLabel, teammateLabel: teammate.personLabel, capabilities: active, actions });
   }
 
   private syncTeamItemAccess(session: Session, roster: TeamRoster, link: ItemLinkRow, forceEdit = false): void {
@@ -1172,7 +1182,7 @@ export class TelegramLiveRuntime {
     }
     const isOwner = owner.personId === member.personId;
     const has = (capability: ItemGrantCapability) => isOwner || workspaces.hasItemCapability(link.itemId, member.personId, capability);
-    const deny = (capability: ItemGrantCapability) => this.enqueueText(session, roster.groupChatId, null, `Ask ${owner.workstationLabel} to grant ${capability} on this item.`, itemSubject(link.itemId));
+    const deny = (capability: ItemGrantCapability) => this.enqueueText(session, roster.groupChatId, null, `Ask ${owner.personLabel} to grant ${capability} on this item.`, itemSubject(link.itemId));
     const enqueueCard = (title: string, detail: string, actions: Array<{ ref: string; action: TaskControlAction }>, allowance?: string | null) => {
       workspaces.enqueueTelegramOutbox({
         botId: session.botId,
@@ -1193,7 +1203,7 @@ export class TelegramLiveRuntime {
       const teammate = roster.members.find(candidate => candidate.personId !== owner.personId);
       if (teammate === undefined) return;
       const action = this.createTeamItemAction(session, roster, link, { actor: owner, action: command.command, capabilities: command.capabilities, targetPersonId: teammate.personId });
-      enqueueCard(command.command === "grant" ? "Grant item access" : "Revoke item access", `${command.command === "grant" ? "Grant" : "Revoke"} ${command.capabilities.join(", ")} for ${teammate.workstationLabel}.`, [action]);
+      enqueueCard(command.command === "grant" ? "Grant item access" : "Revoke item access", `${command.command === "grant" ? "Grant" : "Revoke"} ${command.capabilities.join(", ")} for ${teammate.personLabel}.`, [action]);
       return;
     }
     if (command.command === "close") {
@@ -1208,7 +1218,7 @@ export class TelegramLiveRuntime {
       const target = this.resumeTarget(link.promptId);
       const actions = [this.createTeamItemAction(session, roster, link, { actor: member, action: "save_human_response", content: command.answer })];
       if (has("resume") && target.provider !== null) actions.push(this.createTeamItemAction(session, roster, link, { actor: member, action: "answer_and_resume", content: command.answer }));
-      enqueueCard("Answer item question", command.answer, actions, actions.some(action => action.action === "answer_and_resume") ? `Uses ${owner.workstationLabel}'s ${target.provider} allowance.` : null);
+      enqueueCard("Answer item question", command.answer, actions, actions.some(action => action.action === "answer_and_resume") ? `Uses ${owner.personLabel}'s ${target.provider} allowance.` : null);
       return;
     }
     if (!has("resume")) { deny("resume"); return; }
@@ -1217,7 +1227,7 @@ export class TelegramLiveRuntime {
     const target = this.resumeTarget(link.promptId);
     if (target.provider === null) { this.enqueueText(session, roster.groupChatId, null, "The item owner must choose a provider before this task can resume.", itemSubject(link.itemId)); return; }
     const action = this.createTeamItemAction(session, roster, link, { actor: member, action: "resume_saved" });
-    enqueueCard("Resume item", "Resume with the saved answer.", [action], `Uses ${owner.workstationLabel}'s ${target.provider} allowance.`);
+    enqueueCard("Resume item", "Resume with the saved answer.", [action], `Uses ${owner.personLabel}'s ${target.provider} allowance.`);
   }
 
   private handleTeamItemMessage(session: Session, message: TelegramMessagePayload, roster: TeamRoster): boolean {
@@ -1275,7 +1285,7 @@ export class TelegramLiveRuntime {
       workspaces.enqueueTelegramOutbox({
         botId: session.botId,
         chatId: roster.groupChatId,
-        payload: renderTeamThreadRequest({ ...identity, requesterLabel: requester.workstationLabel, ownerLabel: owner.workstationLabel }),
+        payload: renderTeamThreadRequest({ ...identity, requesterLabel: requester.personLabel, ownerLabel: owner.personLabel }),
       });
     }
     if (owner.botId !== session.botId || workspaces.hasTeamThreadRequestActions(identity.requestId)) return true;
@@ -1315,7 +1325,7 @@ export class TelegramLiveRuntime {
       topicId: actor.topic_id,
       payload: renderTeamThreadConfirmation({
         ...identity,
-        requesterLabel: requester.workstationLabel,
+        requesterLabel: requester.personLabel,
         title: activity.item.prompt.title,
         expiresAt,
         actions,
