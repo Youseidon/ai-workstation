@@ -16,6 +16,8 @@ export interface TeamItemViewState {
   ownerWorkstation: string;
   memberLabels: string[];
   memberAccess?: Array<{ personId: string; label: string; capabilities: ItemGrantCapability[]; owner: boolean }>;
+  /** Who asked, so `/help` can list what that member may actually run (TM-T1-4). */
+  askingPersonId?: string | null;
   now: Date;
 }
 
@@ -51,6 +53,28 @@ export function parseTeamItemCommand(text: string, botUsername: string | null): 
     itemReference: match[3] ?? null,
   };
 }
+
+/** Always available to every roster member. */
+const HELP_READ_ONLY = [
+  "/task - Current item summary",
+  "/status - Execution and decision state",
+  "/access - Current access",
+  "/help - Commands available here",
+];
+
+/** Unlocked one for one by the capability named beside it. */
+const HELP_BY_CAPABILITY: Array<{ capability: ItemGrantCapability; line: string }> = [
+  { capability: "context", line: "/context - Item context and open question" },
+  { capability: "answer", line: "/answer <text> - Answer the open question" },
+  { capability: "resume", line: "/resume - Resume with the saved answer" },
+];
+
+/** The owner's own commands, which no grant ever confers on anyone else. */
+const HELP_OWNER_ONLY = [
+  "/close - Close this thread and end every grant",
+  "/grant <capability> - Grant access to the other member",
+  "/revoke [capability] - Revoke access",
+];
 
 function simpleView(lines: string[]): RenderedView {
   return { kind: "view", text: lines.join("\n"), entities: [], buttons: [] };
@@ -90,14 +114,18 @@ export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummar
       : state.memberLabels.map((label) => `${lineText(label, 64)}: read only`);
     return simpleView(["Item access", ...members, "No open offer.", summary.tag]);
   }
-  return simpleView([
-    "Item commands",
-    "/task - Current item summary",
-    "/status - Execution and decision state",
-    "/access - Current access",
-    "/help - Commands available here",
-    summary.tag,
-  ]);
+  // `/help` answers for the member who asked: the read-only commands, plus the
+  // ones their current grants unlock, plus the owner's own set when they are the
+  // owner. An unidentified asker is told only what needs no grant.
+  const asking = state.askingPersonId === undefined || state.askingPersonId === null
+    ? undefined
+    : state.memberAccess?.find(member => member.personId === state.askingPersonId);
+  const granted = asking === undefined
+    ? []
+    : asking.owner
+    ? [...HELP_BY_CAPABILITY.map(entry => entry.line), ...HELP_OWNER_ONLY]
+    : HELP_BY_CAPABILITY.filter(entry => asking.capabilities.includes(entry.capability)).map(entry => entry.line);
+  return simpleView(["Item commands", ...HELP_READ_ONLY, ...granted, summary.tag]);
 }
 
 export function renderTeamItemContext(summary: TaskSummary): RenderedView {

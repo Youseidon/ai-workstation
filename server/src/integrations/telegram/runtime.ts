@@ -823,7 +823,7 @@ export class TelegramLiveRuntime {
     return roster;
   }
 
-  private teamItemViewState(session: Session, roster: TeamRoster, link: ItemLinkRow): TeamItemViewState {
+  private teamItemViewState(session: Session, roster: TeamRoster, link: ItemLinkRow, askingPersonId: string | null = null): TeamItemViewState {
     const activity = workspaces.promptActivity(link.promptId);
     const owner = roster.members.find(member => member.botId === session.botId);
     if (owner === undefined) throw new WorkspaceError(409, "team_owner_missing", "This workstation is not in the Team roster.");
@@ -838,12 +838,13 @@ export class TelegramLiveRuntime {
         owner: member.botId === session.botId,
         capabilities: workspaces.itemGrants(link.itemId, { activeOnly: true, personId: member.personId }).map(grant => grant.capability),
       })),
+      askingPersonId,
       now: new Date(this.now()),
     };
   }
 
-  private teamItemPayload(session: Session, roster: TeamRoster, link: ItemLinkRow) {
-    const state = this.teamItemViewState(session, roster, link);
+  private teamItemPayload(session: Session, roster: TeamRoster, link: ItemLinkRow, askingPersonId: string | null = null) {
+    const state = this.teamItemViewState(session, roster, link, askingPersonId);
     const summary = taskSummary(link.promptId, "team", { workstationLabel: state.ownerWorkstation, itemId: link.itemId });
     return { state, summary, payload: renderTeamItemAnchor(summary, state) };
   }
@@ -1034,7 +1035,9 @@ export class TelegramLiveRuntime {
       this.handleTeamGrantedCommand(session, message, roster, link, route.command);
       return true;
     }
-    const { state, summary } = this.teamItemPayload(session, roster, link);
+    // `/help` answers for whoever asked, so the view needs their person id.
+    const askingPersonId = roster.members.find(member => member.telegramUserId === message.transportUserId)?.personId ?? null;
+    const { state, summary } = this.teamItemPayload(session, roster, link, askingPersonId);
     workspaces.enqueueTelegramOutbox({
       botId: session.botId,
       chatId: roster.groupChatId,
