@@ -9,11 +9,12 @@ A fixed entry says so at the top of the entry, with the task and commits that cl
 
 State as of 2026-09-20:
 
-- main is at `9796b0d` in `/home/junaid/ai-workstation`, clean, **nothing pushed**; `origin/main` is far behind and staying that way by jd's decision.
+- main is at `25b64d9` in `/home/junaid/ai-workstation`, clean, **nothing pushed**; `origin/main` is far behind and staying that way by jd's decision.
 - The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, already merged into main. It is the test rig, not where product code goes.
 - Both pilot instances are stopped and nothing listens on 3100, 3200, 4100 or 4200.
 - **Phase A is done.** F00A, F01 and F02 are merged; B12, B14 and B17 are closed, B17 apart from its pinned anchor.
-- **Next task is F03.** Every remaining task goes to a worker agent; the orchestrator composes cards, verifies, merges and tracks, and writes no product code.
+- **F03 is in progress.** Every remaining task goes to a worker agent; the orchestrator composes cards, verifies, merges and tracks, and writes no product code.
+- Order of the remaining tasks: F03, F05, F06, F07, F08, F09, then H01 to H05. Migration numbers start at **28**; F02 took 27.
 - **Testing is parked.** By jd's instruction of 2026-09-20, tasks run only a typecheck and the narrow unit tests for what they changed. The full suites, every burn-in, both audits, the wall-clock sweep (F00B) and the LT-4 re-run all run in **Phase V**, after implementation finishes. See section 2.1 and section 6 of the brief.
 
 Decisions jd settled on 2026-09-20, all now recorded in the plan:
@@ -67,6 +68,7 @@ Execution model, by jd's decision of 2026-09-20: the orchestrator implements Pha
 | F04 | F | done | orchestrator | none, applied on main | `(with this commit)` | Documentation only. R-B amended to owner-initiated in the wording jd approved on 2026-09-20, and B15 closed as resolved by decision. Done by the orchestrator rather than a worker because the text was approved verbatim and the change is one table row. | 2026-09-20 |
 | F02 | F | done | orchestrator | `fix/F02-close-the-thread` | `32ce63c..cfb9d55` | Closes B17 apart from its pinned anchor, and closes B14. Owns migration 27, which adds `closed_at` and `closed_command_id` to `item_link` in place, no rebuild needed. Behavioural red first at the T1 tier: 8 actions stayed armed on the item after a close where 0 were expected. Two design corrections found while building: retiring the anchor the way completion does makes the thread unroutable, because `telegramItemThreadForMessage` skips `ANCHOR_GONE`, so a reply would meet silence instead of a refusal; and marking a completed link closed would stop the anchor retiring at all, so the access message reads completion from the prompt instead. Green: new closed-thread T1 case, whole TM3 file 3/3 in 1.8m, TM-T0-5-27 across two boots, full server suite 279/279, typecheck clean. T15's expected item link row updated for the two new columns. | 2026-09-20 |
 | F01 | F | done | orchestrator | `fix/F01-help-capabilities` | `506ea0a..7cca9cd` | Closes B12. Red proven at both tiers first: TM-T1-4 failed at `tm3-grants.spec.ts:137` and the new `teamItemViews.test.ts` failed 2/5. `/help` had no coverage at any tier beforehand. Root cause was that `renderTeamItemView` was never told who asked, so `askingPersonId` was added to the view state and threaded from `message.transportUserId`. Green: unit 5/5, TM-T1-4 1/1 in 1.2m, TM-T1-4 burn-in 3/3 in 1.9m, full server suite 279/279, typecheck 4/4 workspaces, web lint 0 errors and the 5 existing warnings. No live Telegram, credential, paid provider, remote write or push. | 2026-09-20 |
+| F03 | F | in progress | `worker/F03` | `fix/F03-open-team-thread` | | Owner-side "Open Team thread" control (B2) and a named refusal when the prompt is already `DONE` or `SKIPPED` (B7). Started from main at `25b64d9`. | 2026-09-20 |
 
 ## Log
 
