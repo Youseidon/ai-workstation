@@ -84,9 +84,45 @@ function stateLabel(value: string): string {
   return value.toLowerCase().replaceAll("_", " ");
 }
 
+/** The `agent_run` states that mean the row has not ended; every other state is terminal. */
+const OPEN_RUN_STATES = new Set(["STARTING", "RUNNING"]);
+
+/**
+ * The same task described from its completed state, for the anchor that stays in
+ * the group as the item's permanent record (B13).
+ *
+ * Completion used to be marked in the hint line alone, so the card around it went
+ * on describing the block the item finished in: the pilot's last anchor said the
+ * item was complete, said it was blocked on a decision, told the reader nothing
+ * would move until they chose, and showed the run still going. A finished item
+ * asks the group for nothing, so the blocker, the recommendation and the "If you
+ * wait" line are not part of its record, and a run the card is about to freeze is
+ * stated as finished rather than as running: the prompt reaching DONE is the
+ * agent's last word, whatever its own row still says for the next few seconds.
+ *
+ * `blockedAt` and the options are already absent on a finished prompt, because
+ * `blockingStatus` answers only for a BLOCKED one; they are stated here so the
+ * completed card does not depend on that from a distance.
+ */
+export function completedSummary(summary: TaskSummary): TaskSummary {
+  return {
+    ...summary,
+    blockedAt: null,
+    options: null,
+    optionsOmitted: 0,
+    blockers: null,
+    recommendation: null,
+    ifYouWait: "",
+    history: {
+      ...summary.history,
+      runs: summary.history.runs.map(run => OPEN_RUN_STATES.has(run.state.toUpperCase()) ? { ...run, state: "FINISHED" } : run),
+    },
+  };
+}
+
 export function renderTeamItemAnchor(summary: TaskSummary, state: TeamItemViewState): RenderedView {
   const completed = state.promptStatus === "DONE" || state.promptStatus === "SKIPPED";
-  const card = formatCard(summary, {
+  const card = formatCard(completed ? completedSummary(summary) : summary, {
     hint: `${completed ? "Completed" : `State: ${stateLabel(state.operationalState)}`} · Owner: ${lineText(state.ownerWorkstation, 64)}`,
     now: state.now,
   });

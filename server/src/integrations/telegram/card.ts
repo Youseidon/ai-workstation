@@ -19,6 +19,8 @@ import type { TaskSummary, TaskSummaryOption } from "../../telegramSummary.ts";
  *
  * Budget (operator questions 2 and 3 of l3-f3-a.md, and l3-a2.md):
  * - Never shortened: the tag, title, age, breadcrumb, "If you wait", the reply hint.
+ *   A summary with an empty `ifYouWait` has nothing left to wait for, which is a
+ *   completed item's anchor (B13); the line is then absent rather than empty.
  * - Blockers and their required actions are kept whole up to a per-item cap;
  *   as many as fit are listed and the rest are declared.
  * - When the card is too long, sections shrink or drop in this order: details,
@@ -168,7 +170,11 @@ function historyLines(summary: TaskSummary, now: Date): string {
   const lines = ["History:"];
   for (const run of history.runs) lines.push(`- ${clock(run.startedAt, now)} ${run.provider} (${run.state.toLowerCase()})`);
   if (history.moreRuns > 0) lines.push(`and ${history.moreRuns} more run${history.moreRuns === 1 ? "" : "s"} in the local app`);
-  if (history.blocks > 0) lines.push(history.blocks === 1 ? "Blocked once, now." : `Blocked ${history.blocks} times, including this one.`);
+  // "now" and "this one" are true only while the task is still in a block. A card
+  // rendered from a finished state has no `blockedAt`, and counts its blocks in
+  // the past tense rather than claiming the reader is standing in one (B13).
+  const inBlock = summary.blockedAt !== null;
+  if (history.blocks > 0) lines.push(history.blocks === 1 ? (inBlock ? "Blocked once, now." : "Blocked once.") : `Blocked ${history.blocks} times${inBlock ? ", including this one" : ""}.`);
   if (history.previousAnswer) {
     lines.push(`Previous answer (${clock(history.previousAnswer.at, now)}): ${history.previousAnswer.text}`);
     if (history.morePreviousAnswers > 0) lines.push(`and ${history.morePreviousAnswers} more answer${history.morePreviousAnswers === 1 ? "" : "s"} in the local app`);
@@ -207,7 +213,7 @@ export function formatCard(summary: TaskSummary, options: CardOptions): Formatte
   const now = options.now ?? new Date();
   const age = ageText(summary.blockedAt, now);
   const fixedHead = [summary.tag, `Task: ${summary.title}`, [age, breadcrumb(summary)].filter(Boolean).join(" · ")];
-  const tail = [`If you wait: ${summary.ifYouWait}`, "", options.hint];
+  const tail = [...(summary.ifYouWait === "" ? [] : [`If you wait: ${summary.ifYouWait}`]), "", options.hint];
 
   const blockerItems: string[][] = (summary.blockers ?? []).map((blocker) => [shorten(blocker.description, BLOCKER_ITEM_CAP), ...(blocker.requiredAction ? [`Action: ${shorten(blocker.requiredAction, BLOCKER_ITEM_CAP)}`] : [])]);
   const blockerLines = blockerItems.length > 0 ? ["Blocked on:", ...blockerItems.flat()] : [];

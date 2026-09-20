@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderTeamItemView, type TeamItemViewState } from "./teamItemViews.ts";
+import { completedSummary, renderTeamItemAnchor, renderTeamItemView, type TeamItemViewState } from "./teamItemViews.ts";
 import type { TaskSummary } from "./telegramSummary.ts";
 
 // TM-T1-4 requires that "/access and /help show only current capabilities".
@@ -92,4 +92,56 @@ test("B12: /help falls back to the read-only commands when the asker is unknown"
   const text = renderTeamItemView("help", summary, { ...state(access([]), OWNER), askingPersonId: null }).text;
   assert.ok(text.includes("/task"), "the read-only commands are always listed");
   assert.ok(!text.includes("/grant"), "an unidentified asker is given nothing extra");
+});
+
+// B13: a completed item's anchor is the permanent record of the item in the group,
+// because nothing edits it again once it is retired. It used to mark completion in
+// the hint line alone and leave the blocked state rendered around it.
+
+const blocked: TaskSummary = {
+  ...summary,
+  blockedAt: "2026-09-19T12:00:00.000Z",
+  options: [{ label: "Recalculate", advantages: ["Accurate"], disadvantages: ["Slow"] }],
+  history: { runs: [{ provider: "claude", startedAt: "2026-09-19T12:58:00.000Z", state: "RUNNING" }, { provider: "grok", startedAt: "2026-09-19T11:00:00.000Z", state: "DONE" }], moreRuns: 0, blocks: 1, previousAnswer: null, morePreviousAnswers: 0 },
+  blockers: [{ description: "Amounts disagree with the owner list.", requiredAction: "Choose whether amounts are recalculated." }],
+  recommendation: "Wait for your decision.",
+  ifYouWait: "This task and its pipeline stay paused; other workspaces continue.",
+};
+
+const anchor = (promptStatus: string) => renderTeamItemAnchor(blocked, { ...state(access([]), OWNER), promptStatus }).text;
+
+test("B13: an open item's anchor still states the block, the options and what waiting costs", () => {
+  const text = anchor("BLOCKED");
+  assert.ok(text.includes("Blocked on:"), "the blocker is what the group is being asked about");
+  assert.ok(text.includes("Action: Choose whether amounts are recalculated."), "with the action only a human can take");
+  assert.ok(text.includes("If you wait: This task and its pipeline stay paused"), "and what waiting costs");
+  assert.ok(text.includes("State: awaiting response · Owner: jd-laptop"), "the hint line states the operational state");
+  assert.ok(/- [\d: -]+claude \(running\)/.test(text), "a running run is stated as running");
+});
+
+for (const promptStatus of ["DONE", "SKIPPED"]) {
+  test(`B13: a ${promptStatus} item's anchor is rendered from the completed state`, () => {
+    const text = anchor(promptStatus);
+    assert.ok(text.includes("Completed · Owner: jd-laptop"), "the card says the item is complete");
+    assert.ok(!text.includes("Blocked on:"), "a completed item is not blocked on a decision");
+    assert.ok(!text.includes("Action: Choose"), "and asks the group for no action");
+    assert.ok(!text.includes("If you wait:"), "nothing is waiting on the reader");
+    assert.ok(!text.includes("Agent recommends:"), "and no advice about an open decision survives completion");
+    assert.ok(!text.includes("Options:"), "the choice the item blocked on is no longer offered");
+    assert.ok(!/blocked \d+ min ago|blocked just now/.test(text), "and the head line states no age, because the item is no longer blocked");
+    assert.ok(/- [\d: -]+claude \(finished\)/.test(text), "a run the prompt has already completed past is stated as finished");
+    assert.ok(/- [\d: -]+grok \(done\)/.test(text), "a run that really ended keeps its own outcome");
+    assert.ok(text.includes("Blocked once."), "the block count reads in the past tense, not as a block the reader is standing in");
+  });
+}
+
+test("B13: the completed summary changes nothing but the completed state's own fields", () => {
+  const completed = completedSummary(blocked);
+  assert.deepEqual(
+    { ...completed, blockedAt: blocked.blockedAt, options: blocked.options, blockers: blocked.blockers, recommendation: blocked.recommendation, ifYouWait: blocked.ifYouWait, history: blocked.history },
+    blocked,
+    "identity, title, breadcrumb, objective and the rest of the record are untouched",
+  );
+  assert.deepEqual(completed.history.runs.map(run => run.state), ["FINISHED", "DONE"], "only a run that has not ended is restated");
+  assert.equal(blocked.blockers?.length, 1, "the caller's summary is not mutated");
 });

@@ -239,3 +239,23 @@ test("B11 (T0): the anchor's age grid moves once an hour per item, and a card co
   assert.deepEqual(withoutRenderedAge(notBlocked), notBlocked);
   assert.equal(renderedAge(notBlocked.text), null);
 });
+
+test("B13 (T0): a card with nothing left to wait for drops the If you wait line and counts its blocks in the past tense", () => {
+  // Two runs, so the history is listed rather than collapsed into "first run".
+  const history = { ...summary().history, runs: [{ provider: "grok", startedAt: at(20), state: "DONE" }, { provider: "claude", startedAt: at(70), state: "DONE" }], blocks: 1 };
+  const open = card(summary({ history }));
+  assert.ok(open.text.includes("If you wait: This task and its pipeline stay paused"), "an open task still states what waiting costs");
+  assert.ok(collapsed(open).includes("Blocked once, now."), "and counts the block the reader is standing in");
+
+  // What a completed item's anchor renders from: no block, and nothing to wait for.
+  const finished = card(summary({ blockedAt: null, ifYouWait: "", history }));
+  const lines = finished.text.split("\n");
+  const hintIndex = lines.indexOf(hint);
+  assert.ok(!finished.text.includes("If you wait:"), "nothing waits on the reader of a finished card");
+  assert.equal(lines[hintIndex - 1], "", "the hint keeps the blank line above it");
+  assert.notEqual(lines[hintIndex - 2], "", "and gains no second one where the line used to be");
+  assert.ok(collapsed(finished).includes("Blocked once."), "one past block reads in the past tense");
+  assert.ok(!collapsed(finished).includes("Blocked once, now."), "not as a block that is happening now");
+  const twice = card(summary({ blockedAt: null, history: { ...history, blocks: 2 } }));
+  assert.ok(collapsed(twice).includes("Blocked 2 times."), "and so does a count of several");
+});
