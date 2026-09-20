@@ -101,6 +101,67 @@ test("T18 grant history permits one active item/person/capability and revocation
   }
 });
 
+test("TM-T0-5-27: migration 27 adds the closed columns once and preserves item links", () => {
+  const root = mkdtempSync(join(tmpdir(), "tm3-migration-27-"));
+  try {
+    mkdirSync(join(root, ".agent-console"), { recursive: true });
+    mkdirSync(join(root, "workspace"));
+    assert.equal(boot(root).status, 0);
+    const seeded = runWorkspaceScript(root, `
+      const { workspaces } = await import('./src/workspaces.ts');
+      const workspace = workspaces.create({ name: 'migration-27', workDirectory: ${JSON.stringify(join(root, "workspace"))} });
+      const program = workspaces.createChild('program', workspace.id, { name: 'Program' });
+      const suite = workspaces.createChild('suite', program.id, { name: 'Suite' });
+      const prompt = workspaces.createChild('prompt', suite.id, { title: 'Linked item', content: 'Wait' });
+      workspaces.createItemLink({ promptId: prompt.id, role: 'requester', epoch: 1 });
+      workspaces.close();
+    `);
+    assert.equal(seeded.status, 0, seeded.stderr);
+
+    const file = join(root, ".agent-console/console.sqlite");
+    const database = new Database(file);
+    // Return the table to its pre-27 shape, keeping the row, the way the 25 and
+    // 26 cases fake a downgrade.
+    database.exec(`
+      CREATE TABLE item_link_v26 (
+        item_id TEXT PRIMARY KEY,
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('requester','executor')),
+        epoch INTEGER NOT NULL CHECK(epoch >= 1),
+        control_head TEXT
+      );
+      INSERT INTO item_link_v26 SELECT item_id,prompt_id,role,epoch,control_head FROM item_link;
+      DROP TABLE item_link;
+      ALTER TABLE item_link_v26 RENAME TO item_link;
+      CREATE INDEX item_link_prompt_idx ON item_link(prompt_id);
+      DELETE FROM schema_migration WHERE version=27;
+    `);
+    const before = database.prepare("SELECT item_id,prompt_id,role,epoch,control_head FROM item_link ORDER BY item_id").all();
+    assert.equal(before.length, 1);
+    database.close();
+
+    // Twice, because a migration that is not idempotent fails the second boot
+    // with a duplicate column.
+    for (const run of [1, 2]) {
+      const migrated = boot(root);
+      assert.equal(migrated.status, 0, `boot ${run}: ${migrated.stderr}`);
+      const check = new Database(file, { readonly: true });
+      try {
+        assert.deepEqual(check.prepare("SELECT item_id,prompt_id,role,epoch,control_head FROM item_link ORDER BY item_id").all(), before, `boot ${run} preserves item links`);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=27").all(), [{ version: 27 }]);
+        const columns = check.prepare("PRAGMA table_info(item_link)").all().map(column => (column as { name: string }).name);
+        assert.deepEqual(columns.slice(-2), ["closed_at", "closed_command_id"]);
+        assert.deepEqual(check.prepare("SELECT closed_at,closed_command_id FROM item_link").all(), [{ closed_at: null, closed_command_id: null }], `boot ${run} leaves existing links open`);
+        assert.deepEqual(check.pragma("foreign_key_check"), []);
+      } finally {
+        check.close();
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly once", () => {
   const root = mkdtempSync(join(tmpdir(), "tm3-migration-26-"));
   try {

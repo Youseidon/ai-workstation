@@ -884,11 +884,15 @@ export class TelegramLiveRuntime {
     const teammate = roster.members.find(member => member.botId !== session.botId);
     if (owner === undefined || teammate === undefined) return null;
     const active = workspaces.itemGrants(link.itemId, { activeOnly: true, personId: teammate.personId }).map(grant => grant.capability);
-    // A closed item's access message carries no buttons. Arming them was B14:
-    // the refresh that ended every grant published three fresh ways to restore
-    // one, and on an item closed while its task was still blocked nothing would
-    // ever have revoked what a tap put back.
-    const actions: TeamItemAccessAction[] = link.closedAt !== null ? [] : (["context", "answer", "resume"] as ItemGrantCapability[]).map(capability => {
+    // A finished item's access message carries no buttons, whether it finished by
+    // `/close` or by its task completing. Arming them was B14: the refresh that
+    // ended every grant published three fresh ways to restore one, and on an item
+    // closed while its task was still blocked nothing would ever have revoked
+    // what a tap put back. Completion is read from the prompt rather than written
+    // to the link, because marking the link closed would stop the anchor retiring.
+    const promptStatus = workspaces.promptActivity(link.promptId).item.prompt.status;
+    const finished = link.closedAt !== null || promptStatus === "DONE" || promptStatus === "SKIPPED";
+    const actions: TeamItemAccessAction[] = finished ? [] : (["context", "answer", "resume"] as ItemGrantCapability[]).map(capability => {
       const action = active.includes(capability) ? "revoke" : "grant";
       return {
         ...this.createTeamItemAction(session, roster, link, { actor: owner, action, capabilities: [capability], targetPersonId: teammate.personId }),
@@ -925,6 +929,11 @@ export class TelegramLiveRuntime {
   }
 
   private syncTeamItem(session: Session, roster: TeamRoster, link: ItemLinkRow): void {
+    // A closed item neither gains an anchor nor keeps paying for one. The thread
+    // row stays routable on purpose, so a reply into it still earns a refusal
+    // rather than silence: telegramItemThreadForMessage skips ANCHOR_GONE
+    // threads, so retiring the anchor here would make the item unreachable.
+    if (link.closedAt !== null) return;
     const { state, payload } = this.teamItemPayload(session, roster, link);
     const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
     const completed = state.promptStatus === "DONE" || state.promptStatus === "SKIPPED";

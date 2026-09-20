@@ -71,7 +71,7 @@ test("T15 owner-bound thread decisions are revision-checked, expiring and applie
     const duplicate = await tap(confirmed, "duplicate-command");
     assert.equal(first.state, "APPLIED");
     assert.equal(duplicate.commandId, first.commandId, "a duplicate tap returns the first applied receipt");
-    assert.deepEqual(workspaces.itemLink(confirmed.itemId), { itemId: confirmed.itemId, promptId: prompt.id, role: "requester", epoch: 1, controlHead: null });
+    assert.deepEqual(workspaces.itemLink(confirmed.itemId), { itemId: confirmed.itemId, promptId: prompt.id, role: "requester", epoch: 1, controlHead: null, closedAt: null, closedCommandId: null });
     assert.equal(workspaces.itemLinksForPrompt(prompt.id).filter(link => link.itemId === confirmed.itemId).length, 1);
     assert.equal(workspaces.teamThreadRequestAppliedReceipt(confirmed.requestId)?.commandId, "confirm-command");
   } finally {
