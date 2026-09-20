@@ -1116,9 +1116,9 @@ stands: the bot token in `.env` is readable by any process running as the same
 user. G03 applies to the control record and is supported by
 the LG-1 pass of 2026-09-17. G04 remains jd's one-time governance note.
 
-## 6c. G02 draft record: secret isolation for team execution
+## 6c. G02 record: secret isolation for team execution
 
-**Drafted 2026-09-20 for jd's confirmation. Not yet a decision.**
+**Recorded 2026-09-20. Confirmed by jd as drafted, on the same day it was drafted.**
 Gate G02 asks for tested isolation of provider, bot, Git and signing credentials for team execution, and warns that same-user file modes or prompt rules are insufficient evidence.
 This draft separates what the product can evidence from what only jd can decide.
 
@@ -1139,22 +1139,23 @@ That is the risk G02 exists to make explicit, and it is sharper than the file-mo
 - The bot token in `.env` is readable by any process running as the same user. This is the known L1 limit and it is unchanged by handover.
 - Accepting a handover means executing another member's code with your own credentials in the environment. No sandbox in this product prevents a determined malicious teammate from reading them.
 
-**The decision jd is asked to record.**
+**The decision jd recorded.**
 That the roster is the trust boundary: both members are trusted parties, a malicious roster member is out of scope, and the residual limits above are accepted for a two-person personal team.
-With that, points 1 to 4 are the tested isolation G02 asks for, and the gate closes when RTC-12's tests pass in TM4.
+With that confirmed, points 1 to 4 are the tested isolation G02 asks for, and the gate closes when RTC-12's tests pass in TM4.
+So G02 is decided but not yet closed: the decision half is done here, and the evidence half is produced by RTC-12 inside H04.
 
 **What reopens it.** A member outside that trust circle, automatic acceptance, removing the Host access and sandbox comparison, or any change that carries a credential between machines.
 
-## 6d. G04 draft record: governance
+## 6d. G04 record: governance
 
-**Drafted 2026-09-20 for jd's confirmation. Not yet a decision.**
+**Recorded 2026-09-20. Confirmed by jd, who changed items 3 and 4 from what was drafted.**
 G04 asks for Telegram audience, Git host and storage location, retention, operational owner and enterprise data policy.
-Items 1, 2 and 5 write down what is already true; items 3 and 4 are genuine choices and are the two jd should look at hardest.
+Items 1, 2 and 5 write down what is already true. Items 3 and 4 were the genuine choices, and jd did not take the drafted option for either.
 
 1. **Audience.** The team group contains exactly the roster's members and their bots. Group members who are not on the roster are ignored (R-G). Telegram carries human messaging and cards only; the repository carries files and the three machine records.
 2. **Git host and storage.** GitHub, in the private repository recorded as the roster's remote. It holds `refs/aw/team`, `refs/aw/items/<item>/control` and `aw/handover/<item>` branches. LG-1 confirmed on 2026-09-17 that this host accepts custom refs and rejects a divergent non-fast-forward update.
-3. **Retention.** Proposed: a handover branch and its control record are kept while the item is open, and are deleted by the requester once the item is applied or cancelled. Event files under the control record are kept with it. Local databases are retained on each workstation indefinitely and are never shared. Telegram message history follows Telegram's own retention, which neither workstation controls.
-4. **Operational owner.** Proposed: jd. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members.
+3. **Retention.** jd's ruling: **keep the records, delete the branches.** The `aw/handover/<item>` branch is deleted by the requester once the item is applied or cancelled, because it is bulk that has served its purpose. `refs/aw/items/<item>/control` and its `events/<command id>.json` files are kept indefinitely as the audit trail of who held the item and when, because they are small and are the only durable account of a handover. The draft proposed deleting both together; jd separated them on 2026-09-20, so the trail survives the cleanup. Local databases are retained on each workstation indefinitely and are never shared. Telegram message history follows Telegram's own retention, which neither workstation controls.
+4. **Operational owner.** jd, **with a named fallback**, which is jd's amendment of 2026-09-20 to the drafted single-owner line. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members. The fallback matters because roster updates are signed by the owner and a revocation needs a fresh roster, so an unavailable owner means no member can be removed and no new member admitted. The fallback is Yousef, the only other roster member, and what he can do is deliberately narrower than ownership: he can reach the repository and read the records, but he cannot sign a roster update unless the owner's signing key has been handed over out of band as a separate, deliberate act. Until that happens the honest statement is that owner absence blocks roster changes and nothing else; threads, grants, personal control and an in-flight handover all continue. **jd should confirm the fallback is Yousef**, which the orchestrator assumed as the only candidate in a two-person team.
 5. **Enterprise data policy.** None applies. This is personal use by a two-person trusted team, and no customer or third-party data is expected in handed-over work. If that ever changes, retention and audience are the two items to revisit first.
 
 ## 7. Evidence still required
@@ -1163,8 +1164,8 @@ At this implementation checkpoint, no Telegram bot has been connected, no peer
 handoff protocol has been implemented, no remote deployment has been configured,
 and no provider delegation or security boundary has been certified. The docs are
 ready to guide phased implementation; they are not evidence that G01-G04 passed.
-G01 was recorded on 2026-09-20; see section 6b. G02 and G04 are drafted in sections 6c and 6d and await jd's confirmation. G03 is largely supported by the LG-1 pass of 2026-09-17.
+G01, G02 and G04 were all recorded on 2026-09-20; see sections 6b, 6c and 6d. G02's decision half is recorded and its evidence half, RTC-12's capability matrix, is produced inside H04. G03 is largely supported by the LG-1 pass of 2026-09-17.
 
-Do not convert undecided governance values into fabricated requirements. G04
-requires the team to choose storage location and retention before enterprise
-deployment. This does not block local development or the other specifications.
+Do not convert undecided governance values into fabricated requirements. G04's storage location and retention are now
+chosen and recorded in section 6d. This does not block local development or the
+other specifications.

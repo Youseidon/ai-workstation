@@ -26,14 +26,15 @@ Decisions jd settled on 2026-09-20, all now recorded in the plan:
 | Wall-clock fixtures | Add **F00B**, a sweep before audit 3, because audit 2's 274/274 does not reproduce here. |
 | Execution model | Orchestrator does Phase A; every task from Phase B onward goes to one worker agent each. |
 
+| G02 | **Confirmed as drafted 2026-09-20**, see [implementation.md](implementation.md) section 6c. The roster is the trust boundary, a malicious roster member is out of scope, and the two residual limits are accepted: the `.env` bot token readable by any same-user process, and accepting a handover meaning another member's code runs with your own credentials in the environment. Only the decision half is done; RTC-12 in H04 produces the evidence. |
+| G04 | **Recorded 2026-09-20**, see [implementation.md](implementation.md) section 6d. jd changed both real items away from the draft. Retention: **keep the records, delete the branches** - the `aw/handover/<item>` branch goes once the item is applied or cancelled, `refs/aw/items/<item>/control` and its events are kept indefinitely as the audit trail. Operational owner: jd, **with a named fallback**; the orchestrator recorded Yousef as the only candidate and flagged that jd should confirm the name. |
 | G01 | **Recorded 2026-09-20**, see [implementation.md](implementation.md) section 6b. The handover delegates nothing: the receiver asks to take the task over, accepts it, and resumes under their own login on their own machine, with no credential shared and no cross-account usage. Holds while acceptance stays an explicit human action. |
 
 Still open. None of it blocks building, and none of it blocks the F track:
 
 | Needed for | Open item |
 | --- | --- |
-| Enabling handover | **G02**. A record is **drafted** in [implementation.md](implementation.md) section 6c and needs jd's confirmation of one thing: that the roster is the trust boundary, so a malicious roster member is out of scope and the two residual limits are accepted. The tested-isolation half is produced by RTC-12 inside H04, so G02 closes when TM4 finishes, not before it starts. |
-| Enterprise deployment | **G04**. A record is **drafted** in [implementation.md](implementation.md) section 6d. Items 1, 2 and 5 write down what is already true; jd should check **retention** and **operational owner**, which are real choices. |
+| Enabling handover | **G02** is **decided but not closed**. jd confirmed the record as drafted on 2026-09-20, in [implementation.md](implementation.md) section 6c: the roster is the trust boundary, a malicious roster member is out of scope, and the two residual limits are accepted. The tested-isolation half is produced by RTC-12 inside H04, so G02 closes when TM4 finishes, not before it starts. |
 | The control record, H02 | **G03**, Git host policy and signing verification. Largely supported already by the LG-1 pass of 2026-09-17, which proved custom refs and non-fast-forward rejection. |
 
 | `H-TM-LT3`, `H-TM-LT4` | Real two-person runs with Yousef. The solo pilot is explicitly not a substitute, so **TM3 is not honestly done** until these run. |
