@@ -21,8 +21,9 @@ does exercise a real round trip through GitHub.
 LT-5, not here.
 So no case below touches Git, and the absence of a handover test in this document
 is scope rather than an omission.
-Before LT-5 can run at all, the rig needs fixing: both instances currently share
-one working tree, which is B19.
+When LT-5 eventually runs, instance B will need its own clone first, since both
+instances currently share one working tree (B19). That is a property of this rig
+only, not of the product.
 
 Roles: account A is the owner (workstation label `Jj`, bot `@aiws_helper_bot`,
 instance A on ports 3100/4100), account B is the teammate (label `Junaid`, bot

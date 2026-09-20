@@ -6,6 +6,8 @@ See [solo-team-join-check.md](solo-team-join-check.md) and
 [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) for the
 checks that exposed them.
 None of these is fixed yet.
+[team-burndown-dev-brief.md](team-burndown-dev-brief.md) is the plan that closes
+them, and names the task that owns each one.
 
 ## B1 - a created team's join code cannot be recovered
 
@@ -585,44 +587,26 @@ Suggested fix: extend that footer, or the button label, to name the outcome as
 well as the allowance, so the two buttons are distinguishable by consequence and
 not only by wording.
 
-## B19 - both pilot instances share one working tree, so no Git exchange between them can be tested
+## B19 - the pilot rig shares one working tree, so LT-5 cannot run on it
 
-Severity: high for the pilot rig rather than for the product. It does not affect
-any TM3 case, and it blocks LT-5 outright.
+Severity: none for the product; a note about this rig only.
 
 `setup:team-pilot` isolates ports, bot tokens and the SQLite database, and each
-instance keeps its own bare roster mirror at
-`.agent-console/team/remote.git`, so the roster really does travel through the
-remote.
+instance keeps its own bare roster mirror at `.agent-console/team/remote.git`, so
+roster replication travels through the remote for real.
 It does not isolate the workspace: both instances' workspace 1 has
 `work_directory` `/home/junaid/ai-workstation-team-workspace`, instance A as
 `Team pilot workspace` and instance B as `pilot-project`, the same checkout with
 the same `origin`.
 
-D05 says "Do not use a network-mounted working directory or share a live SQLite
-file" ([teammate-design.md](teammate-design.md)). The database is properly split;
-the working tree is not. One directory shared by two workstations is the same
-mistake in local form.
+This says nothing about production, where the two teammates are on two machines
+with two clones by definition. It matters only as a limit on what this rig can
+check: file-level exchange between the two sides is unobservable here, because
+whatever one instance writes the other already sees without fetching.
+No TM3 case is affected, since none of them touches Git.
 
-Two consequences.
+Consequence to remember: give instance B its own clone before attempting LT-5.
 
-The rig cannot validate any file-level exchange between the two sides, because
-there is nothing to exchange: whatever one instance writes, the other already
-sees without fetching. Anything built on the handover branch would appear to work
-here while proving nothing.
-
-It is also a live hazard whenever both sides run an agent. Two servers running
-agents in one working tree share one index and one checkout, so they can race on
-`.git/index.lock` and overwrite each other's files. No case has hit this only
-because instance B has never started a run: case 7 checks that a teammate's
-resume starts exactly one run on the owner's workstation, which verifies bot and
-callback routing, not filesystem isolation. The two are easy to confuse, since
-"instance B started nothing" reads like isolation and is not.
-
-Suggested fix: give instance B its own clone of the team remote and point its
-workspace at that, so the two sides exchange work the way two workstations
-actually would. Until then, record that the pilot proves Telegram-side team
-behaviour and roster replication, and nothing about Git-mediated work exchange.
 
 ## Unconfirmed
 
