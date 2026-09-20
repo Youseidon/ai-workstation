@@ -731,7 +731,13 @@ export class TelegramLiveRuntime {
     const run = (async () => {
       const { moved } = workspaces.rewriteTeamChatId({ teamId: cached.teamId, fromChatId, toChatId });
       this.log.warn(`the team group was upgraded to a supergroup; moved ${moved.actors} actor(s), ${moved.threads} thread(s), ${moved.actions} action card(s), ${moved.outbox} queued message(s) and ${moved.inbox} pending update(s) to the new chat id`);
-      await this.republishTeamChatId(cached.teamId, cached.remoteUrl, fromChatId, toChatId);
+      try {
+        await this.republishTeamChatId(cached.teamId, cached.remoteUrl, fromChatId, toChatId);
+      } catch (error) {
+        // The local copy has already moved and the old id is unusable either way, so an
+        // unreachable repository delays the shared record rather than the repair.
+        this.log.warn(this.safe(`republishing the team roster after the supergroup upgrade failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
       return true;
     })();
     this.migration = run;
