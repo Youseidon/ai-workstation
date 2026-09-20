@@ -241,34 +241,62 @@ instance is hardest to notice.
 Suggested fix: spawn the child with `detached: true` and signal its process
 group, or spawn the supervisor directly instead of going through `npm`.
 
-## B11 - an open item anchor is edited on a timer, forever
+## B11 - an open item's anchor is rewritten on a timer, forever
 
-Severity: medium; steady Telegram API traffic and unbounded row growth per item.
+Severity: medium; it burns a Telegram edit per open item on a timer for no
+informational gain, and it is unbounded in time.
 
-The anchor payload embeds a relative timestamp ("blocked 29 min ago") through
-`formatCard`, and `syncTeamItem` enqueues an edit whenever the desired payload
-differs from the delivered one
-([runtime.ts:930-933](../../server/src/integrations/telegram/runtime.ts#L930-L933)).
-The relative time changes on its own, so the comparison never settles and the
-anchor is rewritten for as long as the item stays open, with no change a reader
+Merged 2026-09-20: this was recorded twice, as B11 from the first item and B16
+from the second, before anyone noticed the two described the same defect.
+Both observations are kept below because they cover different phases of it.
+
+`syncTeamItemAnchors` runs on every delivery tick, which is every second
+([runtime.ts:165](../../server/src/integrations/telegram/runtime.ts#L165),
+[runtime.ts:645](../../server/src/integrations/telegram/runtime.ts#L645)), and
+`syncTeamItem` enqueues an edit whenever the desired payload differs from the
+delivered one by `JSON.stringify` equality
+([runtime.ts:929-932](../../server/src/integrations/telegram/runtime.ts#L929-L932)).
+
+The payload embeds a relative age: `blockedAt` is a timestamp that "the card
+turns into an age at delivery"
+([telegramSummary.ts:65-66](../../server/src/telegramSummary.ts#L65-L66)), which
+`formatCard` renders as "blocked 29 min ago".
+That string changes on its own, so the comparison never settles and an edit is
+queued whether or not anything about the task changed, with no change a reader
 would notice beyond the age counter.
-The rate decays as the counter coarsens
+How often depends on the item's age, because `ageText` coarsens the counter
 ([card.ts:80-90](../../server/src/integrations/telegram/card.ts#L80-L90)): once a
-minute for the first 90 minutes, then once an hour until 48 hours, then once a
-day.
+minute below 90 minutes, once an hour below 48 hours, then once a day.
 
-Observed 2026-09-19 on one idle item: outbox rows 15, 16, 17, 18, 19, 21, 23,
-27, 29, 30, 32, 36, 37 and 40, each an `edit` targeting outbox 13, one per
-minute at a fixed offset, while nothing about the task changed.
+Observed 2026-09-19 on the first item: outbox rows 15, 16, 17, 18, 19, 21, 23,
+27, 29, 30, 32, 36, 37 and 40, each an `edit` targeting outbox 13, one per minute
+at a fixed offset, while nothing about the task changed.
+
+Observed 2026-09-19 on item `awi1_70e8584ed9e957f9fd198dd8`: outbox rows 81
+through 118 are 38 consecutive edits to the anchor, outbox 79, one per minute
+from 13:54:52 to 14:31:52, each differing only in `blocked N min ago` counting
+40 up to 77.
+Nothing else changed in that window; no command was sent and no grant existed.
+
+Confirmed across the overnight stop on that same item: rows 125 to 132 are
+per-minute edits reading `blocked 82 min ago` up to `blocked 89 min ago`, row 133
+crosses to `blocked 1 hours ago`, and rows 134 to 137 are then hourly at 15:14Z,
+16:14Z, 17:17Z and 01:59Z.
+So the churn decays rather than stopping, and the per-minute phase is only the
+first 90 minutes of an item's life.
 
 That is about 89 `editMessageText` calls in an item's first 90 minutes, then
-roughly 24 a day for as long as it stays open, and it scales with the number of
-open items against Telegram's per-chat rate limits.
-Every edit also re-marks the message as edited in every member's client.
+roughly 24 a day for as long as it stays open, and the cost scales with open
+items rather than with activity, against a group that Telegram rate limits.
+Every edit also re-marks the message as edited in every member's client and keeps
+the pinned anchor churning there.
+An item closed by `/close` keeps doing this forever, because that path never
+retires the anchor (B17).
 
-Suggested fix: compare payloads on their material content, excluding the
-relative timestamp, or recompute the anchor only when the underlying task state
-changes.
+Suggested fix: exclude the rendered age from the equality check, or compare a
+payload with the age field normalized, so an edit is queued only when the task
+state actually changes. Refreshing the age on real changes, and otherwise on a
+much coarser schedule, would keep the display useful without the churn.
 
 ## B12 - `/help` does not reflect granted capabilities
 
@@ -434,47 +462,10 @@ written requirement matches what is built, rather than leaving an accepted
 requirement silently unmet. If cross-member task visibility is ever built,
 `/discuss` becomes reachable and case 10 becomes worth running again.
 
-## B16 - an open item's anchor is rewritten on a timer, forever
+## B16 - merged into B11
 
-Severity: medium; it burns a Telegram edit per open item on a timer for no
-informational gain, and it is unbounded in time.
-
-`syncTeamItemAnchors` runs on every delivery tick, which is every second
-([runtime.ts:165](../../server/src/integrations/telegram/runtime.ts#L165),
-[runtime.ts:645](../../server/src/integrations/telegram/runtime.ts#L645)), and
-`syncTeamItem` enqueues an edit whenever the desired payload differs from the
-delivered one by `JSON.stringify` equality
-([runtime.ts:929-932](../../server/src/integrations/telegram/runtime.ts#L929-L932)).
-
-The payload embeds a relative age: `blockedAt` is a timestamp that "the card
-turns into an age at delivery"
-([telegramSummary.ts:65-66](../../server/src/telegramSummary.ts#L65-L66)).
-That string changes on its own, so the comparison reports a difference and an
-edit is queued whether or not anything about the task changed.
-How often depends on the item's age, because `ageText` coarsens the counter
-([card.ts:80-90](../../server/src/integrations/telegram/card.ts#L80-L90)): once a
-minute below 90 minutes, once an hour below 48 hours, then once a day.
-
-Observed 2026-09-19 on item `awi1_70e8584ed9e957f9fd198dd8`: outbox rows 81
-through 118 are 38 consecutive edits to the anchor, outbox 79, one per minute
-from 13:54:52 to 14:31:52, each differing only in `blocked N min ago` counting
-40 up to 77.
-Nothing else changed in that window; no command was sent and no grant existed.
-
-The cost scales with open items, not with activity: N open items is N edits per
-age change indefinitely, against a group that Telegram rate limits, and it keeps
-the pinned anchor churning in every member's chat.
-Confirmed across the overnight stop on the same item: rows 125 to 132 are
-per-minute edits reading `blocked 82 min ago` up to `blocked 89 min ago`, row 133
-crosses to `blocked 1 hours ago`, and rows 134 to 137 are then hourly at 15:14Z,
-16:14Z, 17:17Z and 01:59Z.
-So the churn decays rather than stopping, and the per-minute phase is the first
-90 minutes of an item's life.
-
-Suggested fix: exclude the rendered age from the equality check, or compare a
-payload with the age field normalized, so an edit is queued only when the task
-state actually changes. Refreshing the age on real changes, and otherwise on a
-much coarser schedule, would keep the display useful without the churn.
+The second recording of the anchor edit churn, kept as a pointer because the
+number was already cited elsewhere. See B11.
 
 ## B17 - `/close` ends the grants but does not close the thread
 
@@ -511,7 +502,7 @@ closed by account A at 02:30:34Z:
 - `telegram_thread` row 10 for that item stayed `state ACTIVE` with
   `status_message_id 79`, against row 8 for the item that completion closed,
   which is `ANCHOR_GONE`
-- the anchor stayed pinned and kept taking its periodic edit (B16)
+- the anchor stayed pinned and kept taking its periodic edit (B11)
 - `/task` from account B at 02:37Z, after the close, still answered in full with
   the blocker text, the required human action, both options with their pros and
   cons, and `State: awaiting response · Owner: Jj`
@@ -539,10 +530,60 @@ publishes `Grant context`, `Grant answer` and `Grant resume`
 02:40:34Z), and a tap on any of them restores that capability with nothing left in
 the system that will ever revoke it.
 
+Confirmed end to end on 2026-09-20, on the item closed at 02:30:34Z, using the
+ordinary command rather than those buttons:
+
+- `/grant context` from account A was accepted on the closed thread, minting card
+  outbox 159 rather than any refusal
+- the tap applied at 02:42:04.363Z, receipted `Done: Granted context.`, and the
+  access message was edited to `Junaid: context` (outbox 161)
+- the grant was still active after 63 checks over the following three minutes,
+  during which the one-second delivery loop had about 180 opportunities to sweep
+  it
+- `/context` from account B then returned the item's objective and open question
+  in full
+
+So a closed thread accepts new grants, keeps them, and serves granted commands
+from them. `/close` gates nothing on the write path either.
+
 Suggested fix: give a closed item a persisted closed state, refuse granted
 commands and further grants against it, retire and unpin its anchor the way
 completion does, and refresh the access message with no actions on the pass that
 closes it (which is also B14's fix).
+
+## B18 - a teammate holding answer and resume is one tap from completing the owner's task
+
+Severity: low as designed, but it is a sharp edge worth stating, and it is
+undocumented outside the command surface table.
+
+While the teammate holds both `answer` and `resume`, every `/answer <text>` mints
+a card with two buttons rather than one: `Save answer`, which needs `answer`, and
+`Answer and resume`, which needs both
+([runtime.ts:999-1000](../../server/src/integrations/telegram/runtime.ts#L999-L1000),
+[teamGrants.ts:15](../../server/src/teamGrants.ts#L15)).
+The second one saves the answer and starts the run, so it completes the owner's
+task, which closes the item and revokes every grant.
+
+This is intended: it is what "Answer and resume needs both `answer` and `resume`"
+means, and the capability model is working exactly as written.
+It is recorded because the consequence is invisible at the point of use.
+The two buttons sit side by side with similar labels, and the only thing that
+distinguishes the card when the second one is present is the footer
+`Uses <owner>'s <provider> allowance.`
+([runtime.ts:1001](../../server/src/integrations/telegram/runtime.ts#L1001)),
+which names whose credits are spent and not that the task completes, the item
+closes and every grant ends.
+
+Observed 2026-09-20 at 02:13:03Z: card outbox 145 carried
+`tc_rakrz1pgNcrkKmwbx11H4U8E` (`save_human_response`) and
+`tc_9UCKC8kxTz9nBO9R_b9yqKre` (`answer_and_resume`) together, ten minutes live,
+on prompt 4, while cases 8, 9 and 11 all still needed that prompt to stay blocked.
+An earlier session had already lost its item to exactly this completion, from the
+owner's personal card.
+
+Suggested fix: extend that footer, or the button label, to name the outcome as
+well as the allowance, so the two buttons are distinguishable by consequence and
+not only by wording.
 
 ## Unconfirmed
 

@@ -224,12 +224,13 @@ rather than from the transcript.
 | 6 teammate answers | PASS | 2026-09-19 | One card bound to account B, Save answer only; one APPLIED receipt, response 16; second tap replayed as `Already applied.` with no second answer. |
 | 7 grant resume and start the run | PASS | 2026-09-19 | Card read `Uses Jj's claude allowance.`; one run `run_e4aaae9b` on instance A, claude, model null; instance B started nothing. The run completed the task, which auto-closed the item: see B13, B14. |
 | 8 revoke beats an open card | PASS | 2026-09-20 | Run off the `Answer and resume` button on card outbox 148, since `/resume` is refused while no answer is saved. `resume` revoked 02:27:05Z; access message edited in place (outbox 151 edits 80) to `Junaid: answer`. Late tap of `tc_Hk3mHo-sHcs70SyInPet8zD2` at 02:27:51Z REJECTED `grant_required`, `Ask Jj to grant resume on this item.`, `started` 0 and `run_id` null; prompt 4 stayed BLOCKED with no new run. One `resume` row keeping `granted_at` 02:07:12Z with `revoked_at` 02:27:05Z, no second active row. |
-| 9 expiry is not renewed | PASS | 2026-09-20 | Card outbox 145 minted 02:13:03Z with both `save_human_response` and `answer_and_resume`; `Save answer` tapped at 02:24:16Z, REJECTED `action_expired`, `response_id` null, `started` 0, `run_id` null. Prompt 4 stayed BLOCKED with no HUMAN_RESPONSE remark and no hold row. No replacement card appeared in the 11 minutes of waiting: the only outbox row was 146, an anchor age edit (B16). Refusal posted as outbox 147 with no actions attached. |
+| 9 expiry is not renewed | PASS | 2026-09-20 | Card outbox 145 minted 02:13:03Z with both `save_human_response` and `answer_and_resume`; `Save answer` tapped at 02:24:16Z, REJECTED `action_expired`, `response_id` null, `started` 0, `run_id` null. Prompt 4 stayed BLOCKED with no HUMAN_RESPONSE remark and no hold row. No replacement card appeared in the 11 minutes of waiting: the only outbox row was 146, an anchor age edit (B11). Refusal posted as outbox 147 with no actions attached. |
 | 10 cross-owner thread request | SKIPPED | 2026-09-19 | Not a real scenario: a teammate can never learn the owner's prompt id, and the owner cannot `/discuss` their own item. See B15. Item for cases 8, 9 and 11 opened by curl instead, the case 2 route. |
 | 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Jj to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
 | 12 default-off regression | not run | | |
 
-Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B17.
+Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B18.
+B16 was merged into B11 on 2026-09-20 and is kept as a pointer.
 
 ## Resuming in a fresh session
 
@@ -244,7 +245,7 @@ node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/c
 That gives the roster, both actors, the open item and its grants, every
 unexpired action and the last group messages, which is everything a case needs.
 
-State as of 2026-09-20 02:10Z, for reference:
+State as of 2026-09-20 02:45Z, for reference:
 
 - **Both instances are running**, restarted at 01:59:53Z after the box slept
   overnight. If nothing is listening on 4100 or 4200, start them before anything
@@ -253,8 +254,9 @@ State as of 2026-09-20 02:10Z, for reference:
 - owner `Jj` / `@aiws_helper_bot` on ports 3100/4100; teammate `Junaid` /
   `@ai_test_pilot_1_bot` on 3200/4200
 - workspace 1 (`Team pilot workspace`), suite 1 (`Suite_TC1`)
-- prompts: 2 `WI_TC01` DONE, 3 `WI_TC02` DONE, **4 `WI_TC03` BLOCKED, which is
-  the live awaiting-response question**, 5 `WI_TC04` TODO and held as a spare
+- prompts: 2 `WI_TC01` DONE, 3 `WI_TC02` DONE, **4 `WI_TC03` still BLOCKED after
+  cases 8, 9 and 11, with no answer ever saved and no new run**, 5 `WI_TC04` TODO
+  and held as a spare
 - prompt 4 asks UTC versus local timezone for run log timestamps; run
   `run_b0a39ccc` DONE, personal question card outbox 78, its buttons long
   expired
@@ -263,11 +265,16 @@ State as of 2026-09-20 02:10Z, for reference:
 - items: `awi1_3a86f4766dba6fff0acb5b47` (prompt 3), DONE and closed, and
   **`awi1_70e8584ed9e957f9fd198dd8` (prompt 4), open**, anchor outbox 79 and
   access message outbox 80, opened by curl at 13:54Z on 2026-09-19
-- grants on the open item, re-granted 2026-09-20 after the closed thread took
-  the case 5 and 7 grants with it: `answer` at 02:06:53Z and `resume` at
-  02:07:12Z, both to person `6525517234`, both active, one row each.
-  The access message at outbox 80 was edited in place both times, to
-  `Junaid: answer` and then `Junaid: answer, resume`
+- the item was closed by `/close` at 02:30:34Z, which ended its grants but did
+  not close it in any other sense (B17), so it is still `ACTIVE` with its anchor
+  pinned at message 39 and still taking a periodic edit (B11)
+- grants on it, all written 2026-09-20: `answer` 02:06:53Z revoked 02:30:34Z,
+  `resume` 02:07:12Z revoked 02:27:05Z by case 8, and `context` granted 02:42:04Z
+  **after the close and still active**, which is the B17 probe rather than
+  anything a later case needs.
+  Revoke it before treating this item as closed.
+  The access message is outbox 80 / message 41, edited in place every time, which
+  is why its buttons never appear at the bottom of the group (B14)
 - the grant buttons that were on outbox 80 before that expired at 14:04:30Z and
   were tapped late at 14:31Z, which is where the two
   `Not applied: This action expired.` lines in the group came from
