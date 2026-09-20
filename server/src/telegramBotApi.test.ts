@@ -112,6 +112,24 @@ test("Bot API errors are classified with server-specified backoff and never carr
   assert.equal((await rejection(new HttpTelegramBotApi({ token, fetch: html.fetchImpl }).getMe())).kind, "transient");
 });
 
+test("B8: a 400 that names migrate_to_chat_id carries the new chat id out of the refusal", async () => {
+  const { fetchImpl } = stubFetch(() => json(400, {
+    ok: false,
+    error_code: 400,
+    description: "Bad Request: group chat was upgraded to a supergroup chat",
+    parameters: { migrate_to_chat_id: -1002000000123 },
+  }));
+  const error = await rejection(new HttpTelegramBotApi({ token, fetch: fetchImpl }).sendMessage({ chatId: "-40123", topicId: null, payload: { kind: "text", text: "Anchor" } }));
+  assert.equal(error.kind, "rejected");
+  assert.equal(error.retryable, false, "the old chat id is never worth retrying");
+  assert.equal(error.migrateToChatId, "-1002000000123");
+  assertNoToken(error, "supergroup upgrade error");
+
+  // Any other rejection carries no migration target.
+  const plain = stubFetch(() => json(400, { ok: false, error_code: 400, description: "Bad Request: chat not found" }));
+  assert.equal((await rejection(new HttpTelegramBotApi({ token, fetch: plain.fetchImpl }).getMe())).migrateToChatId, null);
+});
+
 test("network failures are rethrown sanitized, without the raw error or its cause", async () => {
   const { fetchImpl } = stubFetch(call => {
     const cause = Object.assign(new Error(`connect ECONNREFUSED for ${call.url}`), { code: "ECONNREFUSED" });

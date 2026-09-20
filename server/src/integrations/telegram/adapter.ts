@@ -1,5 +1,5 @@
 import type { TaskControlReceipt } from "@agent-console/shared";
-import { TelegramApiError, redactBotToken, type TelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
+import { TelegramApiError, redactBotToken, supergroupMigrationTarget, type TelegramBotApi, type TelegramMessagePayload, type TelegramMigrationPayload } from "./botApi.ts";
 import { WorkspaceError, workspaces } from "../../workspaces.ts";
 import type { TaskControlService } from "../../taskControl.ts";
 
@@ -40,6 +40,13 @@ function messagePayload(value: unknown): TelegramMessagePayload | null {
   return value as TelegramMessagePayload;
 }
 
+function migrationPayload(value: unknown): TelegramMigrationPayload | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "migration" || typeof record.fromChatId !== "string" || typeof record.toChatId !== "string") return null;
+  return { kind: "migration", fromChatId: record.fromChatId, toChatId: record.toChatId };
+}
+
 function actionRefs(payload: unknown): string[] {
   if (payload === null || typeof payload !== "object") return [];
   const actions = (payload as { actions?: unknown }).actions;
@@ -66,6 +73,12 @@ export interface TelegramDelivery {
   state: "SENT" | "FAILED";
   retryAt: Date | null;
   rateLimited: boolean;
+  /**
+   * The chat id Telegram issued when this chat became a supergroup (B8). The send
+   * is not retryable as it stands, and is retryable at once as soon as the caller
+   * has moved the workstation to that id.
+   */
+  migrateToChatId: string | null;
 }
 
 export interface TelegramAdapterOptions {
@@ -83,6 +96,8 @@ export interface TelegramAdapterOptions {
   onCallbackResult?: (callback: CallbackPayload, receipt: TaskControlReceipt) => void | Promise<void>;
   /** Navigation taps (`nv_` data, slice B) go here and never reach task control, so they cannot create a receipt. */
   onNavigation?: (callback: CallbackPayload & { callbackQueryId?: string }) => void | Promise<void>;
+  /** A group that became a supergroup (B8). Must repair the workstation before any further update is processed. */
+  onMigration?: (migration: TelegramMigrationPayload) => void | Promise<void>;
   now?: () => number;
 }
 
@@ -118,15 +133,18 @@ export class TelegramAdapter {
         const refs = actionRefs(row.payload);
         if (refs.length > 0) workspaces.bindTaskControlActionsToMessage(this.botId, refs, sent.messageId);
       }
-      return { state: "SENT", retryAt: null, rateLimited: false };
+      return { state: "SENT", retryAt: null, rateLimited: false, migrateToChatId: null };
     } catch (error) {
       const delay = telegramRetryDelayMs(error, row.attemptCount);
       const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
       const message = redactBotToken(error instanceof Error ? error.message : String(error));
+      const migrateToChatId = supergroupMigrationTarget(error);
       workspaces.markTelegramOutbox(outboxId, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
-      // A message that will never arrive cannot stay a subject's anchor (C1).
-      if (retryAt === null) workspaces.markTelegramThreadAnchorGone(outboxId);
-      return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
+      // A message that will never arrive cannot stay a subject's anchor (C1). A
+      // supergroup upgrade is the exception: the message is still coming, at the
+      // new chat id, so the subject keeps the anchor it is about to deliver (B8).
+      if (retryAt === null && migrateToChatId === null) workspaces.markTelegramThreadAnchorGone(outboxId);
+      return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited", migrateToChatId };
     }
   }
 
@@ -137,7 +155,7 @@ export class TelegramAdapter {
       // The send it would edit failed for good, so there is no message to change.
       workspaces.markTelegramOutbox(row.id, "FAILED", "The message to edit was never delivered.");
       workspaces.markTelegramThreadAnchorGone(row.targetOutboxId!);
-      return { state: "FAILED", retryAt: null, rateLimited: false };
+      return { state: "FAILED", retryAt: null, rateLimited: false, migrateToChatId: null };
     }
     try {
       await this.api.editMessageText({ chatId: row.chatId, messageId: target.sentMessageId, payload: row.payload });
@@ -146,17 +164,19 @@ export class TelegramAdapter {
         const refs = actionRefs(row.payload);
         if (refs.length > 0) workspaces.bindTaskControlActionsToMessage(this.botId, refs, target.sentMessageId);
       }
-      return { state: "SENT", retryAt: null, rateLimited: false };
+      return { state: "SENT", retryAt: null, rateLimited: false, migrateToChatId: null };
     } catch (error) {
       const delay = telegramRetryDelayMs(error, row.attemptCount);
       const retryAt = delay === null ? null : new Date((this.options.now?.() ?? Date.now()) + delay);
       const message = redactBotToken(error instanceof Error ? error.message : String(error));
+      const migrateToChatId = supergroupMigrationTarget(error);
       workspaces.markTelegramOutbox(row.id, "FAILED", message, { nextAttemptAt: retryAt?.toISOString() ?? null });
       // The edit is not retried (F1); if the message it addressed was a subject's anchor,
       // the operator deleted it, so the registry gives up on it and the next message for
-      // that subject registers a new anchor (C1 recovery).
-      if (retryAt === null) workspaces.markTelegramThreadAnchorGone(row.targetOutboxId!);
-      return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited" };
+      // that subject registers a new anchor (C1 recovery). An upgraded group is not that:
+      // the anchor is still there, under the supergroup's id (B8).
+      if (retryAt === null && migrateToChatId === null) workspaces.markTelegramThreadAnchorGone(row.targetOutboxId!);
+      return { state: "FAILED", retryAt, rateLimited: error instanceof TelegramApiError && error.kind === "rate_limited", migrateToChatId };
     }
   }
 
@@ -164,6 +184,18 @@ export class TelegramAdapter {
     let processed = 0;
     let ignored = 0;
     for (const update of workspaces.pendingTelegramInbox(this.botId)) {
+      // B8: a chat that became a supergroup changes the id every other pending update
+      // is addressed to, so it is repaired first and the rest are re-read afterwards.
+      const migration = migrationPayload(update.payload);
+      if (migration !== null) {
+        if (this.options.onMigration === undefined) ignored++;
+        else {
+          await this.options.onMigration(migration);
+          processed++;
+        }
+        workspaces.markTelegramUpdateProcessed(this.botId, update.updateId);
+        return { processed, ignored };
+      }
       const message = messagePayload(update.payload);
       if (message !== null && this.options.onMessage !== undefined) {
         await this.options.onMessage(message);

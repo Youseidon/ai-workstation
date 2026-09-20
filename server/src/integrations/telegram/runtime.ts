@@ -20,7 +20,7 @@ import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
 import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
-import { TelegramAdapter } from "./adapter.ts";
+import { TelegramAdapter, type TelegramDelivery } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
 import { HttpTelegramBotApi, TELEGRAM_POLL_TIMEOUT_SECONDS } from "./httpBotApi.ts";
@@ -519,6 +519,7 @@ export class TelegramLiveRuntime {
       onMessage: message => this.handleMessage(session, message),
       onCallbackResult: (callback, receipt) => this.handleCallbackResult(session, callback, receipt),
       onNavigation: callback => this.handleNavigation(session, callback),
+      onMigration: async migration => { await this.migrateTeamChat(migration.fromChatId, migration.toChatId); },
       now: this.now,
     });
     this.session = session;
@@ -558,6 +559,13 @@ export class TelegramLiveRuntime {
   private expirePairing(): void {
     if (this.pairing !== null && this.pairing.expiresAt <= this.now()) this.pairing = null;
   }
+
+  /**
+   * The chat-id repair in flight, if any (B8). Both loops wait on it: handover-rules
+   * 4.6 makes the old id unusable from the moment the upgrade is known, so nothing
+   * is sent or processed until every local copy of it has moved.
+   */
+  private migration: Promise<boolean> | null = null;
 
   private async run(session: Session): Promise<void> {
     const { signal } = session.controller;
@@ -599,6 +607,7 @@ export class TelegramLiveRuntime {
         // Any message the phone acted on was sent before the update was fetched, so the delivery in progress,
         // if any, is the last one that can matter.
         await session.delivering?.catch(() => undefined);
+        await this.migration?.catch(() => undefined);
         // Drain what is already durable first: updates saved before a restart
         // must not wait for the next long poll to return.
         await session.adapter.processPendingCallbacks();
@@ -649,6 +658,7 @@ export class TelegramLiveRuntime {
     let nextNotifyAt = 0;
     while (!signal.aborted) {
       try {
+        await this.migration?.catch(() => undefined);
         this.syncTeamItemAnchors(session);
         if (this.now() >= nextNotifyAt) {
           this.notifyWaitingTasks(session);
@@ -669,11 +679,13 @@ export class TelegramLiveRuntime {
     if (this.now() < this.sendPausedUntil) return;
     for (const row of workspaces.dueTelegramOutbox(session.botId, new Date(this.now()))) {
       if (signal.aborted) return;
-      const pending = session.adapter.deliverOutbox(row.id);
-      session.delivering = pending;
-      const delivery = await pending.finally(() => {
-        if (session.delivering === pending) session.delivering = null;
-      });
+      let delivery = await this.deliverOne(session, row.id);
+      // B8: the chat became a supergroup. Repair every copy of its id, then send the
+      // same row again, at the new id, rather than failing this message for good.
+      if (delivery.migrateToChatId !== null && await this.migrateTeamChat(row.chatId, delivery.migrateToChatId)) {
+        if (signal.aborted) return;
+        delivery = await this.deliverOne(session, row.id);
+      }
       if (delivery.state === "FAILED") {
         const failed = workspaces.telegramOutbox().find(entry => entry.id === row.id);
         const retry = delivery.retryAt === null ? "not retrying" : `retry at ${delivery.retryAt.toISOString()}`;
@@ -688,6 +700,78 @@ export class TelegramLiveRuntime {
       }
       if (this.sendSpacingMs > 0) await this.sleep(this.sendSpacingMs, signal);
     }
+  }
+
+  private async deliverOne(session: Session, outboxId: number): Promise<TelegramDelivery> {
+    const pending = session.adapter.deliverOutbox(outboxId);
+    session.delivering = pending;
+    return pending.finally(() => {
+      if (session.delivering === pending) session.delivering = null;
+    });
+  }
+
+  /**
+   * B8: Telegram upgrades a basic group to a supergroup on ordinary actions such as
+   * granting administrator rights, and the chat id changes with it. The old id then
+   * refuses every send and addresses nothing, so handover-rules 4.6 has each
+   * workstation rewrite its roster copy, group actors, thread rows and anchor
+   * pointers to the new id before processing anything else, and republish the
+   * roster. Returns true once this workstation is on the new id.
+   */
+  private async migrateTeamChat(fromChatId: string, toChatId: string): Promise<boolean> {
+    if (fromChatId === toChatId) return false;
+    const inFlight = this.migration;
+    if (inFlight !== null) {
+      await inFlight.catch(() => undefined);
+      return workspaces.teamRosters().some(entry => entry.groupChatId === toChatId);
+    }
+    const cached = workspaces.teamRosters().find(entry => entry.groupChatId === fromChatId);
+    // Only a team group migrates: a personal chat has no roster and never changes id.
+    if (cached === undefined) return false;
+    const run = (async () => {
+      const { moved } = workspaces.rewriteTeamChatId({ teamId: cached.teamId, fromChatId, toChatId });
+      this.log.warn(`the team group was upgraded to a supergroup; moved ${moved.actors} actor(s), ${moved.threads} thread(s), ${moved.actions} action card(s), ${moved.outbox} queued message(s) and ${moved.inbox} pending update(s) to the new chat id`);
+      await this.republishTeamChatId(cached.teamId, cached.remoteUrl, fromChatId, toChatId);
+      return true;
+    })();
+    this.migration = run;
+    try {
+      return await run;
+    } catch (error) {
+      this.log.error(this.safe(`repairing the team after a supergroup upgrade failed: ${error instanceof Error ? error.message : String(error)}`));
+      return false;
+    } finally {
+      if (this.migration === run) this.migration = null;
+    }
+  }
+
+  /**
+   * Publishes the new chat id to refs/aw/team by compare-and-swap. The other
+   * workstation sees the same upgrade, so a lost race is re-read and re-validated
+   * rather than retried blindly or forced: if it already published the same id,
+   * this workstation adopts its revision and stops.
+   */
+  private async republishTeamChatId(teamId: string, remoteUrl: string, fromChatId: string, toChatId: string): Promise<void> {
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), remoteUrl);
+    const commandId = `migrate_${randomBytes(12).toString("base64url")}`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await remote.read();
+      if (current === null || current.roster.teamId !== teamId) return;
+      if (current.roster.groupChatId === toChatId) {
+        workspaces.upsertTeamRoster({ teamId, groupChatId: toChatId, remoteUrl, revision: current.revision, record: current.roster });
+        return;
+      }
+      // The published roster moved somewhere this upgrade does not explain. Leave it
+      // to a person rather than overwrite a change nobody here made.
+      if (current.roster.groupChatId !== fromChatId) return;
+      try {
+        await publishRoster(remote, current.revision, { ...current.roster, groupChatId: toChatId }, commandId);
+        return;
+      } catch (error) {
+        if (!(error instanceof WorkspaceError) || error.code !== "roster_conflict") throw error;
+      }
+    }
+    this.log.warn("the team roster kept changing while this workstation republished the supergroup id; it will be republished on the next refresh");
   }
 
   /** Posts each waiting task once per question revision to every enrolled chat. */
