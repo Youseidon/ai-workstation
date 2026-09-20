@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ANCHOR_AGE_REFRESH_MS, anchorAgeInstant, cutUtf16, formatCard, renderedAge, TELEGRAM_TEXT_LIMIT, withoutRenderedAge } from "./integrations/telegram/card.ts";
+import { ageText, ANCHOR_AGE_REFRESH_MS, anchorAgeInstant, cutUtf16, formatCard, renderedAge, TELEGRAM_TEXT_LIMIT, withoutRenderedAge } from "./integrations/telegram/card.ts";
 import { formatTelegramMessage } from "./integrations/telegram/liveFormat.ts";
 import { blockText, lineText, type TaskSummary } from "./telegramSummary.ts";
 
@@ -225,6 +225,16 @@ test("F09 (T0): an item in its second hour is blocked 1 hour ago, and F07 can st
   assert.equal(renderedAge(singular.text), "blocked 1 hour ago", "the singular hour is still a rendered age F07 can find");
   assert.deepEqual(withoutRenderedAge(singular), withoutRenderedAge(card(summary({ blockedAt: at(119) }))), "two renderings inside the band compare equal with the age out");
   assert.deepEqual(withoutRenderedAge(singular), withoutRenderedAge(card(summary({ blockedAt: at(240) }))), "and so do a singular and a plural hour");
+
+  // Swept minute by minute over five days, which covers every branch `ageText`
+  // has: just now, minutes, the singular hour, plural hours and days.
+  const shapes = new Set<string>();
+  for (let minute = 0; minute <= 60 * 24 * 5; minute += 1) {
+    const rendered = ageText(at(minute), NOW)!;
+    assert.equal(renderedAge(`head ${rendered} · tail`), rendered, `\`${rendered}\` is a shape F07 can read back out of a card`);
+    shapes.add(rendered.replace(/\d+/, "<n>"));
+  }
+  assert.deepEqual([...shapes].sort(), ["blocked <n> days ago", "blocked <n> hour ago", "blocked <n> hours ago", "blocked <n> min ago", "blocked just now"], "and those are all the shapes there are");
 });
 
 test("B6 (T0): a personal question card names the recovery from buttons that have expired", () => {

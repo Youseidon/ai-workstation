@@ -87,7 +87,10 @@ export function ageText(blockedAt: string | null, now: Date): string | null {
   if (minutes < 1) return "blocked just now";
   if (minutes < 90) return `blocked ${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `blocked ${hours} hours ago`;
+  // 90 to 119 minutes is the one band that renders a single hour, and `renderedAge`
+  // below already matches `hour` as well as `hours`, so F07's payload comparison
+  // reads the singular back out of a card exactly as it reads every other shape.
+  if (hours < 48) return `blocked ${hours} ${hours === 1 ? "hour" : "hours"} ago`;
   return `blocked ${Math.floor(hours / 24)} days ago`;
 }
 
