@@ -240,7 +240,7 @@ instance is hardest to notice.
 Suggested fix: spawn the child with `detached: true` and signal its process
 group, or spawn the supervisor directly instead of going through `npm`.
 
-## B11 - an open item anchor is edited once a minute, forever
+## B11 - an open item anchor is edited on a timer, forever
 
 Severity: medium; steady Telegram API traffic and unbounded row growth per item.
 
@@ -248,17 +248,21 @@ The anchor payload embeds a relative timestamp ("blocked 29 min ago") through
 `formatCard`, and `syncTeamItem` enqueues an edit whenever the desired payload
 differs from the delivered one
 ([runtime.ts:930-933](../../server/src/integrations/telegram/runtime.ts#L930-L933)).
-The relative time changes every minute, so the comparison never settles and the
-anchor is rewritten once a minute for as long as the item stays open, with no
-change a reader would notice beyond the minute counter.
+The relative time changes on its own, so the comparison never settles and the
+anchor is rewritten for as long as the item stays open, with no change a reader
+would notice beyond the age counter.
+The rate decays as the counter coarsens
+([card.ts:80-90](../../server/src/integrations/telegram/card.ts#L80-L90)): once a
+minute for the first 90 minutes, then once an hour until 48 hours, then once a
+day.
 
 Observed 2026-09-19 on one idle item: outbox rows 15, 16, 17, 18, 19, 21, 23,
 27, 29, 30, 32, 36, 37 and 40, each an `edit` targeting outbox 13, one per
 minute at a fixed offset, while nothing about the task changed.
 
-That is one `editMessageText` call per minute per open item, about 1440 outbox
-rows per item per day, and it scales with the number of open items against
-Telegram's per-chat rate limits.
+That is about 89 `editMessageText` calls in an item's first 90 minutes, then
+roughly 24 a day for as long as it stays open, and it scales with the number of
+open items against Telegram's per-chat rate limits.
 Every edit also re-marks the message as edited in every member's client.
 
 Suggested fix: compare payloads on their material content, excluding the
@@ -412,9 +416,9 @@ written requirement matches what is built, rather than leaving an accepted
 requirement silently unmet. If cross-member task visibility is ever built,
 `/discuss` becomes reachable and case 10 becomes worth running again.
 
-## B16 - an open item's anchor is rewritten every minute, forever
+## B16 - an open item's anchor is rewritten on a timer, forever
 
-Severity: medium; it burns a Telegram edit per open item per minute for no
+Severity: medium; it burns a Telegram edit per open item on a timer for no
 informational gain, and it is unbounded in time.
 
 `syncTeamItemAnchors` runs on every delivery tick, which is every second
@@ -427,9 +431,11 @@ delivered one by `JSON.stringify` equality
 The payload embeds a relative age: `blockedAt` is a timestamp that "the card
 turns into an age at delivery"
 ([telegramSummary.ts:65-66](../../server/src/telegramSummary.ts#L65-L66)).
-That string changes once a minute on its own, so the comparison reports a
-difference once a minute and an edit is queued, whether or not anything about
-the task changed.
+That string changes on its own, so the comparison reports a difference and an
+edit is queued whether or not anything about the task changed.
+How often depends on the item's age, because `ageText` coarsens the counter
+([card.ts:80-90](../../server/src/integrations/telegram/card.ts#L80-L90)): once a
+minute below 90 minutes, once an hour below 48 hours, then once a day.
 
 Observed 2026-09-19 on item `awi1_70e8584ed9e957f9fd198dd8`: outbox rows 81
 through 118 are 38 consecutive edits to the anchor, outbox 79, one per minute
@@ -438,8 +444,14 @@ from 13:54:52 to 14:31:52, each differing only in `blocked N min ago` counting
 Nothing else changed in that window; no command was sent and no grant existed.
 
 The cost scales with open items, not with activity: N open items is N edits per
-minute indefinitely, against a group that Telegram rate limits, and it keeps the
-pinned anchor churning in every member's chat.
+age change indefinitely, against a group that Telegram rate limits, and it keeps
+the pinned anchor churning in every member's chat.
+Confirmed across the overnight stop on the same item: rows 125 to 132 are
+per-minute edits reading `blocked 82 min ago` up to `blocked 89 min ago`, row 133
+crosses to `blocked 1 hours ago`, and rows 134 to 137 are then hourly at 15:14Z,
+16:14Z, 17:17Z and 01:59Z.
+So the churn decays rather than stopping, and the per-minute phase is the first
+90 minutes of an item's life.
 
 Suggested fix: exclude the rendered age from the equality check, or compare a
 payload with the age field normalized, so an edit is queued only when the task
