@@ -210,6 +210,46 @@ test("S-L3-A2 (T0): the age is computed at delivery and is absent when the task 
   assert.ok(!notBlocked.text.includes("blocked "));
 });
 
+test("F09 (T0): an item in its second hour is blocked 1 hour ago, and F07 can still read that age back out", () => {
+  // `ageText` switches from minutes to whole hours at 90 minutes, so 90 to 119
+  // minutes is the only band that renders a single hour, and it rendered it plural.
+  assert.ok(card(summary({ blockedAt: at(89) })).text.includes("blocked 89 min ago · "), "the last minute before the switch");
+  assert.ok(card(summary({ blockedAt: at(90) })).text.includes("blocked 1 hour ago · "), "one hour is singular");
+  assert.ok(card(summary({ blockedAt: at(119) })).text.includes("blocked 1 hour ago · "), "and stays singular to the end of the band");
+  assert.ok(card(summary({ blockedAt: at(120) })).text.includes("blocked 2 hours ago · "), "two hours is plural again");
+
+  // F07 compares two anchor payloads with their ages taken out (B11), and it finds
+  // the age with a regex over the shapes `ageText` emits. A shape that regex does
+  // not match compares unequal on every render and brings the anchor churn back.
+  const singular = card(summary({ blockedAt: at(90) }));
+  assert.equal(renderedAge(singular.text), "blocked 1 hour ago", "the singular hour is still a rendered age F07 can find");
+  assert.deepEqual(withoutRenderedAge(singular), withoutRenderedAge(card(summary({ blockedAt: at(119) }))), "two renderings inside the band compare equal with the age out");
+  assert.deepEqual(withoutRenderedAge(singular), withoutRenderedAge(card(summary({ blockedAt: at(240) }))), "and so do a singular and a plural hour");
+});
+
+test("B6 (T0): a personal question card names the recovery from buttons that have expired", () => {
+  // Actions expire after ten minutes and `notifyWaitingTasks` posts no replacement
+  // for a revision it has already posted for, so the pilot's prompt 1 sat awaiting a
+  // response for over an hour behind dead buttons. Replying with an answer mints a
+  // fresh card, and jd ruled on 2026-09-20 that the card says so rather than the
+  // dedupe changing: a waiting task may keep dead buttons, and nothing re-posts.
+  const payload = { kind: "personal_question", promptId: 1, title: "x", execution: "blocked", decision: "awaiting response", receipt: "", question: "q", summary: summary(), actions: [{ ref: "tc_save", action: "save_human_response" }, { ref: "tc_resume", action: "answer_and_resume" }] };
+  const cards = {
+    unanswered: formatTelegramMessage(payload, () => null),
+    draft: formatTelegramMessage(payload, () => "Red"),
+    saved: formatTelegramMessage({ ...payload, actions: [{ ref: "tc_resume", action: "answer_and_resume" }] }, () => "Blue"),
+    legacy: formatTelegramMessage({ ...payload, summary: undefined }, () => null),
+  };
+  for (const [name, rendered] of Object.entries(cards)) {
+    assert.match(rendered.text, /buttons expire/i, `the ${name} card says the buttons expire`);
+    assert.match(rendered.text, /fresh card/i, `the ${name} card says a reply brings a fresh one`);
+  }
+  // The instructions the L1 and L3 scenarios read are still on the card.
+  assert.match(cards.unanswered.text, /Reply to this message with your answer\./);
+  assert.match(cards.draft.text, /Save answer keeps the task waiting\. Answer and resume continues it\./);
+  assert.match(cards.saved.text, /Reply to this message to change it\./);
+});
+
 test("B11 (T0): the anchor's age grid moves once an hour per item, and a card compares equal with its age taken out", () => {
   const blockedAt = at(0);
   const minutes = (count: number) => anchorAgeInstant(blockedAt, NOW.getTime() + count * 60_000).getTime();

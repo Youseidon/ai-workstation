@@ -8,6 +8,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { config } from "./config.ts";
+import { settings as appSettings } from "./settings.ts";
 import { BotToken } from "./integrations/telegram/credentials.ts";
 import { HttpTelegramBotApi } from "./integrations/telegram/httpBotApi.ts";
 import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integrations/telegram/runtime.ts";
@@ -15,7 +16,7 @@ import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
 import { itemTag } from "./teamItems.ts";
 import { BareGitTeamRosterRemote, decodeJoinCode, joinTeam, newTeamRoster, publishRoster, type TeamRoster } from "./teamRoster.ts";
-import { taskTagFor } from "./telegramSummary.ts";
+import { defaultWorkstationLabel, taskTagFor } from "./telegramSummary.ts";
 import { itemSubject, taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
 /* -------------------------------------------------------------------------- */
@@ -1159,6 +1160,54 @@ test("B7 (T0): the owner opens a Team item on an awaiting task, and a finished t
     await h.cleanup();
     workspaces.remove(workspace.id);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("B5 (T0): creation records the configured workstation label, and Team views name the workstation and the person apart", async () => {
+  const h = harness();
+  const remote = mkdtempSync(join(tmpdir(), "team-label-remote-"));
+  const dir = mkdtempSync(join(tmpdir(), "team-label-"));
+  const cache = join(config.repoRoot, ".agent-console", "team");
+  const workspace = workspaces.create({ name: dir, workDirectory: dir });
+  const groupChatId = "-1001700";
+  try {
+    execFileSync("git", ["init", "--bare", "-q", remote]);
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const created = await createdTeam(h, groupChatId, remote);
+
+    // The paired account's Telegram display name is "Operator". The machine's own
+    // name is TASK_CONTROL_WORKSTATION_LABEL, which is what the personal card puts
+    // in its breadcrumb. B5: the roster stored the first where the second belongs,
+    // so every Team card disagreed with every personal card about the same machine.
+    const configured = appSettings.taskControl.workstationLabel || defaultWorkstationLabel();
+    assert.notEqual(configured, operator.first_name, "the fixture only means anything while the two differ");
+    const member = (workspaces.teamRoster(created.teamId)!.record as TeamRoster).members[0]!;
+    assert.equal(member.workstationLabel, configured, "the roster holds the workstation's own label");
+    assert.equal(member.personLabel, operator.first_name, "and the person's Telegram name beside it");
+
+    // What the group actually reads. The breadcrumb is a workstation slot; the
+    // anchor footer and `/access` name people; `/status` names the workstation.
+    const prompt = blockedPrompt(workspace.id, suite.id, "Choose a colour");
+    const opened = h.runtime.openTeamItem(prompt.id);
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === groupChatId && message.text.includes(itemTag(opened.itemId))), "Team item anchor");
+    assert.ok(anchor.text.includes(`· ${configured} · `), "the breadcrumb names the workstation");
+    assert.ok(anchor.text.includes(`Owner: ${operator.first_name}`), "the footer names the person who owns it");
+
+    h.stub.send(operator, { id: Number(groupChatId), type: "supergroup" }, `/status ${opened.itemId}`);
+    const status = await waitFor(() => h.stub.messages.find(message => message.chatId === groupChatId && message.text.startsWith("Item status")), "the item status view");
+    assert.ok(status.text.includes(`Owner workstation: ${configured}`), "the workstation line names the workstation");
+    assert.ok(!status.text.includes(operator.first_name), "and no Team view calls the person a workstation");
+
+    h.stub.send(operator, { id: Number(groupChatId), type: "supergroup" }, `/access ${opened.itemId}`);
+    const access = await waitFor(() => h.stub.messages.find(message => message.chatId === groupChatId && message.text.startsWith("Item access")), "the item access view");
+    assert.ok(access.text.includes(`${operator.first_name}: owner`), "access is a list of people, so it names the person");
+  } finally {
+    await h.cleanup();
+    workspaces.remove(workspace.id);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
   }
 });
 

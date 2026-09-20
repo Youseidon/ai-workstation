@@ -39,6 +39,37 @@ test("T19 parses grant commands and renders access and action cards", () => {
   assert.deepEqual(card.replyMarkup?.inline_keyboard.flat().map(button => button.text), ["Save answer", "Answer and resume"]);
 });
 
+test("B18 (T0): the two-button answer card says what Answer and resume does, not only whose allowance it spends", () => {
+  // While a teammate holds both `answer` and `resume` the two buttons sit side by
+  // side with similar labels, and the second one completes the owner's task, which
+  // closes the item and revokes every grant. That is the capability model working
+  // as written; what the card never said is what the tap costs.
+  const both = formatTelegramMessage(renderTeamItemActionCard({
+    itemId: "awi1_000000000000000000000000",
+    title: "Answer item question",
+    detail: "Use blue",
+    allowance: "Uses jd's claude allowance.",
+    actions: [{ ref: "save", action: "save_human_response" }, { ref: "resume", action: "answer_and_resume" }],
+  }), () => null);
+  assert.deepEqual(both.replyMarkup?.inline_keyboard.flat().map(button => button.text), ["Save answer", "Answer and resume"]);
+  assert.match(both.text, /Uses jd's claude allowance/, "whose credits are spent is still stated");
+  assert.match(both.text, /Answer and resume completes the task/, "and so is what the tap does");
+  assert.match(both.text, /the item closes/, "including that the item closes");
+  assert.match(both.text, /every grant ends/, "and that every grant ends with it");
+
+  // A card whose only button saves the answer completes nothing, and must not say it does.
+  const saveOnly = formatTelegramMessage(renderTeamItemActionCard({
+    itemId: "awi1_000000000000000000000000",
+    title: "Answer item question",
+    detail: "Use blue",
+    allowance: null,
+    actions: [{ ref: "save", action: "save_human_response" }],
+  }), () => null);
+  assert.deepEqual(saveOnly.replyMarkup?.inline_keyboard.flat().map(button => button.text), ["Save answer"]);
+  assert.doesNotMatch(saveOnly.text, /completes the task/, "saving an answer completes nothing");
+  assert.doesNotMatch(saveOnly.text, /allowance/, "and spends nothing");
+});
+
 test("T19 owner-bound grants apply once and revocation rejects an already-open teammate card", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm3-grant-actions-"));
   const workspace = workspaces.create({ name: directory, workDirectory: directory });
