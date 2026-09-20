@@ -223,8 +223,8 @@ rather than from the transcript.
 | 5 grant answer | PASS | 2026-09-19 | Access message edited in place (outbox 35 edits 14); wrong-actor tap rejected. |
 | 6 teammate answers | PASS | 2026-09-19 | One card bound to account B, Save answer only; one APPLIED receipt, response 16; second tap replayed as `Already applied.` with no second answer. |
 | 7 grant resume and start the run | PASS | 2026-09-19 | Card read `Uses Jj's claude allowance.`; one run `run_e4aaae9b` on instance A, claude, model null; instance B started nothing. The run completed the task, which auto-closed the item: see B13, B14. |
-| 8 revoke beats an open card | not run | | Item `awi1_70e8584e` is open on prompt 4. Needs the re-grant first. |
-| 9 expiry is not renewed | not run | | Same item as case 8. Budget 10 minutes of waiting. |
+| 8 revoke beats an open card | not run | | Item `awi1_70e8584e` is open on prompt 4. Re-granted 2026-09-20: `answer` 02:06:53Z, `resume` 02:07:12Z. Run it off the `Answer and resume` button, not `/resume`, which is refused while no answer is saved. |
+| 9 expiry is not renewed | PASS | 2026-09-20 | Card outbox 145 minted 02:13:03Z with both `save_human_response` and `answer_and_resume`; `Save answer` tapped at 02:24:16Z, REJECTED `action_expired`, `response_id` null, `started` 0, `run_id` null. Prompt 4 stayed BLOCKED with no HUMAN_RESPONSE remark and no hold row. No replacement card appeared in the 11 minutes of waiting: the only outbox row was 146, an anchor age edit (B16). Refusal posted as outbox 147 with no actions attached. |
 | 10 cross-owner thread request | SKIPPED | 2026-09-19 | Not a real scenario: a teammate can never learn the owner's prompt id, and the owner cannot `/discuss` their own item. See B15. Item for cases 8, 9 and 11 opened by curl instead, the case 2 route. |
 | 11 close the thread | not run | | Run after 8 and 9, while prompt 4 is still open and unanswered. |
 | 12 default-off regression | not run | | |
@@ -244,10 +244,11 @@ node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/c
 That gives the roster, both actors, the open item and its grants, every
 unexpired action and the last group messages, which is everything a case needs.
 
-State as of 2026-09-20 02:00Z, for reference:
+State as of 2026-09-20 02:10Z, for reference:
 
-- **Both instances are stopped.** The box slept overnight; nothing is listening
-  on 4100 or 4200. Start them before anything else
+- **Both instances are running**, restarted at 01:59:53Z after the box slept
+  overnight. If nothing is listening on 4100 or 4200, start them before anything
+  else
 - team `awt1_56yd-5bP1U7ZhGkh`, supergroup `-1004359741812`
 - owner `Jj` / `@aiws_helper_bot` on ports 3100/4100; teammate `Junaid` /
   `@ai_test_pilot_1_bot` on 3200/4200
@@ -262,8 +263,13 @@ State as of 2026-09-20 02:00Z, for reference:
 - items: `awi1_3a86f4766dba6fff0acb5b47` (prompt 3), DONE and closed, and
   **`awi1_70e8584ed9e957f9fd198dd8` (prompt 4), open**, anchor outbox 79 and
   access message outbox 80, opened by curl at 13:54Z on 2026-09-19
-- grants: none active anywhere. The grant buttons on outbox 80 expired at
-  14:04:30Z and were tapped late at 14:31Z, which is where the two
+- grants on the open item, re-granted 2026-09-20 after the closed thread took
+  the case 5 and 7 grants with it: `answer` at 02:06:53Z and `resume` at
+  02:07:12Z, both to person `6525517234`, both active, one row each.
+  The access message at outbox 80 was edited in place both times, to
+  `Junaid: answer` and then `Junaid: answer, resume`
+- the grant buttons that were on outbox 80 before that expired at 14:04:30Z and
+  were tapped late at 14:31Z, which is where the two
   `Not applied: This action expired.` lines in the group came from
 - instance A has notifications and remote actions on; instance B has both off
   and needs neither
@@ -295,17 +301,70 @@ Tapping one answers `Not applied: This action expired.`
 Send `/grant <capability>` to mint a fresh card, and tap that one within ten
 minutes.
 
-**Case 8 - revoke beats an open card.**
-From account B, reply `/resume` to get a fresh card, but do not tap it.
-From account A, reply `/revoke resume` and tap the revoke card.
-Then have account B tap the older resume card: it must be rejected, and no run
-may start.
+**`/resume` needs a saved answer, so neither case 8 nor case 9 uses it.**
+Corrected on 2026-09-20 after `/resume` from account B was refused with
+`There is no saved answer to resume with.`
+([taskControl.ts:283](../../server/src/taskControl.ts#L283),
+[runtime.ts:1006](../../server/src/integrations/telegram/runtime.ts#L1006)).
+The refusal is plain text with no actions attached, so no card is minted and
+nothing can be tapped.
+On the previous item an answer had already been saved in case 6; this item starts
+with none, which is why the earlier run sheet's `/resume` step does not work
+here.
+
+Do not solve that by saving an answer first.
+Saving one is safe for the trap, because `saveHumanResponse` holds the response
+and returns `started: false`
+([humanInput.ts:58-60](../../server/src/humanInput.ts#L58-L60)), but it moves the
+prompt to `TODO` and clears the pending question
+([workspaces.ts:2056](../../server/src/workspaces.ts#L2056),
+[workspaces.ts:1144](../../server/src/workspaces.ts#L1144)), after which a fresh
+`/answer` is refused with `409 prompt_not_blocked`
+([workspaces.ts:2053](../../server/src/workspaces.ts#L2053)) and case 9 loses its
+card.
+
+Both cases therefore work off the two-button `/answer` card instead, which exists
+only while prompt 4 is `BLOCKED`: case 9 lets it expire, case 8 revokes underneath
+it.
+Neither writes anything when it passes, so prompt 4 stays `BLOCKED` throughout and
+the two cases can run in either order.
+They were run 9 then 8 on 2026-09-20.
 
 **Case 9 - expiry is not renewed.**
 From account B, reply `/answer use UTC` to get a fresh card, then leave it for
-more than 10 minutes and tap it.
+more than 10 minutes and tap `Save answer`.
 The tap must be rejected as expired, and no replacement card may appear by
 itself.
+This case writes nothing when it passes, so prompt 4 stays `BLOCKED` for case 8.
+
+Two buttons to leave alone while the clock runs.
+The card's own `Answer and resume` completes prompt 4 if it is tapped before it
+expires, which is the trap.
+The `Revoke answer` button that the access refresh leaves on the access message
+(B14) kills the grant that mints the card.
+
+**Case 8 - revoke beats an open card.**
+Use the `Answer and resume` button rather than a `/resume` card, so that no
+answer is ever saved and prompt 4 never leaves `BLOCKED`.
+While the teammate holds both `answer` and `resume`, `/answer <text>` mints a
+card with two buttons, `Save answer` and `Answer and resume`, and the second one
+is resume-capable
+([teamGrants.ts:15](../../server/src/teamGrants.ts#L15)).
+That is what makes it a valid subject for this case, and it is also the trap:
+tapping it while `resume` is granted completes prompt 4.
+
+From account B, reply `/answer use UTC` for a fresh two-button card, and do not
+tap it.
+From account A, reply `/revoke resume` and tap the revoke card, then confirm in
+the database that the grant is revoked before going on.
+Only then have account B tap `Answer and resume` on the older card.
+It must be rejected with `grant_required` naming `resume`
+([taskControl.ts:277](../../server/src/taskControl.ts#L277)), and no run may
+start.
+
+The window between that card appearing and the revoke landing is the one place in
+cases 8 to 12 where a tap would complete prompt 4, so keep it short and tap
+nothing inside it.
 
 **Case 11 - close the thread.**
 From account A, reply `/close` into the thread.
@@ -321,9 +380,22 @@ Do not let a resume succeed on prompt 4 while cases 8, 9 and 11 are outstanding.
 A successful resume completes the task, and completion closes the item and
 revokes every grant, which is exactly what ended the previous session.
 Cases 8 and 9 are safe on that point, because both end in a rejected tap.
-The likeliest way to spring the trap is not the group at all: the personal
-question card in account A's private chat carries its own `answer_and_resume`
-button, and tapping it completes prompt 4 from the owner side.
+There are two `answer_and_resume` buttons in play, and either one completes
+prompt 4.
+
+The first is in the group, and it was missed when this section was first written.
+Once the teammate holds both `answer` and `resume`, every `/answer <text>` card
+carries `Answer and resume` beside `Save answer`
+([teamGrants.ts:15](../../server/src/teamGrants.ts#L15)), so the teammate can
+complete the owner's task with one tap for the ten minutes that card is live.
+Observed 2026-09-20 at 02:13:03Z: outbox 145 carried
+`tc_rakrz1pgNcrkKmwbx11H4U8E` (`save_human_response`) and
+`tc_9UCKC8kxTz9nBO9R_b9yqKre` (`answer_and_resume`) together.
+Cases 8 and 9 both put that card on screen deliberately, so the rule while either
+is running is to tap only what the case says and only when it says to.
+
+The second is the personal question card in account A's private chat, which
+carries its own `answer_and_resume` and completes prompt 4 from the owner side.
 Leave that card alone and let its buttons expire.
 If prompt 4 is completed by accident, do not try to reuse it: start prompt 5
 instead, take it to a question the same way, and re-run case 10 on prompt 5.
