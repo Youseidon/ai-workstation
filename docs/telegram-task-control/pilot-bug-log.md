@@ -497,6 +497,16 @@ closed by account A at 02:30:34Z:
   `status_message_id 79`, against row 8 for the item that completion closed,
   which is `ANCHOR_GONE`
 - the anchor stayed pinned and kept taking its periodic edit (B16)
+- `/task` from account B at 02:37Z, after the close, still answered in full with
+  the blocker text, the required human action, both options with their pros and
+  cons, and `State: awaiting response · Owner: Jj`
+
+That last point is the user-visible shape of the defect: the owner ends the
+teammate's granted access, the bot confirms `Thread closed`, and the teammate can
+still pull the whole work item out of the group afterwards.
+Read-only views were never grant-gated, which case 3 established deliberately, so
+the defect is not that `/task` ignores grants; it is that closing a thread is
+advertised and receipted as an end state that nothing in the system represents.
 
 The third consequence is the one that matters, and it also corrects B14's
 severity. That entry called the grant buttons harmless because "the next pass of
