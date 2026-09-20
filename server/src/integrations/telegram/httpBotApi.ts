@@ -1,4 +1,4 @@
-import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramCallbackPayload, type TelegramEditRequest, type TelegramMessagePayload, type TelegramSendRequest, type TelegramUnsupportedPayload, type TelegramUpdate } from "./botApi.ts";
+import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramCallbackPayload, type TelegramEditRequest, type TelegramMessagePayload, type TelegramMigrationPayload, type TelegramSendRequest, type TelegramUnsupportedPayload, type TelegramUpdate } from "./botApi.ts";
 import type { BotToken } from "./credentials.ts";
 import { formatTelegramMessage } from "./liveFormat.ts";
 
@@ -68,6 +68,20 @@ export function normalizeTelegramUpdate(raw: unknown): TelegramUpdate | null {
   if (message) {
     const chat = record(message.chat);
     const from = record(message.from);
+    // A supergroup upgrade arrives as a service message on both sides: the basic group
+    // gets `migrate_to_chat_id` and the new supergroup gets `migrate_from_chat_id`
+    // (B8). Neither carries text, so both would otherwise be dropped as unsupported.
+    const migratedTo = id(message.migrate_to_chat_id);
+    const migratedFrom = id(message.migrate_from_chat_id);
+    if (migratedTo !== null || migratedFrom !== null) {
+      const here = id(chat?.id);
+      const fromChatId = migratedFrom ?? here;
+      const toChatId = migratedTo ?? here;
+      if (fromChatId === null || toChatId === null || fromChatId === toChatId) {
+        return { updateId, payload: { kind: "unsupported", type: "message" } satisfies TelegramUnsupportedPayload };
+      }
+      return { updateId, payload: { kind: "migration", fromChatId, toChatId } satisfies TelegramMigrationPayload };
+    }
     const userId = id(from?.id);
     const chatId = id(chat?.id);
     const messageId = id(message.message_id);
@@ -249,18 +263,21 @@ export class HttpTelegramBotApi implements LiveTelegramBotApi {
     const code = typeof parsed?.error_code === "number" ? parsed.error_code : response.status;
     const description = this.redact(typeof parsed?.description === "string" ? parsed.description : response.statusText || "no description");
     const message = `Telegram ${method} failed (${code}): ${description}`;
+    const parameters = record(parsed?.parameters);
     if (code === 429) {
-      const seconds = record(parsed?.parameters)?.retry_after;
+      const seconds = parameters?.retry_after;
       return this.fail("rate_limited", message, typeof seconds === "number" && seconds >= 0 ? seconds * 1000 : 1000);
     }
     if (code === 401 || code === 404) return this.fail("unauthorized", message);
     if (code === 409) return this.fail("conflict", message);
     if (code >= 500) return this.fail("transient", message);
-    return this.fail("rejected", message);
+    // B8: a group upgraded to a supergroup refuses every send to the old id and
+    // names the new one here. The caller needs that id to repair itself.
+    return this.fail("rejected", message, null, id(parameters?.migrate_to_chat_id));
   }
 
-  private fail(kind: TelegramApiError["kind"], message: string, retryAfterMs: number | null = null): never {
-    throw new TelegramApiError(kind, message, retryAfterMs);
+  private fail(kind: TelegramApiError["kind"], message: string, retryAfterMs: number | null = null, migrateToChatId: string | null = null): never {
+    throw new TelegramApiError(kind, message, retryAfterMs, migrateToChatId);
   }
 
   private describe(error: unknown): string {

@@ -41,6 +41,18 @@ export interface TelegramMessagePayload {
   username: string | null;
 }
 
+/**
+ * A basic group Telegram upgraded to a supergroup (B8). The chat id changes with
+ * the upgrade, so this is a migration signal rather than a message: every id the
+ * workstation holds for `fromChatId` has to move to `toChatId` before anything
+ * else is processed.
+ */
+export interface TelegramMigrationPayload {
+  kind: "migration";
+  fromChatId: string;
+  toChatId: string;
+}
+
 export interface TelegramUnsupportedPayload {
   kind: "unsupported";
   type: string;
@@ -100,6 +112,12 @@ export class TelegramApiError extends Error {
     readonly kind: TelegramApiErrorKind,
     message: string,
     readonly retryAfterMs: number | null = null,
+    /**
+     * `parameters.migrate_to_chat_id` from a 400 that refused a send because the
+     * group became a supergroup (B8). The send is not retryable at the old id and
+     * never will be, but it is at this one once the workstation has moved to it.
+     */
+    readonly migrateToChatId: string | null = null,
   ) {
     super(message);
     this.name = "TelegramApiError";
@@ -108,6 +126,11 @@ export class TelegramApiError extends Error {
   get retryable(): boolean {
     return this.kind === "rate_limited" || this.kind === "transient" || this.kind === "conflict";
   }
+}
+
+/** The new chat id a supergroup upgrade refused this send with, if that is what happened. */
+export function supergroupMigrationTarget(error: unknown): string | null {
+  return error instanceof TelegramApiError ? error.migrateToChatId : null;
 }
 
 const TOKEN_SHAPE = /\d{5,}:[A-Za-z0-9_-]{20,}/g;

@@ -14,6 +14,7 @@ import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integration
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
 import { itemTag } from "./teamItems.ts";
+import { BareGitTeamRosterRemote, newTeamRoster, publishRoster } from "./teamRoster.ts";
 import { taskTagFor } from "./telegramSummary.ts";
 import { itemSubject, taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -36,6 +37,7 @@ class StubTelegram {
   private nextMessageId = 500;
   private nextCallbackId = 1;
   private readonly scripts = new Map<string, Scripted[]>();
+  private readonly upgraded = new Map<string, string>();
   private wake: Array<() => void> = [];
   /** Runs after a sendMessage is recorded and before its response returns, as when Telegram shows the message first. */
   holdSendResponse: ((message: RecordedMessage) => Promise<void>) | null = null;
@@ -51,6 +53,20 @@ class StubTelegram {
   private push(update: Record<string, unknown>): void {
     this.updates.push({ update_id: this.nextUpdateId++, ...update });
     for (const resolve of this.wake.splice(0)) resolve();
+  }
+
+  /**
+   * Telegram upgraded this basic group to a supergroup (B8): the old chat id now
+   * answers every call with the 400 that names the new one, and the supergroup
+   * receives the `migrate_from_chat_id` service message.
+   */
+  upgradeToSupergroup(fromChatId: string, toChatId: string): void {
+    this.upgraded.set(fromChatId, toChatId);
+  }
+
+  /** The service message Telegram posts in the supergroup that replaced the group. */
+  sendMigrationNotice(fromChatId: string, toChatId: string): void {
+    this.push({ message: { message_id: this.nextMessageId++, chat: { id: Number(toChatId), type: "supergroup" }, from: { id: 777, first_name: "Telegram", is_bot: false }, date: 1, migrate_from_chat_id: Number(fromChatId) } });
   }
 
   send(from: User, chat: { id: number; type: string }, text: string, replyTo?: number, topic?: number): void {
@@ -74,6 +90,10 @@ class StubTelegram {
     const scripted = this.scripts.get(method)?.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted) return json(scripted.status, scripted.body);
+    const migrateTo = body.chat_id === undefined ? undefined : this.upgraded.get(String(body.chat_id));
+    if (migrateTo !== undefined) {
+      return json(400, { ok: false, error_code: 400, description: "Bad Request: group chat was upgraded to a supergroup chat", parameters: { migrate_to_chat_id: Number(migrateTo) } });
+    }
     switch (method) {
       case "getMe":
         return json(200, { ok: true, result: { id: this.botUserId, is_bot: true, first_name: "L1", username: "l1_stub_bot" } });
@@ -1011,5 +1031,127 @@ test("B7 (T0): the owner opens a Team item on an awaiting task, and a finished t
     await h.cleanup();
     workspaces.remove(workspace.id);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* B8: Telegram upgrades a basic group to a supergroup and the chat id changes. */
+/* -------------------------------------------------------------------------- */
+
+function blockedPrompt(workspaceId: number, suiteId: number, title: string): PromptRecord {
+  const prompt = workspaces.createChild("prompt", suiteId, { title, content: "Red or blue" }) as PromptRecord;
+  const runId = `supergroup-block-${prompt.id}`;
+  workspaces.beginAgentRun({ runId, workspaceId, promptId: prompt.id, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+  workspaces.updateAgentStatus(runId, { requestId: `${runId}-status`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: "The brand guide allows red or blue.", verificationSummary: "Pick red or blue." });
+  workspaces.finishAgentRun(runId, "done");
+  return prompt;
+}
+
+/** A joined team whose roster really lives in refs/aw/team of a bare repository. */
+async function upgradeFixture(h: ReturnType<typeof harness>, groupChatId: string) {
+  const dir = mkdtempSync(join(tmpdir(), "team-supergroup-"));
+  const bare = mkdtempSync(join(tmpdir(), "team-supergroup-remote-"));
+  execFileSync("git", ["init", "--bare", "-q", bare]);
+  const workspace = workspaces.create({ name: dir, workDirectory: dir });
+  const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+  const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+  const teamId = `awt1_supergroup_${h.stub.botUserId}`;
+  const remote = new BareGitTeamRosterRemote(bare);
+  const published = await publishRoster(remote, null, newTeamRoster({
+    teamId,
+    groupChatId,
+    remoteUrl: bare,
+    members: [
+      { personId: String(operator.id), telegramUserId: String(operator.id), botId: h.botId, botUsername: "l1_stub_bot", workstationId: h.botId, workstationLabel: "owner-workstation" },
+      { personId: "404", telegramUserId: "404", botId: "telegram-teammate", botUsername: "teammate_stub_bot", workstationId: "teammate-workstation", workstationLabel: "teammate-workstation" },
+    ],
+  }), `create_${teamId}`);
+  workspaces.upsertTeamGroupActor({ id: `${teamId}-owner`, transport: "telegram", transportUserId: String(operator.id), chatId: groupChatId, label: "owner-workstation" });
+  return {
+    teamId, bare, workspace, suite, published,
+    prompt: (title: string) => blockedPrompt(workspace.id, suite.id, title),
+    async remoteRoster() { return (await remote.read())?.roster ?? null; },
+    cleanup() {
+      workspaces.remove(workspace.id);
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(bare, { recursive: true, force: true });
+      rmSync(join(config.repoRoot, ".agent-console", "team"), { recursive: true, force: true });
+    },
+  };
+}
+
+test("TM-T1-8 (T0): a group upgraded to a supergroup mid-run repairs itself and the next anchor reaches the new chat id", async () => {
+  const h = harness();
+  const fromChatId = "-41001";
+  const toChatId = "-1002000041001";
+  const team = await upgradeFixture(h, fromChatId);
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+
+    // Before the upgrade the team works: the first item's anchor reaches the basic group.
+    const first = h.runtime.openTeamItem(team.prompt("Choose a colour").id);
+    await waitFor(() => h.stub.messages.find(message => message.chatId === fromChatId && message.text.includes(itemTag(first.itemId))), "the first anchor in the basic group");
+    const beforeUpgrade = h.stub.messages.filter(message => message.chatId === fromChatId).length;
+
+    // Granting an administrator right upgrades the group, and the chat id changes with it.
+    h.stub.upgradeToSupergroup(fromChatId, toChatId);
+    const second = h.runtime.openTeamItem(team.prompt("Pick a release date").id);
+
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === toChatId && message.text.includes(itemTag(second.itemId))), "the next anchor in the supergroup");
+    assert.equal(anchor.chatId, toChatId, "the anchor was delivered to the supergroup with no manual repair");
+
+    // Every place the old id lived moved with it, locally and on the shared ref.
+    assert.equal(workspaces.teamRoster(team.teamId)?.groupChatId, toChatId, "the roster cache holds the supergroup id");
+    assert.equal(((workspaces.teamRoster(team.teamId)?.record ?? {}) as { groupChatId?: string }).groupChatId, toChatId, "the cached record holds it too");
+    assert.equal((await team.remoteRoster())?.groupChatId, toChatId, "refs/aw/team was republished by compare-and-swap");
+    assert.equal(workspaces.taskControlActorFor({ transport: "telegram", transportUserId: String(operator.id), chatId: toChatId, topicId: "__team_group__" })?.enabled, 1, "the group actor moved");
+    assert.equal(workspaces.taskControlActorFor({ transport: "telegram", transportUserId: String(operator.id), chatId: fromChatId, topicId: "__team_group__" }), null, "and left nothing behind at the old id");
+    assert.notEqual(workspaces.telegramThreadFor({ botId: h.botId, chatId: toChatId, subject: itemSubject(first.itemId) }).statusMessageId, null, "the first item's thread kept its anchor through the move");
+    assert.deepEqual(workspaces.telegramThreads(h.botId).filter(thread => thread.chatId === fromChatId), [], "no thread row still points at the old chat");
+
+    // The old id is unusable from the upgrade on: nothing is ever sent there again.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(h.stub.messages.filter(message => message.chatId === fromChatId).length, beforeUpgrade, "nothing was delivered to the old chat id after the upgrade");
+  } finally {
+    await h.cleanup();
+    team.cleanup();
+  }
+});
+
+test("TM-T1-9 (T0): the migrate_from_chat_id service message repairs the team before anything else is processed", async () => {
+  const h = harness();
+  const fromChatId = "-41002";
+  const toChatId = "-1002000041002";
+  const team = await upgradeFixture(h, fromChatId);
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+
+    const first = h.runtime.openTeamItem(team.prompt("Choose a colour").id);
+    await waitFor(() => h.stub.messages.find(message => message.chatId === fromChatId && message.text.includes(itemTag(first.itemId))), "the first anchor in the basic group");
+
+    // The upgrade is announced in the supergroup rather than discovered by a refused send.
+    h.stub.upgradeToSupergroup(fromChatId, toChatId);
+    h.stub.sendMigrationNotice(fromChatId, toChatId);
+
+    await waitFor(() => workspaces.teamRoster(team.teamId)?.groupChatId === toChatId, "the roster to follow the service message");
+    assert.equal((await team.remoteRoster())?.groupChatId, toChatId, "refs/aw/team was republished by compare-and-swap");
+    assert.equal(workspaces.taskControlActorFor({ transport: "telegram", transportUserId: String(operator.id), chatId: toChatId, topicId: "__team_group__" })?.enabled, 1, "the group actor moved");
+    assert.deepEqual(workspaces.telegramThreads(h.botId).filter(thread => thread.chatId === fromChatId), [], "no thread row still points at the old chat");
+
+    // The next item is addressed to the supergroup from the start: no send is ever refused.
+    const second = h.runtime.openTeamItem(team.prompt("Pick a release date").id);
+    await waitFor(() => h.stub.messages.find(message => message.chatId === toChatId && message.text.includes(itemTag(second.itemId))), "the next anchor in the supergroup");
+    assert.deepEqual(
+      workspaces.telegramOutbox().filter(row => (row.lastError ?? "").includes("upgraded to a supergroup")).map(row => row.id),
+      [],
+      "the service message repaired the team before any send could be refused",
+    );
+  } finally {
+    await h.cleanup();
+    team.cleanup();
   }
 });
