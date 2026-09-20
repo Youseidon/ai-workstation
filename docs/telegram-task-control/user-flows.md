@@ -246,7 +246,7 @@ automatic best guess.
 | B14 | Task pause, pipeline hold, skip, cancel | Separate scopes; no accidental pipeline advancement. |
 | B15 | Checkpoint complete, unstable, missing artifact, LLM unavailable | Artifact validation determines readiness; summary is optional enrichment. |
 | B16 | Publication complete, partial or interrupted | Reference becomes actionable only after objects are retrievable. |
-| B17 | Named receiver accepts/declines, others volunteer | Named assignment only; no second requester confirmation. |
+| B17 | Receiver accepts or declines, others volunteer, two accept at once | **Amended 2026-09-20 to an open call.** The offer names no receiver; any available teammate may accept and the first accept wins, decided by the control record's compare-and-swap rather than by arrival order at the bot. A losing accept is told the current holder and goes inert. No second requester confirmation. |
 | B18 | Requested permissions within limits / additions / hard deny | Start, prompt for the delta locally, or reject respectively. |
 | B19 | Receiver busy, offline, unprepared or unavailable | Queue/prepare transparently; revalidate before starting. |
 | B20 | Old executor active, released or unknown | Ownership transfer needs confirmed release. |

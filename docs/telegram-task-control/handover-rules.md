@@ -4,7 +4,13 @@ Written 2026-09-20, before TM4 is built, so the scenario table in `tm4.md` and t
 
 This builds on the design of record: section 5.4 of [teammate-design.md](teammate-design.md) settles the shape, section 5.5 lists the offline cases, and the boundary cases B01 to B28 in [user-flows.md](user-flows.md) state the principles.
 Nothing here overrides those.
-Each row below is marked **Settled** when it restates the design, or **Proposed** when it is new and needs jd's ruling; the open ones are collected in section 8.
+Each row below carries one of three marks.
+
+- **Settled** restates the design of record, so it needs nothing from anyone.
+- **Ruled** is one of the five decisions jd made on 2026-09-20, recorded in section 8 with the design amendments each required.
+- **Proposed** is a rule this document adds that follows from the invariants in section 2 rather than from a product choice, such as never force-pushing, or taking ordering from epochs rather than from two machines' clocks. These need no decision to build, and H01 flags any that jd wants to change while writing `tm4.md`.
+
+Nothing here blocks implementation.
 
 ## 1. What is involved
 
@@ -54,13 +60,13 @@ The control record's state, with who may move it and what must be true.
 | State | Meaning | May move it | Leaves to |
 | --- | --- | --- | --- |
 | `OFFERED` | Branch pushed, help requested, nobody holds it | Requester withdraws; receiver claims | `CLAIMED`, `WITHDRAWN` |
-| `CLAIMED` | One receiver holds it and may run | Receiver returns or releases; requester cannot take it back unilaterally | `RETURNED`, `RELEASED` |
+| `CLAIMED` | One receiver holds it and may run | Receiver returns or releases. The requester has no reclaim; they may only cancel the item | `RETURNED`, `RELEASED` |
 | `RETURNED` | Receiver pushed result commits and stopped | Requester applies or requests changes | `APPLIED`, next epoch `OFFERED` |
 | `APPLIED` | Merged into the requester's checkout, task complete | Terminal | terminal |
 | `WITHDRAWN` | Offer ended before anyone claimed | Terminal for that epoch | new epoch `OFFERED` |
 | `RELEASED` | Receiver gave it back unfinished | Requester re-offers or resumes locally | new epoch `OFFERED`, or local resume |
 
-**Proposed:** `RELEASED` is new, and so is the eighth action it needs. The design has `withdraw_offer` for the requester and `return_work` for finished work, but nothing for a receiver handing back work they could not finish, which is the single most likely real outcome after quota exhaustion on the receiving side.
+**Ruled 2026-09-20:** `RELEASED` is confirmed, and so is the eighth action it needs, `release_work`. The design has `withdraw_offer` for the requester and `return_work` for finished work, but nothing for a receiver handing back work they could not finish, which is the single most likely real outcome after quota exhaustion on the receiving side.
 
 Every transition writes `events/<command id>.json` and bumps nothing but its own state; **epoch** increases only when the requester re-offers after `RETURNED`, `WITHDRAWN` or `RELEASED`.
 
@@ -74,7 +80,7 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | A run still owns the workspace | Capture waits until no run owns it; it never snapshots a moving tree. | Settled, 5.4 step 2 |
 | Capture content | A snapshot commit of tracked and untracked non-ignored files through a temporary index, so HEAD, index and worktree are untouched, plus a context file: objective, requirements, answers, open questions, completed and pending work, verification, recommended provider. | Settled, 5.4 step 2 |
 | Unsupported content | Symlinks escaping the tree, submodule contents and LFS objects stop the capture with a named reason. | Settled, 5.4 step 2 |
-| **An untracked file holds a secret** | Capture publishes untracked non-ignored files to a shared remote, so a local `*.env.local`, key or dump that nobody gitignored would leave the machine. The preview must list every untracked file being published, by path, and capture must refuse known credential shapes outright rather than warn. | **Proposed** |
+| An untracked file holds a secret | **Warn, do not refuse**, by jd's ruling of 2026-09-20. The preview lists every uncommitted file being published, by path, and flags any that match a known credential shape. Flagged matches take their own confirmation rather than riding along with the ordinary Publish tap, so proceeding is always deliberate. Accepted risk, recorded: a secret pushed to a shared remote stays in that remote's history, so deleting the file afterwards does not unpublish it. The cheap mitigation is to gitignore the file and re-capture. | Ruled |
 | Repository is enormous, or capture would push very large objects | Capture reports size before publishing and the requester confirms. No silent multi-hundred-megabyte push. | **Proposed** |
 | The item is already closed by `/close` | Refuse the handover. A closed item is an end state that refuses every action (F02), and starting a handover on one would contradict that. | **Proposed** |
 | The task completes locally during capture | Abandon the handover and say so. Completion revokes grants and ends the item; there is nothing left to hand over. | **Proposed** |
@@ -88,7 +94,7 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | Push rejected, non-fast-forward on the record | Compare-and-swap lost. Re-read the record and re-validate rather than retrying; report the state that actually exists. | Settled, section 8.3 |
 | Push outcome uncertain | Fetch and look for this command id before retrying, so an offer is never published twice. | Settled, section 8.3 |
 | Receiver's workstation is off when the offer is published | The requester sees "Waiting for <receiver>"; the Accept card appears when it returns. | Settled, 5.5 |
-| **Named receiver or open call** | The design says named: B17 is "Named assignment only", and 5.4 step 3 writes a named receiver. jd described an open call to available teammates. With two members these are the same flow; with three they are not. | **Open, section 8** |
+| Who the offer goes to | **Open call.** The offer names no receiver and is posted to the thread; any available teammate may accept and the first accept wins. B17, R-A and RTC-11 were amended on 2026-09-20 to match. | Ruled |
 | Nobody accepts, indefinitely | The offer does not expire on its own. The requester sees it is still unclaimed and may withdraw. Ten-minute action expiry applies to the card, not to the offer. | **Proposed** |
 
 ### 4.3 Discover, accept, claim
@@ -98,7 +104,7 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | Discovery | The receiver's workstation reads the shared record on its poll, 5 seconds by default, and posts its own Accept and run card from its own bot. | Settled, 5.4 step 4 |
 | Receiver's settings differ | Their workstation compares requested provider, model, Host access and sandbox mode with its own workspace settings before offering to run. Within limits it starts; a delta is prompted locally; a hard deny is rejected (B18). | Settled, 5.4 step 4 and B18 |
 | Claim races a withdraw | The claim fails with the current state, and the loser re-validates rather than retrying blindly. A claim that lost stays lost. | Settled, 5.4 step 5 |
-| **Two receivers claim at once** | Only possible under an open call. Compare-and-swap makes exactly one win; the loser is told who holds it and their card goes inert. This is why the control record must exist before the offer does. | **Proposed** |
+| Two receivers accept at once | Real, now that the offer is an open call. The control record's compare-and-swap makes exactly one win, decided there rather than by which tap reached the bot first; the loser is told who holds it and their card goes inert. This is why the record must exist before the offer does, and why H02 precedes H03. | Ruled |
 | Receiver declines | `decline_offer` is one of the designed actions, so declining is recorded rather than silent. What follows is not specified: the offer stays `OFFERED` for others under an open call, or returns to the requester as unclaimed under a named one. | Action settled, outcome **Proposed** |
 | Receiver busy, offline or unprepared | Queue and prepare transparently, and re-validate settings immediately before starting rather than at claim time (B19). | Settled, B19 |
 | Teammate removed from the roster while `OFFERED` | Their group actor is disabled and their grants revoked, so their Accept card goes inert. The offer stays open for a remaining member, or is withdrawn. | **Proposed** |
@@ -111,10 +117,10 @@ Every transition writes `events/<command id>.json` and bumps nothing but its own
 | Normal run | A worktree of the branch, linked to a local task, started through the normal start path, with progress posted on the anchor. | Settled, 5.4 step 6 |
 | Requirement question mid-run | Posted by the receiver's workstation and issued to the requester as actor, so it applies while the requester is offline. Access, provider and allowance questions are asked to the receiver locally. | Settled, 5.4 step 6 |
 | Mid-run instruction, provider or access change | Record the revision and check scope before applying (B22). | Settled, B22 |
-| **Receiver exhausts their own quota** | The run stops with quota as its distinct reason (B05), and the receiver is offered Release, which returns the work unfinished with its commits so far. Not silently re-offered, and never re-offered to a third party, because further handoff beyond a return is excluded. | **Proposed** |
+| Receiver exhausts their own quota | The run stops with quota as its distinct reason (B05), and the receiver is offered Release, which returns the work unfinished with its commits so far. Never silently re-offered, and never passed to a third party, because further handoff beyond a return is excluded. | Ruled |
 | **Receiver goes silent indefinitely** | The requester cannot seize a claimed item, because that would run two agents on one item. The requester may ask, and the receiver's workstation may release; a claim only ends by the receiver's action or by the receiver's workstation reporting its run dead. | **Proposed** |
 | Receiver's run crashes or the process is orphaned | No release until writing has stopped, and uncertain external effects require inspection (B13). An unknown start is not retried automatically (B23). | Settled, B13 and B23 |
-| **Requester regains quota and wants it back** | They ask; they do not take. The requester may cancel the item outright, which ends the handover and discards the branch, or wait for a release. There is no unilateral reclaim of a running item. | **Proposed** |
+| Requester regains quota and wants it back | They ask; they do not take. The requester may cancel the item outright, which ends the handover, or wait for a release. There is **no reclaim action at all**, because two agents on one item is the one thing the invariants forbid and a forced reclaim would have to stop another machine's run and prove it stopped. | Ruled |
 | **Requester's task is completed locally while claimed** | The receiver's work becomes irrelevant. The item ends, the receiver is told plainly that the requester completed it, and their run is stopped. The branch is kept until the requester deletes it. | **Proposed** |
 | **Both sides push to the branch** | The receiver owns the branch while `CLAIMED`. The requester does not push to it; if they have, the receiver's push is rejected non-fast-forward, and the receiver reports the divergence rather than force-pushing. Force-push is never used by the product. | **Proposed** |
 | **A human force-pushes or deletes the branch on GitHub** | Detected on the next fetch. The handover stops with a named reason and the record is not advanced; recovery is a fresh epoch, because the captured state is gone. | **Proposed** |
@@ -169,10 +175,13 @@ None of them blocks building TM4 behind the disabled capability.
 | H04 | Discovery, settings re-validation, claim races, decline, release, receiver quota exhaustion, and the no-unilateral-reclaim rule. |
 | H05 | Return, apply, conflict, idempotent re-apply, request changes and the new epoch. |
 
-## 8. Open, and needing jd
+## 8. The five rulings, settled 2026-09-20
 
-1. **Named receiver or open call.** B17 says "Named assignment only", and 5.4 writes a named receiver into the offer; jd described an open call to available teammates. Recommendation: build the open call, since it is what jd wants and the control record makes it safe, and amend B17 and R-A to match rather than leaving the design contradicting the build. It changes nothing while the team has two members.
-2. **The trigger wording.** R-A says the trigger is an allowance about to run out; jd described needing help. The design already supports both in practice, because 5.4 step 1 offers `/handover` on the anchor as well as the quota warning. Recommendation: amend R-A to name both.
-3. **`RELEASED`.** Confirm that a receiver who cannot finish may hand work back unfinished, and that it returns to the requester rather than to another teammate.
-4. **No unilateral reclaim.** Confirm that a requester may not seize a claimed item, and that their escape hatch is cancelling the item rather than taking it back.
-5. **Secrets in capture.** Confirm that capture refuses known credential shapes outright rather than warning, and that the preview lists every untracked file by path.
+1. **Open call, not a named receiver.** The offer names nobody and the first accept wins. Amended in B17 ([user-flows.md](user-flows.md)), R-A ([teammate-design.md](teammate-design.md)) and RTC-11 ([engineering-plan.md](engineering-plan.md)), so the design no longer contradicts the build.
+2. **The trigger is needing help, not only a quota warning.** R-A amended to name both the quota warning and `/handover` on the anchor. This was never a blocker, because 5.4 step 1 already offered both.
+3. **A receiver may release work unfinished.** New state `RELEASED` and new action `release_work`, returning to the requester and never to a third party. H02 adds both in TM4's migration.
+4. **No reclaim of a claimed item.** The requester asks, or cancels the item. No reclaim action is built, so two agents can never hold one item.
+5. **Capture warns about secrets rather than refusing.** jd's decision, against the recommendation in the first draft of this document, which was to refuse. The preview lists every uncommitted file by path and flags credential shapes, and a flagged match takes its own confirmation. The accepted risk is recorded in section 4.1: a secret reaching a shared remote stays in its history.
+
+No decision blocks implementation. The rows still marked **Proposed** are derived rules rather than open questions, as the note at the top explains; H01 raises any jd wants changed.
+G02 still gates enabling handover, and that is evidence rather than a decision.
