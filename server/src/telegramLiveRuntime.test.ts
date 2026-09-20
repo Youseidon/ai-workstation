@@ -14,7 +14,7 @@ import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integration
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
 import { itemTag } from "./teamItems.ts";
-import { BareGitTeamRosterRemote, newTeamRoster, publishRoster } from "./teamRoster.ts";
+import { BareGitTeamRosterRemote, decodeJoinCode, joinTeam, newTeamRoster, publishRoster, type TeamRoster } from "./teamRoster.ts";
 import { taskTagFor } from "./telegramSummary.ts";
 import { itemSubject, taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -891,6 +891,117 @@ test("TM-T1-1a (T0 part): team creation observes the group command, verifies rig
     assert.match(result.joinCode, /^awj1\./);
     assert.equal(workspaces.teamRoster(result.teamId)?.groupChatId, "-1001");
     assert.equal(workspaces.taskControlActorFor({ transport: "telegram", transportUserId: String(operator.id), chatId: "-1001", topicId: "__team_group__" })?.enabled, 1);
+  } finally {
+    await h.cleanup();
+    rmSync(remote, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* B1: a created team's join code cannot be recovered.                          */
+/* -------------------------------------------------------------------------- */
+
+/** Creates a team the way the panel does, and hands back what creation returned once. */
+async function createdTeam(h: ReturnType<typeof harness>, groupChatId: string, remoteDirectory: string) {
+  await h.runtime.reconcile();
+  await waitFor(() => h.runtime.status().state === "polling", "polling");
+  await pair(h);
+  const pending = h.runtime.startTeamCreate(remoteDirectory);
+  h.stub.send(operator, { id: Number(groupChatId), type: "supergroup" }, `/team ${pending.code}`);
+  await waitFor(() => h.runtime.teamCreateStatus()?.observed === true, "team group observation");
+  return h.runtime.confirmTeamCreate();
+}
+
+test("B1 (T0): a created team whose join code was lost issues a fresh one, and the fresh code joins", async () => {
+  const h = harness();
+  const remote = mkdtempSync(join(tmpdir(), "team-reissue-remote-"));
+  const cache = join(config.repoRoot, ".agent-console", "team");
+  try {
+    execFileSync("git", ["init", "--bare", "-q", remote]);
+    const created = await createdTeam(h, "-1003", remote);
+    // Creation returns the code once and nothing persists it, which is B1: the
+    // panel held it in React state and a page reload dropped it.
+    const lost = decodeJoinCode(created.joinCode);
+
+    // What the reloaded panel can still see, and what it used to try instead.
+    assert.equal(h.runtime.teamCreateStatus(), null, "a reload has no pending create left to read the code from");
+    const second = h.runtime.startTeamCreate(remote);
+    h.stub.send(operator, { id: -1003, type: "supergroup" }, `/team ${second.code}`);
+    await waitFor(() => h.runtime.teamCreateStatus()?.observed === true, "second team group observation");
+    await assert.rejects(
+      h.runtime.confirmTeamCreate(),
+      (error: unknown) => error instanceof WorkspaceError && error.status === 409 && error.code === "roster_conflict",
+      "creating the team again is refused, because refs/aw/team already holds this team",
+    );
+    h.runtime.cancelTeamCreate();
+
+    const before = workspaces.teamRoster(created.teamId)!;
+    const reissued = await h.runtime.reissueTeamJoinCode();
+    const fresh = decodeJoinCode(reissued.joinCode);
+    assert.equal(reissued.teamId, created.teamId);
+    assert.equal(fresh.teamId, lost.teamId);
+    assert.equal(fresh.groupChatId, lost.groupChatId);
+    assert.equal(fresh.remoteUrl, lost.remoteUrl);
+    assert.notEqual(fresh.inviteId, lost.inviteId, "a reissue mints a fresh invite id");
+
+    const after = workspaces.teamRoster(created.teamId)!;
+    const record = after.record as TeamRoster;
+    assert.notEqual(after.revision, before.revision, "the reissue published the roster by compare-and-swap");
+    assert.equal(record.commandIds.filter(id => id.startsWith("reissue_")).length, 1, "the reissue is recorded as one roster command");
+    assert.deepEqual(record.members, (before.record as TeamRoster).members, "a reissue changes nobody's membership");
+    assert.deepEqual(record.usedInviteIds, [], "a reissue consumes no invite id");
+
+    // The fresh code is usable: the real join path takes it and spends it.
+    const joined = await joinTeam(
+      new BareGitTeamRosterRemote(remote),
+      reissued.joinCode,
+      { personId: "808", telegramUserId: "808", botId: "telegram-teammate-808", botUsername: "teammate_stub_bot", workstationId: "teammate-workstation", workstationLabel: "teammate-workstation" },
+      `join_${randomBytes(9).toString("base64url")}`,
+    );
+    assert.equal(joined.roster.members.length, 2, "the reissued code admitted the teammate");
+    assert.deepEqual(joined.roster.usedInviteIds, [fresh.inviteId]);
+  } finally {
+    await h.cleanup();
+    rmSync(remote, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test("B1 (T0): a reissue over a roster that moved is refused as roster_conflict, and works once the panel refreshes", async () => {
+  const h = harness();
+  const remote = mkdtempSync(join(tmpdir(), "team-reissue-conflict-"));
+  const cache = join(config.repoRoot, ".agent-console", "team");
+  try {
+    execFileSync("git", ["init", "--bare", "-q", remote]);
+    const created = await createdTeam(h, "-1004", remote);
+
+    // The other workstation publishes while this panel still holds the older revision.
+    const bare = new BareGitTeamRosterRemote(remote);
+    const current = (await bare.read())!;
+    const competing: TeamRoster = { ...current.roster, commandIds: [...current.roster.commandIds, "other_workstation"], updatedAt: new Date().toISOString() };
+    assert.notEqual(await bare.compareAndSwap(current.revision, competing), "conflict", "the other workstation published first");
+
+    await assert.rejects(
+      h.runtime.reissueTeamJoinCode(),
+      (error: unknown) => error instanceof WorkspaceError
+        && error.status === 409
+        && error.code === "roster_conflict"
+        && error.message === "Team roster changed; review it before trying again.",
+      "a reissue does not overwrite a roster it has not seen",
+    );
+    const held = (await bare.read())!;
+    assert.deepEqual(held.roster.commandIds, competing.commandIds, "the refused reissue published nothing");
+    assert.equal(held.revision, (await bare.read())!.revision);
+
+    // The conflict is recoverable, which is the half B1 lacked: refresh, then reissue.
+    await h.runtime.refreshTeam();
+    const recovered = await h.runtime.reissueTeamJoinCode();
+    assert.match(recovered.joinCode, /^awj1\./);
+    assert.equal(decodeJoinCode(recovered.joinCode).teamId, created.teamId);
+    const settled = (await bare.read())!;
+    assert.equal((settled.roster.commandIds.filter(id => id.startsWith("reissue_"))).length, 1);
+    assert.equal(workspaces.teamRoster(created.teamId)?.revision, settled.revision, "the local cache holds the revision it just published");
   } finally {
     await h.cleanup();
     rmSync(remote, { recursive: true, force: true });
