@@ -201,6 +201,37 @@ created.
 
 ## B8 - a supergroup upgrade permanently wedges the team
 
+**Fixed 2026-09-20 by F05, commits `deb63fc` to `70c0cab`.**
+A send refused with `group chat was upgraded to a supergroup chat` now carries
+`parameters.migrate_to_chat_id` out of the refusal, and the `migrate_from_chat_id`
+service message normalizes to the same migration signal. Either one repairs the
+workstation before anything else is processed: every local row carrying the old
+chat id moves in one SQLite transaction, the roster is republished to
+`refs/aw/team` by compare-and-swap, and the refused send is retried at the new
+id. Both loops await the repair, so the old id is unusable only for as long as
+the repair takes rather than forever.
+
+**This entry's recovery list was short by three places**, which the F05 worker
+found by checking the schema instead of trusting the list below. The five named
+here are right, and these were missing:
+
+- `task_control_action.chat_id`, or a card minted before the upgrade would be
+  tapped from the new chat id and rejected as the wrong context;
+- `telegram_outbox.chat_id`, every queued and already-sent row, so pending sends
+  and the later edits that target them address the supergroup;
+- the `chatId` inside an unprocessed `telegram_inbox` payload, or a command typed
+  just before the upgrade would find no actor and be dropped silently.
+
+Two further `chat_id` columns were checked and deliberately excluded:
+`task_control_pairing_challenge.chat_id` is private-chat only, and the `ttr_` and
+`awi1_` ids derived from `groupChatId` are identifiers rather than addresses, so
+an in-flight thread request stays self-consistent.
+
+One consequence worth naming: a permanently failing send used to retire the
+subject's anchor as `ANCHOR_GONE`, which is right for a message that will never
+arrive and wrong here, because this one is still coming at the new id. The
+upgrade is now the exception to that rule on both the send and the edit path.
+
 Severity: high; the team becomes unusable and cannot be repaired from the app.
 
 Telegram upgrades a basic group to a supergroup on ordinary actions such as
