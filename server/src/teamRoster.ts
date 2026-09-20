@@ -129,6 +129,19 @@ function validateRoster(value: unknown): TeamRoster {
   };
 }
 
+/**
+ * A roster read back from the local cache rather than from the ref. The cache
+ * holds whatever was last published, and a row written before B5 carries one
+ * label per member, so the same fallback the ref read applies is applied here:
+ * that label was the person's name and it answers for both (B5). It is a fill-in,
+ * not a validation, so a record that used to be usable stays usable.
+ */
+export function cachedTeamRoster(record: unknown): TeamRoster {
+  const roster = record as TeamRoster;
+  if (!Array.isArray(roster?.members)) return roster;
+  return { ...roster, members: roster.members.map(member => ({ ...member, personLabel: member.personLabel ?? member.workstationLabel })) };
+}
+
 export function newTeamRoster(input: Omit<TeamRoster, "version" | "usedInviteIds" | "commandIds" | "updatedAt" | "members"> & { members: TeamMemberInput[]; now?: Date }): TeamRoster {
   return validateRoster({ ...input, version: 1, usedInviteIds: [], commandIds: [], updatedAt: (input.now ?? new Date()).toISOString() });
 }

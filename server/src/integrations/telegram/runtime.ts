@@ -18,7 +18,7 @@ import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThread
 import { routeTeamItemMessage } from "../../teamRouting.ts";
 import { cachedAccountUsage } from "../../adapters/registry.ts";
 import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
-import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
+import { cachedTeamRoster, decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
 import { TelegramAdapter, type TelegramDelivery } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
@@ -290,7 +290,7 @@ export class TelegramLiveRuntime {
     const cached = workspaces.teamRosters()[0];
     if (cached === undefined) throw new WorkspaceError(404, "team_not_found", "Create or join a team before issuing a join code.");
     const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), cached.remoteUrl);
-    const published = await publishRoster(remote, cached.revision, cached.record as TeamRoster, `reissue_${randomBytes(12).toString("base64url")}`);
+    const published = await publishRoster(remote, cached.revision, cachedTeamRoster(cached.record), `reissue_${randomBytes(12).toString("base64url")}`);
     const { teamId, groupChatId, remoteUrl } = published.roster;
     return { teamId, joinCode: encodeJoinCode({ teamId, groupChatId, remoteUrl }) };
   }
@@ -299,7 +299,7 @@ export class TelegramLiveRuntime {
     this.requireTeamEnabled();
     const cached = workspaces.teamRosters()[0];
     if (cached === undefined) return null;
-    return this.panelStatus(cached.record as TeamRoster);
+    return this.panelStatus(cachedTeamRoster(cached.record));
   }
 
   async refreshTeam(): Promise<TeamPanelStatus | null> {
@@ -309,12 +309,12 @@ export class TelegramLiveRuntime {
     const session = this.requireSession();
     const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), cached.remoteUrl);
     const current = await remote.read();
-    const roster = current?.roster ?? cached.record as TeamRoster;
+    const roster = current?.roster ?? cachedTeamRoster(cached.record);
     if (current !== null) {
       workspaces.upsertTeamRoster({ teamId: roster.teamId, groupChatId: roster.groupChatId, remoteUrl: roster.remoteUrl, revision: current.revision, record: roster });
     }
     const currentPeople = new Set(roster.members.map(member => member.telegramUserId));
-    const previousMembers = (cached.record as TeamRoster).members;
+    const previousMembers = cachedTeamRoster(cached.record).members;
     for (const actor of workspaces.taskControlActors("telegram").filter(candidate => candidate.chat_id === roster.groupChatId && candidate.topic_id === TEAM_GROUP_TOPIC_SENTINEL)) {
       if (currentPeople.has(actor.transport_user_id)) continue;
       const removed = previousMembers.find(member => member.telegramUserId === actor.transport_user_id);
@@ -950,7 +950,7 @@ export class TelegramLiveRuntime {
   }
 
   private teamRosterFor(session: Session): TeamRoster {
-    const roster = workspaces.teamRosters().map(entry => entry.record as TeamRoster).find(entry => entry.members.some(member => member.botId === session.botId));
+    const roster = workspaces.teamRosters().map(entry => cachedTeamRoster(entry.record)).find(entry => entry.members.some(member => member.botId === session.botId));
     if (roster === undefined) throw new WorkspaceError(409, "team_not_joined", "Join or create a team before opening an item.");
     return roster;
   }

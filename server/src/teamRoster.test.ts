@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { TEAM_GROUP_TOPIC_SENTINEL, WorkspaceError, workspaces } from "./workspaces.ts";
-import { BareGitTeamRosterRemote, decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster } from "./teamRoster.ts";
+import { BareGitTeamRosterRemote, cachedTeamRoster, decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster } from "./teamRoster.ts";
 
 function roster() {
   return newTeamRoster({
@@ -118,4 +118,16 @@ test("B5: a roster published before the two labels were separated reads back exa
   } finally {
     rmSync(bare, { recursive: true, force: true });
   }
+});
+
+test("B5: a roster row cached before the change is usable without going back to the ref", () => {
+  // `team_roster` holds the record as it was last published, and every Team view
+  // reads that cache rather than the ref. A row written before the two labels were
+  // separated has no `personLabel`, and a view that named a person from it used to
+  // render `undefined` and throw; the one label it has answers for both.
+  const legacy = JSON.parse(JSON.stringify(roster())) as { members: Array<Record<string, unknown>> };
+  for (const member of legacy.members) delete member.personLabel;
+  assert.deepEqual(cachedTeamRoster(legacy).members.map(member => [member.workstationLabel, member.personLabel]), [["jd laptop", "jd laptop"]]);
+  // A row written after it is handed back as it is.
+  assert.deepEqual(cachedTeamRoster(roster()), roster());
 });
