@@ -2,6 +2,33 @@
 
 Created: 2026-09-20
 
+## Start here
+
+Read this file, then [team-burndown-dev-brief.md](team-burndown-dev-brief.md) sections 2.1, 3, 6 and 7, then the open entries of [pilot-bug-log.md](pilot-bug-log.md).
+A fixed entry says so at the top of the entry, with the task and commits that closed it, so anything without that banner is still open.
+
+State as of 2026-09-20:
+
+- main is at `9796b0d` in `/home/junaid/ai-workstation`, clean, **nothing pushed**; `origin/main` is far behind and staying that way by jd's decision.
+- The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, already merged into main. It is the test rig, not where product code goes.
+- Both pilot instances are stopped and nothing listens on 3100, 3200, 4100 or 4200.
+- **Phase A is done.** F00A, F01 and F02 are merged; B12, B14 and B17 are closed, B17 apart from its pinned anchor.
+- **Next task is F03**, the owner-side control to open an item thread, and the first task jd assigned to a worker agent rather than the orchestrator.
+
+Four decisions are waiting on jd, and only the second one blocks a task that is next in line:
+
+| Needed for | Decision |
+| --- | --- |
+| F04, pairs with F03 | Confirm the amended R-B wording, owner-initiated threads only. The orchestrator can draft it for approval. |
+| F09 | Choose the B6 approach: exclude expired actions from the notifier's dedupe so a still-waiting task gets a fresh card, or leave the dedupe and say on the card that replying mints fresh buttons. |
+| H track, blocks enablement not building | G01: whether a teammate running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. |
+| H01 | Skim the TM4 scenario table once written. |
+
+One standing warning that cost time twice: three tests in this suite take timestamps from the wall clock and assume they will differ, so they fail under load on a fast machine.
+`h6-route-proxy.spec.ts` was repaired as T20A, the migration 26 fixture as F00A, and `S-L1-33` failed once under full-suite load then passed in isolation with and without the change.
+Audit 2 recorded the server suite at 274/274; that figure does not reproduce here.
+A deliberate sweep for wall-clock fixtures is worth doing before any audit claims a green suite.
+
 Scope: the F track (defects B1 to B19 from [pilot-bug-log.md](pilot-bug-log.md)) and the H track (TM4 handover).
 Plan of record: [team-burndown-dev-brief.md](team-burndown-dev-brief.md).
 
