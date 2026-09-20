@@ -181,6 +181,33 @@ Do not run two harness tasks at once.
 - **Saving an answer moves the prompt.** It goes `BLOCKED` to `TODO` with a hold and clears the pending question, after which a fresh `/answer` is refused with `409 prompt_not_blocked`. Order any scenario that needs a blocked prompt accordingly.
 - **A closed thread is not closed today.** Until F02, do not build anything that assumes closure is enforced.
 
+## 7b. Resuming in a fresh session
+
+Read [team-burndown-tracker.md](team-burndown-tracker.md) first: it holds the starting commits, every task's status and evidence, and the log of what happened, and it is the only state carried between sessions.
+Then read the open entries of [pilot-bug-log.md](pilot-bug-log.md); a fixed entry says so at the top of the entry, with the task and commits that closed it.
+
+Rough order of magnitude for what is left, from the two tasks already done.
+F01 took one session slice: two red tiers, the fix, a burn-in and a full suite.
+Treat each of these as one worker task with its own branch, and expect the test work to be the larger half.
+
+| Task | Size | Why |
+| --- | --- | --- |
+| F02 | large | Owns migration 27, changes authorization, the anchor lifecycle and the access refresh at once. The only task here that touches the schema. |
+| F03 | medium | Web UI plus an API refusal; the UI half needs both widths checked. |
+| F04 | small | Documentation only, and jd must confirm the wording. |
+| F05 | large | Needs the fake to model a supergroup upgrade mid-test, which no scenario does yet. |
+| F06 | small | One panel action and a compare-and-swap that already exists for creation. |
+| F07 | medium | Two independent changes, a payload comparison and a per-thread back-off, each needing a test that watches for the absence of writes. |
+| F08 | medium | Turns on a race the current code loses; the test is the hard part. |
+| F09 | medium | Four unrelated small fixes, each its own commit, and jd must choose the B6 option. |
+| F10 | medium | Rig only, no product code, and only needed before LT-5. |
+| G01 | jd | A decision, not work. |
+| H01 to H05 | very large | TM4 in five tasks. Neither of its two Git records exists yet, and the control record is the harder half. Budget more than the whole F track. |
+
+Two standing constraints carried from every prior task: no live Telegram credential, no paid provider, no remote write and no push, and never two harness runs at once.
+
+Sequence, gates and audits are in section 6.
+
 ## 8. Done means
 
 Audit 3 and audit 4 pass; B1 to B14 and B17 to B19 are closed or explicitly deferred with a reason in the bug log; B15 is closed by the F04 amendment and B16 stays a pointer to B11; LT-4's re-run rows are recorded; and the orchestrator reports to jd the commits per task, test counts per tier, burn-in results, the G01 decision, real checks and outcomes, both audit results, design corrections made, and anything left open.
