@@ -74,6 +74,19 @@ async function blockedItem(team: TeamHarness, suffix: string, resumed = false) {
   return { task, itemId: opened.item.itemId, tag, anchor, access, group };
 }
 
+/** Sends a read-only view command into the item thread and returns the owner bot's reply. */
+async function viewReply(
+  team: TeamHarness,
+  item: Awaited<ReturnType<typeof blockedItem>>,
+  command: string,
+  prefix: string,
+  user = team.envA.user,
+): Promise<StoredMessage> {
+  const sent = team.fakeTelegram.userSendsMessage(team.envA.bot, user, team.groupChat, command, { replyToMessageId: item.anchor.message_id });
+  return eventually(`${command} reply`, async () => item.group().find(message =>
+    message.message_id > sent.message_id && message.from.id === team.envA.bot.id && message.text.startsWith(prefix)));
+}
+
 async function grant(team: TeamHarness, access: StoredMessage, capability: "answer" | "resume"): Promise<void> {
   const edits = access.history.length;
   await eventually(`${capability} grant button`, async () => access.reply_markup?.inline_keyboard.flat().some(entry => entry.text === `Grant ${capability}`));
@@ -107,9 +120,30 @@ test("TM-T1-4: owner grants answer and resume and teammate starts exactly one ow
     team.fakeTelegram.userSendsMessage(team.envA.bot, team.envB.user, team.groupChat, "/resume", { replyToMessageId: item.anchor.message_id });
     await eventually("ungranted resume refusal", async () => item.group().find(message => message.message_id > beforeRefusal && message.from.id === team.envA.bot.id && message.text.includes("grant resume")));
 
+    // TM-T1-4 requires that /access and /help show only current capabilities.
+    const helpBefore = await viewReply(team, item, "/help", "Item commands", team.envB.user);
+    expect(helpBefore.text).toContain("/task");
+    expect(helpBefore.text).not.toContain("/answer");
+    expect(helpBefore.text).not.toContain("/resume");
+    expect(helpBefore.text).not.toContain("/context");
+    const accessBefore = await viewReply(team, item, "/access", "Item access", team.envB.user);
+    expect(accessBefore.text).toContain("read only");
+
     await grant(team, item.access, "answer");
     await grant(team, item.access, "resume");
     expect(item.access.text).toContain("answer, resume");
+
+    const helpAfter = await viewReply(team, item, "/help", "Item commands", team.envB.user);
+    expect(helpAfter.text).toContain("/answer");
+    expect(helpAfter.text).toContain("/resume");
+    expect(helpAfter.text).not.toContain("/context");
+    expect(helpAfter.text).not.toContain("/grant");
+    const accessAfter = await viewReply(team, item, "/access", "Item access", team.envB.user);
+    expect(accessAfter.text).toContain("answer, resume");
+    // The owner needs no grant, so their help lists the owner-only commands too.
+    const ownerHelp = await viewReply(team, item, "/help", "Item commands");
+    expect(ownerHelp.text).toContain("/grant");
+    expect(ownerHelp.text).toContain("/close");
     const answerSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envB.user, team.groupChat, "/answer Use blue", { replyToMessageId: item.anchor.message_id });
     const card = await eventually("teammate answer card", async () => item.group().find(message => message.message_id > answerSent.message_id && message.from.id === team.envA.bot.id && message.text.includes("Use blue") && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Answer and resume")));
     expect(card.text).toMatch(/Uses Team A's grok allowance/);
