@@ -1,5 +1,5 @@
 import { lineText, type TaskSummary } from "./telegramSummary.ts";
-import { formatCard } from "./integrations/telegram/card.ts";
+import { formatCard, renderedAge, withoutRenderedAge, type CardEntity } from "./integrations/telegram/card.ts";
 import type { RenderedView } from "./integrations/telegram/views.ts";
 import { ITEM_GRANT_CAPABILITIES, type ItemGrantCapability } from "./teamGrants.ts";
 
@@ -91,6 +91,33 @@ export function renderTeamItemAnchor(summary: TaskSummary, state: TeamItemViewSt
     now: state.now,
   });
   return { kind: "view", text: card.text, entities: card.entities, buttons: [] };
+}
+
+/** The card text of an anchor payload, or null for anything that is not one. */
+function anchorText(payload: unknown): string | null {
+  if (payload === null || typeof payload !== "object") return null;
+  const text = (payload as { text?: unknown }).text;
+  return typeof text === "string" ? text : null;
+}
+
+/**
+ * An anchor payload reduced to what a reader would call a change: everything but
+ * the rendered age, which moves on its own and whose restatement is the churn B11
+ * recorded. When the age is due a refresh, `teamItemAnchorAge` says so; it is never
+ * something this comparison should discover.
+ */
+export function teamItemAnchorMaterial(payload: unknown): string {
+  const text = anchorText(payload);
+  if (text === null) return JSON.stringify(payload ?? null);
+  const entities = (payload as { entities?: unknown }).entities;
+  const stripped = withoutRenderedAge({ text, entities: Array.isArray(entities) ? entities as CardEntity[] : [] });
+  return JSON.stringify({ ...(payload as object), ...stripped });
+}
+
+/** The age an anchor payload currently states, for deciding whether it is due a refresh (B11). */
+export function teamItemAnchorAge(payload: unknown): string | null {
+  const text = anchorText(payload);
+  return text === null ? null : renderedAge(text);
 }
 
 export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummary, state: TeamItemViewState): RenderedView {

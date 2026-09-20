@@ -11,7 +11,7 @@ import { config } from "../../config.ts";
 import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { taskSummary, taskTagFor } from "../../telegramSummary.ts";
-import { renderTeamItemAccessMessage, renderTeamItemActionCard, renderTeamItemAnchor, renderTeamItemContext, renderTeamItemView, type TeamItemAccessAction, type TeamItemGrantedCommand, type TeamItemViewState } from "../../teamItemViews.ts";
+import { renderTeamItemAccessMessage, renderTeamItemActionCard, renderTeamItemAnchor, renderTeamItemContext, renderTeamItemView, teamItemAnchorAge, teamItemAnchorMaterial, type TeamItemAccessAction, type TeamItemGrantedCommand, type TeamItemViewState } from "../../teamItemViews.ts";
 import type { ItemGrantCapability } from "../../teamGrants.ts";
 import { itemTag } from "../../teamItems.ts";
 import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
@@ -22,6 +22,7 @@ import { decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster,
 import { join as joinPath } from "node:path";
 import { TelegramAdapter, type TelegramDelivery } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
+import { anchorAgeInstant } from "./card.ts";
 import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
 import { HttpTelegramBotApi, TELEGRAM_POLL_TIMEOUT_SECONDS } from "./httpBotApi.ts";
 import type { TelegramTextPayload } from "./liveFormat.ts";
@@ -965,7 +966,12 @@ export class TelegramLiveRuntime {
   private teamItemPayload(session: Session, roster: TeamRoster, link: ItemLinkRow, askingPersonId: string | null = null) {
     const state = this.teamItemViewState(session, roster, link, askingPersonId);
     const summary = taskSummary(link.promptId, "team", { workstationLabel: state.ownerWorkstation, itemId: link.itemId });
-    return { state, summary, payload: renderTeamItemAnchor(summary, state) };
+    // The anchor is a message that stays, so it states its age on the item's own
+    // hourly grid (B11) rather than on the second the deliver loop happened to
+    // reconsider it. A view a member asked for is a fresh message and keeps
+    // `state.now`, so `/task` still answers with the age the item really has.
+    const anchorState = { ...state, now: anchorAgeInstant(summary.blockedAt, this.now()) };
+    return { state, summary, payload: renderTeamItemAnchor(summary, anchorState) };
   }
 
   private createTeamItemAction(session: Session, roster: TeamRoster, link: ItemLinkRow, input: {
@@ -1061,9 +1067,16 @@ export class TelegramLiveRuntime {
       return;
     }
     const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
-    if (anchor !== null && JSON.stringify(anchor.desiredPayload) !== JSON.stringify(payload)) {
-      workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: anchor.outboxId, payload });
-    }
+    if (anchor === null) return;
+    // Two reasons, and only two, to edit a live anchor (B11). Either the item's
+    // material content changed, which is what a reader is here for, or its age is
+    // due the coarse refresh `anchorAgeInstant` schedules. Comparing the rendered
+    // payloads whole never settled, because the age inside them moves by itself:
+    // the pilot recorded 38 consecutive edits of one idle item, one a minute,
+    // differing only in `blocked N min ago`.
+    const contentChanged = teamItemAnchorMaterial(anchor.desiredPayload) !== teamItemAnchorMaterial(payload);
+    const ageRefreshDue = teamItemAnchorAge(anchor.desiredPayload) !== teamItemAnchorAge(payload);
+    if (contentChanged || ageRefreshDue) workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: anchor.outboxId, payload });
   }
 
   private async finishCompletedTeamItems(session: Session): Promise<void> {

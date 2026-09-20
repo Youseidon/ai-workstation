@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cutUtf16, formatCard, TELEGRAM_TEXT_LIMIT } from "./integrations/telegram/card.ts";
+import { ANCHOR_AGE_REFRESH_MS, anchorAgeInstant, cutUtf16, formatCard, renderedAge, TELEGRAM_TEXT_LIMIT, withoutRenderedAge } from "./integrations/telegram/card.ts";
 import { formatTelegramMessage } from "./integrations/telegram/liveFormat.ts";
 import { blockText, lineText, type TaskSummary } from "./telegramSummary.ts";
 
@@ -208,4 +208,34 @@ test("S-L3-A2 (T0): the age is computed at delivery and is absent when the task 
   const notBlocked = card(summary({ blockedAt: null }));
   assert.equal(notBlocked.text.split("\n")[2], "jd-laptop · ai-workstation · Telegram L1 / Live setup · pipeline step 2/3");
   assert.ok(!notBlocked.text.includes("blocked "));
+});
+
+test("B11 (T0): the anchor's age grid moves once an hour per item, and a card compares equal with its age taken out", () => {
+  const blockedAt = at(0);
+  const minutes = (count: number) => anchorAgeInstant(blockedAt, NOW.getTime() + count * 60_000).getTime();
+  assert.equal(ANCHOR_AGE_REFRESH_MS, 60 * 60_000);
+  assert.equal(minutes(0), NOW.getTime(), "the first rendering states the age the item really has");
+  assert.equal(minutes(59), NOW.getTime(), "nothing moves inside the hour the pilot watched churn");
+  assert.equal(minutes(60), NOW.getTime() + 60 * 60_000, "and it moves exactly once when the hour turns");
+  assert.equal(minutes(119), NOW.getTime() + 60 * 60_000);
+  // Each item keeps its own phase, so open items do not all rewrite on the same minute.
+  assert.equal(anchorAgeInstant(at(17), NOW.getTime() + 77 * 60_000).getTime(), NOW.getTime() + 43 * 60_000);
+  // An item that never blocked has no age to schedule.
+  assert.equal(anchorAgeInstant(null, NOW.getTime()).getTime(), NOW.getTime());
+
+  // Two renderings of one unchanged task, 40 minutes apart, differ only in the age.
+  const fresh = card(summary({ blockedAt: at(40) }));
+  const aged = card(summary({ blockedAt: at(77) }));
+  assert.equal(renderedAge(fresh.text), "blocked 40 min ago");
+  assert.equal(renderedAge(aged.text), "blocked 77 min ago");
+  assert.notEqual(fresh.text, aged.text);
+  assert.deepEqual(withoutRenderedAge(fresh), withoutRenderedAge(aged), "with the age out they are the same card");
+  // The collapsed blockquote still covers the same text after the age is taken out.
+  const stripped = withoutRenderedAge(aged);
+  const entity = stripped.entities[0]!;
+  assert.equal(stripped.text.slice(entity.offset, entity.offset + entity.length), aged.text.slice(aged.entities[0]!.offset, aged.entities[0]!.offset + aged.entities[0]!.length));
+  // A card with no age is left exactly as it is.
+  const notBlocked = card(summary({ blockedAt: null }));
+  assert.deepEqual(withoutRenderedAge(notBlocked), notBlocked);
+  assert.equal(renderedAge(notBlocked.text), null);
 });

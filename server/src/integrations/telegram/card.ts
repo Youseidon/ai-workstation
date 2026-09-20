@@ -89,6 +89,57 @@ export function ageText(blockedAt: string | null, now: Date): string | null {
   return `blocked ${Math.floor(hours / 24)} days ago`;
 }
 
+/**
+ * How often an item anchor may restate its age (B11). An anchor is a pinned,
+ * long-lived message that `syncTeamItemAnchors` reconsiders every second, and the
+ * age inside it moves on its own, so comparing rendered payloads never settled:
+ * an idle item cost one `editMessageText` a minute for its first 90 minutes and
+ * one an hour after that, for as long as it stayed open. One hour is the coarsest
+ * step that never shows an age the card's own vocabulary would call stale, because
+ * `ageText` renders whole hours from 90 minutes on; below that the counter moves in
+ * minutes, which is exactly the band that produced the churn and the band in which
+ * a minute of an item's life tells a reader nothing. Past 48 hours the text is in
+ * whole days, so most hourly steps leave it unchanged and the anchor settles at
+ * about one edit a day by itself.
+ */
+export const ANCHOR_AGE_REFRESH_MS = 60 * 60_000;
+
+/**
+ * The instant an anchor states its age as of: the item's own hourly grid, counted
+ * from the moment it blocked. Each item keeps its own phase, so open items do not
+ * all rewrite themselves on the same minute.
+ */
+export function anchorAgeInstant(blockedAt: string | null, nowMs: number, stepMs: number = ANCHOR_AGE_REFRESH_MS): Date {
+  if (blockedAt === null || stepMs <= 0) return new Date(nowMs);
+  const at = Date.parse(blockedAt);
+  if (Number.isNaN(at) || nowMs <= at) return new Date(nowMs);
+  return new Date(at + Math.floor((nowMs - at) / stepMs) * stepMs);
+}
+
+/** Every shape `ageText` renders, so a card can be read with its age taken out. */
+const RENDERED_AGE = /blocked (?:just now|\d+ (?:min|hours?|days?) ago)/;
+
+/** The age a rendered card currently states, which is what a refresh would replace. */
+export function renderedAge(text: string): string | null {
+  return RENDERED_AGE.exec(text)?.[0] ?? null;
+}
+
+/**
+ * The card with its rendered age replaced by a fixed token, so two renderings of
+ * the same task state compare equal however old the item has grown (B11). The age
+ * sits in the head line, so the collapsed blockquote that follows it moves with it.
+ */
+export function withoutRenderedAge(card: FormattedCard): FormattedCard {
+  const match = RENDERED_AGE.exec(card.text);
+  if (match === null) return card;
+  const token = "blocked <age>";
+  const shift = token.length - match[0].length;
+  return {
+    text: `${card.text.slice(0, match.index)}${token}${card.text.slice(match.index + match[0].length)}`,
+    entities: card.entities.map(entity => entity.offset > match.index ? { ...entity, offset: entity.offset + shift } : entity),
+  };
+}
+
 /** Local clock time, with the date when the moment is not today. */
 function clock(at: string, now: Date): string {
   const time = new Date(at);
