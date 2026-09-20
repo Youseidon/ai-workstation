@@ -133,6 +133,24 @@ A solo re-run updates the check document's progress table and nothing in `human-
 ## 5. H track: TM4 handover
 
 The only open progression slice.
+
+**What handover is, in jd's words, 2026-09-20.**
+A requester needs help finishing a work item.
+Their workstation creates a feature branch for that item and pushes it to the remote, and at the same time opens a Telegram thread asking available teammates to take the incomplete item up and finish it.
+Once a teammate accepts, that teammate checks out the branch and works on it with their own workstation and their own settings, their own provider login and their own quota, and hands the completed item back to the requester.
+
+H01 writes the scenario table from that description, and must reconcile two differences from the design of record before it does.
+
+The design says the offer is **named**: R-A calls it "a named handover" and RTC-11 is "Named offer and receiver claim", where the requester picks the receiver and that person claims it without a second approval.
+jd describes an **open call** to whoever is available, with the first to accept taking it.
+With the two members this track is scoped to, and a third deliberately excluded, the two collapse to the same flow, so this need not be settled before building.
+It must be settled before a third member exists, because an open call makes simultaneous accepts possible, and the item control record's compare-and-swap is then the only thing deciding who actually holds the work.
+Building the control record first, as H02 does, keeps both readable: post the offer without naming a receiver, and keep the receiver field in the record for a named offer later.
+
+The design also ties the trigger to allowance: R-A reads "when one person's LLM allowance is about to run out".
+jd describes the trigger as needing help, which is broader.
+That changes when the action is offered and how the card reads, not how the handover works.
+Both wordings are jd's to amend, the way R-B was on 2026-09-20; neither is amended yet.
 Its scope, from the [engineering plan](engineering-plan.md) TM4 row: a snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, a worktree run, requirement questions across workstations, return, and apply by ordinary merge.
 
 Two things are worth stating plainly before anyone starts.
