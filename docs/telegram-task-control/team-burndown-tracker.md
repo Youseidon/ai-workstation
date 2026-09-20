@@ -13,7 +13,8 @@ State as of 2026-09-20:
 - The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, already merged into main. It is the test rig, not where product code goes.
 - Both pilot instances are stopped and nothing listens on 3100, 3200, 4100 or 4200.
 - **Phase A is done.** F00A, F01 and F02 are merged; B12, B14 and B17 are closed, B17 apart from its pinned anchor.
-- **Next task is F00B**, the wall-clock fixture sweep, then F03. F00B comes first so that any red in a later task means something. Both go to worker agents; F04 is already done.
+- **Next task is F03.** Every remaining task goes to a worker agent; the orchestrator composes cards, verifies, merges and tracks, and writes no product code.
+- **Testing is parked.** By jd's instruction of 2026-09-20, tasks run only a typecheck and the narrow unit tests for what they changed. The full suites, every burn-in, both audits, the wall-clock sweep (F00B) and the LT-4 re-run all run in **Phase V**, after implementation finishes. See section 2.1 and section 6 of the brief.
 
 Decisions jd settled on 2026-09-20, all now recorded in the plan:
 
@@ -30,9 +31,10 @@ Still open. None of it blocks building, and none of it blocks the F track:
 
 | Needed for | Open item |
 | --- | --- |
-| Enabling handover | **G02**, tested isolation for provider, bot, Git and signing credentials. A known gap is already recorded: the `.env` bot token is readable by any process running as the same user. This, not G01, is what now gates turning handover on. |
+| Enabling handover | **G02**. A record is **drafted** in [implementation.md](implementation.md) section 6c and needs jd's confirmation of one thing: that the roster is the trust boundary, so a malicious roster member is out of scope and the two residual limits are accepted. The tested-isolation half is produced by RTC-12 inside H04, so G02 closes when TM4 finishes, not before it starts. |
+| Enterprise deployment | **G04**. A record is **drafted** in [implementation.md](implementation.md) section 6d. Items 1, 2 and 5 write down what is already true; jd should check **retention** and **operational owner**, which are real choices. |
 | The control record, H02 | **G03**, Git host policy and signing verification. Largely supported already by the LG-1 pass of 2026-09-17, which proved custom refs and non-fast-forward rejection. |
-| Enterprise deployment | **G04**, jd's one-time governance note: Telegram audience, Git host and storage location, retention. Does not block local development. |
+
 | `H-TM-LT3`, `H-TM-LT4` | Real two-person runs with Yousef. The solo pilot is explicitly not a substitute, so **TM3 is not honestly done** until these run. |
 | jd's call | `main` is far ahead of `origin/main` and nothing is pushed. |
 | H01 | Skim `tm4.md` once written. The five handover rulings were settled on 2026-09-20 and are recorded in section 8 of [handover-rules.md](handover-rules.md), so H01 is no longer blocked. |
