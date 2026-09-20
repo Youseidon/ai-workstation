@@ -299,7 +299,14 @@ export class TelegramLiveRuntime {
     this.requireTeamEnabled();
     const session = this.requireSession();
     if (!Number.isSafeInteger(promptId) || Number(promptId) <= 0) throw new WorkspaceError(422, "validation_error", "A saved task is required.");
-    workspaces.promptOutcome(Number(promptId));
+    const outcome = workspaces.promptOutcome(Number(promptId));
+    // B7: syncTeamItem deliberately withholds the anchor for a finished task, so
+    // opening one used to answer 201 with an item id, an item_link row and a
+    // telegram_thread row whose status_message_id never fills, and no message in
+    // the group. Refuse before anything is written, so the caller is told.
+    if (outcome.status === "DONE" || outcome.status === "SKIPPED") {
+      throw new WorkspaceError(409, "prompt_already_complete", "That task is already finished, so a Team thread cannot be opened on it.");
+    }
     const roster = this.teamRosterFor(session);
     const link = workspaces.createItemLink({ promptId: Number(promptId), role: "requester", epoch: 1 });
     this.syncTeamItem(session, roster, link);
