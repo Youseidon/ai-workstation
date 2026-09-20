@@ -132,6 +132,103 @@ test("TM-T0-5-25: migration 25 preserves C1 threads, anchors and indexes and run
   }
 });
 
+test("TM-T0-5-28: migration 28 marks the anchors exactly once and preserves every outbox row", () => {
+  const root = mkdtempSync(join(tmpdir(), "f07-migration-28-"));
+  try {
+    mkdirSync(join(root, ".agent-console"), { recursive: true });
+    mkdirSync(join(root, "workspace"));
+    const first = boot(root);
+    assert.equal(first.status, 0, first.stderr);
+
+    const file = join(root, ".agent-console/console.sqlite");
+    const database = new Database(file);
+    database.pragma("foreign_keys = OFF");
+    // A chat as F07 finds one: an item thread holding its anchor, a workstation
+    // panel still awaiting its pin, an item thread whose anchor was retired by a
+    // send that failed for good (B9), an ordinary message inside a thread, and a
+    // personal message belonging to no thread at all.
+    database.exec(`
+      INSERT INTO telegram_outbox
+        (id,bot_id,chat_id,topic_id,payload_json,state,attempt_count,last_error,created_at,updated_at,next_attempt_at,sent_message_id,operation,target_outbox_id,payload_version,thread_id)
+      VALUES
+        (911,'telegram-m28','-42',NULL,'{"kind":"view","text":"item anchor","entities":[],"buttons":[]}','SENT',1,NULL,'2026-09-19T00:00:00.000Z','2026-09-19T00:00:01.000Z',NULL,'601','send',NULL,0,NULL),
+        (912,'telegram-m28','-42',NULL,'{"kind":"view","text":"workstation panel","entities":[],"buttons":[]}','QUEUED',0,NULL,'2026-09-19T00:00:02.000Z','2026-09-19T00:00:02.000Z',NULL,NULL,'send',NULL,0,NULL),
+        (913,'telegram-m28','-42',NULL,'{"kind":"view","text":"retired anchor","entities":[],"buttons":[]}','FAILED',1,'Bad Request: chat not found','2026-09-19T00:00:03.000Z','2026-09-19T00:00:04.000Z',NULL,NULL,'send',NULL,0,NULL),
+        (914,'telegram-m28','-42',NULL,'{"kind":"text","text":"Item not found."}','SENT',1,NULL,'2026-09-19T00:00:05.000Z','2026-09-19T00:00:06.000Z',NULL,'602','send',NULL,0,NULL),
+        (915,'telegram-m28','77',NULL,'{"kind":"text","text":"Paired."}','SENT',1,NULL,'2026-09-19T00:00:07.000Z','2026-09-19T00:00:08.000Z',NULL,'603','send',NULL,0,NULL);
+      INSERT INTO telegram_thread
+        (id,bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at)
+      VALUES
+        (811,'telegram-m28','-42','item','awi1_1111111111111111111111aa',NULL,911,'ACTIVE','2026-09-19T00:00:00.000Z','2026-09-19T00:00:01.000Z'),
+        (812,'telegram-m28','-42','workstation','workstation',NULL,912,'PIN_PENDING','2026-09-19T00:00:02.000Z','2026-09-19T00:00:02.000Z'),
+        (813,'telegram-m28','-42','item','awi1_2222222222222222222222bb',NULL,NULL,'ANCHOR_GONE','2026-09-19T00:00:03.000Z','2026-09-19T00:00:04.000Z');
+      UPDATE telegram_outbox SET thread_id=811 WHERE id IN (911,914);
+      UPDATE telegram_outbox SET thread_id=812 WHERE id=912;
+      UPDATE telegram_outbox SET thread_id=813 WHERE id=913;
+      ALTER TABLE telegram_outbox DROP COLUMN anchor;
+      DELETE FROM schema_migration WHERE version=28;
+    `);
+    const OUTBOX_COLUMNS = "id,bot_id,chat_id,topic_id,payload_json,state,attempt_count,last_error,created_at,updated_at,next_attempt_at,sent_message_id,operation,target_outbox_id,payload_version,thread_id";
+    const beforeOutbox = database.prepare(`SELECT ${OUTBOX_COLUMNS} FROM telegram_outbox ORDER BY id`).all();
+    const beforeThreads = database.prepare("SELECT * FROM telegram_thread ORDER BY id").all();
+    const beforeIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='telegram_outbox_state_idx'").get();
+    assert.equal(beforeOutbox.length, 5);
+    assert.deepEqual(database.prepare("PRAGMA table_info(telegram_outbox)").all().map(column => (column as { name: string }).name).filter(name => name === "anchor"), [], "the pre-28 table has no anchor column");
+    database.close();
+
+    // Twice, because a migration that is not idempotent fails the second boot with
+    // a duplicate column, and a backfill that is not would re-mark rows the app has
+    // since changed.
+    for (const run of [1, 2]) {
+      const migrated = boot(root);
+      assert.equal(migrated.status, 0, `boot ${run}: ${migrated.stderr}`);
+      const check = new Database(file, { readonly: true });
+      try {
+        const columns = check.prepare("PRAGMA table_info(telegram_outbox)").all().map(column => (column as { name: string }).name);
+        assert.deepEqual(columns.filter(name => name === "anchor"), ["anchor"], `boot ${run} adds the column exactly once`);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=28").all(), [{ version: 28 }], `boot ${run} records the migration once`);
+
+        // The backfill marks precisely the rows a thread still points at. Row 913 is
+        // the anchor a permanently failed send retired, and nothing in the schema
+        // records that any more; it stays 0, which is safe because a thread with no
+        // anchor history is due one, so the first pass after the upgrade offers one.
+        assert.deepEqual(
+          check.prepare("SELECT id,anchor FROM telegram_outbox ORDER BY id").all(),
+          [{ id: 911, anchor: 1 }, { id: 912, anchor: 1 }, { id: 913, anchor: 0 }, { id: 914, anchor: 0 }, { id: 915, anchor: 0 }],
+          `boot ${run} marks only the rows a thread points at`,
+        );
+        assert.deepEqual(check.prepare(`SELECT ${OUTBOX_COLUMNS} FROM telegram_outbox ORDER BY id`).all(), beforeOutbox, `boot ${run} leaves every other outbox field, state and thread link unchanged`);
+        assert.deepEqual(check.prepare("SELECT * FROM telegram_thread ORDER BY id").all(), beforeThreads, `boot ${run} leaves every thread row and anchor pointer unchanged`);
+        assert.deepEqual(check.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='telegram_outbox_state_idx'").get(), beforeIndex, `boot ${run} preserves the outbox index`);
+        assert.deepEqual(check.pragma("foreign_key_check"), [], `boot ${run} leaves no foreign-key violation`);
+      } finally {
+        check.close();
+      }
+    }
+
+    // A row queued after the upgrade is an anchor only when it was offered as one.
+    const queued = runWorkspaceScript(root, `
+      const { workspaces } = await import('./src/workspaces.ts');
+      const subject = { kind: 'item', id: 'awi1_1111111111111111111111aa' };
+      const plain = workspaces.enqueueTelegramOutbox({ botId: 'telegram-m28', chatId: '-42', payload: { kind: 'text', text: 'Item access' }, subject });
+      const anchored = workspaces.enqueueTelegramOutbox({ botId: 'telegram-m28', chatId: '-42', payload: { kind: 'text', text: 'anchor' }, subject: { kind: 'item', id: 'awi1_2222222222222222222222bb' }, anchor: { pin: true } });
+      console.log(JSON.stringify({ plain, anchored }));
+      workspaces.close();
+    `);
+    assert.equal(queued.status, 0, queued.stderr);
+    const ids = JSON.parse(queued.stdout.trim().split("\n").at(-1)!) as { plain: number; anchored: number };
+    const after = new Database(file, { readonly: true });
+    try {
+      assert.equal((after.prepare("SELECT anchor FROM telegram_outbox WHERE id=?").get(ids.plain) as { anchor: number }).anchor, 0, "an ordinary message in an item thread is not an anchor");
+      assert.equal((after.prepare("SELECT anchor FROM telegram_outbox WHERE id=?").get(ids.anchored) as { anchor: number }).anchor, 1, "a row offered as the anchor is recorded as one");
+    } finally {
+      after.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("T12 item links mint one opaque identity reused by item threads and tags", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm2-item-link-"));
   const workspace = workspaces.create({ name: directory, workDirectory: directory });
