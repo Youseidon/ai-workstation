@@ -13,8 +13,9 @@ import { HttpTelegramBotApi } from "./integrations/telegram/httpBotApi.ts";
 import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "./integrations/telegram/runtime.ts";
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { renderPersonalQuestion } from "./taskControlRenderer.ts";
+import { itemTag } from "./teamItems.ts";
 import { taskTagFor } from "./telegramSummary.ts";
-import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
+import { itemSubject, taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
 
 /* -------------------------------------------------------------------------- */
 /* A stub Bot API: real HTTP client, fake api.telegram.org behind fetch        */
@@ -941,5 +942,74 @@ test("T15 requester bot posts one sanitized cross-owner thread request card", as
     assert.equal(h.stub.messages.filter(message => message.chatId === groupChatId && message.text.startsWith("Thread requested")).length, 1);
   } finally {
     await h.cleanup();
+  }
+});
+
+test("B7 (T0): the owner opens a Team item on an awaiting task, and a finished task is refused instead of half-opened", async () => {
+  const h = harness();
+  const teamId = `team-open-item-${h.stub.botUserId}`;
+  const groupChatId = "-1001600";
+  const dir = mkdtempSync(join(tmpdir(), "team-open-item-"));
+  const workspace = workspaces.create({ name: dir, workDirectory: dir });
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const awaiting = workspaces.createChild("prompt", suite.id, { title: "Choose a colour", content: "Red or blue" }) as PromptRecord;
+    const finished = workspaces.createChild("prompt", suite.id, { title: "Ship the release", content: "Ship it" }) as PromptRecord;
+
+    // The awaiting task is blocked on a question, exactly as its own agent would leave it.
+    const blockRun = `open-item-block-${workspace.id}`;
+    workspaces.beginAgentRun({ runId: blockRun, workspaceId: workspace.id, promptId: awaiting.id, provider: "grok", model: null, tokenHash: blockRun, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+    workspaces.updateAgentStatus(blockRun, { requestId: `${blockRun}-status`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: "The brand guide allows red or blue.", verificationSummary: "Pick red or blue." });
+    workspaces.finishAgentRun(blockRun, "done");
+    assert.equal(workspaces.promptOutcome(awaiting.id).status, "BLOCKED");
+
+    // The finished task completed before anyone thought to discuss it: B7's pilot case.
+    const doneRun = `open-item-done-${workspace.id}`;
+    workspaces.beginAgentRun({ runId: doneRun, workspaceId: workspace.id, promptId: finished.id, provider: "grok", model: null, tokenHash: doneRun, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+    workspaces.updateAgentStatus(doneRun, { requestId: `${doneRun}-status`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Released", verificationSummary: "Shipped" });
+    workspaces.finishAgentRun(doneRun, "done");
+    assert.equal(workspaces.promptOutcome(finished.id).status, "DONE");
+
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+    const roster = {
+      version: 1 as const,
+      teamId,
+      groupChatId,
+      remoteUrl: "https://example.invalid/team.git",
+      members: [
+        { personId: String(operator.id), telegramUserId: String(operator.id), botId: h.botId, botUsername: "l1_stub_bot", workstationId: h.botId, workstationLabel: "owner-workstation" },
+        { personId: "404", telegramUserId: "404", botId: "telegram-teammate", botUsername: "teammate_stub_bot", workstationId: "teammate-workstation", workstationLabel: "teammate-workstation" },
+      ],
+      usedInviteIds: [],
+      commandIds: [],
+      updatedAt: new Date().toISOString(),
+    };
+    workspaces.upsertTeamRoster({ teamId, groupChatId, remoteUrl: roster.remoteUrl, revision: "open-item-revision", record: roster });
+    workspaces.upsertTeamGroupActor({ id: `${teamId}-owner`, transport: "telegram", transportUserId: String(operator.id), chatId: groupChatId, label: "owner-workstation" });
+
+    // Success path: the owner's own control opens the thread and the anchor really reaches the group.
+    const opened = h.runtime.openTeamItem(awaiting.id);
+    assert.match(opened.itemId, /^awi1_[a-f0-9]{24}$/);
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === groupChatId && message.text.includes(itemTag(opened.itemId))), "Team item anchor");
+    assert.doesNotMatch(anchor.text, /\/home\/|token|credential/i);
+    assert.notEqual(workspaces.telegramThreadFor({ botId: h.botId, chatId: groupChatId, subject: itemSubject(opened.itemId) }).statusMessageId, null, "the opened item has an anchor");
+
+    // B7: a finished prompt must be refused, not turned into an anchorless link row.
+    assert.throws(
+      () => h.runtime.openTeamItem(finished.id),
+      (error: unknown) => error instanceof WorkspaceError && error.status === 409 && error.code === "prompt_already_complete",
+      "opening a Team item on a finished task must be refused",
+    );
+    assert.deepEqual(workspaces.itemLinksForPrompt(finished.id), [], "a refused open leaves no item_link row behind");
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const strayItems = h.stub.messages.filter(message => message.chatId === groupChatId && /#item_[a-f0-9]{24}/.test(message.text) && !message.text.includes(itemTag(opened.itemId)));
+    assert.deepEqual(strayItems.map(message => message.text), [], "a refused open posts nothing about a second item");
+  } finally {
+    await h.cleanup();
+    workspaces.remove(workspace.id);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
