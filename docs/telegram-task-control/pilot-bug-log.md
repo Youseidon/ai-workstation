@@ -14,6 +14,36 @@ Everything else is still open.
 
 ## B1 - a created team's join code cannot be recovered
 
+**Fixed 2026-09-20 by F06, commits `b43899c` to `b1b1143`.**
+The Team status panel carries an "Issue new join code" action for an existing
+roster. It mints a fresh invite id the way creation does, through the same
+`encodeJoinCode`, and publishes through the same roster compare-and-swap, so
+there is no second publishing path. The swap is against the revision this
+workstation holds, which means a code is never minted from a roster the panel
+has not seen: a reissue over a roster that moved is refused as `roster_conflict`
+and succeeds after a refresh. That refuse-then-refresh-then-succeed path is the
+half this entry lacked, and it is covered by a test.
+
+**Reissuing does not invalidate the earlier code**, and that follows from the
+roster model rather than being a preference. `TeamRoster` records only the invite
+ids a join has consumed, in `usedInviteIds`, and nothing anywhere records an id
+that was issued - which is exactly why this defect exists. So there is nothing to
+revoke. Invalidation would need a new field holding issued-but-unused ids and a
+new rule in `joinTeam` checking membership of an active set instead of absence
+from the consumed set. That is a roster-model change and was deliberately left
+out of this task. Both codes stay single use and expire on the existing 24 hour
+TTL, and a join code still carries no credential, which was re-asserted on the
+reissue path.
+
+Two limits recorded rather than hidden. Any workstation holding the roster may
+reissue, not only the owner, because the roster model has no notion of who may
+invite: `joinTeam` accepts any unconsumed invite id and `publishRoster` accepts
+any writer holding the current revision. Making invites owner-only is the same
+kind of roster-model rule as invalidation and belongs with it. And the reissue
+posts no notice to the Telegram group and needs no live transport, deliberately,
+so the recovery still works in the degraded states where it is wanted; the
+teammate therefore sees nothing in the group when a new code is issued.
+
 Severity: high, because it strands a created team with no way to invite anyone.
 
 `confirmTeamCreate` returns the join code once
