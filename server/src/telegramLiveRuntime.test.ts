@@ -38,6 +38,7 @@ class StubTelegram {
   private nextCallbackId = 1;
   private readonly scripts = new Map<string, Scripted[]>();
   private readonly upgraded = new Map<string, string>();
+  private readonly refused = new Map<string, string>();
   private wake: Array<() => void> = [];
   /** Runs after a sendMessage is recorded and before its response returns, as when Telegram shows the message first. */
   holdSendResponse: ((message: RecordedMessage) => Promise<void>) | null = null;
@@ -62,6 +63,15 @@ class StubTelegram {
    */
   upgradeToSupergroup(fromChatId: string, toChatId: string): void {
     this.upgraded.set(fromChatId, toChatId);
+  }
+
+  /**
+   * This chat refuses everything, for good: the bot was removed, or the group was
+   * deleted. Unlike `script`, it never runs out, which is what a producer with no
+   * bound runs into (B9).
+   */
+  refuseChat(chatId: string, description: string): void {
+    this.refused.set(chatId, description);
   }
 
   /** The service message Telegram posts in the supergroup that replaced the group. */
@@ -90,6 +100,8 @@ class StubTelegram {
     const scripted = this.scripts.get(method)?.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted) return json(scripted.status, scripted.body);
+    const refusal = body.chat_id === undefined ? undefined : this.refused.get(String(body.chat_id));
+    if (refusal !== undefined) return json(400, { ok: false, error_code: 400, description: refusal });
     const migrateTo = body.chat_id === undefined ? undefined : this.upgraded.get(String(body.chat_id));
     if (migrateTo !== undefined) {
       return json(400, { ok: false, error_code: 400, description: "Bad Request: group chat was upgraded to a supergroup chat", parameters: { migrate_to_chat_id: Number(migrateTo) } });
@@ -1266,6 +1278,108 @@ test("TM-T1-9 (T0): the migrate_from_chat_id service message repairs the team be
       [],
       "the service message repaired the team before any send could be refused",
     );
+  } finally {
+    await h.cleanup();
+    team.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* F07: the anchor writes are bounded (B11 age churn, B9 the unbounded loop).  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Waits for the delivery loop to complete whole passes. Time is driven through the
+ * runtime's injected clock, never by sleeping, so a coarser schedule is proved by
+ * elapsed simulated time and by write counts rather than by a wall-clock wait.
+ */
+async function deliverPasses(h: ReturnType<typeof harness>, count = 2): Promise<void> {
+  const ticks = () => h.sleeps.filter(ms => ms === 5).length;
+  const start = ticks();
+  await waitFor(() => ticks() >= start + count, "delivery passes");
+}
+
+/** Every outbox row this bot offered as the anchor of one item's thread. */
+function anchorRows(botId: string, chatId: string, itemId: string) {
+  return workspaces.telegramOutbox().filter(row =>
+    row.botId === botId && row.chatId === chatId && typeof (row.payload as { text?: unknown }).text === "string"
+    && String((row.payload as { text: string }).text).includes(itemTag(itemId)));
+}
+
+test("B11 (T0): an idle open item's anchor is not rewritten as it ages, and refreshes on a coarse schedule", async () => {
+  let clock = Date.now();
+  const h = harness({ now: () => clock });
+  const chatId = "-41011";
+  const team = await upgradeFixture(h, chatId);
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+
+    clock = Date.now();
+    const item = h.runtime.openTeamItem(team.prompt("Choose a colour").id);
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === chatId && message.text.includes(itemTag(item.itemId))), "the item anchor");
+    assert.match(anchor.text, /blocked just now|blocked \d+ min ago/, "the anchor states the item's age");
+    const editsAtPost = anchor.edits;
+
+    // Forty minutes pass on the runtime's clock with nothing about the task changing:
+    // no command, no grant, no status change. The pilot saw 38 consecutive edits
+    // across exactly such a window (outbox rows 81 to 118, 13:54Z to 14:31Z).
+    for (let minute = 1; minute <= 40; minute += 1) {
+      clock += 60_000;
+      await deliverPasses(h);
+    }
+    assert.equal(anchor.edits - editsAtPost, 0, "an idle item queues no editMessageText as it ages");
+
+    // The age is not frozen either: once the item crosses its own hourly grid the
+    // anchor restates it, once, and then settles again.
+    clock += 21 * 60_000;
+    await waitFor(() => anchor.edits === editsAtPost + 1, "one coarse age refresh");
+    assert.match(anchor.text, /blocked 60 min ago/, "the refreshed anchor states the age it has");
+    for (let minute = 1; minute <= 10; minute += 1) {
+      clock += 60_000;
+      await deliverPasses(h);
+    }
+    assert.equal(anchor.edits - editsAtPost, 1, "and the counter settles again until the next hour");
+  } finally {
+    await h.cleanup();
+    team.cleanup();
+  }
+});
+
+test("B9 (T0): an anchor that can never be delivered queues one row, then backs off, instead of a series", async () => {
+  let clock = Date.now();
+  const h = harness({ now: () => clock });
+  const chatId = "-41009";
+  const team = await upgradeFixture(h, chatId);
+  try {
+    // The group is gone: every send is refused, for good, and no retry can fix it.
+    h.stub.refuseChat(chatId, "Bad Request: chat not found");
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+
+    clock = Date.now();
+    const item = h.runtime.openTeamItem(team.prompt("Choose a colour").id);
+    await waitFor(() => anchorRows(h.botId, chatId, item.itemId).some(row => row.state === "FAILED"), "the refused anchor");
+
+    // The pilot watched this window produce outbox rows 11 to 36, one every 2.5
+    // seconds, all FAILED against the same chat, with no upper bound.
+    for (let second = 1; second <= 59; second += 1) {
+      clock += 1000;
+      await deliverPasses(h);
+    }
+    assert.equal(anchorRows(h.botId, chatId, item.itemId).length, 1, "a failing anchor is offered once, not on every pass");
+
+    // It is not abandoned either: the thread backs off and tries again, and the
+    // wait doubles each time rather than staying at one pass.
+    clock += 3_000;
+    await waitFor(() => anchorRows(h.botId, chatId, item.itemId).length === 2, "the first backed-off retry");
+    for (let second = 1; second <= 55; second += 1) {
+      clock += 1000;
+      await deliverPasses(h);
+    }
+    assert.equal(anchorRows(h.botId, chatId, item.itemId).length, 2, "the second wait is longer than the first");
+    clock += 65_000;
+    await waitFor(() => anchorRows(h.botId, chatId, item.itemId).length === 3, "the second backed-off retry");
   } finally {
     await h.cleanup();
     team.cleanup();
