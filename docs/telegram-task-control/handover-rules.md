@@ -167,7 +167,7 @@ The requester is not powerless: either party may request Pause or Cancel, but "o
 ## 5. What is deliberately excluded
 
 From the plan's TM4 exclusions, so nobody designs for them: a third team member, further handoff beyond a return to the requester, remote Stop across workstations, package signing and device keys, and any hosted relay.
-`RELEASED` as proposed above is a return to the requester, not a further handoff, so it stays inside this boundary.
+A receiver who cannot finish returning partial work is a return to the requester, not a further handoff, so it stays inside this boundary.
 
 ## 6. What still gates enabling
 
