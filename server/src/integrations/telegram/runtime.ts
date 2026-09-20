@@ -884,7 +884,11 @@ export class TelegramLiveRuntime {
     const teammate = roster.members.find(member => member.botId !== session.botId);
     if (owner === undefined || teammate === undefined) return null;
     const active = workspaces.itemGrants(link.itemId, { activeOnly: true, personId: teammate.personId }).map(grant => grant.capability);
-    const actions: TeamItemAccessAction[] = (["context", "answer", "resume"] as ItemGrantCapability[]).map(capability => {
+    // A closed item's access message carries no buttons. Arming them was B14:
+    // the refresh that ended every grant published three fresh ways to restore
+    // one, and on an item closed while its task was still blocked nothing would
+    // ever have revoked what a tap put back.
+    const actions: TeamItemAccessAction[] = link.closedAt !== null ? [] : (["context", "answer", "resume"] as ItemGrantCapability[]).map(capability => {
       const action = active.includes(capability) ? "revoke" : "grant";
       return {
         ...this.createTeamItemAction(session, roster, link, { actor: owner, action, capabilities: [capability], targetPersonId: teammate.personId }),
@@ -961,6 +965,12 @@ export class TelegramLiveRuntime {
     const owner = roster.members.find(member => member.botId === session.botId);
     const member = roster.members.find(candidate => candidate.telegramUserId === message.transportUserId);
     if (owner === undefined || member === undefined) return;
+    // A closed thread accepts nothing further, so say so instead of minting a
+    // card whose tap would only be rejected.
+    if (link.closedAt !== null) {
+      this.enqueueText(session, roster.groupChatId, null, "This item thread is closed.", itemSubject(link.itemId));
+      return;
+    }
     const isOwner = owner.personId === member.personId;
     const has = (capability: ItemGrantCapability) => isOwner || workspaces.hasItemCapability(link.itemId, member.personId, capability);
     const deny = (capability: ItemGrantCapability) => this.enqueueText(session, roster.groupChatId, null, `Ask ${owner.workstationLabel} to grant ${capability} on this item.`, itemSubject(link.itemId));

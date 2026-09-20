@@ -734,6 +734,22 @@ db.transaction(() => {
   }
 }
 
+{
+  // F02: closing an item thread used to revoke its grants and nothing else, so
+  // the closed state it reported existed nowhere. Two nullable columns are
+  // enough, so this adds them in place rather than rebuilding the table.
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=27").get();
+  if (!applied) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE item_link ADD COLUMN closed_at TEXT;
+        ALTER TABLE item_link ADD COLUMN closed_command_id TEXT;
+      `);
+      db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(27,?)").run(new Date().toISOString());
+    })();
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -815,6 +831,9 @@ export interface ItemLinkRow {
   role: ItemLinkRole;
   epoch: number;
   controlHead: string | null;
+  /** Set once the owner closes the thread; a closed item accepts no further action. */
+  closedAt: string | null;
+  closedCommandId: string | null;
 }
 
 export interface ItemGrantRow {
@@ -1233,29 +1252,42 @@ export const workspaces = {
       .run(teamId, groupChatId, remoteUrl, revision, record, updatedAt);
     return { teamId, groupChatId, remoteUrl, revision, record: input.record, updatedAt };
   },
+  /**
+   * Records that the owner closed this item thread. Returns false when it was
+   * already closed, so the caller can tell a first close from a repeat and
+   * refresh the group only once.
+   */
+  closeItemLink(input: { itemId: string; commandId: string }): boolean { return sqliteGuard(() => db.transaction(() => {
+    const row = db.prepare("SELECT closed_at closedAt FROM item_link WHERE item_id=?").get(input.itemId) as { closedAt: string | null } | undefined;
+    if (row === undefined) throw new WorkspaceError(404, "not_found", "Team item not found");
+    if (row.closedAt !== null) return false;
+    db.prepare("UPDATE item_link SET closed_at=?,closed_command_id=? WHERE item_id=?")
+      .run(new Date().toISOString(), requireText(input.commandId, "commandId", 160), input.itemId);
+    return true;
+  })()); },
   createItemLink(input: { itemId?: string; promptId: number; role: ItemLinkRole; epoch: number; controlHead?: string | null }): ItemLinkRow { return sqliteGuard(() => db.transaction(() => {
     if (input.itemId !== undefined && !isItemId(input.itemId)) throw new WorkspaceError(422, "validation_error", "A valid Team item id is required.");
     if (input.role !== "requester" && input.role !== "executor") throw new WorkspaceError(422, "validation_error", "Item role must be requester or executor.");
     if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) throw new WorkspaceError(422, "validation_error", "Item epoch must be a positive integer.");
     const controlHead = input.controlHead === undefined || input.controlHead === null ? null : requireText(input.controlHead, "controlHead", 160);
     if (input.itemId === undefined) {
-      const existing = db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE prompt_id=? AND role=? ORDER BY rowid LIMIT 1").get(input.promptId, input.role) as ItemLinkRow | undefined;
+      const existing = db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE prompt_id=? AND role=? ORDER BY rowid LIMIT 1").get(input.promptId, input.role) as ItemLinkRow | undefined;
       if (existing) return existing;
     }
     const itemId = input.itemId ?? mintItemId();
     db.prepare("INSERT INTO item_link(item_id,prompt_id,role,epoch,control_head) VALUES(?,?,?,?,?)")
       .run(itemId, input.promptId, input.role, input.epoch, controlHead);
-    return { itemId, promptId: input.promptId, role: input.role, epoch: input.epoch, controlHead };
+    return { itemId, promptId: input.promptId, role: input.role, epoch: input.epoch, controlHead, closedAt: null, closedCommandId: null };
   })()); },
   itemLink(itemId: string): ItemLinkRow | null {
     if (!isItemId(itemId)) return null;
-    return (db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE item_id=?").get(itemId) as ItemLinkRow | undefined) ?? null;
+    return (db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE item_id=?").get(itemId) as ItemLinkRow | undefined) ?? null;
   },
   itemLinksForPrompt(promptId: number): ItemLinkRow[] {
-    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link WHERE prompt_id=? ORDER BY rowid").all(promptId) as ItemLinkRow[];
+    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE prompt_id=? ORDER BY rowid").all(promptId) as ItemLinkRow[];
   },
   itemLinks(): ItemLinkRow[] {
-    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead FROM item_link ORDER BY rowid").all() as ItemLinkRow[];
+    return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link ORDER BY rowid").all() as ItemLinkRow[];
   },
   grantItemCapability(input: { itemId: string; personId: string; capability: ItemGrantCapability; commandId: string; grantedAt?: string }): ItemGrantRow { return sqliteGuard(() => db.transaction(() => {
     if (!isItemId(input.itemId) || this.itemLink(input.itemId) === null) throw new WorkspaceError(404, "item_not_found", "Team item not found.");

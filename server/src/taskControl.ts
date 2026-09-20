@@ -240,8 +240,17 @@ export class TaskControlService {
       }
       if (action.subject_kind === "item") {
         if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);
-        if (action.item_id === null || workspaces.itemLink(action.item_id)?.promptId !== action.prompt_id) {
+        if (action.item_id === null) {
           return this.reject(input, "item_not_found", "This Team item is no longer available.", action.ref);
+        }
+        const link = workspaces.itemLink(action.item_id);
+        if (link === null || link.promptId !== action.prompt_id) {
+          return this.reject(input, "item_not_found", "This Team item is no longer available.", action.ref);
+        }
+        // A closed thread is an end state: no grant, no revoke and no granted
+        // command applies to it, however the tap was minted.
+        if (link.closedAt !== null) {
+          return this.reject(input, "item_closed", "This item thread is closed.", action.ref);
         }
         const roster = workspaces.teamRosters()
           .map(entry => entry.record as { members?: Array<{ personId: string; telegramUserId: string; botId: string; workstationLabel: string }> })
@@ -257,6 +266,7 @@ export class TaskControlService {
           workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);
           if (action.action === "close_thread") {
             workspaces.revokeItemGrants({ itemId: action.item_id, commandId: input.commandId });
+            workspaces.closeItemLink({ itemId: action.item_id, commandId: input.commandId });
             return workspaces.recordTaskControlReceipt({ commandId: input.commandId, actionRef: action.ref, state: "APPLIED", message: "Thread closed; grants ended." });
           }
           if (payload === null || payload.capabilities.length === 0) return this.reject(input, "invalid_action", "This access action is incomplete.", action.ref);

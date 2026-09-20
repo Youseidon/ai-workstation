@@ -159,6 +159,63 @@ test("TM-T1-4: owner grants answer and resume and teammate starts exactly one ow
   }
 });
 
+test("TM-T0-2 closed thread: a closed item grants nothing and accepts no command", {
+  annotation: { type: "covers", description: "T19, TM-T0-2 closed thread state, B17, B14" },
+}, async () => {
+  const team = await startTeamHarness({ envA: { fakeProvider: "live" } });
+  try {
+    await joinFixture(team);
+    const item = await blockedItem(team, "closed");
+    await grant(team, item.access, "answer");
+
+    // Minted before the close and deliberately left untapped, so the tap below
+    // exercises the closed state rather than duplicate-delivery replay.
+    const staleSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/grant resume", { replyToMessageId: item.anchor.message_id });
+    const staleCard = await eventually("stale grant card", async () => item.group().find(message =>
+      message.message_id > staleSent.message_id && message.from.id === team.envA.bot.id
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Grant")));
+
+    const closeSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/close", { replyToMessageId: item.anchor.message_id });
+    const closeCard = await eventually("close card", async () => item.group().find(message =>
+      message.message_id > closeSent.message_id && message.from.id === team.envA.bot.id
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Close thread")));
+    expect(await tap(team, closeCard, "Close thread")).toContain("closed");
+    await eventually("grants ended by the close", async () =>
+      team.envA.app.query<{ n: number }>("SELECT COUNT(*) n FROM item_grant WHERE item_id=? AND revoked_at IS NULL", item.itemId)[0]!.n === 0);
+
+    // The close is an end state. The access message it refreshes carries no
+    // buttons afterwards (B14 armed three fresh grants there), and any card that
+    // was already in the group is inert, whatever its expiry says.
+    await eventually("closed access message drops its buttons", async () =>
+      (item.access.reply_markup?.inline_keyboard.flat().length ?? 0) === 0);
+    // The card that was already in the group is inert, whatever its expiry says.
+    expect(await tap(team, staleCard, "Grant")).toMatch(/closed/i);
+    expect(team.envA.app.query<{ n: number }>("SELECT COUNT(*) n FROM item_grant WHERE item_id=? AND revoked_at IS NULL", item.itemId)[0]!.n).toBe(0);
+
+    const afterClose = item.group().at(-1)?.message_id ?? 0;
+    team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/grant resume", { replyToMessageId: item.anchor.message_id });
+    await eventually("grant refused on a closed thread", async () => item.group().find(message =>
+      message.message_id > afterClose && message.from.id === team.envA.bot.id && /closed/i.test(message.text)));
+    expect(item.group().some(message => message.message_id > afterClose
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Grant"))).toBe(false);
+    expect(team.envA.app.query<{ n: number }>("SELECT COUNT(*) n FROM item_grant WHERE item_id=? AND revoked_at IS NULL", item.itemId)[0]!.n).toBe(0);
+
+    const beforeAnswer = item.group().at(-1)?.message_id ?? 0;
+    team.fakeTelegram.userSendsMessage(team.envA.bot, team.envB.user, team.groupChat, "/answer Use blue", { replyToMessageId: item.anchor.message_id });
+    await eventually("teammate command refused on a closed thread", async () => item.group().find(message =>
+      message.message_id > beforeAnswer && message.from.id === team.envA.bot.id && /closed/i.test(message.text)));
+    expect(item.group().some(message => message.message_id > beforeAnswer
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Save answer"))).toBe(false);
+
+    // Nothing was written to the task by any of it.
+    expect(team.envA.app.query<{ status: string }>("SELECT status FROM prompt WHERE id=?", item.task.promptId)[0]?.status).toBe("BLOCKED");
+    // And the closure is durable, not just an absence of grants.
+    expect(team.envA.app.query<{ n: number }>("SELECT COUNT(*) n FROM item_link WHERE item_id=? AND closed_at IS NOT NULL", item.itemId)[0]!.n).toBe(1);
+  } finally {
+    await team.dispose();
+  }
+});
+
 test("TM-T1-5: revoke and expiry reject open cards and teammate removal ends authority", {
   annotation: { type: "covers", description: "T19, TM-T1-5, tap-time grants, offline expiry" },
 }, async () => {
