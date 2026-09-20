@@ -471,6 +471,51 @@ read-only four for a member with no capabilities.
 
 ## B13 - a completed item's final anchor contradicts itself and is never corrected
 
+**Fixed 2026-09-21 by F08, commits `9008c6f` to `e7d97cd`.**
+Two halves, matching the two halves of the defect.
+
+The content: a `DONE` or `SKIPPED` item's anchor is now rendered from a completed
+summary that drops the blockers, the options that were on offer, the "If you
+wait" line and the stale age, and restates a run still reading `STARTING` or
+`RUNNING` as finished. An open item's anchor is untouched, which a test pins.
+
+The timing: `finishCompletedTeamItems` now requires that **every `role='execute'`
+run of the item has a non-null `ended_at`** before it retires the anchor, on top
+of the unchanged payload equality. That is what closes the race. The pilot's row
+kept `ended_at` null for four seconds after the prompt read `DONE`, and the
+equality check matched inside that window, so the anchor was retired in exactly
+the contradictory state. With the run gate, the last edit the group ever sees is
+rendered from rows nothing is still writing to.
+
+The card the fixed test leaves in the group, against the one quoted below:
+
+```
+Completed - Owner: owner-workstation
+
+History:
+- 06:43 claude (done)
+- 06:43 grok (done)
+Blocked once.
+Previous answer (06:43): Recalculate the amounts from the owner list
+```
+
+Two deliberate wording changes beyond the three the task named, both recorded
+because they are judgement rather than mechanism. The completed card drops the
+agent's recommendation, which matters for a `SKIPPED` item that keeps its brief,
+because "Agent recommends: Wait for your decision." on a finished item is the
+same lie as "If you wait". And the collapsed history reads "Blocked once."
+instead of "Blocked once, now.", which was the last present-tense claim left on
+a completed card.
+
+**One accepted trade, recorded rather than hidden.** An execute run that never
+ends - a process killed between its `DONE` status and its own bookkeeping, since
+`recoverAbandonedRuns` does not set `ended_at` - now leaves the anchor pinned and
+live rather than frozen and wrong. It stays in step and stays quiet, because F07
+suppresses the churn, and the first pass after that row resolves retires it. The
+F08 worker judged a live truthful anchor better than a frozen false one, and the
+orchestrator agreed; it is reversible if jd wants a bound on how long an anchor
+may stay pinned waiting for a run that will never end.
+
 Severity: medium; the contradictory card is the permanent record of the item in
 the group, and nothing ever edits it again.
 
