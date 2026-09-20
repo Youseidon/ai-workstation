@@ -32,6 +32,21 @@ existing roster, minting a fresh `inviteId` the same way creation does.
 
 ## B2 - no UI to open a Team item thread
 
+**Fixed 2026-09-20 by F03, commits `fc01a2c` to `730fcde`.**
+The work-item detail now carries a Team thread panel with an "Open Team thread"
+button, backed by a new `openTeamItem` method in `workspacesApi.ts`, so the
+owner's route is no longer curl. It is enabled only once a roster exists and the
+task is awaiting a response, and it says which of those two is missing rather
+than sitting dead. With Team off the roster read is refused and the panel does
+not render at all, so nothing about Team appears on an install that has it
+disabled. One component serves both widths, because the desktop split pane and
+the mobile sheet render the same overview tab.
+
+The UI is deliberately stricter than the API: it enables only on
+`AWAITING_RESPONSE`, while the route refuses only `DONE` and `SKIPPED`, so a
+thread on a `WORKING` task is still reachable by curl. That was a judgement the
+F03 worker made and recorded, not an oversight.
+
 Severity: high; the owner has no supported way to start a thread on their own
 item, which is the feature's primary flow.
 
@@ -148,6 +163,20 @@ re-posts, or say on the card that replying with an answer produces fresh
 buttons.
 
 ## B7 - opening a Team item on a completed task silently does nothing
+
+**Fixed 2026-09-20 by F03, commits `fc01a2c` to `730fcde`.**
+`openTeamItem` now reads the prompt outcome first and refuses a `DONE` or
+`SKIPPED` prompt with `409 prompt_already_complete`, before any `item_link` or
+`telegram_thread` row is written, so the half-opened rows this entry describes
+are never created. Proven red first: the new T0 case failed with "Missing
+expected exception" on the code before the fix, and a throwaway variant printed
+the exact defect, a `201` with an item id, a link row, and a thread row whose
+`status_message_id` stayed null.
+
+One tier is still unverified, recorded rather than hidden: the test drives
+`runtime.openTeamItem` directly, so the 409's trip through the HTTP route relies
+on the generic `WorkspaceError` handler every other route already uses and has no
+test of its own. That belongs to Phase V.
 
 Severity: medium; the call reports success and leaves unusable rows behind.
 
