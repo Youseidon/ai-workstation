@@ -292,6 +292,26 @@ At minimum, surface the condition instead of failing silently forever.
 
 ## B9 - a failing anchor is re-enqueued on every poll pass, without bound
 
+**Fixed 2026-09-21 by F07, commits `a5331a5` to `46b2522`.**
+The producer now stops. A thread reports the anchor it is still waiting on, so
+nothing is re-enqueued while an undelivered anchor exists, and after a failure
+the thread backs off by `min(60 min, 60 s * 2^(failures-1))` from the failed
+row's timestamp. Measured on the reproduction: **119 rows in a 59-second window
+before, 1 after**, with the second row appearing only after the 60-second wait
+and the third only after the doubled 120.
+
+This needed migration 28, a `telegram_outbox.anchor` column, which was not
+planned for F07. `markTelegramThreadAnchorGone` clears the thread's pointer,
+which is exactly what made a retired anchor indistinguishable from any other
+message in the item thread, so the producer could not see that the anchor it was
+about to queue was the one that had just failed. It could not be derived from the
+payload either, because an anchor and a `/task` reply render the same
+`kind: "view"` shape into the same thread. Durable state was chosen over an
+in-memory map so that a `tsx watch` reload or a crash loop cannot restart the
+write loop. One row upgraded from the pre-28 schema reads as never having been an
+anchor, which is safe: a thread with no anchor history reads as due one, so the
+first pass after the upgrade offers exactly one.
+
 Severity: high; it is an unbounded write loop against a failing send.
 
 `syncTeamItem` enqueues the anchor whenever the thread has no
@@ -337,6 +357,29 @@ Suggested fix: spawn the child with `detached: true` and signal its process
 group, or spawn the supervisor directly instead of going through `npm`.
 
 ## B11 - an open item's anchor is rewritten on a timer, forever
+
+**Fixed 2026-09-21 by F07, commits `a5331a5` to `46b2522`.** This closes B16 with
+it, since the two were the same defect.
+Two changes. The payload comparison now runs on material content with the
+rendered age replaced by a fixed token, shifting the blockquote entity offset
+with it, so two renderings of the same task state compare equal however old the
+item has grown. And the anchor states its age on an hourly grid counted from the
+item's own `blockedAt`, so open items keep separate phases and do not all rewrite
+themselves on the same minute against a rate-limited group.
+
+Measured on the reproduction: **39 edits across a 40-minute idle window before, 0
+after**, matching the pilot's rows 81 to 118. The counter is not frozen, which
+the test pins: crossing the item's first hour produces exactly 1 edit, the anchor
+then reads `blocked 60 min ago`, and 10 further minutes produce none.
+
+Why an hour, in the F07 worker's reasoning: `ageText` already renders whole hours
+from 90 minutes on and whole days from 48 hours on, so anything finer only moves
+the counter inside the minutes band, which is both the band that produced the
+churn and the band in which one more minute tells a team reader nothing. Past 48
+hours most hourly steps change nothing and the comparison suppresses them, so the
+anchor settles at about one edit a day by itself, down from roughly 24. A view a
+member asked for with `/task` is a fresh message and still renders at the real
+`now`, so it states the age the item actually has.
 
 Severity: medium; it burns a Telegram edit per open item on a timer for no
 informational gain, and it is unbounded in time.

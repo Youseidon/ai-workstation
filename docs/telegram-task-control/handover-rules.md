@@ -182,7 +182,7 @@ None of them blocks building TM4 behind the disabled capability.
 | Slice | Gains |
 | --- | --- |
 | H01 | Writes `tm4.md` from this document, and settles the open items in section 8 first. |
-| H02 | TM4's migration, which adds the seven designed actions, and the control record built to [protocol.md](protocol.md)'s lifecycle table: its states, authorized actors, required conditions, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. Migration number is 28 or later, because F02 took 27. |
+| H02 | TM4's migration, which adds the seven designed actions, and the control record built to [protocol.md](protocol.md)'s lifecycle table: its states, authorized actors, required conditions, epochs, command ids, compare-and-swap, uncertain-push resolution and the local cache rules. Migration number is **29 or later**: F02 took 27, and F07 took 28 on 2026-09-21 for the `telegram_outbox.anchor` column that bounds the anchor writes. |
 | H03 | Capture with the secret and size rules, the preview listing untracked files, refusal on a closed or completed item, and publish. |
 | H04 | Discovery, settings re-validation, claim races, decline, release, receiver quota exhaustion, and the no-unilateral-reclaim rule. |
 | H05 | Return, apply, conflict, idempotent re-apply, request changes and the new epoch. |

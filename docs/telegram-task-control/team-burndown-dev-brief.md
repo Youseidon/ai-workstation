@@ -182,7 +182,7 @@ Building TM4 is blocked by none of them.
 | --- | --- | --- | --- |
 | G01 | Record the handover governance decision. | **Done 2026-09-20.** Recorded in [implementation.md](implementation.md) section 6b: the handover delegates nothing, so a receiver who accepts a task and resumes it under their own login is ordinary use. It holds only while acceptance stays an explicit human action and no credential is ever shared, so a move to auto-accept re-opens it. | |
 | H01 | TM4 scenario table. | Commit `docs/e2e-scenarios/tm4.md` written from [handover-rules.md](handover-rules.md), whose five decisions jd settled on 2026-09-20, specifying TM-T0-6, TM-T0-7 and TM-T1-H1 to TM-T1-H3 in the shape the TM3 table uses. Cover the open call's simultaneous accept, a partial return by a receiver who cannot finish, the proof required before a requester reacquires ownership, and the capture preview's secret warning. No product code in the commit. | **jd**: skim. |
-| H02 | The item control record. | `refs/aw/items/<item>/control` with `state.json` and `events/<command id>.json`, fetch and compare-and-swap write, fast-forward or rejection only; `item_link.control_head` finally written and read. On an uncertain push, fetch and look for the command id before retrying; on a lost race, re-read and re-validate rather than re-applying. Owns TM4's migration, number 28 or later because F02 took 27, adding the seven designed actions. Build the lifecycle from [protocol.md](protocol.md)'s table, which is authoritative, rather than a summary of it. TM-T0-6 passes. | |
+| H02 | The item control record. | `refs/aw/items/<item>/control` with `state.json` and `events/<command id>.json`, fetch and compare-and-swap write, fast-forward or rejection only; `item_link.control_head` finally written and read. On an uncertain push, fetch and look for the command id before retrying; on a lost race, re-read and re-validate rather than re-applying. Owns TM4's migration, **number 29 or later**, adding the seven designed actions. F02 took 27 and F07 took 28, the latter unplanned: bounding the anchor writes needed durable state saying which outbox rows were offered as an anchor, because `markTelegramThreadAnchorGone` clears the thread's pointer and an anchor and a `/task` reply render the same shape. Build the lifecycle from [protocol.md](protocol.md)'s table, which is authoritative, rather than a summary of it. TM-T0-6 passes. | |
 | H03 | Capture and offer. | Snapshot commit through a temporary index, branch `aw/handover/<item>` pushed, then the control record written as `OFFERED` with epoch 1 and the requested provider and model, naming no receiver. The capture preview lists every uncommitted file by path and flags credential shapes, which take their own confirmation. TM-T0-7 passes. | |
 | H04 | Accept, claim and run. | Receiver accepts and claims, runs in a worktree under their own provider, and requirement questions cross workstations while the requester is stopped. TM-T1-H1 and TM-T1-H2 pass. | |
 | H05 | Return and apply. | Return, then apply by ordinary merge, then task complete. TM-T1-H3 passes; the full T1 suite passes; burn-in at 3 repeats on the H scenarios. | |
@@ -201,7 +201,7 @@ implementation, minimal unit tests only (section 2.1)
   F07, F08        anchor lifecycle
   F09             papercuts
   H01             TM4 scenario table
-  H02             the item control record + migration 28
+  H02             the item control record + migration 29
   H03             capture and offer
   H04             accept, claim, run, partial return
   H05             return and apply
@@ -224,7 +224,7 @@ V1 comes first inside Phase V, because until the wall-clock fixtures are determi
 
 Run **audit 3** over the F track and **audit 4** over the H track, both inside Phase V, using section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) unchanged.
 
-Phases A to E are independent of each other and could be reordered, with one exception: F02 owns migration 27, so any later task needing a migration takes 28 and up.
+Phases A to E are independent of each other and could be reordered, with one exception: migrations are handed out in order. F02 owns 27 and F07 owns 28, so any later task needing one takes 29 and up.
 Do not run two harness tasks at once.
 
 ## 7. New traps, in addition to section 6 of the earlier brief
