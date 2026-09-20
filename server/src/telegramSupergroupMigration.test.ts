@@ -132,7 +132,8 @@ test("B8: the rewrite moves every place the old team chat id lives, in one trans
 
     const rewritten = workspaces.rewriteTeamChatId({ teamId, fromChatId, toChatId });
 
-    assert.equal(rewritten.roster.groupChatId, toChatId);
+    assert.equal(rewritten.cache.groupChatId, toChatId);
+    assert.equal((rewritten.cache.record as { groupChatId: string }).groupChatId, toChatId);
     assert.deepEqual(chatIdSightings(fromChatId), {
       team_roster_group_chat_id: 0, team_roster_record_json: 0, task_control_actor: 0,
       task_control_action: 0, telegram_thread: 0, telegram_outbox: 0, telegram_inbox: 0,

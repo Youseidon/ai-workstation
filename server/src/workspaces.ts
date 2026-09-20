@@ -1253,6 +1253,41 @@ export const workspaces = {
     return { teamId, groupChatId, remoteUrl, revision, record: input.record, updatedAt };
   },
   /**
+   * Moves every local row that carries a team group's chat id to the id Telegram
+   * issued when the group became a supergroup (B8). From that moment the old id
+   * addresses nothing, so the roster cache and its cached record, the group
+   * actors, the thread rows, the open action cards, the outbox and any inbound
+   * update still waiting to be processed all move together, in one transaction.
+   * A row already at the new id is the same chat, so the stale copy at the old id
+   * is dropped rather than left to break a uniqueness constraint.
+   */
+  rewriteTeamChatId(input: { teamId: string; fromChatId: string; toChatId: string }): { cache: TeamRosterCacheRow; moved: Record<string, number> } { return sqliteGuard(() => db.transaction(() => {
+    const teamId = requireText(input.teamId, "teamId", 120);
+    const from = requireText(input.fromChatId, "fromChatId", 120);
+    const to = requireText(input.toChatId, "toChatId", 120);
+    if (from === to) throw new WorkspaceError(422, "validation_error", "A chat migration needs a new chat id.");
+    const cached = this.teamRoster(teamId);
+    if (cached === null) throw new WorkspaceError(404, "team_not_found", "No team roster is cached for this team.");
+    if (cached.groupChatId !== from) throw new WorkspaceError(409, "chat_migration_mismatch", "This team is not on the chat that was upgraded.");
+    const now = new Date().toISOString();
+    db.prepare(`DELETE FROM task_control_actor WHERE topic_id=? AND chat_id=? AND EXISTS (
+      SELECT 1 FROM task_control_actor other WHERE other.topic_id=? AND other.chat_id=? AND other.transport=task_control_actor.transport AND other.transport_user_id=task_control_actor.transport_user_id)`)
+      .run(TEAM_GROUP_TOPIC_SENTINEL, from, TEAM_GROUP_TOPIC_SENTINEL, to);
+    db.prepare(`DELETE FROM telegram_thread WHERE chat_id=? AND EXISTS (
+      SELECT 1 FROM telegram_thread other WHERE other.chat_id=? AND other.bot_id=telegram_thread.bot_id AND other.subject_kind=telegram_thread.subject_kind AND other.subject_id=telegram_thread.subject_id)`)
+      .run(from, to);
+    const moved = {
+      actors: db.prepare("UPDATE task_control_actor SET chat_id=? WHERE topic_id=? AND chat_id=?").run(to, TEAM_GROUP_TOPIC_SENTINEL, from).changes,
+      actions: db.prepare("UPDATE task_control_action SET chat_id=? WHERE chat_id=?").run(to, from).changes,
+      threads: db.prepare("UPDATE telegram_thread SET chat_id=?,updated_at=? WHERE chat_id=?").run(to, now, from).changes,
+      outbox: db.prepare("UPDATE telegram_outbox SET chat_id=?,updated_at=? WHERE chat_id=?").run(to, now, from).changes,
+      inbox: db.prepare("UPDATE telegram_inbox SET payload_json=json_set(payload_json,'$.chatId',?) WHERE processed_at IS NULL AND json_extract(payload_json,'$.chatId')=?").run(to, from).changes,
+    };
+    const record = { ...(cached.record as Record<string, unknown>), groupChatId: to };
+    db.prepare("UPDATE team_roster SET group_chat_id=?,record_json=?,updated_at=? WHERE team_id=?").run(to, JSON.stringify(record), now, teamId);
+    return { cache: { ...cached, groupChatId: to, record, updatedAt: now }, moved };
+  })()); },
+  /**
    * Records that the owner closed this item thread. Returns false when it was
    * already closed, so the caller can tell a first close from a repeat and
    * refresh the group only once.
