@@ -171,9 +171,10 @@ A receiver who cannot finish returning partial work is a return to the requester
 
 ## 6. What still gates enabling
 
-G01 is recorded. **G02 is the remaining gate**: tested isolation for provider, bot, Git and signing credentials, and a known gap is already recorded, the `.env` bot token being readable by any process running as the same user.
+G01 is recorded, and G02 and G04 were both recorded on 2026-09-20.
+**G02 is still the remaining gate**, because only its decision half is done: jd confirmed that the roster is the trust boundary and accepted the two residual limits, one of which is the `.env` bot token being readable by any process running as the same user. Its evidence half is RTC-12's capability matrix, built inside H04, so G02 closes when TM4 finishes rather than before it starts.
 G03 applies to the control record and is largely supported by the LG-1 pass of 2026-09-17.
-G04 is jd's one-time governance note.
+G04 is recorded in [implementation.md](implementation.md) section 6d: control records are kept as the audit trail and handover branches are deleted once applied or cancelled, and jd owns operations with a named fallback.
 None of them blocks building TM4 behind the disabled capability.
 
 ## 7. Where the new rules land in the slices
