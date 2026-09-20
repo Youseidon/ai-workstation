@@ -1385,3 +1385,101 @@ test("B9 (T0): an anchor that can never be delivered queues one row, then backs 
     team.cleanup();
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* F08: the anchor a completed item leaves behind in the group (B13).          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Drives the race that froze the pilot's card: the prompt reaches DONE while the
+ * agent_run row that completed it still has no ended_at. That is the state the
+ * anchor was rendered and retired in on 2026-09-19 (case 7, outbox 69), and once
+ * the thread is ANCHOR_GONE nothing edits the message again.
+ *
+ * The ordering is written as explicit state changes, never as a wall-clock wait,
+ * so what the test pins is which state the runtime saw, not how fast it ran.
+ */
+function completeLeavingTheRunOpen(workspaceId: number, promptId: number, expiresAtMs: number): string {
+  workspaces.respondToBlockedPrompt(promptId, { content: "Recalculate the amounts from the owner list" });
+  const runId = `b13-complete-${promptId}`;
+  workspaces.beginAgentRun({ runId, workspaceId, promptId, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(expiresAtMs).toISOString(), role: "execute" });
+  workspaces.updateAgentStatus(runId, { requestId: `${runId}-status`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "The owner chose to recalculate.", verificationSummary: "Recalculated the amounts and checked the totals." });
+  const run = (workspaces.promptHistory(promptId).runs as Array<{ id: string; endedAt: string | null }>).find(entry => entry.id === runId);
+  assert.equal(workspaces.promptOutcome(promptId).status, "DONE", "the prompt reads DONE");
+  assert.equal(run?.endedAt, null, "and the run that completed it has no ended_at yet: the B13 race");
+  return runId;
+}
+
+/** What the pilot's frozen card said that a completed item's record must never say. */
+function contradictions(card: string): string[] {
+  return [
+    /Blocked on:/.test(card) ? "tells the reader the completed item is blocked on a decision" : "",
+    /If you wait:/.test(card) ? "tells the reader nothing moves until they choose" : "",
+    /\((?:running|starting)\)/.test(card) ? "shows the run still going" : "",
+  ].filter(entry => entry !== "");
+}
+
+test("B13 (T0): the anchor a completed item leaves in the group reads as completed, not as blocked and running", async () => {
+  let clock = Date.now();
+  const h = harness({ now: () => clock });
+  const chatId = "-41013";
+  const team = await upgradeFixture(h, chatId);
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+
+    clock = Date.now();
+    const prompt = team.prompt("Choose whether amounts are recalculated");
+    const item = h.runtime.openTeamItem(prompt.id);
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === chatId && message.text.includes(itemTag(item.itemId))), "the item anchor");
+    assert.match(anchor.text, /Blocked on:/, "the open item's anchor states the blocker it is waiting on");
+
+    const runId = completeLeavingTheRunOpen(team.workspace.id, prompt.id, clock + 60_000);
+    await deliverPasses(h, 6);
+    // Four seconds later the run row ends, as the pilot's did at 12:58:57.
+    clock += 4_000;
+    workspaces.finishAgentRun(runId, "done");
+    const thread = () => workspaces.telegramThreadFor({ botId: h.botId, chatId, subject: itemSubject(item.itemId) });
+    await waitFor(() => thread().state === "ANCHOR_GONE", "the retired anchor");
+    await deliverPasses(h, 4);
+
+    const frozen = anchor.text;
+    assert.match(frozen, /Completed · /, "the message left in the group says the item is complete");
+    assert.deepEqual(contradictions(frozen), [], `the completed item's permanent record contradicts itself:\n${frozen}`);
+    assert.match(frozen, /\(done\)/, "and shows the run that completed it as finished");
+  } finally {
+    await h.cleanup();
+    team.cleanup();
+  }
+});
+
+test("B13 (T0): a completed item's anchor is not retired while the run that completed it is still open", async () => {
+  let clock = Date.now();
+  const h = harness({ now: () => clock });
+  const chatId = "-41014";
+  const team = await upgradeFixture(h, chatId);
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+
+    clock = Date.now();
+    const prompt = team.prompt("Choose whether amounts are recalculated");
+    const item = h.runtime.openTeamItem(prompt.id);
+    const anchor = await waitFor(() => h.stub.messages.find(message => message.chatId === chatId && message.text.includes(itemTag(item.itemId))), "the item anchor");
+    const thread = () => workspaces.telegramThreadFor({ botId: h.botId, chatId, subject: itemSubject(item.itemId) });
+
+    const runId = completeLeavingTheRunOpen(team.workspace.id, prompt.id, clock + 60_000);
+    await deliverPasses(h, 8);
+    assert.notEqual(thread().state, "ANCHOR_GONE", "the anchor is still live while the run that completed it has not ended");
+    assert.equal(h.stub.calls.filter(call => call.method === "unpinChatMessage").length, 0, "and nothing has unpinned it yet");
+    assert.deepEqual(contradictions(anchor.text), [], `the anchor read during the race contradicts itself:\n${anchor.text}`);
+
+    // Once the run has really ended, the record is final and the anchor retires.
+    clock += 4_000;
+    workspaces.finishAgentRun(runId, "done");
+    await waitFor(() => thread().state === "ANCHOR_GONE", "the retired anchor");
+  } finally {
+    await h.cleanup();
+    team.cleanup();
+  }
+});
