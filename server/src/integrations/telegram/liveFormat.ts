@@ -24,6 +24,20 @@ export interface TelegramTextPayload {
 const MAX_TEXT = 4000;
 const MAX_ANSWER_PREVIEW = 1500;
 
+/**
+ * B6: a card's buttons stop working ten minutes after it was sent, and
+ * `notifyWaitingTasks` posts no second card for a question revision it has
+ * already posted for, so a task can sit awaiting a response behind dead buttons
+ * for as long as it waits. Replying to the card with an answer mints a fresh one
+ * with fresh buttons, and that is the only recovery; it was undiscoverable.
+ *
+ * jd ruled on 2026-09-20 that the card says so and the dedupe stays as it is:
+ * a waiting task may keep its dead buttons, in exchange for no extra posting and
+ * no re-post loop. So this sentence is the fix, and it is on every question card,
+ * because every one of them has buttons that expire.
+ */
+const EXPIRY_RECOVERY = "These buttons expire; a reply with your answer always brings a fresh card.";
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -149,10 +163,10 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
       const summary = record(data.summary) as TaskSummary | null;
       if (summary !== null) {
         const card = formatCard(summary, draft !== null
-          ? { answer: { label: "Your answer", text: draft }, hint: "Save answer keeps the task waiting. Answer and resume continues it." }
+          ? { answer: { label: "Your answer", text: draft }, hint: `Save answer keeps the task waiting. Answer and resume continues it. ${EXPIRY_RECOVERY}` }
           : saved !== null
-            ? { answer: { label: "Saved answer", text: saved }, hint: "Reply to this message to change it." }
-            : { hint: "Reply to this message with your answer." });
+            ? { answer: { label: "Saved answer", text: saved }, hint: `Reply to this message to change it. ${EXPIRY_RECOVERY}` }
+            : { hint: `Reply to this message with your answer. ${EXPIRY_RECOVERY}` });
         return { ...card, replyMarkup };
       }
       const lines = [
@@ -163,11 +177,11 @@ export function formatTelegramMessage(payload: unknown, contentForRef: (ref: str
         "",
       ];
       if (draft !== null) {
-        lines.push("Your answer:", clip(draft, MAX_ANSWER_PREVIEW), "", "Save answer keeps the task waiting. Answer and resume continues it.");
+        lines.push("Your answer:", clip(draft, MAX_ANSWER_PREVIEW), "", `Save answer keeps the task waiting. Answer and resume continues it. ${EXPIRY_RECOVERY}`);
       } else if (saved !== null) {
-        lines.push("Saved answer:", clip(saved, MAX_ANSWER_PREVIEW), "", "Reply to this message to change it.");
+        lines.push("Saved answer:", clip(saved, MAX_ANSWER_PREVIEW), "", `Reply to this message to change it. ${EXPIRY_RECOVERY}`);
       } else {
-        lines.push("Reply to this message with your answer.");
+        lines.push(`Reply to this message with your answer. ${EXPIRY_RECOVERY}`);
       }
       return { text: clip(lines.join("\n"), MAX_TEXT), replyMarkup, entities: [] };
     }
