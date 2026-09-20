@@ -110,7 +110,7 @@ its owner by default; a team topic receives a generic capacity warning.
 | --- | --- | --- |
 | Continue | Acknowledge this quota warning; keep the currently authorized execution and pipeline policy. | Does not authorize new spending, accounts or broader tools. Hard exhaustion becomes a different event. |
 | Prepare to pause | Hold new pipeline starts; request controlled interruption, then checkpoint and optionally summarize. | No promise to finish the current implementation step. If stopping cannot be established, show status unknown and do not release ownership. |
-| Request takeover | Choose a named recipient; freeze and capture, review the exact export, then publish and offer it. | No new receiver starts before publication and confirmed release of the old writer. Failed export leaves the original task held with retry/resume choices. |
+| Request takeover | Freeze and capture, review the exact export, then publish and offer it to whoever is available; no recipient is named (amended 2026-09-20). | No new receiver starts before publication and confirmed release of the old writer. Failed export leaves the original task held with retry/resume choices. |
 | Change provider | Present an explicit provider/model/authentication selection and any billing change, then stop/checkpoint before replacement. | No implicit API fallback or imported credential. Missing compatible provider leaves the task waiting. |
 | Pause now | Interrupt without waiting for an optional summary; save available file state after writing stops. | Show pause requested until confirmed; preserve uncertainty around in-flight external actions. |
 
@@ -138,8 +138,10 @@ The source app holds the original task/pipeline, establishes no managed writer
 remains, and publishes a package plus an offer naming the receiver and workspace.
 The sender approves the exact frozen export once before publication; any later
 file change requires a new capture and preview. There is no requester confirmation after the
-receiver accepts. More than one eligible teammate may discuss the request, but
-only the named receiver can accept this offer.
+receiver accepts. More than one eligible teammate may discuss the request, and
+since 2026-09-20 any of them may accept it: the offer names no receiver and the
+first accept wins, decided by the shared update rather than by which tap reached
+the bot first. A losing accept is told the current holder and goes inert.
 
 The receiving app discovers published offers through Git. Its own bot posts
 Accept and run / Decline with the task, checkpoint, requested provider/model,

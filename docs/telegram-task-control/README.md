@@ -104,9 +104,10 @@ linked task, not a copied pipeline or a second authoritative task database.
 
 ## First-release boundaries
 
-- One trusted team; one named receiver per offer. A topic may be visible to other
-  authorized teammates, but volunteering does not claim execution. Open bidding
-  is a later feature, not a hidden second approval in the named-receiver path.
+- One trusted team. Since 2026-09-20 an offer names no receiver: any available
+  teammate may accept and the first accept wins, decided by the shared control
+  record rather than by which tap arrived first. There is still no second
+  requester approval after an accept, and a losing accept goes inert.
 - One bot per registered workstation. Multiple devices for one person need
   explicit IDs and routing; do not clone bot tokens or workstation identities.
 - Personal control and teammate transfer enable independently (D16). Personal
