@@ -246,7 +246,7 @@ rather than from the transcript.
 | 9 expiry is not renewed | PASS | 2026-09-20 | Card outbox 145 minted 02:13:03Z with both `save_human_response` and `answer_and_resume`; `Save answer` tapped at 02:24:16Z, REJECTED `action_expired`, `response_id` null, `started` 0, `run_id` null. Prompt 4 stayed BLOCKED with no HUMAN_RESPONSE remark and no hold row. No replacement card appeared in the 11 minutes of waiting: the only outbox row was 146, an anchor age edit (B11). Refusal posted as outbox 147 with no actions attached. |
 | 10 cross-owner thread request | SKIPPED | 2026-09-19 | Not a real scenario: a teammate can never learn the owner's prompt id, and the owner cannot `/discuss` their own item. See B15. Item for cases 8, 9 and 11 opened by curl instead, the case 2 route. |
 | 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Jj to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
-| 12 default-off regression | not run | | |
+| 12 default-off regression | DEFERRED | 2026-09-20 | jd's decision: folded into the LT-4 re-run that F01 to F03 require, rather than run on its own. Baseline captured while Team was on: `/api/task-control/team` 200 with the roster, `/api/task-control/team/refresh` 405. With Team off both must answer 403 `team_disabled`, and the 405 becoming a 403 is the check that the gate sits in front of method routing ([workspaceApi.ts:63](../../server/src/workspaceApi.ts#L63)). |
 
 Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B19.
 B16 was merged into B11 on 2026-09-20 and is kept as a pointer.
@@ -397,8 +397,13 @@ From account A, reply `/close` into the thread.
 Check that `/close` from account B is refused first, since close is owner-only.
 
 **Case 12 - default-off regression.**
+Deferred on 2026-09-20 into the LT-4 re-run; see the progress table for the
+Team-on baseline already captured.
 Turn Team off in instance A's Agents settings, check the panels disappear, the
 team API answers 403 `team_disabled`, and personal task control still works.
+Verify the personal side with a read-only command such as `/status`, not by
+tapping prompt 4's personal question card, whose `answer_and_resume` button
+completes the task.
 Turn Team back on afterwards.
 
 **The trap.**

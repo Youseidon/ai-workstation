@@ -20,6 +20,7 @@ The F track comes first, because two of its items are unmet `must` requirements 
   Until it lands, the ids this brief cites do not exist on main.
 - `git status` on main is clean, and no other session is running the harness on this machine.
 - Both pilot instances are stopped, since several F tasks touch files that `tsx watch` reloads under a live pilot.
+  They were stopped at 2026-09-20 03:0xZ by signalling the `concurrently` supervisors directly, because B10 means signalling the launcher alone does nothing.
 - Record the starting commit of main and of `origin/main` in the tracker; the audits use them.
 
 ## 1. Read first
@@ -33,8 +34,12 @@ The F track comes first, because two of its items are unmet `must` requirements 
 
 ## 2. Execution model
 
-Unchanged from [team-track-dev-brief.md](team-track-dev-brief.md) sections 2.1 to 2.4: one worker per task in its own worktree, the same worker card template, the same report shape, no worker merges or pushes.
-Two changes for this track.
+Unchanged from [team-track-dev-brief.md](team-track-dev-brief.md) sections 2.1 to 2.4: the same worker card template, the same report shape, no worker merges or pushes.
+Three changes for this track.
+
+jd's decision of 2026-09-20 splits the work.
+Phase A, tasks F01 and F02, is implemented directly by the orchestrator, because both defects are assertion gaps whose diagnosis is fresh and whose fix depends on understanding how they escaped.
+Everything from Phase B onward goes to one worker per task in its own worktree, as the earlier brief describes.
 
 The tracker is `docs/telegram-task-control/team-burndown-tracker.md`, created before task F01, with one row per task: id, track, status, worker agent id, branch, merged commits, evidence summary, date.
 
@@ -112,6 +117,7 @@ It is required before LT-5, because LT-5 cannot observe a Git exchange on the cu
 After F01, F02 and F03 land, re-run the affected cases from [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) rather than the whole document.
 
 Case 11 is currently PARTIAL because `/close` closed nothing; F02 is what makes it a pass.
+Case 12 was deferred into this re-run on 2026-09-20 rather than run on its own, so it is part of the set, and its Team-on baseline is already recorded in the check document.
 Case 3's `/help` result changes with F01, so its row needs re-recording.
 Case 2 gains a supported route with F03 and should be re-run through the UI instead of curl.
 
