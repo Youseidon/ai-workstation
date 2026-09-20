@@ -39,6 +39,8 @@ export const workspaceApi = {
   confirmTeamCreate(serverUrl:string){return request<{team:{teamId:string;joinCode:string}}>(serverUrl,"/api/task-control/team/create/confirm",{method:"POST",...json({})}).then(r=>r.team);},
   startTeamJoin(serverUrl:string,code:string){return request<{team:{teamId:string;groupChatId:string}}>(serverUrl,"/api/task-control/team/join",{method:"POST",...json({code})}).then(r=>r.team);},
   confirmTeamJoin(serverUrl:string){return request<{team:{teamId:string;instruction:string}}>(serverUrl,"/api/task-control/team/join/confirm",{method:"POST",...json({})}).then(r=>r.team);},
+  /** Opens a Team item thread on the owner's own work item (R-B). Refused with prompt_already_complete once the task is finished. */
+  openTeamItem(serverUrl:string,promptId:number){return request<{item:{itemId:string}}>(serverUrl,"/api/task-control/team/items",{method:"POST",...json({promptId})}).then(r=>r.item);},
   operations(serverUrl:string,workspaceId?:number){return request<OperationsSnapshot>(serverUrl,`/api/operations${workspaceId===undefined?"":`?workspace=${workspaceId}`}`);},
   /** Records a fresh audit of what the orchestration records already claim. */
   auditSuite(serverUrl:string,suiteId:number){return request<{verification:SuiteVerificationRecord}>(serverUrl,`/api/suites/${suiteId}/verification`,{method:"POST",body:"{}"}).then(r=>r.verification);},

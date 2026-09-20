@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { OperationsPrompt, OperationsSuite, StartUnknownClassification } from "@agent-console/shared";
 import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
+import { TeamThreadPanel } from "@/components/tasks/TeamThreadPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
@@ -246,6 +247,8 @@ export function WorkItemDetail({
                 Open in Chat
               </Link>
             </div>
+
+            <TeamThreadPanel key={item.prompt.id} item={item} />
 
             {item.latestIntervention !== null && (
               <div className="rounded-panel border border-warning/30 bg-warning/5 p-4">
