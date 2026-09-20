@@ -1,6 +1,7 @@
 # Team pilot bug log
 
-Defects found while running the solo two-account Team checks on 2026-09-19.
+Defects found while running the solo two-account Team checks on 2026-09-19 and
+2026-09-20.
 See [solo-team-join-check.md](solo-team-join-check.md) and
 [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) for the
 checks that exposed them.
@@ -339,8 +340,10 @@ retire the anchor only once the run has actually ended.
 
 ## B14 - closing an item arms fresh grant buttons on the closed item
 
-Severity: low; the buttons work, and what they grant is revoked again on the
-next pass.
+Severity: low when the item closed because its task completed, high when it was
+closed by `/close` on a task that is still blocked.
+The "revoked again on the next pass" reasoning below holds only in the first
+case; see B17 for the second, where nothing ever revokes the restored grant.
 
 When a task completes, `finishCompletedTeamItems` revokes every grant and
 refreshes the access message
@@ -457,6 +460,64 @@ Suggested fix: exclude the rendered age from the equality check, or compare a
 payload with the age field normalized, so an edit is queued only when the task
 state actually changes. Refreshing the age on real changes, and otherwise on a
 much coarser schedule, would keep the display useful without the churn.
+
+## B17 - `/close` ends the grants but does not close the thread
+
+Severity: high; the command reports `Thread closed; grants ended.` while the
+thread stays open, keeps churning, and can have its access restored permanently
+by a button the close itself published.
+
+`close_thread` does exactly two things
+([taskControl.ts:258-261](../../server/src/taskControl.ts#L258-L261)): it calls
+`revokeItemGrants` and records a receipt reading `Thread closed; grants ended.`
+Nothing marks the thread closed, retires the anchor, or unpins it, and the card
+that mints the action promises both halves: `Close this item thread and end every
+active grant.`
+There is no stored notion of a closed item to mark: `item_link` carries only
+`item_id`, `prompt_id`, `role`, `epoch` and `control_head`.
+
+The product does have a graceful retire, and `/close` does not use it.
+`markTelegramThreadAnchorGone` is reached from `finishCompletedTeamItems`, which
+also unpins the anchor
+([runtime.ts:947-956](../../server/src/integrations/telegram/runtime.ts#L947-L956)),
+and otherwise only from the adapter's permanent-failure paths
+([adapter.ts:128](../../server/src/integrations/telegram/adapter.ts#L128),
+[adapter.ts:139](../../server/src/integrations/telegram/adapter.ts#L139),
+[adapter.ts:158](../../server/src/integrations/telegram/adapter.ts#L158)).
+Both of those require the prompt to be `DONE` or `SKIPPED`
+([runtime.ts:942](../../server/src/integrations/telegram/runtime.ts#L942)), so a
+thread closed on a still-blocked task is never retired.
+
+Observed 2026-09-20 on item `awi1_70e8584ed9e957f9fd198dd8`, prompt 4 `BLOCKED`,
+closed by account A at 02:30:34Z:
+
+- the receipt said `Thread closed; grants ended.` and both grants were revoked,
+  `answer` at 02:30:34.423Z and `resume` already at 02:27:05.085Z
+- `telegram_thread` row 10 for that item stayed `state ACTIVE` with
+  `status_message_id 79`, against row 8 for the item that completion closed,
+  which is `ANCHOR_GONE`
+- the anchor stayed pinned and kept taking its periodic edit (B16)
+
+The third consequence is the one that matters, and it also corrects B14's
+severity. That entry called the grant buttons harmless because "the next pass of
+`finishCompletedTeamItems` revokes it", which is true only while the prompt is
+complete. `revokeItemGrants` has exactly two production callers, this close path
+and that completion sweeper
+([taskControl.ts:259](../../server/src/taskControl.ts#L259),
+[runtime.ts:943](../../server/src/integrations/telegram/runtime.ts#L943)), and the
+sweeper skips every prompt that is not `DONE` or `SKIPPED`.
+
+So on a thread closed while its task is still blocked, the closing access refresh
+publishes `Grant context`, `Grant answer` and `Grant resume`
+(observed as outbox 156, refs `tc_Yx9pV7N-h-abyb9-BVVgBQXN`,
+`tc_7yoQSKZDp8Yo25HRIrXfNafl` and `tc_lCDqXtTeHbUPWTXitzIcI8WP`, live until
+02:40:34Z), and a tap on any of them restores that capability with nothing left in
+the system that will ever revoke it.
+
+Suggested fix: give a closed item a persisted closed state, refuse granted
+commands and further grants against it, retire and unpin its anchor the way
+completion does, and refresh the access message with no actions on the pass that
+closes it (which is also B14's fix).
 
 ## Unconfirmed
 

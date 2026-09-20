@@ -229,7 +229,7 @@ rather than from the transcript.
 | 11 close the thread | not run | | Run after 8 and 9, while prompt 4 is still open and unanswered. |
 | 12 default-off regression | not run | | |
 
-Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B16.
+Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B17.
 
 ## Resuming in a fresh session
 
