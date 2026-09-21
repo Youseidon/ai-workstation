@@ -45,6 +45,20 @@ function roster(teamId: string, groupChatId: string, botId: string, remoteUrl: s
   });
 }
 
+/**
+ * team_roster has no removal API, so a fixture that upserts a cache row must clear it
+ * itself. AGENT_CONSOLE_REPO_ROOT is shared across runs, so a row left behind is still
+ * there on the next run against the same root and the sighting counts below climb.
+ */
+function forgetTeamRoster(teamId: string): void {
+  const db = new Database(join(config.repoRoot, ".agent-console/console.sqlite"));
+  try {
+    db.prepare("DELETE FROM team_roster WHERE team_id=?").run(teamId);
+  } finally {
+    db.close();
+  }
+}
+
 /** Every column in the schema that stores a Telegram chat id, checked against the schema rather than the bug log. */
 function chatIdSightings(chatId: string): Record<string, number> {
   const db = new Database(join(config.repoRoot, ".agent-console/console.sqlite"), { readonly: true });
@@ -157,6 +171,7 @@ test("B8: the rewrite moves every place the old team chat id lives, in one trans
   } finally {
     workspaces.removeTelegramRecordsForBot(botId);
     for (const actor of workspaces.taskControlActors("telegram")) workspaces.removeTaskControlActor(actor.id);
+    forgetTeamRoster(teamId);
     f.cleanup();
   }
 });
@@ -186,6 +201,7 @@ test("B8: the migrated roster is republished by compare-and-swap, and a lost rac
     );
     assert.equal((await remote.read())?.roster.groupChatId, toChatId, "the lost race left the published roster alone");
   } finally {
+    forgetTeamRoster(teamId);
     rmSync(bare, { recursive: true, force: true });
   }
 });
