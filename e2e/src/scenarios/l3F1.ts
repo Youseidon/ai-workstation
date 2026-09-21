@@ -27,8 +27,16 @@ interface OutboxRow {
 
 export const outboxRow = (harness: L1Context["harness"], id: number) => harness.query<OutboxRow>("SELECT id,state,attempt_count,last_error,next_attempt_at,operation,target_outbox_id,payload_json FROM telegram_outbox WHERE id = ?", id)[0];
 const editsOf = (harness: L1Context["harness"], target: number) => harness.query<OutboxRow>("SELECT id,state,attempt_count,last_error,next_attempt_at,operation,target_outbox_id,payload_json FROM telegram_outbox WHERE target_outbox_id = ? ORDER BY id", target);
-const editCalls = (harness: L1Context["harness"], since = 0) => harness.telegramCalls().filter((call) => call.method === "editMessageText" && call.at >= since);
-const sendCalls = (harness: L1Context["harness"], since = 0) => harness.telegramCalls().filter((call) => call.method === "sendMessage" && call.at >= since);
+/*
+ * `since` is an index into the Bot API call log, not a wall-clock instant. A
+ * timestamp boundary cannot separate a call made just before it from one made
+ * just after: both land in the same millisecond on a fast machine, so a call the
+ * scenario means to exclude is counted and the count assertions below go red for
+ * no regression. The log only ever grows, so its length is an exact cut.
+ */
+const callCursor = (harness: L1Context["harness"]) => harness.telegramCalls().length;
+const editCalls = (harness: L1Context["harness"], since = 0) => harness.telegramCalls().slice(since).filter((call) => call.method === "editMessageText");
+const sendCalls = (harness: L1Context["harness"], since = 0) => harness.telegramCalls().slice(since).filter((call) => call.method === "sendMessage");
 
 export async function queueText(phone: L1Context["phone"], text: string): Promise<number> {
   return (await state.post<{ outboxId: number }>("/api/task-control/telegram/harness/outbox", { chatId: phone.chatId, text })).outboxId;
@@ -64,7 +72,7 @@ export async function editInPlace(ctx: L1Context): Promise<void> {
   const { harness, phone } = ctx;
   const base = label("Status v0");
   const { outboxId, message } = await sendBase(ctx, base);
-  const startedAt = Date.now();
+  const startedAt = callCursor(harness);
   const cursor = await phone.cursor();
   const first = await queueEdit(outboxId, text(`${base} v1`));
   await showsText(phone, message, `${base} v1`);
@@ -166,7 +174,7 @@ export async function unmodifiedEditIsSuccess(ctx: L1Context): Promise<void> {
   const { harness, phone } = ctx;
   const base = label("Unchanged");
   const { outboxId, message } = await sendBase(ctx, base);
-  const startedAt = Date.now();
+  const startedAt = callCursor(harness);
   const edit = await queueEdit(outboxId, text(base));
   await eventually("the unchanged edit to be SENT", async () => outboxRow(harness, edit)?.state === "SENT");
   await observeQuietPeriod(3_000, "a retry of an unmodified edit");
@@ -202,7 +210,7 @@ export async function editOfDeletedMessage(ctx: L1Context): Promise<void> {
   const { outboxId, message } = await sendBase(ctx, base);
   await phone.deleteMessage(message);
   const failedBefore = (await telegramStatus()).outbox.failed;
-  const startedAt = Date.now();
+  const startedAt = callCursor(harness);
   const edit = await queueEdit(outboxId, text(`${base} edited`));
   const failed = await eventually("the edit to fail", async () => (outboxRow(harness, edit)?.state === "FAILED" ? outboxRow(harness, edit) : undefined), 30_000);
   expect(failed).toMatchObject({ attempt_count: 1, next_attempt_at: null });
@@ -301,7 +309,7 @@ export async function editsSurviveRestart(ctx: L1Context, coalesce: boolean): Pr
   const { harness, phone } = ctx;
   const base = label(`Restart ${coalesce ? "burst" : "single"}`);
   const { outboxId, message } = await sendBase(ctx, base);
-  const started = Date.now();
+  const started = callCursor(harness);
   // With the route cut nothing is delivered, so the edits are durable queued rows when the server restarts.
   harness.network.cutTelegram("refuse");
   await eventually("the transport to back off", async () => ((await telegramStatus()).state === "backoff" ? true : undefined), 60_000);
@@ -312,7 +320,7 @@ export async function editsSurviveRestart(ctx: L1Context, coalesce: boolean): Pr
   await waitForTelegramState("polling", 120_000);
   await showsText(phone, message, `${base} ${suffixes.at(-1)}`, 60_000);
   await outboxClear();
-  const delivered = harness.telegramCalls().filter((call) => call.at >= started && call.method === "editMessageText" && "outcome" in call && call.outcome === 200);
+  const delivered = harness.telegramCalls().slice(started).filter((call) => call.method === "editMessageText" && "outcome" in call && call.outcome === 200);
   expect(delivered.map((call) => call.body.text)).toEqual([`${base} ${suffixes.at(-1)}`]);
   expect(editsOf(harness, outboxId).filter((row) => row.state === "SENT")).toHaveLength(1);
 }
