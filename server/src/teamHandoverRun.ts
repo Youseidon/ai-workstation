@@ -210,19 +210,33 @@ export interface OfferCard {
   inert: boolean;
 }
 
+/**
+ * A handover button's payload. The receiver's offer card and the requester's
+ * review card (H05) both carry one, so a tap on either routes through the same
+ * capability gate and reaches the handover runtime with the item it is about.
+ */
 interface HandoverActionPayload {
-  kind: "handover_offer";
+  kind: "handover_offer" | "handover_review";
   itemId: string;
   epoch: number;
   packageHash: string;
+  /** Present on a review card: the result this tap would apply or send back. */
+  resultId: string | null;
 }
 
 export function decodeHandoverActionPayload(json: string | null): HandoverActionPayload | null {
   if (json === null) return null;
   try {
     const value = JSON.parse(json) as Partial<HandoverActionPayload>;
-    if (value.kind !== "handover_offer" || typeof value.itemId !== "string" || typeof value.epoch !== "number") return null;
-    return { kind: "handover_offer", itemId: value.itemId, epoch: value.epoch, packageHash: String(value.packageHash ?? "") };
+    if (value.kind !== "handover_offer" && value.kind !== "handover_review") return null;
+    if (typeof value.itemId !== "string" || typeof value.epoch !== "number") return null;
+    return {
+      kind: value.kind,
+      itemId: value.itemId,
+      epoch: value.epoch,
+      packageHash: String(value.packageHash ?? ""),
+      resultId: typeof value.resultId === "string" ? value.resultId : null,
+    };
   } catch { return null; }
 }
 
@@ -280,7 +294,7 @@ function postOfferCard(
   // the local decision cannot be overridden by a tap.
   const wanted: TaskControlAction[] = comparison.runnable ? ["accept_offer", "decline_offer"] : ["decline_offer"];
   const actions = wanted.map(action => ({ ref: actionRef(), action }));
-  const payload: HandoverActionPayload = { kind: "handover_offer", itemId: offer.itemId, epoch: offer.epoch, packageHash: offer.packageHash };
+  const payload: HandoverActionPayload = { kind: "handover_offer", itemId: offer.itemId, epoch: offer.epoch, packageHash: offer.packageHash, resultId: null };
   for (const action of actions) {
     workspaces.createTaskControlAction({
       ref: action.ref,
@@ -792,7 +806,7 @@ export interface ReturnResult {
   label: "full" | "partial";
   releasedExecutor: boolean;
   stopReason: HandoverStopReason;
-  /** The Result record's own id, which H05's apply and receipt quote back. */
+  /** The Result record's own id, which the requester's apply and receipt quote back. */
   resultId: string;
 }
 
@@ -814,7 +828,7 @@ export async function returnHandoverWork(
     runId: string;
     push: () => Promise<void>;
     now?: Date;
-    /** protocol.md section 3's Result record beyond the commit and the label; H05 records it. */
+    /** protocol.md section 3's Result record beyond the commit and the label. */
     resultId?: string;
     verification?: string[];
     uncertainEffects?: string[];
@@ -822,6 +836,7 @@ export async function returnHandoverWork(
 ): Promise<ReturnResult> {
   const { env } = input;
   const label: "full" | "partial" = input.stopReason === "completed" ? "full" : "partial";
+  const resultId = input.resultId ?? `${input.commandIdPrefix}-result`;
   const actor = { personId: env.personId, workstationId: env.workstationId };
 
   workspaces.markStartIntent(input.runId, "KNOWN_STOPPED", `The run ended: ${input.stopReason}.`);
@@ -833,16 +848,39 @@ export async function returnHandoverWork(
   // The result is published before the record says it was returned.
   await input.push();
 
+  const current = await remote.read();
+  if (current === null) throw new WorkspaceError(404, "control_not_found", "This item has no control record yet.");
+
   const returned = await advance(remote, {
     event: "return_work", actor, commandId: `${input.commandIdPrefix}-return`, roster: env.roster, now: input.now,
-    payload: { resultCommit: input.resultCommit, resultLabel: label },
+    payload: {
+      resultCommit: input.resultCommit,
+      resultLabel: label,
+      resultId,
+      // protocol.md section 3's Result record. Evidence and claimed completion
+      // stay separate (B26): a returned branch is not a claim that the work is
+      // right, so the evidence travels as its own field and the requester
+      // reviews it. `RETURNED` is what releases the executor, and the release
+      // evidence is recorded here because there is no release action.
+      result: {
+        resultId,
+        epoch: current.record.epoch,
+        resultCommit: input.resultCommit,
+        label,
+        verification: input.verification ?? [],
+        uncertainEffects: input.uncertainEffects ?? [],
+        releaseEvidence: `${env.personId} stopped ${input.runId} on ${env.workstationId}: ${input.stopReason}.`,
+        executor: env.personId,
+        returnedAt: (input.now ?? new Date()).toISOString(),
+      },
+    },
   });
   return {
     record: returned.record,
     label,
     releasedExecutor: returned.record.executor === null,
     stopReason: input.stopReason,
-    resultId: input.resultId ?? "",
+    resultId,
   };
 }
 

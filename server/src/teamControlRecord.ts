@@ -112,6 +112,27 @@ export interface ControlTransitionPayload {
   outcome?: "full" | "partial" | "error";
   resultCommit?: string;
   resultLabel?: "full" | "partial";
+  /**
+   * protocol.md section 3's Result record. `return_work` records it and
+   * `apply_result` and `application_reconciled` quote it forward, so one result
+   * id runs through the return, the application and the receipt, and a
+   * requester reading the record at any of those states finds the same result
+   * without walking the history (H05).
+   */
+  resultId?: string;
+  result?: {
+    resultId: string;
+    epoch: number;
+    resultCommit: string;
+    label: "full" | "partial";
+    verification: string[];
+    uncertainEffects: string[];
+    releaseEvidence: string;
+    executor: string;
+    returnedAt: string;
+  };
+  /** The merged tree an application is aiming at, recorded before it is reached. */
+  targetTree?: string;
   baselineValidated?: boolean;
   acceptanceMet?: boolean;
   requirementsRevision?: string;
