@@ -106,3 +106,59 @@ test.fixme("TM-T1-H2: contention and offline behaviour across two workstations",
     await team.dispose();
   }
 });
+
+test.fixme("TM-T1-H3: the return crosses back and jd applies it from his phone", async () => {
+  const team = await startTeamHarness({
+    envA: { settings: { "team.enabled": true, "team.handoverEnabled": true } },
+    envB: { settings: { "team.enabled": true, "team.handoverEnabled": true } },
+  });
+  try {
+    /*
+     * `fixme` for the same two reasons as the cases above, and the second is
+     * unchanged at H05: handover still has no HTTP route and no long-poll
+     * wiring. `server/src/workspaceApi.ts` exposes no
+     * `/api/task-control/team/handover/…` route, `telegramLiveRuntime`
+     * schedules no control-record poll, and `registerHandoverTapHandler` has no
+     * production caller, so a Playwright harness has nothing to drive.
+     *
+     * The server tier of this row lives in `server/src/teamResultApply.test.ts`
+     * and passes, 23/23. It covers everything that does not need two databases
+     * or a delivered Telegram update, which for this row is most of it: the
+     * complete baseline comparison against a real dirty checkout, the isolated
+     * integration checkout and Git's own conflict state, the ordinary merge,
+     * idempotence, restart recovery against the pre and target manifests, the
+     * partial application, Request changes at a new epoch, the closed-item
+     * refusal and G04 retention.
+     *
+     * What is left here is what only two app roots, two bots and one fake group
+     * can show:
+     *
+     * 1. Env B taps Return work and the completion report is posted in the item
+     *    thread by ENV B'S OWN BOT; jd's review card is posted by ENV A'S bot.
+     * 2. The review card on jd's phone shows Review, Request changes and Apply,
+     *    and shows NO Apply button at all when the merge is not clean.
+     * 3. D01: env A is STOPPED when the work is returned. The completion report
+     *    is visible in the thread at once, and Apply waits for env A; when env A
+     *    returns, the review card appears and the tap applies.
+     * 4. One `return_work` receipt and one `apply_result` receipt, each applied
+     *    once, with duplicate callback delivery answered from the first receipt
+     *    and producing no second merge.
+     * 5. The anchor renders from the completed state and retires only once the
+     *    run has actually ended (F08), and the edits are bounded on material
+     *    content (F07).
+     * 6. Request changes posts a fresh open-call offer card in the thread that
+     *    names no receiver, and env B discovers it on its next shared-record
+     *    read; a teammate who declined the previous round still sees it.
+     * 7. B28: closing or leaving the Telegram thread from either phone
+     *    completes, cancels and reassigns nothing.
+     * 8. A Telegram close or edit failure after a recorded application does not
+     *    roll it back: the card fails to edit and the item stays applied.
+     * 9. No token, absolute path or credential appears in either bot's
+     *    transcript, in `aw/handover/<item>`, in the control record or in its
+     *    events.
+     */
+    expect(team.envA.app.serverUrl).toBeTruthy();
+  } finally {
+    await team.dispose();
+  }
+});
