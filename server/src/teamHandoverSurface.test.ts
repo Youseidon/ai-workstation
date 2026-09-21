@@ -23,6 +23,7 @@ import {
   reviewItemHandover,
   requestItemChanges,
   handleHandoverTap,
+  knownHandoverRecord,
   listControlItems,
   pollControlRecords,
   previewItemHandover,
@@ -181,6 +182,32 @@ test("C1: the requester's route path captures, publishes and leaves an open call
     // HEAD, the index and the worktree are untouched by the capture.
     assert.equal(git(f.source, ["rev-parse", "--abbrev-ref", "HEAD"]), "work");
     assert.equal(git(f.source, ["status", "--porcelain=v1"]).split("\n").length, 2);
+  } finally {
+    f.dispose();
+    disable();
+  }
+});
+
+/*
+ * H07: the reader the `/close` guard asks. `TelegramLiveRuntime` registers it
+ * beside the tap handler, so this is the production probe rather than a stub.
+ */
+test("H07: this workstation's own mirror answers what state the item's handover is in, with no remote", async () => {
+  enable();
+  const f = fixture("surface-close-guard");
+  try {
+    assert.equal(await knownHandoverRecord(f.itemId), null, "an item with no control record reads as no handover");
+    const { record } = await offered(f);
+    assert.equal(record.state, "OFFERED");
+
+    // The shared repository goes away entirely. Closing a thread is the owner's
+    // own decision on their own workstation, so the guard must still be able to
+    // ask, and the mirror is what answers.
+    rmSync(f.bare, { recursive: true, force: true });
+    const known = await knownHandoverRecord(f.itemId);
+    assert.equal(known?.state, "OFFERED", "the state comes from the local mirror, not a fetch");
+    assert.equal(known?.itemId, f.itemId);
+    assert.equal(await knownHandoverRecord(mintItemId()), null, "and an item this workstation never saw reads as no handover");
   } finally {
     f.dispose();
     disable();

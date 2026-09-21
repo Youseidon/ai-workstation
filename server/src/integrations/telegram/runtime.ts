@@ -25,6 +25,7 @@ import {
   applyItemHandover,
   beginItemHandover,
   handleHandoverTap,
+  knownHandoverRecord,
   pollControlRecords,
   previewItemHandover,
   publishItemHandover,
@@ -675,6 +676,10 @@ export class TelegramLiveRuntime {
     // already passed the capability gate in TaskControlService, so this only
     // routes it; nothing below re-decides whether handover is allowed.
     control.registerHandoverTapHandler(tap => handleHandoverTap(this.surfaceContext(botId), tap));
+    // H07: the close guard's reader. It is attached whatever the handover
+    // capability says, because an item handed over before handover was switched
+    // off still carries somebody else's unapplied work.
+    control.registerHandoverStateProbe(itemId => knownHandoverRecord(itemId));
     const controller = new AbortController();
     const session: Session = { controller, botId, api, control, adapter: undefined as unknown as TelegramAdapter, done: Promise.resolve(), delivering: null };
     session.adapter = new TelegramAdapter(botId, api, control, {

@@ -10,6 +10,7 @@ import { settings } from "./settings.ts";
 import type { HandoverTap } from "./taskControl.ts";
 import type { TeamRoster, TeamMember } from "./teamRoster.ts";
 import {
+  BareGitControlRecordRemote,
   RemoteGitControlRecordRemote,
   controlRef,
   handoverBranch,
@@ -748,6 +749,28 @@ export function postReturnWorkCard(context: SurfaceContext, itemId: string, run:
     }),
     subject: itemSubject(itemId),
   });
+}
+
+/* ------------------------------ the close guard ----------------------------- */
+
+/**
+ * The item's control record as this workstation already knows it, which is what
+ * the `/close` guard in `TaskControlService` asks (H07).
+ *
+ * It reads the **local mirror only** and never fetches. Closing a thread is the
+ * owner's own decision on their own workstation and must not wait on, or be
+ * refused by, an unreachable remote; and the mirror already carries every
+ * transition this workstation has taken part in or read, because the requester
+ * is the workstation that created the record and the 5-second control read
+ * refreshes it. A mirror that is behind can only refuse a close that has since
+ * become allowed, which the next read clears, and never allow one that would
+ * destroy a receiver's work this workstation has heard about.
+ */
+export async function knownHandoverRecord(itemId: string): Promise<ControlRecord | null> {
+  const bare = controlBare();
+  if (!existsSync(bare)) return null;
+  const snapshot = await new BareGitControlRecordRemote(bare, itemId).read();
+  return snapshot?.record ?? null;
 }
 
 /* ----------------------------- the control poll ----------------------------- */
