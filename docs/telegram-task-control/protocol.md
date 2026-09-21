@@ -87,14 +87,47 @@ Configure an explicit private remote for each project. Use a separate app-owned
 Git administrative checkout, outside agent access, to manage transfer metadata.
 Do not change the developer's branch, index or remote configuration to publish.
 
-Branch layout (under `refs/heads/`; names are reserved by this feature):
+Ref layout. Names are reserved by this feature.
 
 ```text
-aw/team/<project-id>                  signed project enrollment history
-aw/control/<task-id>                  ordered task state and event history
-aw/checkpoint/<task-id>/<package-id>   published immutable checkpoint
-aw/result/<task-id>/<result-id>       published immutable returned version
+refs/aw/team                              signed project enrollment history
+refs/aw/items/<item>/control              ordered item state and event history
+refs/heads/aw/handover/<item>             snapshot commit, then result commits
+refs/heads/aw/checkpoint/<item>/<pkg-id>  published immutable checkpoint
+refs/heads/aw/result/<item>/<result-id>   published immutable returned version
 ```
+
+The last two are specified here but are **not what TM4 builds**. TM4 carries the
+snapshot commit and the result commits on the one `aw/handover/<item>` branch, per
+[teammate-design.md](teammate-design.md) section 5.4 and the return rule in
+[handover-rules.md](handover-rules.md) section 4.5. They stay in this
+specification as the separated form a later release may need; nothing in TM4
+asserts them, and the immutability rule below applies to them if they are ever
+built.
+
+**Amended 2026-09-21 by jd's ruling**, which settled a disagreement this section
+had with [teammate-design.md](teammate-design.md), [handover-rules.md](handover-rules.md),
+the H02 task row and the G04 record. This section previously put every record
+under `refs/heads/` and keyed them to `<task-id>`, which predates the item
+identity TM2 introduced. The records are keyed to `<item>`, which is what
+`item_link` and the group tags are built from, and the control record lives
+outside `refs/heads/` as a custom ref.
+
+The condition that decides this was tested rather than assumed.
+teammate-design.md made the custom ref primary and an ordinary branch
+`aw/control/<item>` its contingency, to be taken only if the host failed to
+reject a non-fast-forward update of a ref outside `refs/heads`.
+LG-1 tested exactly that on 2026-09-17 and passed: custom `refs/aw/*` refs were
+accepted, a divergent non-fast-forward update was rejected, an `aw/handover/*`
+branch was accepted and no Actions run was triggered.
+So the contingency never fired, and `refs/aw/team` has shipped on that evidence
+since TM1. If a future host does not hold that line, the contingency is still
+`aw/control/<item>` as an ordinary branch, where Git guarantees the rejection.
+
+Keeping the control record out of `refs/heads/` also keeps handover state out of
+the branch namespace the remote protects for code, which is the separation G04's
+retention ruling depends on: the handover branch is deleted once the item is
+applied or cancelled, and the control record and its events are kept.
 
 Control branches contain a current `state.json` plus append-only
 `events/<event-id>.json`. Each update is a single-parent signed commit whose parent

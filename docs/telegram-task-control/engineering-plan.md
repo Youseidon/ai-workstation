@@ -451,9 +451,19 @@ T0, seven scenarios, each table-driven rather than split per case:
 | TM-T0-2 | Grant matrix: every command and action against owner, other person with and without each capability, revoked, stranger, and after a handover starts. |
 | TM-T0-3 | Join code: encode, decode, expiry, tampering, wrong team, reused invite id. |
 | TM-T0-4 | Shared record compare-and-swap, roster and control: concurrent writers, uncertain push found by command id, loser re-validates and stays lost. |
-| TM-T0-5 | Migrations 24, 25 and 26, each from its predecessor: both table rebuilds preserve rows and indexes, C1 threads are unchanged, the group actor index stops duplicates, and pre-upgrade cards still answer and resume exactly once. Each slice adds its own case. |
-| TM-T0-6 | Snapshot capture: HEAD, index and worktree untouched, untracked included, ignored excluded, escaping symlink and submodule refused. |
-| TM-T0-7 | Apply: clean merge completes once, conflict leaves Git's own conflict state and does not complete, second apply returns the first receipt. |
+| TM-T0-5 | Migrations 24 to 29, each from its predecessor: every table rebuild preserves rows and indexes, C1 threads are unchanged, the group actor index stops duplicates, and pre-upgrade cards still answer and resume exactly once. Each slice adds its own case. 27 is F02's closed columns, 28 is F07's `telegram_outbox.anchor`, 29 is TM4's seven actions. |
+| TM-T0-6 | **The item control record and its lifecycle**: protocol.md section 5's table built rather than summarized, single-parent writes, the remote's non-fast-forward rejection as the compare-and-swap, the simultaneous-accept race at the record tier, uncertain-push resolution by command id, stable error codes on an out-of-table transition, epoch advance, offer expiry, and `item_link.control_head` written and read back across a restart. |
+| TM-T0-7 | **Capture, preview and publish**: HEAD, index and worktree untouched, untracked included, ignored excluded, escaping symlink, submodule and LFS refused, the closed-item and completed-during-capture refusals, the secret warning taking its own confirmation, and the branch pushed and verified before the record is published. |
+
+**Amended 2026-09-21 by jd's ruling.** TM-T0-6 previously read "Snapshot
+capture" and TM-T0-7 "Apply", which contradicted the H02 and H03 rows of
+[team-burndown-dev-brief.md](team-burndown-dev-brief.md) section 5: H02 is the
+control record and migration and says "TM-T0-6 passes", H03 is capture and offer
+and says "TM-T0-7 passes". Both readings could not hold. The brief wins, because
+the alternative left H02 and migration 29 with no T0 row at all, while the apply
+content this row used to carry is already covered at the T1 tier by TM-T1-H1's
+clean apply and TM-T1-H3's conflict and idempotent re-apply, which are H05's own
+acceptance criteria. Found by H01 while writing [tm4.md](../e2e-scenarios/tm4.md).
 
 The `team` summary audience and the item subject in the thread registry are new
 cases in the existing summary and registry test files, not new scenarios.
