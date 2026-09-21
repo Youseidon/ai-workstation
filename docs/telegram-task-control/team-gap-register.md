@@ -37,7 +37,11 @@ It was in no card at all, which is the process failure worth naming: the H track
 
 ### C2. Nothing has been run against the full test suite
 
-**Status: part-advanced. V1 and V2 are done. V3, V4 and V5 are outstanding.**
+**Status: part-advanced. V1, V2 and V3 are done. V4 and V5 are outstanding.**
+
+V3, the burn-ins, completed 2026-09-22: `tm3-grants.spec.ts` at `9 passed (7.0m)` and `tm4-handover.spec.ts` at `9 passed (8.8m)`, each scenario three times, zero flaky and zero retries.
+The orchestrator re-ran the handover burn-in itself at `9 passed (10.0m)`.
+Gap H-3 and G02 closed inside it.
 
 V2 completed 2026-09-22 by the orchestrator, since F00B's proof runs had already produced most of it:
 
@@ -88,13 +92,7 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 ### H-3. G02 still gates enabling handover
 
-**Status: H-2's rows now pass, so the evidence exists. G02 closes when Phase V's burn-in confirms it holds at 3 repeats rather than once.**
-
-The decision half is recorded: jd confirmed on 2026-09-20 that the roster is the trust boundary.
-The evidence half now exists, because H04 built RTC-12's capability matrix and it passes at the server tier, covering within-limit, a grantable delta, a hard deny and unknown enforcement.
-
-It is **not** recorded as closed, because the T1 rows that exercise that matrix end to end are the three unrun ones above.
-Closing it on server-tier evidence alone would be the same shortcut the F track spent nine tasks undoing.
+**CLOSED 2026-09-22 by V3. See the closed section at the foot of this file.**
 
 ## Medium
 
@@ -211,3 +209,23 @@ Two non-deterministic fixtures repaired, both test-only, no product change.
 Verified totals: server suite 417/417 three times against one unchanged root; T1 `127 passed (24.8m)` with 0 failed, 0 skipped and 0 flaky, including all three TM-T1 handover rows; typecheck clean across four workspaces; diff confined to two test files; both team flags still `fallback: false`.
 
 **No product defect was found.** All thirty T1 spec files ran and passed, including the twenty-one that had not run in the prior session, so the first-discovery risk F00B's card warned audit 3 about did not materialise.
+
+### H-3 and G02, the isolation evidence. Closed 2026-09-22 by V3.
+
+G02's decision half was confirmed by jd on 2026-09-20; the evidence half is what was missing, and H-3 required it at **3 repeats rather than once**.
+
+Both tiers now hold at three repeats:
+
+| Tier | Evidence | Repeats |
+| --- | --- | --- |
+| T1, end to end | `TM-T1-H1` in the `tm4-handover.spec.ts` burn-in | 3, twice over: the V3 worker at `9 passed (8.8m)` and the orchestrator's own re-run at `9 passed (10.0m)`, both exit 0, 0 flaky, 0 retries |
+| Server, the capability matrix | the four `RTC-12` rows at `server/src/teamHandoverRun.test.ts:496`, `:513`, `:525`, `:535`, plus `:565` that a hard denial cannot be overridden from Telegram | 3, against one unchanged root |
+
+**The V3 worker flagged a scope gap rather than asserting G02 closed, and it was right to.**
+It observed that `TM-T1-H1` exercises only the within-limit path end to end and does not itself enumerate the four matrix rows, and it declined to claim the server tier had run three times because that was outside what it had run.
+It was mistaken only in believing the server tier had run once: V2's server suite ran **three times against one unchanged root** and `teamHandoverRun.test.ts` is matched by that glob, so the matrix rows were already inside all three passes.
+The orchestrator did not rely on that inference and re-ran the four rows three times directly, plus the whole file at 34/34.
+
+So the honest statement is: the receiver's own policy decides, proven end to end at 3 repeats for the runnable path, and proven row by row at 3 repeats at the server tier.
+The two residual limits jd accepted on 2026-09-20 are unchanged and remain accepted: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment.
+`TM-T1-H1:225-227` additionally asserts no credential reaches the transcript, which passed on all six repeats across the two burn-ins.
