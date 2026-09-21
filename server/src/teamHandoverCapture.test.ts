@@ -50,6 +50,8 @@ const MODEL = "sonnet";
  */
 const EXAMPLE = "EXAMPLEEXAMPLEEXAMPLE";
 const fake = (prefix: string, body: string) => `${prefix}${body}`;
+/** A PEM header with no key material, assembled so the sweep finds no whole shape. */
+const pem = (kind: string) => `${"-".repeat(5)}BEGIN ${kind} PRIVATE KEY${"-".repeat(5)}`;
 
 const database = () => new Database(join(config.repoRoot, ".agent-console/console.sqlite"));
 
@@ -448,8 +450,8 @@ test("TM-T0-7: capture, preview and publish", async (t) => {
       [`Authorization: Bearer ${EXAMPLE}`, "bearer_token"],
       [`api_key = "${EXAMPLE}"`, "assigned_secret"],
       [`password=${EXAMPLE}`, "assigned_secret"],
-      ["-----BEGIN RSA PRIVATE KEY-----", "private_key"],
-      ["-----BEGIN OPENSSH PRIVATE KEY-----", "private_key"],
+      [pem("RSA"), "private_key"],
+      [pem("OPENSSH"), "private_key"],
     ];
     for (const [value, shape] of cases) {
       assert.equal(detectCredentialShapes(`before ${value} after`).includes(shape), true, `${shape} is detected`);
@@ -608,7 +610,7 @@ test("TM-T0-7: capture, preview and publish", async (t) => {
   });
 
   await t.test("Durable: a refused or declined case writes no action, no receipt, no offer and no control_head", async () => {
-    const f = fixture("tm-t0-7-durable", directory => writeFileSync(join(directory, "id_rsa"), "-----BEGIN OPENSSH PRIVATE KEY-----\nbody\n"));
+    const f = fixture("tm-t0-7-durable", directory => writeFileSync(join(directory, "id_rsa"), `${pem("OPENSSH")}\nbody\n`));
     try {
       const db = database();
       const count = () => ({
