@@ -11,6 +11,9 @@ import { mintItemId } from "./teamItems.ts";
 import type { TeamRoster } from "./teamRoster.ts";
 import { compareCapabilities } from "./teamHandoverRun.ts";
 import { applyControlTransition } from "./teamControlRecord.ts";
+import { formatTelegramMessage } from "./integrations/telegram/liveFormat.ts";
+import { renderHandoverOfferCard, renderHandoverReviewCard } from "./taskControlRenderer.ts";
+import { renderTeamItemActionCard } from "./teamItemViews.ts";
 import {
   HANDOVER_SANDBOX,
   applyItemHandover,
@@ -483,4 +486,139 @@ test("C1: Return work publishes the result, and the requester's poll turns it in
     f.dispose();
     disable();
   }
+});
+
+/*
+ * The third leg of C1: the cards H03 to H05 render had no Telegram formatting
+ * at all. `formatTelegramMessage` had no case for `handover_offer`,
+ * `handover_review` or `handover_question`, so every one of them failed
+ * delivery with "unsupported payload kind" and no tap was ever possible.
+ */
+
+test("C1: the offer card renders as an open call with an Accept and run button", () => {
+  const formatted = formatTelegramMessage(renderHandoverOfferCard({
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    branch: "aw/handover/awi1_75c3aabf7831461bc7c4a395",
+    epoch: 1,
+    startDeadline: "2026-09-22T09:00:00.000Z",
+    requested: { provider: "grok", model: null, hostAccess: false, sandbox: HANDOVER_SANDBOX, tools: [] },
+    capability: { outcome: "within_limit", additions: [], denied: [], unknown: [], reason: "This package is inside your own settings." },
+    promptId: null,
+    actions: [{ ref: "tc_accept", action: "accept_offer" }, { ref: "tc_decline", action: "decline_offer" }],
+  }), () => null);
+  assert.match(formatted.text, /Handover offered/);
+  assert.match(formatted.text, /names no receiver/);
+  assert.match(formatted.text, /#item_/, "the card carries the item's own tag");
+  assert.deepEqual(formatted.replyMarkup?.inline_keyboard.flat(), [
+    { text: "Accept and run", callback_data: "tc_accept" },
+    { text: "Decline", callback_data: "tc_decline" },
+  ]);
+});
+
+test("C1: an inert offer card keeps its reason and offers no tap", () => {
+  const formatted = formatTelegramMessage(renderHandoverOfferCard({
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    branch: "aw/handover/awi1_75c3aabf7831461bc7c4a395",
+    epoch: 1,
+    startDeadline: "2026-09-22T09:00:00.000Z",
+    requested: { provider: "grok", model: null, hostAccess: false, sandbox: HANDOVER_SANDBOX, tools: [] },
+    capability: { outcome: "within_limit", additions: [], denied: [], unknown: [], reason: "Inside your settings." },
+    promptId: null,
+    actions: [{ ref: "tc_accept", action: "accept_offer" }],
+    inert: true,
+    reason: "yousef holds this item now (CLAIMED).",
+  }), () => null);
+  assert.match(formatted.text, /yousef holds this item now/);
+  assert.equal(formatted.replyMarkup, null);
+});
+
+test("Q9: the review card offers Apply only when the merge is clean", () => {
+  const base = {
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    branch: "aw/handover/awi1_75c3aabf7831461bc7c4a395",
+    epoch: 1,
+    resultId: "r-1",
+    resultCommit: "b".repeat(40),
+    label: "full" as const,
+    verification: ["run r-1 on yousef-desktop"],
+    uncertainEffects: [],
+    evidenceMissing: false,
+    divergedPaths: [],
+    conflictPaths: [],
+    promptId: null,
+    reason: "The result merges cleanly into this checkout.",
+  };
+  const clean = formatTelegramMessage(renderHandoverReviewCard({
+    ...base,
+    applyOffered: true,
+    actions: [{ ref: "tc_apply", action: "apply_result" }, { ref: "tc_changes", action: "request_changes" }],
+  }), () => null);
+  assert.deepEqual(clean.replyMarkup?.inline_keyboard.flat(), [
+    { text: "Apply", callback_data: "tc_apply" },
+    { text: "Request changes", callback_data: "tc_changes" },
+  ]);
+
+  const conflicted = formatTelegramMessage(renderHandoverReviewCard({
+    ...base,
+    applyOffered: false,
+    conflictPaths: ["task.md"],
+    reason: "Git stopped with a conflict in task.md.",
+    actions: [{ ref: "tc_changes", action: "request_changes" }],
+  }), () => null);
+  assert.deepEqual(conflicted.replyMarkup?.inline_keyboard.flat(), [{ text: "Request changes", callback_data: "tc_changes" }]);
+  assert.doesNotMatch(conflicted.text, /\bApply\b(?!\sis not offered)/);
+  assert.match(conflicted.text, /Apply is not offered while the merge is not clean/);
+  assert.match(conflicted.text, /conflict in: task\.md/);
+});
+
+test("B26: a full result with no evidence says so rather than letting the label speak", () => {
+  const formatted = formatTelegramMessage(renderHandoverReviewCard({
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    branch: "aw/handover/awi1_75c3aabf7831461bc7c4a395",
+    epoch: 1,
+    resultId: "r-1",
+    resultCommit: "b".repeat(40),
+    label: "full",
+    verification: [],
+    uncertainEffects: ["a deploy may have started"],
+    evidenceMissing: true,
+    applyOffered: true,
+    divergedPaths: [],
+    conflictPaths: [],
+    promptId: null,
+    actions: [{ ref: "tc_apply", action: "apply_result" }],
+    reason: "This result is labelled full but carries no verification evidence.",
+  }), () => null);
+  assert.match(formatted.text, /Evidence: none was reported/);
+  assert.match(formatted.text, /which is not acceptance/);
+  assert.match(formatted.text, /Uncertain external effects: a deploy may have started/);
+});
+
+test("C1: a requirement question reads as the requester's to answer and is replied to", () => {
+  const payload = {
+    kind: "handover_question",
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    questionKind: "requirement",
+    audience: "requester",
+    question: "Should the release colour be blue or green?",
+    actions: [{ ref: "tc_save", action: "save_human_response" }, { ref: "tc_resume", action: "answer_and_resume" }],
+  };
+  const unanswered = formatTelegramMessage(payload, () => null);
+  assert.match(unanswered.text, /requirements question, so it is yours to answer/);
+  assert.match(unanswered.text, /Reply to this message with your answer/);
+  assert.equal(unanswered.replyMarkup, null, "a tap with no bound answer has nothing to save");
+
+  const answered = formatTelegramMessage(payload, ref => (ref === "tc_save" || ref === "tc_resume" ? "Use blue" : null));
+  assert.match(answered.text, /Your answer:\nUse blue/);
+  assert.deepEqual(answered.replyMarkup?.inline_keyboard.flat().map(one => one.text), ["Save answer", "Answer and resume"]);
+});
+
+test("C1: the Return work card renders its own button", () => {
+  const formatted = formatTelegramMessage(renderTeamItemActionCard({
+    itemId: "awi1_75c3aabf7831461bc7c4a395",
+    title: "Return work",
+    detail: "This run finished. Return the work to the requester for review.",
+    actions: [{ ref: "tc_return", action: "return_work" }],
+  }), () => null);
+  assert.deepEqual(formatted.replyMarkup?.inline_keyboard.flat(), [{ text: "Return work", callback_data: "tc_return" }]);
 });
