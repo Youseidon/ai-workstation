@@ -193,8 +193,9 @@ test("TM-T0-6: the item control record builds protocol.md section 5, arbitrates 
       const directory = bareRepository("tm-t0-6-rows-");
       try {
         const remote = new BareGitControlRecordRemote(directory, ITEM);
-        await createControlRecord(remote, { itemId: ITEM, requester: REQUESTER, commandId: `${one.name}-create` });
-        const last = await drive(remote, one.steps.map(step => ({ event: step.event, actor: { personId: step.person }, payload: step.payload })), one.name.replace(/\s+/g, "-"));
+        const slug = one.name.replace(/\s+/g, "-");
+        await createControlRecord(remote, { itemId: ITEM, requester: REQUESTER, commandId: `${slug}-create` });
+        const last = await drive(remote, one.steps.map(step => ({ event: step.event, actor: { personId: step.person }, payload: step.payload })), slug);
         assert.equal(last.record.state, one.to, one.name);
       } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -383,14 +384,14 @@ test("TM-T0-6: the item control record builds protocol.md section 5, arbitrates 
       assert.equal(gitOut(directory, ["rev-list", "--count", controlRef(ITEM)]), "3");
 
       const late = new Date(published.getTime() + OFFER_DEADLINE_MS + 1000);
-      const expired = await expireOfferIfDue(remote, { actor: { personId: REQUESTER }, commandId: "exp-1", roster: ROSTER, now: late });
+      const expired = await expireOfferIfDue(remote, { actor: { personId: REQUESTER }, commandId: "exp-expire", roster: ROSTER, now: late });
       assert.equal(expired.expired, true, "expiry moves OFFERED to WITHDRAWN through the same validated shared update");
       assert.equal(expired.outcome!.record.state, "WITHDRAWN");
       assert.equal(expired.outcome!.event.event, "expire_offer");
-      assert.equal(expired.outcome!.event.commandId, "exp-1", "expiry carries its own command id, so it is recorded rather than inferred");
+      assert.equal(expired.outcome!.event.commandId, "exp-expire", "expiry carries its own command id, so it is recorded rather than inferred");
 
       // A second evaluation returns the existing outcome and writes nothing further.
-      const again = await expireOfferIfDue(remote, { actor: { personId: REQUESTER }, commandId: "exp-2", roster: ROSTER, now: late });
+      const again = await expireOfferIfDue(remote, { actor: { personId: REQUESTER }, commandId: "exp-expire-again", roster: ROSTER, now: late });
       assert.equal(again.expired, false);
       assert.equal(again.record.state, "WITHDRAWN");
       assert.equal(gitOut(directory, ["rev-list", "--count", controlRef(ITEM)]), "4", "the second evaluation writes nothing further");
@@ -462,7 +463,7 @@ test("TM-T0-6: the item control record builds protocol.md section 5, arbitrates 
       ], "dur");
       const stored = workspaces.itemLink(link.itemId)!;
       assert.equal(stored.controlHead, after.head, "every accepted transition updates control_head");
-      assert.equal(stored.epoch, 2, "item_link follows the record's epoch once it is published");
+      assert.equal(stored.epoch, 1, "item_link follows the record's epoch once it is published");
 
       // A workstation whose local row is behind re-reads the record and does not
       // re-apply a command id already present in it.

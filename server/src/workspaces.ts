@@ -1331,6 +1331,25 @@ export const workspaces = {
       .run(itemId, input.promptId, input.role, input.epoch, controlHead);
     return { itemId, promptId: input.promptId, role: input.role, epoch: input.epoch, controlHead, closedAt: null, closedCommandId: null };
   })()); },
+  /**
+   * Records the control-record head this workstation has accepted for the item,
+   * and the epoch that head carries (H02). `control_head` shipped with migration
+   * 25 as a placeholder that no caller wrote; the control record is what finally
+   * writes and reads it, so a workstation can tell whether its local row is
+   * behind the record without re-applying anything.
+   */
+  updateItemControlHead(input: { itemId: string; controlHead: string; epoch?: number }): ItemLinkRow { return sqliteGuard(() => db.transaction(() => {
+    if (!isItemId(input.itemId)) throw new WorkspaceError(422, "validation_error", "A valid Team item id is required.");
+    const controlHead = requireText(input.controlHead, "controlHead", 160);
+    if (input.epoch !== undefined && (!Number.isSafeInteger(input.epoch) || input.epoch < 1)) {
+      throw new WorkspaceError(422, "validation_error", "Item epoch must be a positive integer.");
+    }
+    const changed = input.epoch === undefined
+      ? db.prepare("UPDATE item_link SET control_head=? WHERE item_id=?").run(controlHead, input.itemId).changes
+      : db.prepare("UPDATE item_link SET control_head=?,epoch=? WHERE item_id=?").run(controlHead, input.epoch, input.itemId).changes;
+    if (changed === 0) throw new WorkspaceError(404, "item_not_found", "Team item not found.");
+    return this.itemLink(input.itemId)!;
+  })()); },
   itemLink(itemId: string): ItemLinkRow | null {
     if (!isItemId(itemId)) return null;
     return (db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE item_id=?").get(itemId) as ItemLinkRow | undefined) ?? null;
