@@ -27,6 +27,66 @@ export const CONTROL_STATES = [
 ] as const;
 export type ControlState = (typeof CONTROL_STATES)[number];
 
+/**
+ * The states in which a handover is live, so `/close` is refused (H07, ruling 7
+ * in section 8 of docs/telegram-task-control/handover-rules.md).
+ *
+ * jd ruled on 2026-09-22 that no close may silently destroy work another person
+ * did, and named two situations: **a receiver holds the item**, and **work has
+ * been returned that has not been applied**. This list is that ruling read
+ * against protocol.md's own lifecycle, state by state:
+ *
+ * - `LOCAL` and `PREPARING` are excluded. Nothing has been offered and no other
+ *   workstation has seen the item, so the only work a close can lose is the
+ *   owner's own.
+ * - `OFFERED` is included. Nobody holds the item yet, so it is not literally
+ *   "a receiver holds it", but the offer is published and any roster member can
+ *   still accept it; closing leaves a live invitation to do work that could then
+ *   never be applied. The owner withdraws the offer first, which is the same
+ *   "cancel the handover first" the ruling asks for.
+ * - `CLAIMED`, `STARTING`, `RUNNING`, `WAITING_INPUT`, `PAUSED` and
+ *   `STOP_REQUESTED` are included: in every one of them an executor holds the
+ *   item, and only that executor releases it (B20, ruling 4).
+ * - `RETURNED` is included: it is the ruling's second situation exactly, work
+ *   back on the branch that has not been applied.
+ * - `APPLYING` is included. Mid-apply is neither clearly held nor clearly
+ *   applied, but the application has not finished, so the returned work is still
+ *   unapplied and a close during it would strand a half-applied item that H05's
+ *   own refusal then keeps anyone from finishing.
+ * - `COMPLETED`, `CANCELLED` and `WITHDRAWN` are excluded: the handover is over
+ *   in all three, and nobody's unapplied work is left to lose.
+ */
+export const LIVE_HANDOVER_STATES = [
+  "OFFERED", "CLAIMED", "STARTING", "RUNNING", "WAITING_INPUT",
+  "PAUSED", "STOP_REQUESTED", "RETURNED", "APPLYING",
+] as const satisfies readonly ControlState[];
+
+export function isLiveHandoverState(state: ControlState): boolean {
+  return (LIVE_HANDOVER_STATES as readonly ControlState[]).includes(state);
+}
+
+/**
+ * Why the close was refused, naming the live handover so the owner knows what
+ * to do next rather than only that they may not close.
+ */
+export function liveHandoverCloseRefusal(record: ControlRecord): string {
+  const holder = record.executor ?? "a teammate";
+  const head = `This item has a live handover, so it cannot be closed:`;
+  switch (record.state) {
+    case "OFFERED":
+      return `${head} ${record.itemId} is offered and any teammate can still accept it. Withdraw the offer first.`;
+    // `RETURNED` releases the executor, so neither of these two names a person:
+    // the record no longer carries one, and inventing one would be worse than
+    // naming the item and what is outstanding on it.
+    case "RETURNED":
+      return `${head} work returned on ${record.itemId} has not been applied. Apply the returned work or cancel the handover first.`;
+    case "APPLYING":
+      return `${head} work returned on ${record.itemId} is still being applied. Let the apply finish first.`;
+    default:
+      return `${head} ${holder} is holding ${record.itemId} (${record.state}). Cancel the handover, or wait for the work to come back and apply it, first.`;
+  }
+}
+
 export const CONTROL_EVENTS = [
   "create_record", "request_takeover", "publish_offer", "abandon_preparation", "accept_offer",
   "decline_offer", "withdraw_offer", "expire_offer", "preparation_complete", "dependency_wait",
