@@ -17,7 +17,7 @@ import { itemTag } from "../../teamItems.ts";
 import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
 import { routeTeamItemMessage } from "../../teamRouting.ts";
 import { cachedAccountUsage, detectProviders } from "../../adapters/registry.ts";
-import { assertHandoverEnabled } from "../../teamHandoverRun.ts";
+import { assertHandoverEnabled, decodeHandoverActionPayload } from "../../teamHandoverRun.ts";
 import { handoverPipelineHold } from "../../teamResultApply.ts";
 import type { CapturePreview, HandoverConfirmation, PublishedOffer } from "../../teamHandoverCapture.ts";
 import {
@@ -1622,12 +1622,25 @@ export class TelegramLiveRuntime {
         void session.api.answerCallbackQuery(callback.callbackQueryId, toast)
           .catch(error => this.log.warn(this.safe(`answerCallbackQuery failed: ${error instanceof Error ? error.message : String(error)}`)));
       }
+      // A handover card is posted in the group and its action is bound to this
+      // workstation's own candidate task, so its subject kind is `task` while
+      // the tap carries no topic. `TaskControlService.handleCallback` already
+      // resolves the group actor for a handover action; this did not, so every
+      // handover tap was answered with a toast and nothing was ever written into
+      // the item's thread - the report a receiver's return is supposed to leave.
+      const handover = decodeHandoverActionPayload(action?.payload_json ?? null);
       const actor = workspaces.taskControlActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId, topicId: callback.topicId ?? null })
-        ?? (action?.subject_kind === "item" ? workspaces.taskControlTeamActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId }) : null);
+        ?? (action?.subject_kind === "item" || handover !== null
+          ? workspaces.taskControlTeamActorFor({ transport: "telegram", transportUserId: callback.transportUserId, chatId: callback.chatId })
+          : null);
       if (!actor || actor.enabled !== 1 || replay) return;
       // A result belongs to the task it decided, so it carries that task's tag and
-      // replies to its card; a rejection that names no task is workstation-wide.
-      const subject = action?.subject_kind === "item" && action.item_id !== null ? itemSubject(action.item_id) : receipt.promptId > 0 ? taskSubject(receipt.promptId) : WORKSTATION_SUBJECT;
+      // replies to its card; a handover result belongs to the item, which is the
+      // thread both workstations share; a rejection that names no task is
+      // workstation-wide.
+      const subject = handover !== null
+        ? itemSubject(handover.itemId)
+        : action?.subject_kind === "item" && action.item_id !== null ? itemSubject(action.item_id) : receipt.promptId > 0 ? taskSubject(receipt.promptId) : WORKSTATION_SUBJECT;
       if (receipt.state === "APPLIED") {
         this.enqueueText(session, callback.chatId, callback.topicId ?? null, receipt.errorCode === null ? `Done: ${receipt.message}` : `Answer saved, but resume did not start: ${receipt.message}`, subject);
         if (action?.subject_kind === "item" && action.item_id !== null && ["grant", "revoke", "close_thread"].includes(action.action)) {
@@ -1639,9 +1652,9 @@ export class TelegramLiveRuntime {
         return;
       }
       this.enqueueText(session, callback.chatId, callback.topicId ?? null, `Not applied: ${receipt.message}`, subject);
-      if (action?.subject_kind === "item" && action.item_id !== null) {
-        // Team item buttons are never renewed automatically. The person who
-        // requested the action must issue the item command again.
+      if ((action?.subject_kind === "item" && action.item_id !== null) || handover !== null) {
+        // Team item and handover buttons are never renewed automatically. The
+        // person who requested the action must issue it again.
         return;
       }
       if (receipt.errorCode !== null && REISSUE_CODES.has(receipt.errorCode) && receipt.promptId > 0 && this.isAwaiting(receipt.promptId)) {
