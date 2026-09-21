@@ -644,10 +644,23 @@ test("TM-T0-7: capture, preview and publish", async (t) => {
     } finally { f.dispose(); }
   });
 
-  await t.test("Gate: handover stays behind its own disabled capability until H04", () => {
+  await t.test("Gate: handover routes only behind its own capability, and both Team settings are off by default", () => {
+    // H04 opened this gate, because H04 is what produces RTC-12's evidence.
+    // Until it did, every handover tap was refused outright with
+    // `action_not_available`. What replaced that refusal is a narrower one:
+    // handover taps are still the first thing checked, and they are refused
+    // unless Team *and* handover are both enabled.
     const source = readFileSync(new URL("./taskControl.ts", import.meta.url), "utf8");
-    assert.match(source, /HANDOVER_ACTIONS as readonly string\[\]\)\.includes\(action\.action\)/, "handover taps are still refused as action_not_available");
+    assert.match(source, /HANDOVER_ACTIONS as readonly string\[\]\)\.includes\(action\.action\)/,
+      "handover taps are still recognised before anything else can read them as an ordinary resume");
+    assert.match(source, /this\.config\.teamEnabled !== true\) return this\.reject\(input, "team_disabled"/,
+      "and refused while Team is disabled");
+    assert.match(source, /this\.config\.handoverEnabled !== true[\s\S]{0,120}"handover_disabled"/,
+      "and refused while handover's own capability is disabled");
+    assert.match(source, /handoverEnabled: settings\.team\.handoverEnabled/,
+      "with the capability read from the setting rather than assumed");
     assert.equal(settings.team.enabled, false, "team.enabled is still off by default");
+    assert.equal(settings.team.handoverEnabled, false, "and handover has its own setting, also off by default");
   });
 });
 

@@ -4,6 +4,7 @@ import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
 import { decodeTeamItemActionPayload, requiredItemGrantCapabilities, type ItemGrantOperation } from "./teamGrants.ts";
+import { decodeHandoverActionPayload } from "./teamHandoverRun.ts";
 import { decodeTeamThreadRequestAction } from "./teamThreadRequests.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
 import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./workspaces.ts";
@@ -11,6 +12,8 @@ import { taskSubject, WORKSTATION_SUBJECT, WorkspaceError, workspaces } from "./
 export interface TaskControlConfig {
   enabled: boolean;
   teamEnabled?: boolean;
+  /** Handover's own capability (H04). Team must be on as well, and both are off by default. */
+  handoverEnabled?: boolean;
   notificationsEnabled: boolean;
   remoteActionsEnabled: boolean;
   transport: "fake_telegram" | "telegram";
@@ -35,6 +38,27 @@ export interface TaskControlCallbackInput {
   content?: string;
 }
 
+/**
+ * What a validated handover tap carries to the handover runtime. The runtime is
+ * registered rather than imported, because accepting, claiming and running all
+ * need the Git control record, and this service deliberately owns no Git.
+ */
+export interface HandoverTap {
+  action: TaskControlAction;
+  actionRef: string;
+  itemId: string;
+  epoch: number;
+  commandId: string;
+  botId: string;
+  chatId: string;
+  topicId: string | null;
+  transportUserId: string;
+  promptId: number;
+  content?: string;
+}
+
+export type HandoverTapHandler = (tap: HandoverTap) => Promise<TaskControlReceipt>;
+
 export interface TaskControlQuestionCard {
   outboxId: number;
   actions: Array<{ ref: string; action: TaskControlAction }>;
@@ -51,7 +75,18 @@ export function withLiveTokenState(capability: TaskControlCapability, tokenConfi
 }
 
 export class TaskControlService {
+  private handoverTaps: HandoverTapHandler | null = null;
+
   constructor(private readonly configSource: TaskControlConfig | (() => TaskControlConfig)) {}
+
+  /**
+   * Attaches the handover runtime. Until one is attached a handover tap is
+   * refused rather than read as something else, exactly as it was while the
+   * capability was disabled outright.
+   */
+  registerHandoverTapHandler(handler: HandoverTapHandler | null): void {
+    this.handoverTaps = handler;
+  }
 
   private get config(): TaskControlConfig {
     return typeof this.configSource === "function" ? this.configSource() : this.configSource;
@@ -211,7 +246,10 @@ export class TaskControlService {
     if (action.message_id !== null && input.messageId !== undefined && action.message_id !== input.messageId) return this.reject(input, "wrong_message", "This action belongs to another message.", action.ref);
     if (Date.parse(action.expires_at) <= Date.now()) return this.reject(input, "action_expired", "This action expired. Review the current task state.", action.ref);
     const actor = workspaces.taskControlActorFor({ transport: this.config.transport, transportUserId: input.transportUserId, chatId: input.chatId, topicId: input.topicId ?? null })
-      ?? (action.subject_kind === "item"
+      // A group tap carries no topic, while a group actor is stored under the
+      // team sentinel; an item card and a handover card are both posted in the
+      // group, so both resolve their actor that way.
+      ?? (action.subject_kind === "item" || (HANDOVER_ACTIONS as readonly string[]).includes(action.action)
         ? workspaces.taskControlTeamActorFor({ transport: this.config.transport, transportUserId: input.transportUserId, chatId: input.chatId })
         : null);
     if (!actor || actor.enabled !== 1 || actor.id !== action.actor_id) return this.reject(input, "actor_not_enrolled", "This Telegram actor is not authorized for the task action.", action.ref);
@@ -238,12 +276,33 @@ export class TaskControlService {
           message: threadRequest.decision === "confirm" ? "Team thread confirmed." : "Team thread request declined.",
         });
       }
-      // The seven handover actions exist in the schema from migration 29, but
-      // nothing routes them yet: handover stays behind its own disabled
-      // capability until H04 produces RTC-12's evidence. Refusing them here
-      // keeps a handover tap from being read as an ordinary resume.
+      // The seven handover actions route only behind handover's own capability,
+      // which needs Team and `team.handoverEnabled`, both off by default (H04).
+      // While either is off the tap is refused here rather than falling through
+      // and being read as an ordinary resume.
       if ((HANDOVER_ACTIONS as readonly string[]).includes(action.action)) {
-        return this.reject(input, "action_not_available", "This Team action is not available yet.", action.ref);
+        if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);
+        if (this.config.handoverEnabled !== true) {
+          return this.reject(input, "handover_disabled", "Handover is not enabled on this workstation.", action.ref);
+        }
+        const handover = decodeHandoverActionPayload(action.payload_json);
+        if (handover === null) return this.reject(input, "invalid_action", "This handover action is incomplete.", action.ref);
+        if (this.handoverTaps === null) {
+          return this.reject(input, "action_not_available", "This workstation has no handover runtime attached.", action.ref);
+        }
+        return this.handoverTaps({
+          action: action.action,
+          actionRef: action.ref,
+          itemId: handover.itemId,
+          epoch: handover.epoch,
+          commandId: input.commandId,
+          botId: input.botId,
+          chatId: input.chatId,
+          topicId: input.topicId ?? null,
+          transportUserId: input.transportUserId,
+          promptId: action.prompt_id,
+          content: input.content,
+        });
       }
       if (action.subject_kind === "item") {
         if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);
@@ -381,6 +440,7 @@ export class TaskControlService {
 export const taskControl = new TaskControlService(() => ({
   enabled: settings.taskControl.enabled,
   teamEnabled: settings.team.enabled,
+  handoverEnabled: settings.team.handoverEnabled,
   notificationsEnabled: settings.taskControl.notificationsEnabled,
   remoteActionsEnabled: settings.taskControl.remoteActionsEnabled,
   transport: settings.taskControl.transport,

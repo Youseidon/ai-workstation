@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { settings } from "./settings.ts";
+import { TaskControlService } from "./taskControl.ts";
 import {
   BareGitControlRecordRemote,
   OFFER_DEADLINE_MS,
@@ -1015,6 +1016,53 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       assertHandoverEnabled({ teamEnabled: true, handoverEnabled: true });
       assert.equal((await f.control.read())!.head, head, "the record is untouched, so the handover resumes when it is re-enabled");
       assert.equal(before.epoch, 1);
+    } finally { f.dispose(); }
+  });
+
+  await t.test("Seventh: the gate itself - a handover tap is routed only when Team and handover are both enabled", async () => {
+    const f = fixture("tm-t1-h2-gate");
+    try {
+      const offer = await publishedOffer(f);
+      const discovery = await discoverHandoverOffer(f.control, f.env);
+      assert.equal(discovery.kind, "offer");
+      if (discovery.kind !== "offer") return;
+      const acceptRef = discovery.card.actions.find(one => one.action === "accept_offer")!.ref;
+      const actor = workspaces.taskControlActorById(f.env.actorId)!;
+
+      const service = (teamEnabled: boolean, handoverEnabled: boolean) => new TaskControlService({
+        enabled: true, teamEnabled, handoverEnabled,
+        notificationsEnabled: true, remoteActionsEnabled: true,
+        transport: "fake_telegram", botId: f.env.botId,
+      });
+      const tap = (commandId: string) => ({
+        ref: acceptRef, transportUserId: actor.transport_user_id, chatId: actor.chat_id,
+        topicId: null, botId: f.env.botId, messageId: `handover-${f.itemId}`, commandId,
+      });
+
+      const teamOff = await service(false, true).handleCallback(tap("gate-team-off"));
+      assert.equal(teamOff.state, "REJECTED");
+      assert.equal(teamOff.errorCode, "team_disabled", "Team disabled answers 403 and stops the card applying");
+
+      const handoverOff = await service(true, false).handleCallback(tap("gate-handover-off"));
+      assert.equal(handoverOff.state, "REJECTED");
+      assert.equal(handoverOff.errorCode, "handover_disabled", "and handover has its own capability, refused on its own");
+
+      const unattached = await service(true, true).handleCallback(tap("gate-no-runtime"));
+      assert.equal(unattached.errorCode, "action_not_available", "with both on but no runtime attached, the tap is still refused");
+
+      const routed = service(true, true);
+      const seen: string[] = [];
+      routed.registerHandoverTapHandler(async handoverTap => {
+        seen.push(`${handoverTap.action}:${handoverTap.itemId}:${handoverTap.epoch}`);
+        return workspaces.recordTaskControlReceipt({
+          commandId: handoverTap.commandId, actionRef: handoverTap.actionRef, state: "APPLIED", message: "Routed.",
+        });
+      });
+      const applied = await routed.handleCallback(tap("gate-routed"));
+      assert.equal(applied.state, "APPLIED");
+      assert.deepEqual(seen, [`accept_offer:${f.itemId}:1`], "and with both on the tap reaches the handover runtime with its item and epoch");
+      assert.equal((await f.control.read())!.head.length, 40, "the record is untouched by any of the refusals");
+      assert.equal((await f.control.read())!.record.state, "OFFERED");
     } finally { f.dispose(); }
   });
 
