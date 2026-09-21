@@ -373,11 +373,20 @@ export async function discoverHandoverOffer(
   const promptId = candidatePrompt(env, offer);
   if (existing !== null) {
     const outboxId = workspaces.handoverOfferCardOutbox(env.botId, offer.itemId);
-    if (outboxId !== null) {
-      // Already discovered: the card stands, and a further poll does not repost it.
+    // The dedupe is per epoch, not per item. Request changes opens a **new
+    // epoch** and a fresh open call, and an offer at a new epoch is a different
+    // offer: a card from the spent round carries buttons bound to an epoch that
+    // can never become valid again, so treating it as "already discovered"
+    // would make every round after the first undiscoverable by anyone.
+    if (outboxId !== null && workspaces.handoverOfferCardEpoch(env.botId, offer.itemId) === offer.epoch) {
+      // Already discovered at this epoch: the card stands, and a further poll
+      // does not repost it.
       const actions = workspaces.handoverActionsForItem(env.botId, offer.itemId);
       return { kind: "offer", offer, comparison, promptId, card: { outboxId, botId: env.botId, actions, inert: false } };
     }
+    // A new epoch: end the spent round's buttons before offering fresh ones, so
+    // a stale card cannot be tapped beside the live one.
+    if (outboxId !== null) workspaces.expireHandoverActionsForItem(env.botId, offer.itemId);
   }
   return { kind: "offer", offer, comparison, promptId, card: postOfferCard(env, offer, comparison, promptId, options) };
 }

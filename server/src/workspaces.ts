@@ -1518,6 +1518,19 @@ export const workspaces = {
         AND json_extract(payload_json,'$.itemId')=? ORDER BY rowid`)
       .all(requireText(botId, "botId", 120), itemId) as Array<{ ref: string; action: TaskControlAction }>;
   },
+  /**
+   * The epoch this bot's newest offer card for one item was minted at. Request
+   * changes opens a **new epoch**, and a card from the previous one is spent, so
+   * discovery has to be able to tell the two apart.
+   */
+  handoverOfferCardEpoch(botId: string, itemId: string): number | null {
+    if (!isItemId(itemId)) return null;
+    const row = db.prepare(`SELECT json_extract(payload_json,'$.epoch') epoch FROM task_control_action
+      WHERE bot_id=? AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=? ORDER BY rowid DESC LIMIT 1`)
+      .get(requireText(botId, "botId", 120), itemId) as { epoch: number | null } | undefined;
+    return typeof row?.epoch === "number" ? row.epoch : null;
+  },
   /** The outbox row carrying this bot's offer card for one item, so it can be edited inert. */
   handoverOfferCardOutbox(botId: string, itemId: string): number | null {
     if (!isItemId(itemId)) return null;

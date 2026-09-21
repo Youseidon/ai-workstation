@@ -21,6 +21,7 @@ import {
   controlRemote,
   handoverSurfaceInternals,
   reviewItemHandover,
+  requestItemChanges,
   handleHandoverTap,
   listControlItems,
   pollControlRecords,
@@ -621,4 +622,70 @@ test("C1: the Return work card renders its own button", () => {
     actions: [{ ref: "tc_return", action: "return_work" }],
   }), () => null);
   assert.deepEqual(formatted.replyMarkup?.inline_keyboard.flat(), [{ text: "Return work", callback_data: "tc_return" }]);
+});
+
+test("TM-T1-H3: Request changes opens a new epoch whose fresh offer is discoverable again", async () => {
+  enable();
+  const f = fixture("surface-request-changes");
+  try {
+    const { offer } = await offered(f);
+    await pollControlRecords(f.receiver);
+    const firstCard = workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId);
+    assert.notEqual(firstCard, null);
+
+    // The teammate declines this round, so the next one must still reach them.
+    const decline = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "decline_offer")!;
+    await handleHandoverTap(f.receiver, {
+      action: "decline_offer", actionRef: decline.ref, itemId: f.itemId, epoch: offer.epoch,
+      commandId: `b-decline-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
+      transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+    });
+
+    // The requester re-offers the same package at a new epoch. `requestHandoverChanges`
+    // only runs from RETURNED, so the record is walked there the way the
+    // receiver's run walks it, and the re-offer is driven through the surface.
+    const remote = controlRemote(f.itemId, f.bare);
+    const walk = async (event: string, payload: Record<string, unknown>) => {
+      const current = (await remote.read())!;
+      await applyControlTransition(remote, {
+        event: event as never, actor: { personId: event === "accept_offer" ? RECEIVER : RECEIVER, workstationId: "yousef-desktop" },
+        commandId: `w-${event}-${f.itemId}`, epoch: current.record.epoch, fromHead: current.head,
+        roster: [REQUESTER, RECEIVER], payload,
+      });
+    };
+    await walk("accept_offer", {});
+    await walk("preparation_complete", { policyChecked: true, workspaceReserved: true, startIntentDurable: true });
+    await walk("run_started", { runId: "run-w-1" });
+    await walk("run_ended", { outcome: "partial", reason: "quota" });
+    await walk("return_work", {
+      resultCommit: offer.snapshotCommit, resultLabel: "partial", resultId: "r-w-1",
+      result: { resultId: "r-w-1", epoch: 1, resultCommit: offer.snapshotCommit, label: "partial", verification: [], uncertainEffects: [], releaseEvidence: "stopped", executor: RECEIVER, returnedAt: new Date().toISOString() },
+    });
+
+    const changes = await requestItemChanges(f.requester, f.itemId, { requirements: "Use blue, not green." });
+    assert.equal(changes.receiver, null, "the new round is an open call and names nobody");
+    assert.equal(changes.epoch, 2, "Request changes opens a new epoch");
+
+    // The teammate who declined the previous round discovers the new one.
+    const rediscovered = await pollControlRecords(f.receiver);
+    assert.deepEqual(rediscovered.discovered, [f.itemId]);
+    const secondCard = workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId);
+    assert.notEqual(secondCard, firstCard, "a new epoch posts a fresh card rather than leaving the spent one");
+    // Tappable means unexpired **and** undecided: an action that already carries
+    // a receipt is answered from it rather than re-applied, which is why
+    // `expireHandoverActionsForItem` leaves a decided one alone. The previous
+    // round's decline is decided, so it is not a live button; its accept was
+    // never tapped, so ending it is what stops a stale card being usable.
+    const tappable = workspaces.handoverActionsForItem("yousef-bot", f.itemId).filter(one => {
+      const action = workspaces.taskControlAction(one.ref);
+      return action !== null
+        && Date.parse(action.expires_at) > Date.now()
+        && workspaces.taskControlReceiptForAction(one.ref) === null;
+    });
+    assert.deepEqual(tappable.map(one => one.action).sort(), ["accept_offer", "decline_offer"],
+      "the new round's buttons are the only ones left to tap");
+  } finally {
+    f.dispose();
+    disable();
+  }
 });
