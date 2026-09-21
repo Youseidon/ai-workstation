@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { ProviderId, QuotaWarning, TaskControlAction, TaskControlCapability, TaskControlReceipt } from "@agent-console/shared";
+import { HANDOVER_ACTIONS, type ProviderId, type QuotaWarning, type TaskControlAction, type TaskControlCapability, type TaskControlReceipt } from "@agent-console/shared";
 import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
@@ -237,6 +237,13 @@ export class TaskControlService {
           state: "APPLIED",
           message: threadRequest.decision === "confirm" ? "Team thread confirmed." : "Team thread request declined.",
         });
+      }
+      // The seven handover actions exist in the schema from migration 29, but
+      // nothing routes them yet: handover stays behind its own disabled
+      // capability until H04 produces RTC-12's evidence. Refusing them here
+      // keeps a handover tap from being read as an ordinary resume.
+      if ((HANDOVER_ACTIONS as readonly string[]).includes(action.action)) {
+        return this.reject(input, "action_not_available", "This Team action is not available yet.", action.ref);
       }
       if (action.subject_kind === "item") {
         if (this.config.teamEnabled !== true) return this.reject(input, "team_disabled", "Team features are disabled.", action.ref);

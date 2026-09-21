@@ -1,3 +1,4 @@
+import type { TaskControlAction } from "@agent-console/shared";
 import { lineText, type TaskSummary } from "./telegramSummary.ts";
 import { formatCard, renderedAge, withoutRenderedAge, type CardEntity } from "./integrations/telegram/card.ts";
 import type { RenderedView } from "./integrations/telegram/views.ts";
@@ -264,7 +265,7 @@ export function renderTeamItemActionCard(input: {
   title: string;
   detail: string;
   allowance?: string | null;
-  actions: Array<{ ref: string; action: "save_human_response" | "answer_and_resume" | "resume_saved" | "grant" | "revoke" | "close_thread" }>;
+  actions: Array<{ ref: string; action: TaskControlAction }>;
 }) {
   return {
     kind: "team_item_action",

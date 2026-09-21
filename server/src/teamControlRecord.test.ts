@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
+import Database from "better-sqlite3";
+import { HANDOVER_ACTIONS, type ProgramRecord, type PromptRecord, type SuiteRecord } from "@agent-console/shared";
 import {
   BareGitControlRecordRemote,
   CONTROL_STATES,
@@ -26,6 +27,19 @@ import {
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 const serverDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function runWorkspaceScript(root: string, source: string) {
+  return spawnSync(process.execPath, ["--import", "tsx", "-e", source], {
+    cwd: serverDir,
+    env: { ...process.env, AGENT_CONSOLE_REPO_ROOT: root },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+}
+
+function boot(root: string) {
+  return runWorkspaceScript(root, "const { workspaces } = await import('./src/workspaces.ts'); workspaces.close();");
+}
 const ITEM = "awi1_0123456789abcdef01234567";
 const REQUESTER = "jd";
 const RECEIVER = "yousef";
@@ -566,4 +580,180 @@ test("TM-T0-6: the item control record builds protocol.md section 5, arbitrates 
       rmSync(directory, { recursive: true, force: true });
     }
   });
+});
+
+test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebuilds the table once", () => {
+  const root = mkdtempSync(join(tmpdir(), "tm4-migration-29-"));
+  try {
+    mkdirSync(join(root, ".agent-console"), { recursive: true });
+    mkdirSync(join(root, "workspace"));
+    const booted = boot(root);
+    assert.equal(booted.status, 0, booted.stderr);
+    const seeded = runWorkspaceScript(root, `
+      const { workspaces } = await import('./src/workspaces.ts');
+      const workspace = workspaces.create({ name: 'migration-29', workDirectory: ${JSON.stringify(join(root, "workspace"))} });
+      const program = workspaces.createChild('program', workspace.id, { name: 'Program' });
+      // Two blocked tasks, because saving an answer moves its own prompt out of
+      // BLOCKED; a Save answer card and an Answer and resume card that had to
+      // share one prompt could not both still apply.
+      const seedBlocked = (label) => {
+        const suite = workspaces.createChild('suite', program.id, { name: 'Suite ' + label });
+        const prompt = workspaces.createChild('prompt', suite.id, { title: 'Pending card ' + label, content: 'Answer once' });
+        const runId = 'm29-source-run-' + label;
+        workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: 'claude', model: null, tokenHash: 'm29-' + label, expiresAt: '2099-01-01T00:00:00.000Z', role: 'execute' });
+        workspaces.finishAgentRun(runId, 'done');
+        const priorAnswer = workspaces.respondToBlockedPrompt(prompt.id, { content: 'Prior answer' });
+        const handoff = workspaces.createHandoff({ id: 'm29-handoff-' + label, workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: 'claude', model: null });
+        // The question must complete strictly after the prior answer, or
+        // pendingHumanQuestion counts that answer as having answered it and the
+        // card is refused as prompt_not_blocked.
+        workspaces.updateHandoff(handoff.id, { state: 'READY', recommendation: 'WAIT_FOR_HUMAN', completedAt: new Date(Date.parse(priorAnswer.createdAt) + 1).toISOString() });
+        workspaces.addPipelineStep(prompt.id, { provider: 'claude' });
+        const pipeline = workspaces.createPipelineRun({ id: 'm29-pipeline-' + label, suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
+        workspaces.updatePipelineRun(pipeline.id, { state: 'WAITING_HUMAN', currentPromptId: prompt.id });
+        return prompt;
+      };
+      const savePrompt = seedBlocked('save');
+      const resumePrompt = seedBlocked('resume');
+      const actor = workspaces.upsertTaskControlActor({ id: 'm29-actor', transport: 'fake_telegram', transportUserId: '101', chatId: '42', label: 'jd' });
+      const group = workspaces.upsertTeamGroupActor({ id: 'm29-group-actor', transport: 'fake_telegram', transportUserId: '202', chatId: 'group-29', label: 'yousef' });
+      const item = workspaces.createItemLink({ promptId: savePrompt.id, role: 'requester', epoch: 1, controlHead: 'head-before-29' });
+      // A pre-upgrade Save answer card and a pre-upgrade Answer and resume card.
+      workspaces.createTaskControlAction({ ref: 'm29-save', action: 'save_human_response', promptId: savePrompt.id, actorId: actor.id, chatId: '42', botId: 'telegram-m29', messageId: 'card-29-save', expectedRevision: workspaces.humanInputState(savePrompt.id).revision, provider: 'claude', expiresAt: '2099-01-01T00:00:00.000Z' });
+      workspaces.createTaskControlAction({ ref: 'm29-resume', action: 'answer_and_resume', promptId: resumePrompt.id, actorId: actor.id, chatId: '42', botId: 'telegram-m29', messageId: 'card-29-resume', expectedRevision: workspaces.humanInputState(resumePrompt.id).revision, provider: 'claude', expiresAt: '2099-01-01T00:00:00.000Z' });
+      for (const action of ['resume_saved', 'grant', 'revoke', 'close_thread']) {
+        workspaces.createTaskControlAction({ ref: 'm29-' + action, action, promptId: savePrompt.id, actorId: group.id, chatId: 'group-29', botId: 'telegram-m29', messageId: 'card-29-' + action, expectedRevision: workspaces.humanInputState(savePrompt.id).revision, expiresAt: '2099-01-01T00:00:00.000Z', subjectKind: 'item', itemId: item.itemId, payload: action === 'grant' || action === 'revoke' ? { personId: 'yousef', capabilities: ['answer'] } : undefined });
+      }
+      workspaces.recordTaskControlReceipt({ commandId: 'm29-receipt-applied', actionRef: 'm29-grant', state: 'APPLIED', message: 'Granted answer.' });
+      workspaces.grantItemCapability({ itemId: item.itemId, personId: 'yousef', capability: 'answer', commandId: 'm29-grant-command' });
+      workspaces.close();
+    `);
+    assert.equal(seeded.status, 0, seeded.stderr);
+
+    const file = join(root, ".agent-console/console.sqlite");
+    const database = new Database(file);
+    database.pragma("foreign_keys = OFF");
+    // Return task_control_action to its migration-28 shape, keeping every row,
+    // the way the 25, 26 and 27 cases fake a downgrade.
+    database.exec(`
+      CREATE TABLE task_control_action_v28 (
+        ref TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('save_human_response','answer_and_resume','resume_saved','grant','revoke','close_thread')),
+        prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+        actor_id TEXT NOT NULL REFERENCES task_control_actor(id) ON DELETE CASCADE,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT,
+        bot_id TEXT NOT NULL,
+        message_id TEXT,
+        expected_revision TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        applied_command_id TEXT,
+        subject_kind TEXT NOT NULL DEFAULT 'task' CHECK(subject_kind IN ('task','item')),
+        item_id TEXT REFERENCES item_link(item_id) ON DELETE CASCADE,
+        payload_json TEXT,
+        CHECK((subject_kind='task' AND item_id IS NULL) OR (subject_kind='item' AND item_id IS NOT NULL))
+      );
+      INSERT INTO task_control_action_v28 SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json FROM task_control_action;
+      DROP TABLE task_control_action;
+      ALTER TABLE task_control_action_v28 RENAME TO task_control_action;
+      CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
+      DELETE FROM schema_migration WHERE version=29;
+    `);
+    const beforeActions = database.prepare("SELECT * FROM task_control_action ORDER BY ref").all();
+    const beforeReceipts = database.prepare("SELECT * FROM task_control_receipt ORDER BY command_id").all();
+    const beforeItemLinks = database.prepare("SELECT item_id,prompt_id,role,epoch,control_head,closed_at,closed_command_id FROM item_link ORDER BY item_id").all();
+    const beforeOutbox = database.prepare("SELECT id,anchor FROM telegram_outbox ORDER BY id").all();
+    const beforeGrants = database.prepare("SELECT * FROM item_grant ORDER BY rowid").all();
+    const beforeIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='task_control_action_prompt_idx'").get();
+    assert.equal(beforeActions.length, 6, "six pre-upgrade cards, one per prior action");
+    database.close();
+
+    // Twice, because a migration that is not idempotent rebuilds again or trips
+    // over its own table on the second boot.
+    for (const run of [1, 2]) {
+      const migrated = boot(root);
+      assert.equal(migrated.status, 0, `boot ${run}: ${migrated.stderr}`);
+      const check = new Database(file);
+      try {
+        assert.deepEqual(check.prepare("SELECT * FROM task_control_action ORDER BY ref").all(), beforeActions, `boot ${run} preserves every action row byte for byte`);
+        assert.deepEqual(check.prepare("SELECT * FROM task_control_receipt ORDER BY command_id").all(), beforeReceipts, `boot ${run} preserves receipts`);
+        assert.deepEqual(check.prepare("SELECT item_id,prompt_id,role,epoch,control_head,closed_at,closed_command_id FROM item_link ORDER BY item_id").all(), beforeItemLinks, `boot ${run} preserves item links, including F02's closed columns`);
+        assert.deepEqual(check.prepare("SELECT id,anchor FROM telegram_outbox ORDER BY id").all(), beforeOutbox, `boot ${run} preserves F07's telegram_outbox.anchor`);
+        assert.deepEqual(check.prepare("SELECT * FROM item_grant ORDER BY rowid").all(), beforeGrants, `boot ${run} preserves grants`);
+        assert.deepEqual(check.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='task_control_action_prompt_idx'").get(), beforeIndex, `boot ${run} preserves the action index`);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=29").all(), [{ version: 29 }], "migration 29 is recorded exactly once");
+        assert.deepEqual(check.pragma("foreign_key_check"), [], `boot ${run} leaves no foreign-key violation`);
+        assert.deepEqual(
+          check.prepare("PRAGMA table_info(task_control_action)").all().map(column => (column as { name: string }).name),
+          ["ref", "action", "prompt_id", "actor_id", "chat_id", "topic_id", "bot_id", "message_id", "expected_revision", "provider", "model", "expires_at", "created_at", "applied_command_id", "subject_kind", "item_id", "payload_json"],
+          `boot ${run} preserves the column list`,
+        );
+        assert.equal((check.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='item_link'").get() as { sql: string }).sql.includes("control_head"), true, "item_link keeps control_head");
+
+        // The check accepts every prior action plus exactly the seven handover
+        // actions, and rejects an eighth.
+        const itemId = (beforeItemLinks[0] as { item_id: string }).item_id;
+        const insert = (action: string) => check.prepare(
+          "INSERT INTO task_control_action(ref,action,prompt_id,actor_id,chat_id,bot_id,expected_revision,expires_at,created_at,subject_kind,item_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(`probe-${run}-${action}`, action, (beforeActions[0] as { prompt_id: number }).prompt_id, (beforeActions[0] as { actor_id: string }).actor_id, "42", "telegram-m29", "rev", "2099-01-01T00:00:00.000Z", "2026-09-21T00:00:00.000Z", "item", itemId);
+        for (const action of ["save_human_response", "answer_and_resume", "resume_saved", "grant", "revoke", "close_thread", ...HANDOVER_ACTIONS]) {
+          assert.doesNotThrow(() => insert(action), `boot ${run} accepts ${action}`);
+        }
+        assert.equal(HANDOVER_ACTIONS.length, 7, "there are exactly seven handover actions");
+        assert.equal((HANDOVER_ACTIONS as readonly string[]).includes("release_work"), false, "there is no release action");
+        for (const eighth of ["release_work", "release", "reassign", "handover"]) {
+          assert.throws(() => insert(eighth), /CHECK constraint failed/, `boot ${run} rejects ${eighth}`);
+        }
+        check.prepare("DELETE FROM task_control_action WHERE ref LIKE ?").run(`probe-${run}-%`);
+        assert.deepEqual(check.prepare("SELECT * FROM task_control_action ORDER BY ref").all(), beforeActions, `boot ${run} is byte-for-byte equivalent to migration 28's data`);
+      } finally {
+        check.close();
+      }
+    }
+
+    // A pre-upgrade Save answer card and a pre-upgrade Answer and resume card
+    // each still apply exactly once, and duplicate delivery returns the original.
+    const applied = runWorkspaceScript(root, `
+      const { setPipelineStationStarter } = await import('./src/pipelineScheduler.ts');
+      const { TaskControlService } = await import('./src/taskControl.ts');
+      const { workspaces } = await import('./src/workspaces.ts');
+      let starts = 0;
+      setPipelineStationStarter(async () => {
+        starts++;
+        const workspace = workspaces.list()[0];
+        const prompt = workspaces.tree(workspace.id).programs[0].suites[1].prompts[0];
+        const runId = 'm29-resumed-run';
+        workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: 'claude', model: null, tokenHash: 'm29-resumed', expiresAt: '2099-01-01T00:00:00.000Z' });
+        return { runId };
+      });
+      const control = new TaskControlService({ enabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: 'fake_telegram', botId: 'telegram-m29' });
+      const save = { ref: 'm29-save', transportUserId: '101', chatId: '42', botId: 'telegram-m29', messageId: 'card-29-save', commandId: 'm29-save-command', content: 'Use blue.' };
+      const firstSave = await control.handleCallback(save);
+      const duplicateSave = await control.handleCallback({ ...save, commandId: 'm29-save-duplicate' });
+      const resume = { ref: 'm29-resume', transportUserId: '101', chatId: '42', botId: 'telegram-m29', messageId: 'card-29-resume', commandId: 'm29-resume-command', content: 'Use green.' };
+      const firstResume = await control.handleCallback(resume);
+      const duplicateResume = await control.handleCallback({ ...resume, commandId: 'm29-resume-duplicate' });
+      if (firstSave.state !== 'APPLIED' || duplicateSave.commandId !== firstSave.commandId) process.exitCode = 2;
+      if (firstResume.state !== 'APPLIED' || !firstResume.started || duplicateResume.commandId !== firstResume.commandId || starts !== 1) process.exitCode = 3;
+      setPipelineStationStarter(null);
+      workspaces.close();
+    `);
+    assert.equal(applied.status, 0, applied.stderr);
+    const restarted = boot(root);
+    assert.equal(restarted.status, 0, restarted.stderr);
+    const final = new Database(file, { readonly: true });
+    try {
+      assert.deepEqual(final.prepare("SELECT command_id,state,started FROM task_control_receipt WHERE action_ref='m29-save'").all(), [{ command_id: "m29-save-command", state: "APPLIED", started: 0 }], "the pre-upgrade Save answer card applies exactly once");
+      assert.deepEqual(final.prepare("SELECT command_id,state,started,run_id FROM task_control_receipt WHERE action_ref='m29-resume'").all(), [{ command_id: "m29-resume-command", state: "APPLIED", started: 1, run_id: "m29-resumed-run" }], "the pre-upgrade Answer and resume card applies exactly once");
+      assert.deepEqual(final.prepare("SELECT version FROM schema_migration WHERE version=29").all(), [{ version: 29 }], "a second boot duplicates no migration row");
+      assert.deepEqual(final.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='task_control_action_prompt_idx'").all(), [{ name: "task_control_action_prompt_idx" }], "a second boot duplicates no index");
+    } finally {
+      final.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

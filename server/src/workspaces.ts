@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type AgentStatusOption, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type StartUnknownClassification, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { TASK_CONTROL_ACTIONS, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnBlockedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type AgentStatusOption, type ClarificationExchange, type HandoffBrief, type HandoffRecord, type HandoffRecommendation, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineStage, type PipelineState, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type StartUnknownClassification, type SuitePipelineDefaults, type SuitePipelineRun, type SuitePipelineView, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskControlAction, type TaskControlActionReference, type TaskControlReceipt, type TaskUsageRow, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
@@ -767,6 +767,60 @@ db.transaction(() => {
   }
 }
 
+{
+  // TM4/H02: the seven handover actions. `task_control_action.action` carries a
+  // CHECK constraint, so widening it rebuilds the table; every row, foreign key,
+  // message binding and index is carried across unchanged. There is deliberately
+  // no eighth action and no `release_work`: a receiver who cannot finish uses
+  // `return_work` and the result is labelled partial, which is what releases the
+  // executor. F02's `item_link` columns and F07's `telegram_outbox.anchor` are on
+  // other tables and are left untouched.
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=29").get();
+  if (!applied) {
+    // Receipts and Telegram action content point back to this table. Disable
+    // foreign-key actions only for the atomic swap so those durable rows survive.
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE task_control_action_v29 (
+            ref TEXT PRIMARY KEY,
+            action TEXT NOT NULL CHECK(action IN ('save_human_response','answer_and_resume','resume_saved','grant','revoke','close_thread','publish_offer','accept_offer','decline_offer','withdraw_offer','return_work','apply_result','request_changes')),
+            prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
+            actor_id TEXT NOT NULL REFERENCES task_control_actor(id) ON DELETE CASCADE,
+            chat_id TEXT NOT NULL,
+            topic_id TEXT,
+            bot_id TEXT NOT NULL,
+            message_id TEXT,
+            expected_revision TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            applied_command_id TEXT,
+            subject_kind TEXT NOT NULL DEFAULT 'task' CHECK(subject_kind IN ('task','item')),
+            item_id TEXT REFERENCES item_link(item_id) ON DELETE CASCADE,
+            payload_json TEXT,
+            CHECK((subject_kind='task' AND item_id IS NULL) OR (subject_kind='item' AND item_id IS NOT NULL))
+          );
+          INSERT INTO task_control_action_v29
+            (ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json)
+          SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json
+          FROM task_control_action;
+          DROP TABLE task_control_action;
+          ALTER TABLE task_control_action_v29 RENAME TO task_control_action;
+          CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
+        `);
+        db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(29,?)").run(new Date().toISOString());
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    const violations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+    if (violations.length > 0) throw new Error(`Migration 29 left ${violations.length} foreign-key violation(s)`);
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1417,7 +1471,7 @@ export const workspaces = {
       .get(itemId, personId, capability) !== undefined;
   },
   createTaskControlAction(input: { ref: string; action: TaskControlAction; promptId: number; actorId: string; chatId: string; topicId?: string | null; botId: string; messageId?: string | null; expectedRevision: string; provider?: ProviderId | null; model?: string | null; expiresAt: string; subjectKind?: "task" | "item"; itemId?: string | null; payload?: unknown }): TaskControlActionReference { return sqliteGuard(() => {
-    if (!["save_human_response", "answer_and_resume", "resume_saved", "grant", "revoke", "close_thread"].includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
+    if (!(TASK_CONTROL_ACTIONS as readonly string[]).includes(input.action)) throw new WorkspaceError(422, "validation_error", "Unknown task-control action");
     this.assertHumanInputRevision(input.promptId, input.expectedRevision);
     const ref = requireText(input.ref, "ref", 160);
     const actor = db.prepare("SELECT id FROM task_control_actor WHERE id=? AND enabled=1").get(input.actorId);

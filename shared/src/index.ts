@@ -1008,6 +1008,23 @@ export interface PromptActivity {
 /* Task control                                                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The seven handover actions TM4's own migration adds, and the whole set: there
+ * is deliberately no release action. A receiver who cannot finish uses
+ * `return_work` and the result is labelled partial, which is what releases the
+ * executor (handover-rules.md section 2b, protocol.md section 5).
+ */
+export const HANDOVER_ACTIONS = [
+  "publish_offer",
+  "accept_offer",
+  "decline_offer",
+  "withdraw_offer",
+  "return_work",
+  "apply_result",
+  "request_changes",
+] as const;
+export type HandoverAction = (typeof HANDOVER_ACTIONS)[number];
+
 export const TASK_CONTROL_ACTIONS = [
   "save_human_response",
   "answer_and_resume",
@@ -1015,6 +1032,7 @@ export const TASK_CONTROL_ACTIONS = [
   "grant",
   "revoke",
   "close_thread",
+  ...HANDOVER_ACTIONS,
 ] as const;
 export type TaskControlAction = (typeof TASK_CONTROL_ACTIONS)[number];
 
