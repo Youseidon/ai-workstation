@@ -104,28 +104,37 @@ Outstanding since before this session; needs Yousef's time, not code.
 
 ### M-2. main and origin/main have genuinely diverged
 
-`main` holds 270 commits that have never left this machine.
-`origin/main` holds ten or more commits of Yousef's pipeline work that main does not have, including two merged pull requests.
+**DECIDED 2026-09-22: keep it local. No push.**
 
-Nothing was pushed from here, which the orchestrator verified: no commit of ours is reachable from any remote ref.
-`origin/main` moved because a worker ran `git fetch --all`, a remote read, while the real remote had moved on.
+jd's ruling: the Team work stays on this machine for now and `origin/main` is left untouched.
+The standing no-push constraint therefore continues to hold, and the divergence remains a decision to revisit later rather than an open question.
 
-This is jd's call and it is larger than the tracker's original "main is far ahead" note implied.
+The facts as verified on 2026-09-22: main holds **325** commits that have never left this machine, `origin/main` is at `4fd0e65` with 29 of Yousef's pipeline commits that main does not have, and `git branch -r --contains HEAD` returns **0**, so no commit of ours is reachable from any remote ref.
+
+Recorded risk jd is accepting: the gap grows with every task, and a later reconcile gets harder the longer it waits.
 
 ### M-3. Audit check D3 will fail for the wrong reason
 
-Section 4.1 of [team-track-dev-brief.md](team-track-dev-brief.md) defines D3 as "Nothing was pushed: `origin/main` is still the starting commit recorded in the tracker".
-That conflates two different facts, and M-2 has now separated them.
+**DECIDED 2026-09-22: the auditors record both readings and the checklist is not edited.**
 
-The honest check is that **no commit of ours is reachable from any remote ref**.
-The orchestrator has not edited the audit checklist, because it is the auditor's instrument and jd's to change.
+jd's ruling: V4's auditors run section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) **unchanged**, and for D3 record **both** results:
+
+- the **literal** check, `origin/main` still at the commit the tracker recorded: **FAIL**, because `origin/main` moved from `44ad588` to `4fd0e65` when a worker ran `git fetch --all` while the real remote had moved on.
+- the **honest** check, that no commit of ours is reachable from any remote ref: **PASS**, `git branch -r --contains HEAD` returns 0.
+
+Two further checks are known to mismatch how jd chose to run the work, and the auditors record the deviation rather than failing the work for it:
+
+- **D1** requires every task to have its own worker agent id with no repeats. F00A, F04 and V2 were done by the orchestrator, by jd's own execution-model decision of 2026-09-20.
+- **A4** requires LT-4 recorded with a date and outcome. LT-4 is deferred by operator instruction of 2026-09-18 pending Yousef (gap M-1), and V5's re-run is sequenced after V4 in any case.
+
+The instrument stays the auditor's and jd's. Nothing in it was edited.
 
 ### M-4. Two handover rules are still unruled
 
-Both are marked **Proposed** in [handover-rules.md](handover-rules.md) and were deliberately not put to jd with the other four.
+**RULED 2026-09-22 by jd. One half is closed by documentation; the other needs a product change and is now task H07.**
 
-- **4.3, the decline outcome.** Its text still offers the named-receiver alternative that ruling 1 abolished. The surface behaviour built in H04 is the open-call reading, and the orchestrator forbade the worker from expressing per-person decline as a record transition, so this is genuinely still open rather than quietly decided.
-- **4.5, closing an item while a handover is live.** This one has teeth. Refusing to apply to a closed item is right and H05 built it, but the damage happens earlier: **closing an item while a receiver holds it or has already returned work discards that work with no path back**. That is a data-loss shape. Fixing it means touching the close path, which F02 owns and which has shipped.
+- **4.3, the decline outcome. Closed.** jd confirmed the **open-call reading**: a decline is recorded, the offer stays `OFFERED` for the rest of the roster, and a per-person decline is never expressed as a record transition. This matches the surface H04 already built, so it was a documentation correction. Recorded as ruling 6 in section 8 of [handover-rules.md](handover-rules.md).
+- **4.5, closing an item while a handover is live. Ruled, not yet built.** jd ruled **refuse the close**. While a receiver holds the item, or has returned work that has not been applied, `/close` is rejected with a reason naming the live handover, and the owner must cancel the handover or apply the return first. Recorded as ruling 7. **This is the only ruling of the seven that requires a product change to already-shipped code**, on the close path F02 owns. Tracked as **task H07**.
 
 ### M-5. No npm script runs the Team web unit tests
 
