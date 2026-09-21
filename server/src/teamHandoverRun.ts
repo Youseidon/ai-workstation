@@ -792,6 +792,8 @@ export interface ReturnResult {
   label: "full" | "partial";
   releasedExecutor: boolean;
   stopReason: HandoverStopReason;
+  /** The Result record's own id, which H05's apply and receipt quote back. */
+  resultId: string;
 }
 
 /**
@@ -812,6 +814,10 @@ export async function returnHandoverWork(
     runId: string;
     push: () => Promise<void>;
     now?: Date;
+    /** protocol.md section 3's Result record beyond the commit and the label; H05 records it. */
+    resultId?: string;
+    verification?: string[];
+    uncertainEffects?: string[];
   },
 ): Promise<ReturnResult> {
   const { env } = input;
@@ -836,6 +842,7 @@ export async function returnHandoverWork(
     label,
     releasedExecutor: returned.record.executor === null,
     stopReason: input.stopReason,
+    resultId: input.resultId ?? "",
   };
 }
 

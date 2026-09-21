@@ -125,8 +125,12 @@ export interface HandoverContext {
   verification: string[];
   recommendedProvider: string;
   recommendedModel: string | null;
-  /** The complete working-tree and staged baseline at export, which apply compares against. */
-  baseline: { head: string; staged: string[]; worktree: string[] };
+  /**
+   * The complete working-tree and staged baseline at export, which apply
+   * compares against. H05 widens it with the two tree hashes: `head` alone is
+   * not a baseline, because checking only HEAD misses uncommitted divergence.
+   */
+  baseline: { head: string; staged: string[]; worktree: string[]; indexTree: string; worktreeTree: string };
   summary: string | null;
 }
 
@@ -347,7 +351,8 @@ function buildContext(input: {
     verification: remarks.filter(one => one.kind === "VERIFICATION" || one.kind === "FINDING").map(one => text(one.content)),
     recommendedProvider: input.provider,
     recommendedModel: input.model,
-    baseline: { head: input.head, staged: input.staged, worktree: input.worktree },
+    // H05 computes these; capture records an empty pair until it does.
+    baseline: { head: input.head, staged: input.staged, worktree: input.worktree, indexTree: "", worktreeTree: "" },
     summary: null,
   };
 }
