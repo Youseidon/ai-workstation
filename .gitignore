@@ -67,3 +67,4 @@ web/.next-e2e-*/
 web/.next-e2e-tsconfig.json
 web/.next-e2e-*-tsconfig.json
 e2e/selftest-results/
+worktrees/
