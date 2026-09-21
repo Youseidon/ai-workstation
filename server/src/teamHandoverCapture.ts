@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isItemId } from "./teamItems.ts";
@@ -127,8 +127,14 @@ export interface HandoverContext {
   recommendedModel: string | null;
   /**
    * The complete working-tree and staged baseline at export, which apply
-   * compares against. H05 widens it with the two tree hashes: `head` alone is
-   * not a baseline, because checking only HEAD misses uncommitted divergence.
+   * compares against (protocol.md section 10).
+   *
+   * `head` alone is not the baseline and never was: checking only HEAD misses
+   * uncommitted divergence. `indexTree` is the developer's index written as a
+   * tree and `worktreeTree` is their tracked and untracked non-ignored content
+   * written as a tree, so between them every byte of the staged and working
+   * state is covered by a hash. `staged` and `worktree` stay as the readable
+   * path lists the preview already showed.
    */
   baseline: { head: string; staged: string[]; worktree: string[]; indexTree: string; worktreeTree: string };
   summary: string | null;
@@ -185,6 +191,55 @@ export interface CaptureInput {
 }
 
 export const CONTEXT_PATH = ".agent-console/handover.json";
+
+/**
+ * The two hashes that make a baseline complete, computed the same way at export
+ * and at apply so the comparison is against like.
+ *
+ * Neither touches the developer's state. `indexTree` is written from a **copy**
+ * of `.git/index`, because `git write-tree` against the real index would rewrite
+ * its cache-tree extension, and `worktreeTree` is written through a temporary
+ * index exactly as the snapshot is, so HEAD, the index and the worktree are
+ * byte-identical before and after.
+ */
+export interface WorkspaceTrees {
+  /** The index written as a tree: the complete staged state. */
+  indexTree: string;
+  /** Tracked and untracked non-ignored content written as a tree. */
+  worktreeTree: string;
+}
+
+/** Writes the index as a tree without disturbing it. */
+export function writeIndexTree(root: string): string {
+  const gitDir = resolve(root, git(root, ["rev-parse", "--git-dir"]).trim());
+  const directory = mkdtempSync(join(tmpdir(), "aw-index-copy-"));
+  const copy = join(directory, "index");
+  try {
+    const env = { GIT_INDEX_FILE: copy };
+    if (existsSync(join(gitDir, "index"))) copyFileSync(join(gitDir, "index"), copy);
+    else git(root, ["read-tree", "HEAD"], { env });
+    return git(root, ["write-tree"], { env }).trim();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** Writes tracked and untracked non-ignored content as a tree, through a temporary index. */
+export function writeWorktreeTree(root: string): string {
+  const directory = mkdtempSync(join(tmpdir(), "aw-worktree-tree-"));
+  try {
+    const env = { GIT_INDEX_FILE: join(directory, "index") };
+    git(root, ["read-tree", "--empty"], { env });
+    git(root, ["add", "-A", "--", "."], { env });
+    return git(root, ["write-tree"], { env }).trim();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+export function workspaceTrees(root: string): WorkspaceTrees {
+  return { indexTree: writeIndexTree(root), worktreeTree: writeWorktreeTree(root) };
+}
 
 /* --------------------------------- plumbing -------------------------------- */
 
@@ -327,7 +382,7 @@ function fileShapes(root: string, path: string): CredentialShapeId[] {
 
 function buildContext(input: {
   itemId: string; workspaceId: number; promptId: number; provider: string; model: string | null;
-  head: string; staged: string[]; worktree: string[];
+  head: string; staged: string[]; worktree: string[]; indexTree: string; worktreeTree: string;
 }): HandoverContext {
   const context = workspaces.agentContext(input.workspaceId, input.promptId);
   const remarks = context.history.remarks;
@@ -351,8 +406,10 @@ function buildContext(input: {
     verification: remarks.filter(one => one.kind === "VERIFICATION" || one.kind === "FINDING").map(one => text(one.content)),
     recommendedProvider: input.provider,
     recommendedModel: input.model,
-    // H05 computes these; capture records an empty pair until it does.
-    baseline: { head: input.head, staged: input.staged, worktree: input.worktree, indexTree: "", worktreeTree: "" },
+    baseline: {
+      head: input.head, staged: input.staged, worktree: input.worktree,
+      indexTree: input.indexTree, worktreeTree: input.worktreeTree,
+    },
     summary: null,
   };
 }
@@ -455,7 +512,13 @@ export async function captureHandoverPackage(input: CaptureInput): Promise<Captu
 
   const staged = git(root, ["diff", "--cached", "--name-only", "HEAD"]).split("\n").filter(one => one !== "");
   const worktree = [...new Set(entries.filter(one => one.status !== "!!").map(one => one.path))].sort();
-  const context = buildContext({ itemId: input.itemId, workspaceId, promptId, provider: input.provider, model, head, staged, worktree });
+  // The complete baseline apply compares against: the paths for the preview to
+  // show, and the two tree hashes that cover every staged and working byte.
+  const trees = workspaceTrees(root);
+  const context = buildContext({
+    itemId: input.itemId, workspaceId, promptId, provider: input.provider, model, head, staged, worktree,
+    indexTree: trees.indexTree, worktreeTree: trees.worktreeTree,
+  });
 
   // The snapshot goes through a temporary index, so HEAD, the index, the
   // worktree, the developer's branch and their remote configuration are untouched.
