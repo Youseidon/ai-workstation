@@ -131,10 +131,10 @@ The instrument stays the auditor's and jd's. Nothing in it was edited.
 
 ### M-4. Two handover rules are still unruled
 
-**RULED 2026-09-22 by jd. One half is closed by documentation; the other needs a product change and is now task H07.**
+**CLOSED 2026-09-22. Both halves ruled by jd; 4.3 by documentation and 4.5 by task H07.**
 
 - **4.3, the decline outcome. Closed.** jd confirmed the **open-call reading**: a decline is recorded, the offer stays `OFFERED` for the rest of the roster, and a per-person decline is never expressed as a record transition. This matches the surface H04 already built, so it was a documentation correction. Recorded as ruling 6 in section 8 of [handover-rules.md](handover-rules.md).
-- **4.5, closing an item while a handover is live. Ruled, not yet built.** jd ruled **refuse the close**. While a receiver holds the item, or has returned work that has not been applied, `/close` is rejected with a reason naming the live handover, and the owner must cancel the handover or apply the return first. Recorded as ruling 7. **This is the only ruling of the seven that requires a product change to already-shipped code**, on the close path F02 owns. Tracked as **task H07**.
+- **4.5, closing an item while a handover is live. CLOSED 2026-09-22 by H07**, commits `d300b05..1f01acd`. jd ruled **refuse the close**. While a receiver holds the item, or has returned work that has not been applied, `/close` is rejected with a reason naming the live handover, and the owner must cancel the handover or apply the return first. Recorded as ruling 7. **This is the only ruling of the seven that requires a product change to already-shipped code**, on the close path F02 owns. Built and merged; see the closed section at the foot of this file.
 
 ### M-5. No npm script runs the Team web unit tests
 
@@ -166,6 +166,23 @@ That is the same mechanism as the bug F00B fixed, one step removed, and it is in
 
 F00B correctly did not expand scope to it: the fixtures it repaired could produce a false red, these cannot today.
 Needs jd's decision on whether to take a follow-up task, because the honest fix is likely a tiebreak in the product lookup rather than more fixture cleanup.
+
+### M-7. H04's `closeAfterHandover` contradicts ruling 7, and nothing owns the reconciliation
+
+Found by H07 while building the close guard, and **correctly not fixed by it**.
+
+`closeAfterHandover` at `server/src/teamHandoverRun.ts:972` permits a close in `OFFERED`, `WAITING_INPUT`, `PAUSED` and `RETURNED`.
+Ruling 7 says all four are live and a close must be refused in every one of them.
+The two disagree.
+
+H07 tried applying the same `isLiveHandoverState` guard there and it broke an existing assertion: `teamHandoverRun.test.ts:955`, "the item closes once the receiver's own workstation has stopped and acknowledged", where `stop_proven` leaves the record in `PAUSED` and H04 reads an acknowledged stop as the end of the handover.
+H07 reverted the attempt entirely rather than weaken that assertion, which was the right call, and the file is byte-identical to main and passes 34/34.
+
+**Why it is not urgent**: `closeAfterHandover` has **no production caller**. The orchestrator verified this; the only references are its own definition and its own test, so no person can reach it today.
+**Why it is not nothing**: the moment anyone wires it to a caller, ruling 7 is bypassed and the data-loss path H07 just closed reopens through a second door.
+
+The real question is which reading is right, and it is a design question rather than a bug: does an acknowledged stop end the handover (H04), or is a stopped-but-unreturned item still held (ruling 7)? There is work on the branch in both readings.
+Needs jd.
 
 ## Low
 
@@ -238,3 +255,18 @@ The orchestrator did not rely on that inference and re-ran the four rows three t
 So the honest statement is: the receiver's own policy decides, proven end to end at 3 repeats for the runnable path, and proven row by row at 3 repeats at the server tier.
 The two residual limits jd accepted on 2026-09-20 are unchanged and remain accepted: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment.
 `TM-T1-H1:225-227` additionally asserts no credential reaches the transcript, which passed on all six repeats across the two burn-ins.
+
+### M-4's rule 4.5, the close-path data loss. Closed 2026-09-22 by H07, commits `d300b05..1f01acd`.
+
+`/close` is now refused while a handover is live, with a reason that names what is outstanding and what to do instead.
+The guard stands **before** `revokeItemGrants` and `closeItemLink`, which is the whole point: H05's refusal to apply to a closed item was too late, because by then the grants were gone and the link shut.
+
+Nine states refuse and five allow. `OFFERED` and `APPLYING` were the two judgement calls and H07 included both, taking the ruling's purpose over its narrowest wording: an open offer is a live invitation to do work that could then never be applied, and a half-finished apply is still unapplied.
+
+**The orchestrator ran a mutation rather than trusting the tests.** Disabling only the guard reproduced the entire data-loss shape: the close applied while the record was `RETURNED`, the item closed, the receiver's grant was revoked, the apply was then refused forever, and `result.md` never reached the requester's checkout. Restored, and re-verified at 421/421 three times against one unchanged root, T1 at `127 passed (25.3m)`, typecheck clean on four workspaces.
+
+Two limits recorded rather than hidden:
+
+- The `/close` **text** command still mints its card and refuses on the tap, rather than refusing instead of the card. H07 chose one unbypassable guard over two that can diverge; making the text path refuse earlier means turning two handlers async. Cosmetic, and a small follow-up if jd wants it.
+- **No T1 row covers this yet.** H07 judged one belongs, the phone-side "`/close` on the anchor while a teammate holds the item", and left it to Phase V rather than writing it unasked. V4's auditors should see it as a known gap in end-to-end coverage, not as covered.
+- The guard is inert if `registerHandoverStateProbe` is never called. It is registered unconditionally in `startSession` beside the tap handler, which the orchestrator verified, so every real session has it; but it fails open rather than closed if a future path forgets.
