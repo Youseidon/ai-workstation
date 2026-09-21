@@ -18,7 +18,7 @@ jd's ruling of 2026-09-21: **work the critical items, then the high ones. The me
 
 ### C1. Handover is built but not connected to any user surface
 
-**Status: being fixed, task H06.**
+**CLOSED 2026-09-21 by H06, commits `2926149..04dca86`. See the closed section at the foot of this file.**
 
 TM4's engine is complete and tested at the server tier: capture, offer, discovery, accept, claim, the receiver's run, the capability matrix, return, review and apply.
 Nothing connects it to a person.
@@ -63,7 +63,7 @@ It arrived in F05 and the orchestrator's verification missed it by using a fresh
 
 ### H-2. The three handover end-to-end rows have never run
 
-**Status: unblocked by H06, then run in Phase V.**
+**CLOSED 2026-09-21 by H06. All three now run and pass, verified independently by the orchestrator: `3 passed (2.9m)`. Their 9/9 burn-in is still owed to Phase V, which is C2, not this gap.**
 
 `e2e/tests/t1/tm4-handover.spec.ts` carries TM-T1-H1, TM-T1-H2 and TM-T1-H3, every one `test.fixme`, so Playwright skips them silently.
 They could not run: they need the surface C1 describes.
@@ -74,7 +74,7 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 ### H-3. G02 still gates enabling handover
 
-**Status: closes when H-2's rows pass.**
+**Status: H-2's rows now pass, so the evidence exists. G02 closes when Phase V's burn-in confirms it holds at 3 repeats rather than once.**
 
 The decision half is recorded: jd confirmed on 2026-09-20 that the roster is the trust boundary.
 The evidence half now exists, because H04 built RTC-12's capability matrix and it passes at the server tier, covering within-limit, a grantable delta, a hard deny and unknown enforcement.
@@ -132,7 +132,7 @@ The assertions exist and nothing routine runs them, which is the brief's own sec
 | L-1 | **F10, the pilot rig**: B3 wrong port silently, B4 credentials inherited from the shell, B10 the launcher cannot be stopped by script, B19 the two instances share one working tree | Rig only, no product code. Needed before LT-5 and nothing else. |
 | L-2 | **G04's named fallback owner** | The orchestrator recorded Yousef as the only candidate in a two-person team and flagged it. jd has not confirmed the name. |
 | L-3 | **Opening the same item twice mints a second item** | `createItemLink` is called again on a repeat open. Found by F03, not in B1 to B19, left alone as out of scope. Worth its own entry if it is real. |
-| L-4 | **F03's two-width UI check cannot be re-run** | The worker ran a headless fixture at 390px and 1280px and then deleted it rather than committing a rig script. The evidence was observed; it is not reproducible. |
+| L-4 | **F03's two-width UI check cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. F03's own control still has no committed rig. |
 | L-5 | **F03's `409 prompt_already_complete` is untested at the HTTP tier** | The test drives the runtime directly and relies on the generic `WorkspaceError` handler every other route already uses. |
 | L-6 | **F08's accepted trade** | An execute run that never ends leaves the anchor pinned and live rather than frozen and wrong. Judged the better failure and reversible if jd wants a bound. |
 | L-7 | **H03 chose the handover context file path** | `.agent-console/handover.json`, inside the snapshot tree only, never in the developer's worktree. The worker's choice, not the design's. |
@@ -141,5 +141,23 @@ The assertions exist and nothing routine runs them, which is the brief's own sec
 
 ## Closed while this register was open
 
-Nothing yet.
-Entries move here with the task and commits that closed them, so the register shrinks visibly rather than being rewritten.
+### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
+
+The engine now reaches a person. Six HTTP routes, a third runtime loop reading the shared ref namespace every 5 seconds so a receiver discovers an offer without being told to look, `registerHandoverTapHandler` finally called from `startSession`, the three handover cards rendered for Telegram, and a requester control on the work-item detail.
+
+**The card named three missing joins and there were five.** Driving a real tap end to end found two more that no reading had caught: `formatTelegramMessage` had no case for any handover card, so every one would have failed delivery as an unsupported payload kind and no tap was ever possible; and the session's `TaskControlService` config never carried `handoverEnabled`, so the gate would have refused every tap even with the setting on. Both were inside C1's own sentence and neither was visible until something tried to use it.
+
+**Two real defects were found by running the tests**, which is exactly why the task existed.
+
+1. **An engine defect in H04**, fixed in its own commit `8062cb2`. `discoverHandoverOffer` deduped per bot and item with no regard to the epoch. Request changes opens a new epoch, so a bot that had ever posted a card for an item would never post another, and **every handover round after the first was undiscoverable by anyone**. It could not have passed at any tier. Dedupe is now per epoch, and a new epoch ends the spent round's undecided buttons while leaving a decided one alone, because a decided button is answered from its receipt rather than re-applied.
+2. **A wiring defect**, fixed in `04dca86`. `runtime.handleCallbackResult` did not resolve the group actor for a handover action, so every handover tap was answered with a toast alone and nothing was written into the item's thread. D01's "the completion report is visible at once" could not have held.
+
+### H-2, the three unrun rows. Closed 2026-09-21 by H06.
+
+TM-T1-H1 27.5s, TM-T1-H2 1.7m, TM-T1-H3 43.6s. The orchestrator re-ran them rather than accepting the report: `3 passed (2.9m)`.
+
+One fixture was corrected rather than one assertion weakened: TM-T1-H1's env A had to move off `main` before capture, because `main` is a protected product branch and this product never merges one automatically. The protected-branch refusal was already asserted at the server tier, so nothing lost coverage.
+
+### L-4, F03's unreproducible two-width check. Closed 2026-09-21 by H06.
+
+H06 committed its two-width rig as `scripts/verify-handover-browser.mjs` with an npm script rather than running it once and deleting it, which is the shape L-4 recorded as missing. F03's own control is still not covered by a committed rig, so L-4 is **narrowed, not fully closed**: the practice is fixed and F03's specific gap remains.
