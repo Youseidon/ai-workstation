@@ -84,6 +84,11 @@ export interface ControlTransitionPayload {
   packageVerified?: boolean;
   branchVerified?: boolean;
   offerDeadline?: string;
+  /** The Offer record's requested provider, model and package (H03, protocol.md section 3). */
+  requestedProvider?: string;
+  requestedModel?: string | null;
+  packageHash?: string;
+  snapshotCommit?: string;
   reason?: string;
   policyChecked?: boolean;
   workspaceReserved?: boolean;

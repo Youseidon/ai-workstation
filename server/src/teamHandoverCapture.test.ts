@@ -156,7 +156,7 @@ function fixture(prefix: string, build?: (directory: string) => void): Fixture {
 }
 
 const capture = (f: Fixture, extra: Record<string, unknown> = {}) => captureHandoverPackage({
-  itemId: f.itemId, requester: REQUESTER, provider: PROVIDER, model: MODEL, ...extra,
+  itemId: f.itemId, requester: REQUESTER, provider: PROVIDER, model: MODEL, control: f.control, ...extra,
 });
 
 async function prepared(f: Fixture, commandId = "begin-1") {
