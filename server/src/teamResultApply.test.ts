@@ -39,6 +39,7 @@ import {
   type HandoverBaseline,
   type RequesterEnvironment,
 } from "./teamResultApply.ts";
+import { parseTeamItemGrantedCommand } from "./teamItemViews.ts";
 import { mintItemId } from "./teamItems.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
@@ -136,6 +137,20 @@ function fixture(prefix: string): Fixture {
     id: `fake-tg-${REQUESTER}-group-${itemId}`, transport: "fake_telegram", transportUserId: "9000",
     chatId: groupChat, label: "jd",
   });
+  // The roster the item's thread belongs to, which is what the item half of
+  // `TaskControlService` resolves an owner and an acting member against.
+  const teamId = `team-${itemId}`;
+  workspaces.upsertTeamRoster({
+    teamId, groupChatId: groupChat, remoteUrl: bare, revision: "r1",
+    record: {
+      version: 1, teamId, groupChatId: groupChat, remoteUrl: bare, usedInviteIds: [], commandIds: [],
+      updatedAt: new Date().toISOString(),
+      members: [
+        { personId: REQUESTER, telegramUserId: "9000", botId: "jd-bot", botUsername: "jd_bot", workstationId: "jd-laptop", workstationLabel: "jd-laptop", personLabel: "jd" },
+        { personId: RECEIVER, telegramUserId: "9001", botId: "yousef-bot", botUsername: "yousef_bot", workstationId: "yousef-desktop", workstationLabel: "yousef-desktop", personLabel: "yousef" },
+      ],
+    },
+  });
 
   const control = new BareGitControlRecordRemote(bare, itemId);
   const env: RequesterEnvironment = {
@@ -169,6 +184,11 @@ function fixture(prefix: string): Fixture {
       // Every row and every file this fixture created goes with it, so the file
       // passes twice against one unchanged repo root.
       for (const entry of workspaces.list()) if (entry.id === workspace.id) workspaces.remove(entry.id);
+      // `team_roster` has no removal API, so the cache row goes back out the
+      // way the other suites clear theirs.
+      const db = database();
+      try { db.prepare("DELETE FROM team_roster WHERE team_id=?").run(teamId); } finally { db.close(); }
+      workspaces.removeTaskControlActor(`fake-tg-${REQUESTER}-group-${itemId}`);
       rmSync(join(config.repoRoot, ".agent-console", "handover-apply", `${itemId}.json`), { force: true });
       for (const directory of [bare, source, receiverClone, integrationRoot]) rmSync(directory, { recursive: true, force: true });
     },
@@ -256,6 +276,28 @@ async function atReturn(
   const preview = await published(f);
   const result = await returned(f, options);
   return { baseline: preview.context.baseline, ...result };
+}
+
+/**
+ * The owner's `/close` as the product applies it (H07).
+ *
+ * `handleTeamGrantedCommand` mints one `close_thread` action for the `/close`
+ * text command and for the item card's Close thread button alike, so both entry
+ * points arrive here, and the probe is the one `TelegramLiveRuntime` registers:
+ * this workstation's own view of the item's control record.
+ */
+function closeThreadTap(f: Fixture, ref: string): { control: TaskControlService; tap: Parameters<TaskControlService["handleCallback"]>[0] } {
+  workspaces.createTaskControlAction({
+    ref, action: "close_thread", promptId: f.promptId, actorId: f.env.actorId, chatId: f.groupChat, botId: f.env.botId,
+    messageId: `close-card-${ref}`, expectedRevision: workspaces.humanInputState(f.promptId).revision,
+    expiresAt: "2099-01-01T00:00:00.000Z", subjectKind: "item", itemId: f.itemId,
+  });
+  const control = new TaskControlService({
+    enabled: true, teamEnabled: true, handoverEnabled: true,
+    notificationsEnabled: true, remoteActionsEnabled: true, transport: "fake_telegram", botId: f.env.botId,
+  });
+  control.registerHandoverStateProbe(async itemId => (await new BareGitControlRecordRemote(f.bare, itemId).read())?.record ?? null);
+  return { control, tap: { ref, transportUserId: "9000", chatId: f.groupChat, botId: f.env.botId, messageId: `close-card-${ref}`, commandId: `${ref}-command` } };
 }
 
 const state = async (f: Fixture): Promise<ControlRecord> => (await f.control.read())!.record;
@@ -760,6 +802,95 @@ test("TM-T1-H3: return, review and apply", async (t) => {
       }
       assert.deepEqual(observeWorkspace(f.source), before, "nothing is merged into a closed item's workspace");
       assert.equal((await state(f)).state, "RETURNED", "and the record is untouched; reopening is a new item");
+    } finally { f.dispose(); }
+  });
+
+  /*
+   * H07, ruling 7 of 2026-09-22 (handover-rules.md section 4.5 and section 8).
+   *
+   * Refusing to *apply* to a closed item, which the test above covers, is not
+   * enough on its own: the damage happens one step earlier. Closing while the
+   * receiver's work is back and unapplied revokes the grants and ends the item,
+   * and the apply refusal above then guarantees that work can never land. That
+   * is the data loss, and this row is the whole path a person walks to it:
+   * `/close` on the item's thread, the card it mints, and the tap.
+   */
+  await t.test("Sixth: /close while returned work is unapplied is refused, and the receiver's work survives (H07)", async () => {
+    const f = fixture("tm-t1-h7-close-returned");
+    try {
+      const { baseline } = await atReturn(f);
+      const before = observeWorkspace(f.source);
+      workspaces.grantItemCapability({ itemId: f.itemId, personId: RECEIVER, capability: "context", commandId: "a-grant" });
+      assert.equal((await state(f)).state, "RETURNED", "the receiver's work is back and nobody has applied it");
+
+      // The owner's `/close`, from the text a person types to the tap that
+      // applies it. `/close` parses to the owner-only close command, which
+      // `handleTeamGrantedCommand` mints as exactly this `close_thread` action
+      // (runtime.ts), so the button and the text command converge here.
+      assert.deepEqual(parseTeamItemGrantedCommand("/close", "jd_bot"), { command: "close" },
+        "the text command a person types is the owner's close");
+      const closing = closeThreadTap(f, "h07-close-returned");
+      const receipt = await closing.control.handleCallback(closing.tap);
+
+      assert.equal(receipt.state, "REJECTED", "the close is refused while the handover is live");
+      assert.equal(receipt.errorCode, "handover_live");
+      assert.match(receipt.message ?? "", /live handover/, "and the reason names the live handover");
+      assert.match(receipt.message ?? "", new RegExp(f.itemId), "by item");
+      assert.match(receipt.message ?? "", /work returned on .* has not been applied/, "says what is at stake");
+      assert.match(receipt.message ?? "", /Apply the returned work or cancel the handover first/,
+        "and says what the owner must do instead");
+
+      // Nothing the close would have destroyed was touched.
+      assert.equal(workspaces.itemLink(f.itemId)!.closedAt, null, "the item is not closed");
+      assert.equal(workspaces.hasItemCapability(f.itemId, RECEIVER, "context"), true, "and no grant was revoked");
+      assert.equal((await state(f)).state, "RETURNED", "the record is exactly where it was");
+      assert.deepEqual(observeWorkspace(f.source), before, "and the owner's own checkout is untouched");
+
+      // The path back the close would have destroyed is still open.
+      const applied = await applyReturnedResult(f.control, {
+        env: f.env, itemId: f.itemId, baseline, commandId: "a-apply-after-refusal", acceptance: { met: true },
+        capability: CAPABILITY, integrationRoot: f.integrationRoot,
+      });
+      assert.equal(applied.kind, "applied", "the owner can still apply the work the close would have discarded");
+      assert.equal(readFileSync(join(f.source, "result.md"), "utf8"), "the receiver's work\n",
+        "and the receiver's work is in the requester's checkout");
+    } finally { f.dispose(); }
+  });
+
+  await t.test("Sixth: /close is allowed again once the handover is over, and still refused while it is only offered (H07)", async () => {
+    const f = fixture("tm-t1-h7-close-states");
+    try {
+      const { baseline } = await atReturn(f);
+      workspaces.grantItemCapability({ itemId: f.itemId, personId: RECEIVER, capability: "context", commandId: "a-grant" });
+
+      // OFFERED: nobody holds it, but the offer is live and any teammate can
+      // still accept, so the owner withdraws it rather than closing over it.
+      await requestHandoverChanges(f.control, {
+        env: f.env, itemId: f.itemId, commandId: "a-changes", requirementsRevision: "rev-2",
+        packageHash: "pkg", snapshotCommit: (await readReturnedResult(f.control, f.itemId))!.resultCommit,
+        provider: PROVIDER, model: MODEL, capability: CAPABILITY, verifyBranch: async () => true,
+      });
+      assert.equal((await state(f)).state, "OFFERED");
+      const offered = closeThreadTap(f, "h07-close-offered");
+      const refusedWhileOffered = await offered.control.handleCallback(offered.tap);
+      assert.equal(refusedWhileOffered.errorCode, "handover_live", "an open offer is a live handover");
+      assert.match(refusedWhileOffered.message ?? "", /Withdraw the offer first/);
+      assert.equal(workspaces.itemLink(f.itemId)!.closedAt, null);
+
+      // WITHDRAWN: the offer is gone and nobody's work is outstanding, so the
+      // close the owner was told to make instead is the one that works.
+      await applyControlTransition(f.control, {
+        event: "withdraw_offer", actor: { personId: REQUESTER, workstationId: "jd-laptop" },
+        commandId: "a-withdraw", epoch: (await state(f)).epoch, roster: [REQUESTER, RECEIVER],
+      });
+      assert.equal((await state(f)).state, "WITHDRAWN");
+      const closing = closeThreadTap(f, "h07-close-withdrawn");
+      const closed = await closing.control.handleCallback(closing.tap);
+      assert.equal(closed.state, "APPLIED", "with no live handover the close applies as it always did");
+      assert.equal(closed.message, "Thread closed; grants ended.");
+      assert.equal(workspaces.itemLink(f.itemId)!.closedAt !== null, true, "the thread is closed");
+      assert.equal(workspaces.hasItemCapability(f.itemId, RECEIVER, "context"), false, "and the grants ended with it");
+      assert.equal(baseline.head.length > 0, true);
     } finally { f.dispose(); }
   });
 

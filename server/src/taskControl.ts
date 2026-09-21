@@ -4,6 +4,7 @@ import { harnessSeams } from "./harnessSeams.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
 import { settings } from "./settings.ts";
 import { decodeTeamItemActionPayload, requiredItemGrantCapabilities, type ItemGrantOperation } from "./teamGrants.ts";
+import { isLiveHandoverState, liveHandoverCloseRefusal, type ControlRecord } from "./teamControlRecord.ts";
 import { decodeHandoverActionPayload } from "./teamHandoverRun.ts";
 import { decodeTeamThreadRequestAction } from "./teamThreadRequests.ts";
 import { renderPersonalQuestion, renderQuotaWarning } from "./taskControlRenderer.ts";
@@ -59,6 +60,14 @@ export interface HandoverTap {
 
 export type HandoverTapHandler = (tap: HandoverTap) => Promise<TaskControlReceipt>;
 
+/**
+ * What this workstation knows about an item's handover, for the close guard
+ * (H07). Like the tap handler it is registered rather than imported, because
+ * the control record is Git and this service owns none; a probe that cannot
+ * read the record throws, and the close is refused rather than allowed.
+ */
+export type HandoverStateProbe = (itemId: string) => Promise<ControlRecord | null>;
+
 export interface TaskControlQuestionCard {
   outboxId: number;
   actions: Array<{ ref: string; action: TaskControlAction }>;
@@ -76,6 +85,7 @@ export function withLiveTokenState(capability: TaskControlCapability, tokenConfi
 
 export class TaskControlService {
   private handoverTaps: HandoverTapHandler | null = null;
+  private handoverState: HandoverStateProbe | null = null;
 
   constructor(private readonly configSource: TaskControlConfig | (() => TaskControlConfig)) {}
 
@@ -86,6 +96,16 @@ export class TaskControlService {
    */
   registerHandoverTapHandler(handler: HandoverTapHandler | null): void {
     this.handoverTaps = handler;
+  }
+
+  /**
+   * Attaches the reader the close guard asks whether a handover is live (H07).
+   * It is attached beside the tap handler, whatever the handover capability
+   * says, because an item handed over before handover was switched off is still
+   * an item somebody else's work is riding on.
+   */
+  registerHandoverStateProbe(probe: HandoverStateProbe | null): void {
+    this.handoverState = probe;
   }
 
   private get config(): TaskControlConfig {
@@ -331,6 +351,16 @@ export class TaskControlService {
           if (!isOwner) return this.reject(input, "owner_required", "Only the item owner can change access or close this thread.", action.ref);
           workspaces.assertHumanInputRevision(action.prompt_id, action.expected_revision);
           if (action.action === "close_thread") {
+            // H07, ruling 7 of 2026-09-22: a close while a receiver holds the
+            // item, or while work has come back that has not been applied,
+            // destroys another person's work with no path back. Refusing to
+            // *apply* to a closed item (H05) is too late, because the grants are
+            // revoked and the link closed on the two lines below, so the guard
+            // stands before both and names the live handover.
+            const live = this.handoverState === null ? null : await this.handoverState(action.item_id);
+            if (live !== null && isLiveHandoverState(live.state)) {
+              return this.reject(input, "handover_live", liveHandoverCloseRefusal(live), action.ref);
+            }
             workspaces.revokeItemGrants({ itemId: action.item_id, commandId: input.commandId });
             workspaces.closeItemLink({ itemId: action.item_id, commandId: input.commandId });
             return workspaces.recordTaskControlReceipt({ commandId: input.commandId, actionRef: action.ref, state: "APPLIED", message: "Thread closed; grants ended." });

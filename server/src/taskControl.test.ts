@@ -7,6 +7,8 @@ import Database from "better-sqlite3";
 import type { ProgramRecord, PromptRecord, QuotaWarning, SuiteRecord } from "@agent-console/shared";
 import { setPipelineStationStarter } from "./pipelineScheduler.ts";
 import { TaskControlService } from "./taskControl.ts";
+import { mintItemId } from "./teamItems.ts";
+import { CONTROL_STATES, isLiveHandoverState, type ControlRecord, type ControlState } from "./teamControlRecord.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
 
 function service(botId = `fake-bot-${Date.now()}-${Math.random()}`) {
@@ -322,4 +324,119 @@ test("capability reports a missing live token instead of 'Telegram configured'",
   assert.match(missing.reason, /TELEGRAM_BOT_TOKEN/);
   const fake = { ...configured, transport: "fake_telegram" as const, setup: "fake_only" as const };
   assert.deepEqual(withLiveTokenState(fake, false), fake);
+});
+
+/*
+ * H07, ruling 7 of 2026-09-22: `/close` is refused while a handover is live.
+ *
+ * The close path revokes every grant and ends the item, in that order, so a
+ * guard placed any later than this one has already destroyed what it was meant
+ * to protect. `teamResultApply.test.ts` walks the whole path with a real
+ * control record; this covers the decision itself, state by state, and the two
+ * entry points that reach it.
+ */
+test("H07: close_thread is refused in every live handover state and applies in every other one", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "h07-close-guard-"));
+  const workspace = workspaces.create({ name: directory, workDirectory: directory });
+  const botId = `telegram-h07-${workspace.id}`;
+  const teamId = `team-h07-${workspace.id}`;
+  const groupChatId = `group-h07-${workspace.id}`;
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const prompt = workspaces.createChild("prompt", suite.id, { title: "Owner item", content: "Finish the work" }) as PromptRecord;
+    workspaces.upsertTeamRoster({
+      teamId, groupChatId, remoteUrl: "local", revision: "r1",
+      record: {
+        version: 1, teamId, groupChatId, remoteUrl: "local", usedInviteIds: [], commandIds: [], updatedAt: new Date().toISOString(),
+        members: [
+          { personId: "jd", telegramUserId: "101", botId, botUsername: "owner_bot", workstationId: botId, workstationLabel: "jd-laptop", personLabel: "jd" },
+          { personId: "yousef", telegramUserId: "202", botId: "telegram-yousef", botUsername: "yousef_bot", workstationId: "ws-yousef", workstationLabel: "yousef-desktop", personLabel: "yousef" },
+        ],
+      },
+    });
+    const owner = workspaces.upsertTeamGroupActor({ id: `h07-owner-${workspace.id}`, transport: "fake_telegram", transportUserId: "101", chatId: groupChatId, label: "jd" });
+
+    const record = (state: ControlState, itemId: string): ControlRecord => ({
+      version: 1, itemId, state, epoch: 1, requester: "jd",
+      executor: state === "RETURNED" || state === "APPLYING" ? null : "yousef",
+      branch: `aw/handover/${itemId}`, lastCommandId: null, offerDeadline: null, resultLabel: null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    /** One `/close` on a fresh item whose handover is in `state`, tapped. */
+    const close = async (state: ControlState | null) => {
+      const item = workspaces.createItemLink({ itemId: mintItemId(), promptId: prompt.id, role: "requester", epoch: 1 });
+      const ref = `h07-close-${item.itemId}`;
+      workspaces.grantItemCapability({ itemId: item.itemId, personId: "yousef", capability: "context", commandId: `${ref}-grant` });
+      workspaces.createTaskControlAction({
+        ref, action: "close_thread", promptId: prompt.id, actorId: owner.id, chatId: groupChatId, botId,
+        messageId: "close-card", expectedRevision: workspaces.humanInputState(prompt.id).revision,
+        expiresAt: "2099-01-01T00:00:00.000Z", subjectKind: "item", itemId: item.itemId,
+      });
+      const control = new TaskControlService({
+        enabled: true, teamEnabled: true, handoverEnabled: true,
+        notificationsEnabled: true, remoteActionsEnabled: true, transport: "fake_telegram", botId,
+      });
+      control.registerHandoverStateProbe(async itemId => (state === null ? null : record(state, itemId)));
+      const receipt = await control.handleCallback({ ref, transportUserId: "101", chatId: groupChatId, botId, messageId: "close-card", commandId: `${ref}-command` });
+      return {
+        receipt,
+        closed: workspaces.itemLink(item.itemId)!.closedAt !== null,
+        granted: workspaces.hasItemCapability(item.itemId, "yousef", "context"),
+      };
+    };
+
+    for (const state of CONTROL_STATES) {
+      const outcome = await close(state);
+      if (isLiveHandoverState(state)) {
+        assert.equal(outcome.receipt.state, "REJECTED", `${state} is live, so the close is refused`);
+        assert.equal(outcome.receipt.errorCode, "handover_live", `${state} refuses with its own code`);
+        assert.match(outcome.receipt.message ?? "", /live handover/, `${state} says a handover is live`);
+        assert.equal(outcome.closed, false, `${state} leaves the item open`);
+        assert.equal(outcome.granted, true, `${state} revokes nothing: the guard stands before the revoke`);
+      } else {
+        assert.equal(outcome.receipt.state, "APPLIED", `${state} is not live, so the close still applies`);
+        assert.equal(outcome.receipt.message, "Thread closed; grants ended.");
+        assert.equal(outcome.closed, true, `${state} closes the item`);
+        assert.equal(outcome.granted, false, `${state} ends the grants with it`);
+      }
+    }
+
+    // An item that was never handed over has no record at all, and closes.
+    const never = await close(null);
+    assert.equal(never.receipt.state, "APPLIED", "an item with no control record closes as it always did");
+    assert.equal(never.closed, true);
+
+    // The states the ruling names, in the words the owner is given.
+    const returned = await close("RETURNED");
+    assert.match(returned.receipt.message ?? "", /Apply the returned work or cancel the handover first/);
+    const claimed = await close("CLAIMED");
+    assert.match(claimed.receipt.message ?? "", /yousef is holding .* \(CLAIMED\)/, "and a held item names who holds it");
+
+    // A probe that cannot read the record refuses rather than closing: the
+    // close never proceeds on a state nobody could check.
+    const unreadable = workspaces.createItemLink({ itemId: mintItemId(), promptId: prompt.id, role: "requester", epoch: 1 });
+    workspaces.createTaskControlAction({
+      ref: `h07-unreadable-${unreadable.itemId}`, action: "close_thread", promptId: prompt.id, actorId: owner.id, chatId: groupChatId, botId,
+      messageId: "close-card", expectedRevision: workspaces.humanInputState(prompt.id).revision,
+      expiresAt: "2099-01-01T00:00:00.000Z", subjectKind: "item", itemId: unreadable.itemId,
+    });
+    const blind = new TaskControlService({
+      enabled: true, teamEnabled: true, handoverEnabled: true,
+      notificationsEnabled: true, remoteActionsEnabled: true, transport: "fake_telegram", botId,
+    });
+    blind.registerHandoverStateProbe(async () => { throw new WorkspaceError(502, "control_git_failed", "Git control record operation failed."); });
+    const refused = await blind.handleCallback({ ref: `h07-unreadable-${unreadable.itemId}`, transportUserId: "101", chatId: groupChatId, botId, messageId: "close-card", commandId: "h07-unreadable-command" });
+    assert.equal(refused.state, "REJECTED", "a record that cannot be read refuses the close");
+    assert.equal(refused.errorCode, "control_git_failed");
+    assert.equal(workspaces.itemLink(unreadable.itemId)!.closedAt, null, "and destroys nothing");
+  } finally {
+    const db = new Database(workspaces.databasePath);
+    try { db.prepare("DELETE FROM team_roster WHERE team_id=?").run(teamId); } finally { db.close(); }
+    workspaces.removeTelegramRecordsForBot(botId);
+    workspaces.removeTaskControlActor(`h07-owner-${workspace.id}`);
+    workspaces.remove(workspace.id);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
