@@ -326,6 +326,7 @@ test("TM-T1-H3: return, review and apply", async (t) => {
       const review = await reviewReturnedResult(f.control, { env: f.env, itemId: f.itemId, baseline, capability: CAPABILITY, integrationRoot: f.integrationRoot });
       assert.equal(review.merge.clean, true, "Git itself would have merged this cleanly");
       assert.equal(review.applyOffered, false, "yet Apply is not offered, because the workspace no longer matches its baseline");
+      assert.deepEqual(review.refusedBecause, ["baseline_diverged"], "and the baseline is the only gate that refuses");
       assert.deepEqual(review.card.offered, ["review", "request_changes"], "so the phone shows no Apply to tap");
       assert.equal(review.card.actions.some(one => one.action === "apply_result"), false, "and mints no apply action");
       assert.match(review.reason, /uncommitted changes since export in notes\.md/);
@@ -366,6 +367,8 @@ test("TM-T1-H3: return, review and apply", async (t) => {
       assert.equal(review.merge.clean, false, "Git cannot complete this merge");
       assert.deepEqual(review.merge.conflictPaths, ["task.md"], "and names the conflicted path itself");
       assert.equal(review.applyOffered, false, "so Apply is not offered; a moved checkout shows as a conflict, not a silent overwrite");
+      assert.deepEqual(review.refusedBecause, ["baseline_diverged", "merge_conflict"],
+        "and both gates refuse independently: Apply is offered only when the merge is clean, as well as when the baseline matches");
       assert.match(review.reason, /conflict/i);
 
       const checkout = review.merge.integrationCheckout;
@@ -401,6 +404,8 @@ test("TM-T1-H3: return, review and apply", async (t) => {
 
       const review = await reviewReturnedResult(f.control, { env: f.env, itemId: f.itemId, baseline, capability: CAPABILITY, integrationRoot: f.integrationRoot });
       assert.equal(review.applyOffered, false, "Apply is not offered on a protected product branch");
+      assert.deepEqual(review.refusedBecause, ["protected_branch"],
+        "the baseline matches and the merge is clean, and Apply is still withheld");
       assert.match(review.reason, /protected product branch/);
 
       await assert.rejects(
@@ -427,6 +432,7 @@ test("TM-T1-H3: return, review and apply", async (t) => {
 
       const review = await reviewReturnedResult(f.control, { env: f.env, itemId: f.itemId, baseline, capability: CAPABILITY, integrationRoot: f.integrationRoot });
       assert.equal(review.applyOffered, true);
+      assert.deepEqual(review.refusedBecause, [], "no gate refuses");
       assert.equal(review.merge.fastForward, true, "an undiverged checkout fast-forwards");
 
       const outboxBefore = database().prepare("SELECT COUNT(*) n FROM telegram_outbox").get() as { n: number };
@@ -490,6 +496,36 @@ test("TM-T1-H3: return, review and apply", async (t) => {
       assert.equal(applied.taskCompleted, false, "acceptance was not met, so the task is not completed");
       assert.equal((await state(f)).state, "PAUSED", "and the application stays resumable");
       assert.equal(workspaces.promptOutcome(f.promptId).status, "TODO");
+    } finally { f.dispose(); }
+  });
+
+  await t.test("Third: the baseline is rechecked immediately before the original moves, not once at the start", async () => {
+    const f = fixture("tm-t1-h3-recheck");
+    try {
+      const { baseline } = await atReturn(f);
+      const review = await reviewReturnedResult(f.control, { env: f.env, itemId: f.itemId, baseline, capability: CAPABILITY, integrationRoot: f.integrationRoot });
+      assert.equal(review.applyOffered, true, "Apply was genuinely offered: the workspace matched when it was reviewed");
+
+      // jd saves a file while the apply is in flight, after APPLYING has been
+      // claimed and the merge has been probed against a workspace that matched.
+      let before: ReturnType<typeof observeWorkspace> | null = null;
+      const applied = await applyReturnedResult(f.control, {
+        env: f.env, itemId: f.itemId, baseline, commandId: "a-apply", acceptance: { met: true },
+        capability: CAPABILITY, integrationRoot: f.integrationRoot,
+        hooks: { beforeMerge: () => {
+          writeFileSync(join(f.source, "untracked.md"), "scratch, edited mid-apply\n");
+          before = observeWorkspace(f.source);
+        } },
+      });
+      assert.equal(applied.kind, "blocked", "the recheck catches it and the original is kept unchanged");
+      if (applied.kind !== "blocked") return;
+      assert.equal(applied.merged, false);
+      assert.deepEqual(applied.baseline.divergedPaths, ["untracked.md"], "naming what moved under it");
+      assert.deepEqual(observeWorkspace(f.source), before, "jd's own save is not overwritten");
+      assert.equal(readFileSync(join(f.source, "untracked.md"), "utf8"), "scratch, edited mid-apply\n");
+      assert.equal(existsSync(join(f.source, "result.md")), false, "and nothing of the result reached the workspace");
+      assert.equal((await state(f)).state, "APPLYING", "the record does not advance past APPLYING");
+      assert.equal(workspaces.promptOutcome(f.promptId).status !== "DONE", true);
     } finally { f.dispose(); }
   });
 
@@ -912,11 +948,14 @@ test("TM-T1-H3: the complete baseline and the isolated integration checkout", as
       writeFileSync(join(f.source, "task.md"), "step one\nsomething else entirely\n");
       git(f.source, ["add", "task.md"]);
       git(f.source, ["commit", "-q", "-m", "jd carried on"]);
+      const before = observeWorkspace(f.source);
+      const status = git(f.source, ["status", "--porcelain=v1", "-uall"]);
       const conflicted = probeResultMerge({ root: f.source, resultCommit, integrationRoot: f.integrationRoot });
       assert.equal(conflicted.clean, false);
       assert.deepEqual(conflicted.conflictPaths, ["task.md"]);
       assert.equal(conflicted.tree, null, "a conflicted merge produces no target");
-      assert.equal(git(f.source, ["status", "--porcelain=v1"]), "", "and the original checkout stays clean throughout");
+      assert.deepEqual(observeWorkspace(f.source), before, "and the original checkout is untouched throughout");
+      assert.equal(git(f.source, ["status", "--porcelain=v1", "-uall"]), status, "with not one conflicted path in it");
     } finally { f.dispose(); }
   });
 });
