@@ -6,6 +6,7 @@ import { LABEL } from "@/components/pipeline/status";
 import { Button } from "@/components/ui/Button";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi } from "@/lib/workspacesApi";
+import { HandoverControl } from "@/components/tasks/HandoverControl";
 
 type TeamStatus = Awaited<ReturnType<typeof workspaceApi.teamStatus>>;
 
@@ -113,12 +114,18 @@ export function TeamThreadPanel({ item }: { item: OperationsPrompt }) {
   }
 
   return (
-    <TeamThreadControl
-      availability={teamThreadAvailability(team, item)}
-      opening={opening}
-      openedItemId={openedItemId}
-      error={error}
-      onOpen={() => void open()}
-    />
+    <>
+      <TeamThreadControl
+        availability={teamThreadAvailability(team, item)}
+        opening={opening}
+        openedItemId={openedItemId}
+        error={error}
+        onOpen={() => void open()}
+      />
+      {/* C1: the handover engine's only route to a person. It opens the item
+          thread itself when there is not one yet, because an offer is posted in
+          that thread, so it does not depend on the control above being used first. */}
+      <HandoverControl team={team} item={item} />
+    </>
   );
 }

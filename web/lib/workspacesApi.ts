@@ -22,6 +22,51 @@ async function request<T>(serverUrl: string, path: string, init?: RequestInit): 
 
 const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 
+export interface HandoverItemStatus {
+  itemId: string;
+  state: string;
+  epoch: number;
+  requester: string;
+  executor: string | null;
+  branch: string;
+  hold: { held: boolean; reason: string };
+}
+
+/** What the requester confirms before anything is pushed (TM-T0-7). */
+export interface HandoverPreview {
+  itemId: string;
+  provider: string;
+  model: string | null;
+  branch: string;
+  files: Array<{ path: string; status: string; bytes: number; shapes: string[] }>;
+  excluded: string[];
+  flagged: Array<{ path: string; shapes: string[] }>;
+  totalBytes: number;
+  large: boolean;
+  requiredConfirmations: string[];
+  risk: string;
+  mitigation: string;
+}
+
+export interface HandoverOffer {
+  itemId: string;
+  branch: string;
+  snapshotCommit: string;
+  provider: string;
+  model: string | null;
+  receiver: null;
+  epoch: number;
+  startDeadline: string;
+}
+
+export interface HandoverReview {
+  applyOffered: boolean;
+  evidenceMissing: boolean;
+  reason: string;
+  refusedBecause: string[];
+  result: { resultId: string; label: "full" | "partial"; resultCommit: string };
+}
+
 export const workspaceApi = {
   async sessions(serverUrl:string){return (await request<{sessions:AgentSession[]}>(serverUrl,"/api/sessions")).sessions;},
   async report(serverUrl:string,workspaceId?:number){return (await request<{report:UsageReport}>(serverUrl,`/api/report${workspaceId===undefined?"":`?workspace=${workspaceId}`}`)).report;},
@@ -31,8 +76,8 @@ export const workspaceApi = {
   cancelTelegramPairing(serverUrl:string){return request<void>(serverUrl,"/api/task-control/telegram/pairing",{method:"DELETE"});},
   confirmTelegramPairing(serverUrl:string,code:string){return request<{status:TelegramLiveStatus}>(serverUrl,"/api/task-control/telegram/pairing/confirm",{method:"POST",...json({code})}).then(r=>r.status);},
   removeTelegramActor(serverUrl:string,actorId:string){return request<void>(serverUrl,`/api/task-control/telegram/actors/${encodeURIComponent(actorId)}`,{method:"DELETE"});},
-  teamStatus(serverUrl:string){return request<{team:{teamId:string;groupChatId:string;members:Array<{personId:string;telegramUserId:string;botId:string;botUsername:string;workstationId:string;workstationLabel:string;personLabel?:string}>;instruction:string|null;inviteLink:string|null}|null}>(serverUrl,"/api/task-control/team").then(r=>r.team);},
-  refreshTeam(serverUrl:string){return request<{team:{teamId:string;groupChatId:string;members:Array<{personId:string;telegramUserId:string;botId:string;botUsername:string;workstationId:string;workstationLabel:string;personLabel?:string}>;instruction:string|null;inviteLink:string|null}|null}>(serverUrl,"/api/task-control/team/refresh",{method:"POST",...json({})}).then(r=>r.team);},
+  teamStatus(serverUrl:string){return request<{team:{teamId:string;groupChatId:string;members:Array<{personId:string;telegramUserId:string;botId:string;botUsername:string;workstationId:string;workstationLabel:string;personLabel?:string}>;instruction:string|null;inviteLink:string|null;handoverEnabled:boolean}|null}>(serverUrl,"/api/task-control/team").then(r=>r.team);},
+  refreshTeam(serverUrl:string){return request<{team:{teamId:string;groupChatId:string;members:Array<{personId:string;telegramUserId:string;botId:string;botUsername:string;workstationId:string;workstationLabel:string;personLabel?:string}>;instruction:string|null;inviteLink:string|null;handoverEnabled:boolean}|null}>(serverUrl,"/api/task-control/team/refresh",{method:"POST",...json({})}).then(r=>r.team);},
   teamCreateStatus(serverUrl:string){return request<{team:{code:string;expiresAt:string;observed:boolean}|null}>(serverUrl,"/api/task-control/team/create").then(r=>r.team);},
   startTeamCreate(serverUrl:string,remoteUrl:string){return request<{team:{code:string;expiresAt:string;observed:boolean}}>(serverUrl,"/api/task-control/team/create",{method:"POST",...json({remoteUrl})}).then(r=>r.team);},
   cancelTeamCreate(serverUrl:string){return request<void>(serverUrl,"/api/task-control/team/create",{method:"DELETE"});},
@@ -43,6 +88,17 @@ export const workspaceApi = {
   confirmTeamJoin(serverUrl:string){return request<{team:{teamId:string;instruction:string}}>(serverUrl,"/api/task-control/team/join/confirm",{method:"POST",...json({})}).then(r=>r.team);},
   /** Opens a Team item thread on the owner's own work item (R-B). Refused with prompt_already_complete once the task is finished. */
   openTeamItem(serverUrl:string,promptId:number){return request<{item:{itemId:string}}>(serverUrl,"/api/task-control/team/items",{method:"POST",...json({promptId})}).then(r=>r.item);},
+  /**
+   * Handover, the requester's six steps (C1). Every one of them answers 403
+   * team_disabled or handover_disabled while the capability is off, which is
+   * what the control renders rather than hiding the refusal.
+   */
+  beginHandover(serverUrl:string,itemId:string){return request<{handover:HandoverItemStatus}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/begin`,{method:"POST",...json({})}).then(r=>r.handover);},
+  handoverPreview(serverUrl:string,itemId:string,provider:ProviderId,model?:string|null){return request<{preview:HandoverPreview}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/preview?provider=${encodeURIComponent(provider)}${model?`&model=${encodeURIComponent(model)}`:""}`).then(r=>r.preview);},
+  publishHandover(serverUrl:string,itemId:string,input:{confirmations:string[];acknowledgedBytes:number}){return request<{offer:HandoverOffer}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/publish`,{method:"POST",...json(input)}).then(r=>r.offer);},
+  handoverReview(serverUrl:string,itemId:string){return request<{review:HandoverReview}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/review`).then(r=>r.review);},
+  applyHandover(serverUrl:string,itemId:string,acceptanceMet:boolean){return request<{apply:{kind:string}}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/apply`,{method:"POST",...json({acceptanceMet})}).then(r=>r.apply);},
+  requestHandoverChanges(serverUrl:string,itemId:string,requirements:string){return request<{changes:{epoch:number}}>(serverUrl,`/api/task-control/team/handover/${encodeURIComponent(itemId)}/request-changes`,{method:"POST",...json({requirements})}).then(r=>r.changes);},
   operations(serverUrl:string,workspaceId?:number){return request<OperationsSnapshot>(serverUrl,`/api/operations${workspaceId===undefined?"":`?workspace=${workspaceId}`}`);},
   /** Records a fresh audit of what the orchestration records already claim. */
   auditSuite(serverUrl:string,suiteId:number){return request<{verification:SuiteVerificationRecord}>(serverUrl,`/api/suites/${suiteId}/verification`,{method:"POST",body:"{}"}).then(r=>r.verification);},

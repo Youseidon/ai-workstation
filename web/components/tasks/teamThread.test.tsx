@@ -19,6 +19,7 @@ function team(): NonNullable<TeamStatus> {
     ],
     instruction: null,
     inviteLink: null,
+    handoverEnabled: false,
   };
 }
 

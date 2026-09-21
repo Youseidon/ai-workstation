@@ -9,6 +9,8 @@
     "lint": "eslint",
     "test:quota-ui": "node --import tsx --test components/CountUp.test.tsx components/agents/usage.test.tsx components/agents/badge.test.tsx components/recovery.test.tsx",
     "verify:m4-browser": "node --import tsx ../scripts/verify-m4-browser.mjs",
+    "verify:handover-browser": "node --import tsx ../scripts/verify-handover-browser.mjs --playwright @playwright/test",
+    "test:handover-ui": "node --import tsx --test components/tasks/handoverControl.test.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
