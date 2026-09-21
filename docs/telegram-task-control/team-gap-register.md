@@ -51,7 +51,10 @@ The mitigation is real - every task merged from its own branch by fast-forward, 
 
 ### H-1. A fixture breaks on its second run, and burn-ins re-run by definition
 
-**Status: in progress, task F00B, started 2026-09-21. It is V1 and the whole of Phase V sits behind it.**
+**Status: in progress, task F00B, restarted clean 2026-09-21 on `fix/F00B-fixture-sweep`. It is V1 and the whole of Phase V sits behind it.**
+
+A first attempt on 2026-09-21 was killed by a session rate limit before it committed anything, so nothing carried over.
+The orchestrator re-reproduced the failure on main at `60de5de` before restarting: `# pass 4 / # fail 0` on a fresh root, `# pass 3 / # fail 1` on a second run against the same root.
 
 `server/src/telegramSupergroupMigration.test.ts`, the case "the rewrite moves every place the old team chat id lives", passes 4/4 against a clean `AGENT_CONSOLE_REPO_ROOT` and then fails 3/4 against the same root.
 Its fixture inserts a `team_roster` row under a fresh team id but the same group chat id and never removes it, so the sighting count climbs.
