@@ -10,9 +10,14 @@ import { TaskControlService, type HandoverTap } from "./taskControl.ts";
 import { mintItemId } from "./teamItems.ts";
 import type { TeamRoster } from "./teamRoster.ts";
 import { compareCapabilities } from "./teamHandoverRun.ts";
+import { applyControlTransition } from "./teamControlRecord.ts";
 import {
   HANDOVER_SANDBOX,
+  applyItemHandover,
   beginItemHandover,
+  controlRemote,
+  handoverSurfaceInternals,
+  reviewItemHandover,
   handleHandoverTap,
   listControlItems,
   pollControlRecords,
@@ -362,6 +367,118 @@ test("C1: the requester's environment is built from the roster, never from the o
     assert.equal(env.remoteUrl, f.bare);
     assert.equal(env.workDirectory, f.source);
     assert.deepEqual(env.roster, [REQUESTER, RECEIVER]);
+  } finally {
+    f.dispose();
+    disable();
+  }
+});
+
+/**
+ * The return and the apply, driven through the surface.
+ *
+ * The run itself is the one thing this tier cannot have - it needs a real
+ * provider in the receiver's own worktree - so the record is advanced to
+ * RUNNING exactly as `startReceiverRun` advances it, and the receiver's worktree
+ * and its run row are real. Everything after that is the surface: the Return
+ * work tap, the requester's poll finding the returned work, the review card and
+ * the apply.
+ */
+async function claimedAndRunning(f: Fixture, offer: { epoch: number }) {
+  await pollControlRecords(f.receiver);
+  const accept = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "accept_offer")!;
+  await handleHandoverTap(f.receiver, {
+    action: "accept_offer", actionRef: accept.ref, itemId: f.itemId, epoch: offer.epoch,
+    commandId: `b-accept-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
+    transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+  });
+}
+
+test("C1: Return work publishes the result, and the requester's poll turns it into a review card", async () => {
+  enable();
+  const f = fixture("surface-return");
+  try {
+    const { offer } = await offered(f);
+    await claimedAndRunning(f, offer);
+
+    // The record's own path from CLAIMED to RUNNING, which the receiver's run
+    // walks. `runClaimedItem` cannot run here because there is no provider.
+    const remote = controlRemote(f.itemId, f.bare);
+    for (const [event, payload] of [
+      ["preparation_complete", { policyChecked: true, workspaceReserved: true, startIntentDurable: true }],
+      ["run_started", { runId: "run-b-1" }],
+    ] as const) {
+      const current = (await remote.read())!;
+      await applyControlTransition(remote, {
+        event, actor: { personId: RECEIVER, workstationId: "yousef-desktop" },
+        commandId: `b-${event}`, epoch: current.record.epoch, fromHead: current.head,
+        roster: [REQUESTER, RECEIVER], payload,
+      });
+    }
+
+    // The receiver's real worktree of the handover branch, and the work it did.
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "surface-return-wt-"));
+    const worktree = join(worktreeRoot, f.itemId);
+    execFileSync("git", ["fetch", "-q", "origin", `+refs/heads/aw/handover/${f.itemId}:refs/remotes/origin/aw/handover/${f.itemId}`], { cwd: f.clone });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", worktree, `refs/remotes/origin/aw/handover/${f.itemId}`], { cwd: f.clone });
+    writeFileSync(join(worktree, "notes.md"), "what is left: nothing, it is done\n");
+
+    const receiverWorkspace = workspaces.create({ name: `handover-${f.itemId}`, workDirectory: worktree });
+    const program = workspaces.createChild("program", receiverWorkspace.id, { name: "Team handover", overview: "" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: f.itemId, overview: "" }) as SuiteRecord;
+    const task = workspaces.createChild("prompt", suite.id, { title: `Handover ${f.itemId}`, content: "Finish it." }) as PromptRecord;
+    // No underscores: a request id is /^[-0-9a-zA-Z]{8,100}$/ and an item id has one.
+    const runId = `run-b-${f.itemId.replace(/_/g, "-")}`;
+    workspaces.beginAgentRun({ runId, workspaceId: receiverWorkspace.id, promptId: task.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    workspaces.updateAgentStatus(runId, { requestId: `${runId}-done`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "handover work finished", verificationSummary: "surface fixture" });
+    workspaces.finishAgentRun(runId, "done");
+    handoverSurfaceInternals.activeRuns.set(f.itemId, {
+      itemId: f.itemId, runId, worktree, workspaceId: receiverWorkspace.id,
+      promptId: task.id, cardPromptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+      provider: "claude", model: null,
+    });
+
+    // The receiver's poll offers Return work once the run has ended.
+    const polled = await pollControlRecords(f.receiver);
+    assert.deepEqual(polled.returnable, [f.itemId]);
+    const returnAction = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "return_work");
+    assert.ok(returnAction, "the receiver's own bot offers Return work");
+
+    const returned = await handleHandoverTap(f.receiver, {
+      action: "return_work", actionRef: returnAction.ref, itemId: f.itemId, epoch: 1,
+      commandId: `b-return-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
+      transportUserId: "9001", promptId: task.id,
+    });
+    assert.equal(returned.state, "APPLIED", returned.message);
+    assert.match(returned.message, /Returned full work/, "a completed run returns a full result, not a partial one");
+
+    // RETURNED releases the executor; there is no release action and no
+    // RELEASED state anywhere in the record.
+    const state = JSON.parse(execFileSync("git", ["--git-dir", f.bare, "show", `refs/aw/items/${f.itemId}/control:state.json`], { encoding: "utf8" })) as { state: string; executor: string | null; resultLabel: string };
+    assert.equal(state.state, "RETURNED");
+    assert.equal(state.executor, null);
+    assert.equal(state.resultLabel, "full");
+
+    // The requester's own poll is what surfaces it, so the report is readable
+    // the moment it lands even if this workstation was stopped when it did (D01).
+    const reviewed = await pollControlRecords(f.requester);
+    assert.deepEqual(reviewed.reviewed, [f.itemId]);
+    const review = await reviewItemHandover(f.requester, f.itemId);
+    assert.equal(review.applyOffered, true, review.reason);
+    assert.deepEqual(review.card.offered, ["review", "request_changes", "apply_result"]);
+    assert.equal(review.result.label, "full");
+
+    // Apply, then apply again: the second returns the first receipt and merges
+    // nothing a second time (B27).
+    const applied = await applyItemHandover(f.requester, f.itemId, { acceptanceMet: true });
+    assert.equal(applied.kind, "applied", "kind" in applied ? applied.kind : "");
+    assert.equal(execFileSync("git", ["show", "HEAD:notes.md"], { cwd: f.source, encoding: "utf8" }).trim(), "what is left: nothing, it is done");
+    const again = await applyItemHandover(f.requester, f.itemId, { acceptanceMet: true });
+    assert.equal(again.kind, "already_applied");
+
+    workspaces.remove(receiverWorkspace.id);
+    execFileSync("git", ["worktree", "remove", "--force", worktree], { cwd: f.clone });
+    rmSync(worktreeRoot, { recursive: true, force: true });
+    handoverSurfaceInternals.activeRuns.delete(f.itemId);
   } finally {
     f.dispose();
     disable();

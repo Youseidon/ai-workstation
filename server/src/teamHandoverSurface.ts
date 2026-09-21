@@ -552,9 +552,37 @@ interface ActiveHandoverRun {
   runId: string;
   worktree: string;
   workspaceId: number;
+  /** The task the run is on, in the worktree's own workspace. */
   promptId: number;
+  /** The candidate task the offer card's buttons are bound to. */
+  cardPromptId: number;
   provider: string;
   model: string | null;
+}
+
+/**
+ * The task the receiver's run is actually on.
+ *
+ * `startReceiverRun` hands `spawn` the candidate task's id together with the
+ * worktree's brand-new workspace, but a task belongs to one workspace and
+ * `resolvePrompt` refuses a pair that does not match, so the product's only
+ * spawn path cannot take that pair. The candidate task stays what the offer
+ * card's buttons are bound to, because that is what survives a restart, and the
+ * work itself is a task in the worktree's workspace, which is where a receiver
+ * expects to see it in their own console.
+ */
+function worktreeTask(workspaceId: number, itemId: string, branch: string): number {
+  const program = workspaces.createChild("program", workspaceId, {
+    name: HANDOVER_PROGRAM,
+    overview: "Work handed over by a teammate, running in this workstation's own worktree.",
+  }) as ProgramRecord;
+  const suite = workspaces.createChild("suite", program.id, { name: itemId, overview: branch }) as SuiteRecord;
+  const prompt = workspaces.createChild("prompt", suite.id, {
+    title: `Handover ${itemId}`,
+    content: `Finish the work published on ${branch} for Team item ${itemId}. `
+      + `The requester's context is in ${CONTEXT_PATH}.`,
+  }) as PromptRecord;
+  return prompt.id;
 }
 
 const activeRuns = new Map<string, ActiveHandoverRun>();
@@ -567,6 +595,7 @@ async function runClaimedItem(context: SurfaceContext, itemId: string, offer: Pu
   const env = receiverEnvironment(context);
   const clone = handoverClone(context.roster.remoteUrl);
   let spawnedRunId: string | null = null;
+  let spawnedPromptId: number | null = null;
   const result = await startReceiverRun(controlRemote(itemId, context.roster.remoteUrl), {
     env,
     itemId,
@@ -581,9 +610,10 @@ async function runClaimedItem(context: SurfaceContext, itemId: string, offer: Pu
       // run that actually exists.
       workspaces.markStartIntent(spawn.runId, "KNOWN_STOPPED", "Handed to the run service, which owns this start.");
       try {
+        spawnedPromptId = worktreeTask(spawn.workspaceId, itemId, offer.branch);
         spawnedRunId = (await startExecute({
           workspaceId: spawn.workspaceId,
-          promptId: spawn.promptId,
+          promptId: spawnedPromptId,
           provider: spawn.provider,
           model: spawn.model,
         })).runId;
@@ -593,13 +623,14 @@ async function runClaimedItem(context: SurfaceContext, itemId: string, offer: Pu
       }
     },
   });
-  if (result.kind === "started" && spawnedRunId !== null) {
+  if (result.kind === "started" && spawnedRunId !== null && spawnedPromptId !== null) {
     activeRuns.set(itemId, {
       itemId,
       runId: spawnedRunId,
       worktree: result.worktree,
       workspaceId: result.workspaceId,
-      promptId: result.promptId,
+      promptId: spawnedPromptId,
+      cardPromptId: result.promptId,
       provider: offer.provider,
       model: offer.model,
     });
