@@ -37,7 +37,17 @@ It was in no card at all, which is the process failure worth naming: the H track
 
 ### C2. Nothing has been run against the full test suite
 
-**Status: Phase V, starting after H06.**
+**Status: part-advanced. V1 is done; V2's suite half is evidenced but lint has not run; V3, V4 and V5 are outstanding.**
+
+What has now run, all re-run by the orchestrator rather than accepted from a worker: the full server suite at 417/417 three times against one unchanged root, the full T1 suite at 127/127 three times (0 failed, 0 skipped, 0 flaky), and `npm run typecheck` clean across all four workspaces.
+**Lint has still not run**, so V2 is not complete.
+The burn-ins, audit 3, audit 4 and the LT-4 re-run are all still outstanding.
+
+**A constraint on what V3's burn-ins can claim, found by F00B.**
+The T1 harness mints its own `AGENT_CONSOLE_REPO_ROOT` per run with `mkdtempSync(HARNESS_ROOT_PREFIX)` at `e2e/src/env/orchestrator.ts:145` and discards any root the caller sets.
+So **a T1 burn-in cannot prove cross-run root pollution**: every repeat starts on a fresh root.
+What it does cover is intra-file pollution, because the harness is shared across tests within a spec file at `workers: 1`, plus `dispose()`'s `realDatabaseHarnessRows` assertion that no harness row reached the real database.
+V3 must be worded to that and no further. The server suite is the half where holding one root constant is meaningful, and F00B did that.
 
 By jd's instruction of 2026-09-20, testing was parked while implementing.
 Every task from F03 onward ran only its own narrow tests plus a composition set.
@@ -51,18 +61,7 @@ The mitigation is real - every task merged from its own branch by fast-forward, 
 
 ### H-1. A fixture breaks on its second run, and burn-ins re-run by definition
 
-**Status: in progress, task F00B, restarted clean 2026-09-21 on `fix/F00B-fixture-sweep`. It is V1 and the whole of Phase V sits behind it.**
-
-A first attempt on 2026-09-21 was killed by a session rate limit before it committed anything, so nothing carried over.
-The orchestrator re-reproduced the failure on main at `60de5de` before restarting: `# pass 4 / # fail 0` on a fresh root, `# pass 3 / # fail 1` on a second run against the same root.
-
-`server/src/telegramSupergroupMigration.test.ts`, the case "the rewrite moves every place the old team chat id lives", passes 4/4 against a clean `AGENT_CONSOLE_REPO_ROOT` and then fails 3/4 against the same root.
-Its fixture inserts a `team_roster` row under a fresh team id but the same group chat id and never removes it, so the sighting count climbs.
-
-This is shared-state pollution, not the wall-clock fragility F00B was originally written for, and **F00B's original wording did not cover it**.
-F00B has been widened to both kinds and its proof changed to three runs **against one unchanged root**, because three runs against three fresh roots would not have caught this at all.
-
-It arrived in F05 and the orchestrator's verification missed it by using a fresh root each time.
+**CLOSED 2026-09-22 by F00B, commits `4070156..581aafd`. See the closed section at the foot of this file.**
 
 ### H-2. The three handover end-to-end rows have never run
 
@@ -128,6 +127,27 @@ Phase V should add a `test:web-ui` covering every `*.test.tsx`.
 
 The assertions exist and nothing routine runs them, which is the brief's own section 7 trap one level up.
 
+### M-6. Fixtures leak rows into the shared root, and one product lookup depends on row order
+
+Found by F00B's row-count leak profile, which snapshots `COUNT(*)` per table between every server test file against one accumulating root.
+None of these causes a failure today, proven by three per-file runs and three full-suite runs against one root, so none is a non-deterministic fixture **yet**.
+
+| file | net rows left per run |
+| --- | --- |
+| `teamHandoverRun` | +57 `task_control_actor`, +25 `telegram_outbox`, +21 `telegram_thread` |
+| `teamResultApply` | +20 actor, +9 outbox, +9 thread |
+| `teamHandoverSurface` | +18 actor, +10 outbox, +6 thread |
+| `telegramLiveRuntime` | +12 `team_roster`; also **deletes** 18 actor rows other files left |
+| `startIntent` | +1 outbox, +1 thread, +1 workspace |
+| `teamRoster`, `teamGrantCommands` | +1 `team_roster` each |
+
+The concrete hazard is not the row counts, it is this: **`taskControl.ts:321` resolves a roster with `workspaces.teamRosters().find(...)` over all rows ordered by `updated_at DESC`.**
+Leaked rosters sharing a `botId` are shadowed by the newest row today, but a same-millisecond `updated_at` tie makes that order undefined.
+That is the same mechanism as the bug F00B fixed, one step removed, and it is in **product** code rather than test code.
+
+F00B correctly did not expand scope to it: the fixtures it repaired could produce a false red, these cannot today.
+Needs jd's decision on whether to take a follow-up task, because the honest fix is likely a tiebreak in the product lookup rather than more fixture cleanup.
+
 ## Low
 
 | Id | Gap | Note |
@@ -141,6 +161,8 @@ The assertions exist and nothing routine runs them, which is the brief's own sec
 | L-7 | **H03 chose the handover context file path** | `.agent-console/handover.json`, inside the snapshot tree only, never in the developer's worktree. The worker's choice, not the design's. |
 | L-8 | **H05's clean non-fast-forward merge is unreachable in one round** | Because the baseline gate is strict, an undiverged checkout always fast-forwards. The path exists and the merge probe exercises it; no fixture was contrived to reach it end to end. |
 | L-9 | **`special_file` is a fourth capture refusal** | Implemented from protocol.md section 9; tm4's matrix names only three. Recorded rather than added to the table. |
+| L-10 | **`h6-route-proxy.spec.ts:21` still cuts its call log by timestamp** | Same `call.at >= cutAt` shape F00B repaired in `l3F1.ts`. Left alone deliberately: the card records this file as already repaired under T20A, and re-cutting another task's repair with no failing symptom is churn. Residual risk flagged, not acted on. |
+| L-11 | **F00B's `l3F1.ts` change is shared with T3 and was validated only on the T1 path** | `e2e/tests/t3/l3-f1-edits-live.spec.ts` imports the same helper and could not be run here, because T3 needs live Telegram credentials which are forbidden. The change is backend-agnostic (`telegramCalls()` returns an append-only array under both T1 and T3, so an index cut behaves identically), but it is untested on T3. |
 
 ## Closed while this register was open
 
@@ -164,3 +186,16 @@ One fixture was corrected rather than one assertion weakened: TM-T1-H1's env A h
 ### L-4, F03's unreproducible two-width check. Closed 2026-09-21 by H06.
 
 H06 committed its two-width rig as `scripts/verify-handover-browser.mjs` with an npm script rather than running it once and deleting it, which is the shape L-4 recorded as missing. F03's own control is still not covered by a committed rig, so L-4 is **narrowed, not fully closed**: the practice is fixed and F03's specific gap remains.
+
+### H-1, the fixture that broke on its second run. Closed 2026-09-22 by F00B, commits `4070156..581aafd`.
+
+Two non-deterministic fixtures repaired, both test-only, no product change.
+
+1. **The known shared-state instance.** `telegramSupergroupMigration.test.ts` inserted `team_roster` rows under a fresh `teamId` but the same `group_chat_id` and never removed them, so the sighting count climbed on a second run against the same root. A `forgetTeamRoster` cleanup now runs in the `finally` block, so it holds even when the test fails partway.
+2. **A second instance nobody knew about**, in `e2e/src/scenarios/l3F1.ts`, cases S-L3-F1-05, -10, -12 and -18. The Bot API call log was cut by `Date.now()` and filtered with `call.at >= since`, so a call made just before the boundary in the same millisecond was counted rather than excluded. The cut is now an index into the append-only log. **This is stricter than the timestamp it replaced, not looser**, and it follows an idiom already used elsewhere in the same file.
+
+**The orchestrator re-ran every headline claim rather than accepting it**, and additionally ran a mutation: commenting out only the two `forgetTeamRoster(teamId)` calls restored the exact original failure (`# pass 4 / # fail 0`, then `not ok 2 ... # pass 3 / # fail 1` twice, same test name), which proves the fix is load-bearing rather than coincidental. The file was restored and the tree confirmed clean.
+
+Verified totals: server suite 417/417 three times against one unchanged root; T1 `127 passed (24.8m)` with 0 failed, 0 skipped and 0 flaky, including all three TM-T1 handover rows; typecheck clean across four workspaces; diff confined to two test files; both team flags still `fallback: false`.
+
+**No product defect was found.** All thirty T1 spec files ran and passed, including the twenty-one that had not run in the prior session, so the first-discovery risk F00B's card warned audit 3 about did not materialise.
