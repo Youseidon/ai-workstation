@@ -288,6 +288,60 @@ test("TM-T1-6 summary: team audience uses the item identity and removes local-on
   }
 });
 
+/**
+ * TM-T0-7's `team` summary rendering of an offer card, carried into H04 with the
+ * card surface it sits behind. One shape serves the requester's item thread and
+ * every receiver's own bot, it names no receiver, and it carries the same `team`
+ * audience summary the item thread already shows.
+ */
+test("TM-T0-7 summary: the offer card renders from the team audience and names no receiver", async () => {
+  const { renderHandoverOfferCard } = await import("./taskControlRenderer.ts");
+  const f = fixture({ workspace: "shared-work", title: "Finish the retry policy" });
+  const itemId = "awi1_0123456789abcdef01234568";
+  const secret = ["sk", "live", "1a2b3c4d5e6f7a8b9c0d"].join("-");
+  try {
+    f.handoff("READY", fullBrief({
+      originalObjective: `Finish it from /home/jd/private/plan.md using ${secret}`,
+      importantFiles: ["server/src/retry.ts"],
+    }));
+    const card = renderHandoverOfferCard({
+      itemId,
+      branch: `aw/handover/${itemId}`,
+      epoch: 1,
+      startDeadline: "2026-09-22T09:00:00.000Z",
+      requested: { provider: "claude", model: "sonnet", hostAccess: false, sandbox: "workspace-write", tools: ["read"] },
+      capability: { outcome: "within_limit", additions: [], denied: [], unknown: [], reason: "Inside your own settings." },
+      promptId: f.prompt.id,
+      actions: [{ ref: "tc_accept", action: "accept_offer" }, { ref: "tc_decline", action: "decline_offer" }],
+    });
+    assert.equal(card.kind, "handover_offer");
+    assert.equal(card.receiver, null, "the open call names no receiver");
+    assert.equal(card.tag, "#item_0123456789abcdef01234568", "and carries the item tag, not a local task tag");
+    assert.equal(card.summary!.key, itemId, "the card renders from the team audience summary");
+    assert.equal(card.summary!.importantFiles, null, "so local-only detail is not on it");
+    assert.deepEqual(card.actions.map(one => one.action), ["accept_offer", "decline_offer"]);
+    assert.doesNotMatch(JSON.stringify(card), /\/home\/jd|1a2b3c4d|server\/src/i, "and no local path or credential reaches it");
+
+    const inert = renderHandoverOfferCard({
+      itemId,
+      branch: `aw/handover/${itemId}`,
+      epoch: 1,
+      startDeadline: "2026-09-22T09:00:00.000Z",
+      requested: { provider: "claude", model: "sonnet", hostAccess: false, sandbox: "workspace-write", tools: ["read"] },
+      capability: { outcome: "within_limit", additions: [], denied: [], unknown: [], reason: "Inside your own settings." },
+      promptId: f.prompt.id,
+      actions: [{ ref: "tc_accept", action: "accept_offer" }],
+      inert: true,
+      reason: "yousef holds this item now (CLAIMED).",
+    });
+    assert.equal(inert.inert, true);
+    assert.deepEqual(inert.actions, [], "an inert card keeps its facts and drops every button");
+    assert.match(inert.reason, /yousef holds this item/, "and states the reason it gives");
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("S-L3-F3-13 (T0): the workstation label defaults to the hostname, refuses long or multi-line values, and empty means the hostname", async () => {
   const { resetSettings, settings, snapshot, updateSettings } = await import("./settings.ts");
   try {
