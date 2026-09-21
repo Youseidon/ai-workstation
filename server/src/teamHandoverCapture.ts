@@ -594,6 +594,14 @@ export interface PublishedOffer {
   packageHash: string;
   provider: string;
   model: string | null;
+  /**
+   * The rest of the requested capabilities the receiver compares against its own
+   * settings (design 5.4 step 4). `null` is "not stated by this offer", which
+   * RTC-12 treats as unknown rather than as permission.
+   */
+  hostAccess: boolean | null;
+  sandbox: string | null;
+  tools: string[] | null;
   /** The offer is an open call: it names no receiver (ruled 2026-09-20). */
   receiver: null;
   epoch: number;
@@ -608,6 +616,8 @@ export interface PublishInput {
   actor: { personId: string; workstationId?: string };
   confirmations: HandoverConfirmation[];
   acknowledgedBytes: number;
+  /** What the package needs beyond a provider and a model, recorded in the offer. */
+  requested?: { hostAccess?: boolean; sandbox?: string; tools?: string[] };
   now?: Date;
 }
 
@@ -662,6 +672,9 @@ export async function publishHandoverOffer(input: PublishInput): Promise<{ outco
       requestedModel: preview.model,
       packageHash: preview.packageHash,
       snapshotCommit: preview.snapshotCommit,
+      ...(input.requested?.hostAccess === undefined ? {} : { requestedHostAccess: input.requested.hostAccess }),
+      ...(input.requested?.sandbox === undefined ? {} : { requestedSandbox: input.requested.sandbox }),
+      ...(input.requested?.tools === undefined ? {} : { requestedTools: input.requested.tools }),
     },
   });
   const offer = offerFrom(outcome.record, outcome.event.payload);
@@ -669,7 +682,10 @@ export async function publishHandoverOffer(input: PublishInput): Promise<{ outco
   return { outcome, offer };
 }
 
-function offerFrom(record: ControlRecord, payload: { requestedProvider?: string; requestedModel?: string | null; packageHash?: string; snapshotCommit?: string }): PublishedOffer | null {
+function offerFrom(record: ControlRecord, payload: {
+  requestedProvider?: string; requestedModel?: string | null; packageHash?: string; snapshotCommit?: string;
+  requestedHostAccess?: boolean; requestedSandbox?: string; requestedTools?: string[];
+}): PublishedOffer | null {
   if (record.state !== "OFFERED" || record.offerDeadline === null) return null;
   if (payload.requestedProvider === undefined || payload.snapshotCommit === undefined || payload.packageHash === undefined) return null;
   return {
@@ -679,6 +695,9 @@ function offerFrom(record: ControlRecord, payload: { requestedProvider?: string;
     packageHash: payload.packageHash,
     provider: payload.requestedProvider,
     model: payload.requestedModel ?? null,
+    hostAccess: payload.requestedHostAccess ?? null,
+    sandbox: payload.requestedSandbox ?? null,
+    tools: payload.requestedTools ?? null,
     receiver: null,
     epoch: record.epoch,
     startDeadline: record.offerDeadline,

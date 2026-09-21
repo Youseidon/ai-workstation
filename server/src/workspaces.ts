@@ -1465,6 +1465,51 @@ export const workspaces = {
       granted_at grantedAt,revoked_command_id revokedCommandId,revoked_at revokedAt
       FROM item_grant WHERE ${clauses.join(" AND ")} ORDER BY granted_at,rowid`).all(...values) as ItemGrantRow[];
   },
+  /**
+   * The local candidate task this bot minted for one handover offer (H04). The
+   * receiver has no `item_link` until its claim wins, so the card's own action
+   * rows are where the candidate lives, and they survive a restart.
+   */
+  handoverCandidatePrompt(botId: string, itemId: string): number | null {
+    if (!isItemId(itemId)) return null;
+    const row = db.prepare(`SELECT prompt_id promptId FROM task_control_action
+      WHERE bot_id=? AND subject_kind='task' AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=? ORDER BY rowid LIMIT 1`)
+      .get(requireText(botId, "botId", 120), itemId) as { promptId: number } | undefined;
+    return row?.promptId ?? null;
+  },
+  /** This bot's outstanding handover buttons for one item, newest last. */
+  handoverActionsForItem(botId: string, itemId: string): Array<{ ref: string; action: TaskControlAction }> {
+    if (!isItemId(itemId)) return [];
+    return db.prepare(`SELECT ref,action FROM task_control_action
+      WHERE bot_id=? AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=? ORDER BY rowid`)
+      .all(requireText(botId, "botId", 120), itemId) as Array<{ ref: string; action: TaskControlAction }>;
+  },
+  /** The outbox row carrying this bot's offer card for one item, so it can be edited inert. */
+  handoverOfferCardOutbox(botId: string, itemId: string): number | null {
+    if (!isItemId(itemId)) return null;
+    const row = db.prepare(`SELECT id FROM telegram_outbox
+      WHERE bot_id=? AND operation='send' AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=? ORDER BY id DESC LIMIT 1`)
+      .get(requireText(botId, "botId", 120), itemId) as { id: number } | undefined;
+    return row?.id ?? null;
+  },
+  /**
+   * Ends this bot's outstanding handover buttons for one item without touching
+   * the shared record: a per-person decline, and a removed member's card, are
+   * local facts (handover-rules.md 4.3). Buttons that already have a receipt are
+   * left alone, so an applied decision is never rewritten.
+   */
+  expireHandoverActionsForItem(botId: string, itemId: string): number {
+    if (!isItemId(itemId)) return 0;
+    const now = new Date().toISOString();
+    return db.prepare(`UPDATE task_control_action SET expires_at=?
+      WHERE bot_id=? AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=? AND expires_at>?
+        AND ref NOT IN (SELECT action_ref FROM task_control_receipt)`)
+      .run(now, requireText(botId, "botId", 120), itemId, now).changes;
+  },
   hasItemCapability(itemId: string, personId: string, capability: ItemGrantCapability): boolean {
     if (!isItemId(itemId) || !isItemGrantCapability(capability)) return false;
     return db.prepare("SELECT 1 FROM item_grant WHERE item_id=? AND person_id=? AND capability=? AND revoked_at IS NULL")

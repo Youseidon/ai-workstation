@@ -87,6 +87,15 @@ export interface ControlTransitionPayload {
   /** The Offer record's requested provider, model and package (H03, protocol.md section 3). */
   requestedProvider?: string;
   requestedModel?: string | null;
+  /**
+   * The rest of what the receiver's workstation compares against its own
+   * settings before it runs anything (teammate-design.md 5.4 step 4, B18).
+   * Absent means not requested, which is not the same as permitted: H04's
+   * comparison treats an omitted requirement as unknown rather than allowed.
+   */
+  requestedHostAccess?: boolean;
+  requestedSandbox?: string;
+  requestedTools?: string[];
   packageHash?: string;
   snapshotCommit?: string;
   reason?: string;

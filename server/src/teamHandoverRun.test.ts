@@ -73,7 +73,6 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 const REQUESTER = "jd";
 const RECEIVER = "yousef";
 const OTHER_RECEIVER = "sam";
-const GROUP_CHAT = "-100777";
 const PROVIDER = "claude";
 const MODEL = "sonnet";
 
@@ -99,6 +98,8 @@ function policyWithin(): ReceiverPolicy {
 
 interface Fixture {
   itemId: string;
+  /** One fake group per fixture, so actor rows never collide across fixtures. */
+  groupChat: string;
   bare: string;
   /** Env A's checkout, used only to build the branch the receiver fetches. */
   source: string;
@@ -119,6 +120,7 @@ interface Fixture {
  */
 function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}): Fixture {
   const itemId = mintItemId();
+  const groupChat = `-100${itemId.slice(-10)}`;
   const source = mkdtempSync(join(tmpdir(), `${prefix}-src-`));
   const bare = mkdtempSync(join(tmpdir(), `${prefix}-bare-`));
   const clone = mkdtempSync(join(tmpdir(), `${prefix}-clone-`));
@@ -148,11 +150,11 @@ function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}
   });
   workspaces.upsertTeamGroupActor({
     id: `fake-tg-${REQUESTER}-group-${itemId}`, transport: "fake_telegram", transportUserId: "9000",
-    chatId: GROUP_CHAT, label: "jd",
+    chatId: groupChat, label: "jd",
   });
   workspaces.upsertTeamGroupActor({
     id: `fake-tg-${RECEIVER}-group-${itemId}`, transport: "fake_telegram", transportUserId: "9001",
-    chatId: GROUP_CHAT, label: "Yousef",
+    chatId: groupChat, label: "Yousef",
   });
 
   const control = new BareGitControlRecordRemote(bare, itemId);
@@ -160,7 +162,7 @@ function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}
     personId: RECEIVER,
     workstationId: "yousef-desktop",
     botId: "yousef-bot",
-    chatId: GROUP_CHAT,
+    chatId: groupChat,
     topicId: null,
     actorId: `fake-tg-${RECEIVER}-group-${itemId}`,
     roster: [REQUESTER, RECEIVER, OTHER_RECEIVER],
@@ -170,11 +172,37 @@ function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}
   };
 
   return {
-    itemId, bare, source, clone, worktreeRoot, control, env, snapshotCommit,
+    itemId, groupChat, bare, source, clone, worktreeRoot, control, env, snapshotCommit,
     dispose() {
-      workspaces.remove(workspace.id);
+      // Every row this fixture created goes with it, so the suite passes twice
+      // against one unchanged repo root (F00B's second kind of non-determinism).
+      for (const entry of workspaces.list()) {
+        if (entry.id === workspace.id || entry.workDirectory.startsWith(worktreeRoot)) workspaces.remove(entry.id);
+      }
       for (const directory of [source, bare, clone, worktreeRoot, home]) rmSync(directory, { recursive: true, force: true });
     },
+  };
+}
+
+/**
+ * A second receiver. On the harness this is a third app root; here it is its own
+ * suite, bot and actor inside the one database, which is enough for the record
+ * to be what arbitrates between them.
+ */
+function secondReceiver(f: Fixture): ReceiverEnvironment {
+  const program = workspaces.createChild("program", f.env.workspaceId, { name: `Team ${OTHER_RECEIVER}`, overview: "Handover" }) as ProgramRecord;
+  const suite = workspaces.createChild("suite", program.id, { name: "Incoming", overview: "TM4" }) as SuiteRecord;
+  workspaces.upsertTeamGroupActor({
+    id: `fake-tg-${OTHER_RECEIVER}-group-${f.itemId}`, transport: "fake_telegram", transportUserId: "9002",
+    chatId: f.groupChat, label: "Sam",
+  });
+  return {
+    ...f.env,
+    personId: OTHER_RECEIVER,
+    workstationId: "sam-desktop",
+    botId: "sam-bot",
+    actorId: `fake-tg-${OTHER_RECEIVER}-group-${f.itemId}`,
+    suiteId: suite.id,
   };
 }
 
@@ -191,6 +219,7 @@ async function publishedOffer(f: Fixture, now = new Date()): Promise<PublishedOf
       writersStopped: true, packageVerified: true, branchVerified: true,
       offerDeadline: new Date(now.getTime() + OFFER_DEADLINE_MS).toISOString(),
       requestedProvider: PROVIDER, requestedModel: MODEL,
+      requestedHostAccess: false, requestedSandbox: "workspace-write", requestedTools: ["read", "edit"],
       packageHash: "pkg-1", snapshotCommit: f.snapshotCommit,
     },
   });
@@ -434,7 +463,7 @@ test("TM-T1-H1: discover, accept, claim and run under the receiver's own provide
       const offer = await publishedOffer(f);
       const discovery = await claimed(f, offer);
       if (discovery.kind !== "offer") return;
-      const requester = { actorId: `fake-tg-${REQUESTER}-group-${f.itemId}`, chatId: GROUP_CHAT, topicId: null };
+      const requester = { actorId: `fake-tg-${REQUESTER}-group-${f.itemId}`, chatId: f.groupChat, topicId: null };
 
       assert.equal(handoverQuestionAudience("requirement"), "requester");
       for (const kind of ["access", "provider", "allowance"] as const) {
@@ -588,7 +617,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
     try {
       const offer = await publishedOffer(f);
       const head = (await f.control.read())!.head;
-      const other: ReceiverEnvironment = { ...f.env, personId: OTHER_RECEIVER, botId: "sam-bot", workstationId: "sam-desktop" };
+      const other = secondReceiver(f);
 
       // Both taps are minted from the same head. The tap that reached its bot
       // second is the one driven to the record first, so arrival order at a bot
@@ -629,7 +658,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       assert.equal(discovery.kind, "offer");
       if (discovery.kind !== "offer") return;
       const head = (await f.control.read())!.head;
-      const other: ReceiverEnvironment = { ...f.env, personId: OTHER_RECEIVER, botId: "sam-bot" };
+      const other = secondReceiver(f);
       await acceptHandoverOffer(f.control, { env: other, itemId: f.itemId, offer, commandId: "b-sam-wins", fromHead: head });
 
       const acceptRef = discovery.card.actions.find(one => one.action === "accept_offer")!.ref;
@@ -727,7 +756,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       assert.equal(receipt?.action, "decline_offer");
 
       // Anyone else may still accept, which is the whole point of the open call.
-      const other: ReceiverEnvironment = { ...f.env, personId: OTHER_RECEIVER, botId: "sam-bot" };
+      const other = secondReceiver(f);
       const accepted = await acceptHandoverOffer(f.control, { env: other, itemId: f.itemId, offer, commandId: "b-sam-accept" });
       assert.equal(accepted.kind, "claimed", "a remaining member can still accept the offer the decliner left open");
     } finally { f.dispose(); }
@@ -924,10 +953,14 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
   });
 
   await t.test("Sixth: no module path stops the other workstation's run", () => {
-    const source = readFileSync(new URL("./teamHandoverRun.ts", import.meta.url), "utf8");
-    assert.equal(/remoteStop|stopRemoteRun|forceRelease|seizeOwnership/.test(source), false,
+    // Comments are stripped, so this asserts on what the module does rather than
+    // on what it says about itself.
+    const code = readFileSync(new URL("./teamHandoverRun.ts", import.meta.url), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    assert.equal(/remoteStop|stopRemoteRun|forceRelease|seizeOwnership|overrideExecutor/.test(code), false,
       "no path exists by which env A stops env B's run, and no surface offers one");
-    assert.equal(source.includes("RELEASED"), false, "and there is no RELEASED state");
+    assert.equal(/\bRELEASED\b/.test(code), false, "and there is no RELEASED state");
+    assert.equal(/\brelease_work\b/.test(code), false, "and no eighth action");
   });
 
   await t.test("Seventh: a teammate removed from the roster while OFFERED has their card retired, and the offer stays open", async () => {
@@ -937,18 +970,32 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       const discovery = await discoverHandoverOffer(f.control, f.env);
       assert.equal(discovery.kind, "offer");
       if (discovery.kind !== "offer") return;
-      workspaces.grantItemCapability({ itemId: f.itemId, personId: RECEIVER, capability: "answer", commandId: "grant-1" })
-;
       const retired = retireHandoverCardsFor({ itemId: f.itemId, personId: RECEIVER, actorIds: [f.env.actorId] });
       assert.equal(retired.actorsDisabled, 1, "their group actor is disabled");
-      assert.equal(retired.grantsRevoked >= 1, true, "and their grants are revoked");
+      // Grants on an offered item live on the requester's workstation, which is
+      // the other environment, so env B holds none of its own to revoke here.
+      assert.equal(retired.grantsRevoked, 0);
 
       const acceptRef = discovery.card.actions.find(one => one.action === "accept_offer")!.ref;
       assert.equal(Date.parse(workspaces.taskControlAction(acceptRef)!.expires_at) <= Date.now(), true, "so their card goes inert");
       assert.equal((await f.control.read())!.record.state, "OFFERED", "and the offer stays open for a remaining member");
 
-      const other: ReceiverEnvironment = { ...f.env, personId: OTHER_RECEIVER, botId: "sam-bot" };
+      const other = secondReceiver(f);
       assert.equal((await acceptHandoverOffer(f.control, { env: other, itemId: f.itemId, offer, commandId: "b-sam" })).kind, "claimed");
+    } finally { f.dispose(); }
+  });
+
+  await t.test("Seventh: a removed member's grants on a claimed item are revoked with their cards", async () => {
+    const f = fixture("tm-t1-h2-roster-grants");
+    try {
+      const offer = await publishedOffer(f);
+      await claimed(f, offer);
+      workspaces.grantItemCapability({ itemId: f.itemId, personId: RECEIVER, capability: "answer", commandId: "grant-1" });
+      workspaces.grantItemCapability({ itemId: f.itemId, personId: RECEIVER, capability: "resume", commandId: "grant-2" });
+      const retired = retireHandoverCardsFor({ itemId: f.itemId, personId: RECEIVER, actorIds: [f.env.actorId] });
+      assert.equal(retired.grantsRevoked, 2, "their grants are revoked with their cards");
+      assert.equal(workspaces.itemGrants(f.itemId, { activeOnly: true }).length, 0);
+      assert.equal(workspaces.itemGrants(f.itemId).length, 2, "and the grant history is kept, not deleted");
     } finally { f.dispose(); }
   });
 
