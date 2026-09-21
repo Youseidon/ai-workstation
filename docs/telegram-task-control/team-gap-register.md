@@ -37,10 +37,22 @@ It was in no card at all, which is the process failure worth naming: the H track
 
 ### C2. Nothing has been run against the full test suite
 
-**Status: part-advanced. V1 is done; V2's suite half is evidenced but lint has not run; V3, V4 and V5 are outstanding.**
+**Status: part-advanced. V1 and V2 are done. V3, V4 and V5 are outstanding.**
 
-What has now run, all re-run by the orchestrator rather than accepted from a worker: the full server suite at 417/417 three times against one unchanged root, the full T1 suite at 127/127 three times (0 failed, 0 skipped, 0 flaky), and `npm run typecheck` clean across all four workspaces.
-**Lint has still not run**, so V2 is not complete.
+V2 completed 2026-09-22 by the orchestrator, since F00B's proof runs had already produced most of it:
+
+| V2 item | Result | Who ran it |
+| --- | --- | --- |
+| Full server suite | 417/417, three times against one unchanged root | orchestrator, independently |
+| Full T1 suite | 127/127 three times (0 failed, 0 skipped, 0 flaky) | F00B worker; the orchestrator independently confirmed **one** full pass at `127 passed (24.8m)` |
+| Typecheck | exit 0 across shared, server, web, e2e | orchestrator |
+| Lint | exit 0, **0 errors**, 5 warnings | orchestrator |
+
+Stated precisely, because the distinction matters to audit 3: the orchestrator re-ran the server suite three times itself, but confirmed only one of the three T1 passes itself.
+
+The 5 lint warnings are all `@typescript-eslint/no-unused-vars` on underscore-prefixed parameters in `web/components/pipeline/PipelineHeader.tsx`.
+That is Yousef's pipeline code, not Team code, and they are warnings rather than errors.
+Silencing them means adding an `argsIgnorePattern` to `web/eslint.config.mjs`, which is a config change inside the diverged area of gap M-2, so it was flagged rather than taken.
 The burn-ins, audit 3, audit 4 and the LT-4 re-run are all still outstanding.
 
 **A constraint on what V3's burn-ins can claim, found by F00B.**
