@@ -1408,6 +1408,38 @@ export const workspaces = {
     if (!isItemId(itemId)) return null;
     return (db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE item_id=?").get(itemId) as ItemLinkRow | undefined) ?? null;
   },
+  /**
+   * Step 3 of protocol.md section 10, the one place a handover result changes
+   * the requester's own task: task acceptance and pipeline state are updated
+   * **once**, in one transaction, after the files are already on disk.
+   *
+   * Acceptance is never derived from the result's label. A received DONE
+   * statement without required evidence is not automatic acceptance, so the
+   * requester's explicit decision is what `acceptanceMet` carries, and a result
+   * labelled partial can never complete the task however that decision reads
+   * (B26). A partial application leaves the task resumable with its evidence
+   * recorded separately from any claimed completion.
+   */
+  applyHandoverResultToTask(input: { promptId: number; label: "full" | "partial"; acceptanceMet: boolean; evidence: string; resultCommit: string }): { status: PromptRecord["status"]; completed: boolean } {
+    return sqliteGuard(() => db.transaction(() => {
+      const prompt = db.prepare("SELECT status FROM prompt WHERE id=?").get(input.promptId) as { status: PromptRecord["status"] } | undefined;
+      if (prompt === undefined) throw new WorkspaceError(404, "not_found", "Prompt not found");
+      const completed = input.label === "full" && input.acceptanceMet === true;
+      const now = new Date().toISOString();
+      const evidence = requireText(input.evidence, "evidence", 20000, true);
+      const status: PromptRecord["status"] = completed ? "DONE" : "TODO";
+      const reason = completed
+        ? `Handover result ${input.resultCommit} applied and accepted.`
+        : `Handover result ${input.resultCommit} applied and labelled ${input.label}; the task stays resumable.`;
+      db.prepare("UPDATE prompt SET status=?,result=?,completed_at=?,updated_at=? WHERE id=?")
+        .run(status, evidence, completed ? now : null, now, input.promptId);
+      db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,NULL,?,?,?,?,'USER',?)")
+        .run(input.promptId, prompt.status, status, reason, evidence, now);
+      db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,?,?,'USER',?)")
+        .run(input.promptId, completed ? "COMPLETION" : "PROGRESS", evidence === "" ? reason : evidence, now);
+      return { status, completed };
+    })());
+  },
   itemLinksForPrompt(promptId: number): ItemLinkRow[] {
     return db.prepare("SELECT item_id itemId,prompt_id promptId,role,epoch,control_head controlHead,closed_at closedAt,closed_command_id closedCommandId FROM item_link WHERE prompt_id=? ORDER BY rowid").all(promptId) as ItemLinkRow[];
   },
