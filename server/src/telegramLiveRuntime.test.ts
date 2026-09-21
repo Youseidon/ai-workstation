@@ -171,7 +171,7 @@ async function waitFor<T>(probe: () => T | null | undefined | false, label: stri
 
 function harness(options: { settings?: Partial<TelegramRuntimeSettings>; token?: "stub" | "none"; now?: () => number } = {}) {
   const stub = new StubTelegram(7_000_000_000 + Math.floor(Math.random() * 1_000_000));
-  const settings: TelegramRuntimeSettings = { enabled: true, teamEnabled: true, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
+  const settings: TelegramRuntimeSettings = { enabled: true, teamEnabled: true, handoverEnabled: false, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
   const logs: string[] = [];
   const sleeps: number[] = [];
   const log = (level: string) => (message: string, extra?: unknown) => { logs.push(`${level} ${message} ${extra === undefined ? "" : String(extra)}`); };

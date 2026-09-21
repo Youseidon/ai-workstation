@@ -135,6 +135,25 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else { const input = await body(req); json(res, 201, { item: telegramRuntime.openTeamItem(input.promptId) }); }
       return true;
     }
+    // Handover, the requester's side (C1). Team-off is already refused above with
+    // `team_disabled`; each route below refuses handover-off with
+    // `handover_disabled`, so a caller is told which capability stopped it. Both
+    // settings are false by default and neither is changed from here.
+    const handoverMatch = url.pathname.match(/^\/api\/task-control\/team\/handover\/([^/]+)\/(begin|preview|publish|review|apply|request-changes)$/);
+    if (handoverMatch) {
+      const itemId = decodeURIComponent(handoverMatch[1]!);
+      const step = handoverMatch[2]!;
+      const wants = step === "preview" || step === "review" ? "GET" : "POST";
+      if (method !== wants) { json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } }); return true; }
+      if (step === "begin") json(res, 201, { handover: await telegramRuntime.beginHandover(itemId) });
+      else if (step === "preview") {
+        json(res, 200, { preview: await telegramRuntime.handoverPreview(itemId, { provider: url.searchParams.get("provider"), model: url.searchParams.get("model") }) });
+      } else if (step === "publish") json(res, 201, { offer: await telegramRuntime.publishHandover(itemId, await body(req)) });
+      else if (step === "review") json(res, 200, { review: await telegramRuntime.handoverReview(itemId) });
+      else if (step === "apply") json(res, 200, { apply: await telegramRuntime.applyHandover(itemId, await body(req)) });
+      else json(res, 201, { changes: await telegramRuntime.requestHandoverChanges(itemId, await body(req)) });
+      return true;
+    }
     const teamItemReopenMatch = isHarnessMode() ? url.pathname.match(/^\/api\/task-control\/team\/harness\/items\/([^/]+)\/reopen$/) : null;
     if (teamItemReopenMatch) {
       if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });

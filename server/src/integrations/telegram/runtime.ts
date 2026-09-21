@@ -16,7 +16,23 @@ import type { ItemGrantCapability } from "../../teamGrants.ts";
 import { itemTag } from "../../teamItems.ts";
 import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
 import { routeTeamItemMessage } from "../../teamRouting.ts";
-import { cachedAccountUsage } from "../../adapters/registry.ts";
+import { cachedAccountUsage, detectProviders } from "../../adapters/registry.ts";
+import { assertHandoverEnabled } from "../../teamHandoverRun.ts";
+import { handoverPipelineHold } from "../../teamResultApply.ts";
+import type { CapturePreview, HandoverConfirmation, PublishedOffer } from "../../teamHandoverCapture.ts";
+import {
+  CONTROL_READ_INTERVAL_MS,
+  applyItemHandover,
+  beginItemHandover,
+  handleHandoverTap,
+  pollControlRecords,
+  previewItemHandover,
+  publishItemHandover,
+  requestItemChanges,
+  reviewItemHandover,
+  type HandoverItemStatus,
+  type SurfaceContext,
+} from "../../teamHandoverSurface.ts";
 import { itemSubject, taskSubject, TEAM_GROUP_TOPIC_SENTINEL, WORKSTATION_SUBJECT, WorkspaceError, workspaces, type ItemLinkRow, type TelegramSubject } from "../../workspaces.ts";
 import { cachedTeamRoster, decodeJoinCode, encodeJoinCode, joinTeam, newTeamRoster, publishRoster, RemoteGitTeamRosterRemote, type TeamRoster } from "../../teamRoster.ts";
 import { join as joinPath } from "node:path";
@@ -31,6 +47,8 @@ import { COMMANDS, decodeNav, parseCommand, renderView, type ViewContext, type V
 export interface TelegramRuntimeSettings {
   enabled: boolean;
   teamEnabled: boolean;
+  /** Handover's own capability. Team must be on as well, and both are off by default. */
+  handoverEnabled: boolean;
   notificationsEnabled: boolean;
   remoteActionsEnabled: boolean;
   transport: "fake_telegram" | "telegram";
@@ -52,6 +70,8 @@ export interface TelegramRuntimeOptions {
   /** Refuses a bot before polling it; the harness uses this to never touch the operator's own bot. */
   assertBot?: (botId: string) => void;
   pollTimeoutSeconds?: number;
+  /** The shared control-record read interval; the recorded default is 5 seconds. */
+  controlReadIntervalMs?: number;
 }
 
 interface Session {
@@ -86,6 +106,12 @@ export interface TeamPanelStatus {
   members: TeamRoster["members"];
   instruction: string | null;
   inviteLink: string | null;
+  /**
+   * Whether handover is enabled on this workstation. The web surface reads it so
+   * it can say the capability is off rather than offering a control whose every
+   * tap would be refused; it is false by default and says nothing about Team.
+   */
+  handoverEnabled: boolean;
 }
 
 interface StoredTeamInvite { inviteLink: string; expiresAt: string; }
@@ -145,6 +171,7 @@ export class TelegramLiveRuntime {
   private readonly sendSpacingMs: number;
   private readonly pairingTtlMs: number;
   private readonly pollTimeoutSeconds: number;
+  private readonly controlReadIntervalMs: number;
 
   private session: Session | null = null;
   private transition: Promise<void> = Promise.resolve();
@@ -166,6 +193,7 @@ export class TelegramLiveRuntime {
     this.sleep = options.sleep ?? abortableSleep;
     this.now = options.now ?? Date.now;
     this.log = options.logger ?? createLogger("telegram");
+    this.controlReadIntervalMs = options.controlReadIntervalMs ?? CONTROL_READ_INTERVAL_MS;
     this.deliverIntervalMs = options.deliverIntervalMs ?? 1000;
     this.notifyIntervalMs = options.notifyIntervalMs ?? 5000;
     this.sendSpacingMs = options.sendSpacingMs ?? 1000;
@@ -372,6 +400,103 @@ export class TelegramLiveRuntime {
     workspaces.finishAgentRun(runId, "done");
   }
 
+  /* ------------------------------- handover (C1) ------------------------------ */
+
+  /**
+   * Provider ids this workstation is logged in to, as the receiver's own policy
+   * reads them (RTC-12). Detection is asynchronous and the policy is read
+   * synchronously, immediately before a start, so the control loop refreshes
+   * this snapshot on every pass and the policy closure reads it live.
+   */
+  private handoverProviders: string[] = [];
+
+  private surfaceContext(botId: string): SurfaceContext {
+    const roster = workspaces.teamRosters()
+      .map(entry => cachedTeamRoster(entry.record))
+      .find(entry => entry.members.some(member => member.botId === botId));
+    if (roster === undefined) throw new WorkspaceError(409, "team_not_joined", "Join or create a team before using handover.");
+    return { roster, botId, providers: this.handoverProviders };
+  }
+
+  /** Both settings, in one place, so a route can say which one refused it. */
+  private requireHandoverEnabled(): void {
+    this.requireTeamEnabled();
+    assertHandoverEnabled({ teamEnabled: true, handoverEnabled: this.settings().handoverEnabled });
+  }
+
+  private handoverContext(): SurfaceContext {
+    this.requireHandoverEnabled();
+    return this.surfaceContext(this.requireSession().botId);
+  }
+
+  private static handoverItemId(value: unknown): string {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new WorkspaceError(422, "validation_error", "A Team item id is required.");
+    }
+    return value.trim();
+  }
+
+  async beginHandover(itemId: unknown): Promise<HandoverItemStatus> {
+    const context = this.handoverContext();
+    const item = TelegramLiveRuntime.handoverItemId(itemId);
+    const begun = await beginItemHandover(context, item);
+    return {
+      itemId: item,
+      state: begun.record.state,
+      epoch: begun.record.epoch,
+      requester: begun.record.requester,
+      executor: begun.record.executor,
+      branch: begun.record.branch,
+      hold: handoverPipelineHold(item, begun.record),
+    };
+  }
+
+  async handoverPreview(itemId: unknown, input: { provider?: unknown; model?: unknown }): Promise<CapturePreview> {
+    const context = this.handoverContext();
+    if (!isProviderId(input.provider)) {
+      throw new WorkspaceError(422, "provider_required", "Choose the agent this work item should be handed over with.");
+    }
+    return previewItemHandover(context, TelegramLiveRuntime.handoverItemId(itemId), {
+      provider: input.provider,
+      model: typeof input.model === "string" ? input.model : null,
+    });
+  }
+
+  async publishHandover(itemId: unknown, input: { confirmations?: unknown; acknowledgedBytes?: unknown }): Promise<PublishedOffer> {
+    const context = this.handoverContext();
+    const confirmations = Array.isArray(input.confirmations)
+      ? input.confirmations.filter((one): one is HandoverConfirmation => one === "publish" || one === "credential_exposure")
+      : [];
+    if (!Number.isSafeInteger(input.acknowledgedBytes) || Number(input.acknowledgedBytes) < 0) {
+      throw new WorkspaceError(422, "size_unconfirmed", "Confirm the package size shown in the preview before publishing.");
+    }
+    const published = await publishItemHandover(context, TelegramLiveRuntime.handoverItemId(itemId), {
+      confirmations,
+      acknowledgedBytes: Number(input.acknowledgedBytes),
+    });
+    return published.offer;
+  }
+
+  async handoverReview(itemId: unknown) {
+    return reviewItemHandover(this.handoverContext(), TelegramLiveRuntime.handoverItemId(itemId));
+  }
+
+  async applyHandover(itemId: unknown, input: { acceptanceMet?: unknown }) {
+    return applyItemHandover(this.handoverContext(), TelegramLiveRuntime.handoverItemId(itemId), {
+      // Acceptance is the requester's own decision and is never derived from the
+      // result's label, so it must be stated rather than defaulted to true.
+      acceptanceMet: input.acceptanceMet === true,
+    });
+  }
+
+  async requestHandoverChanges(itemId: unknown, input: { requirements?: unknown }) {
+    const requirements = typeof input.requirements === "string" ? input.requirements.trim() : "";
+    if (requirements === "") {
+      throw new WorkspaceError(422, "validation_error", "Say what needs changing; a fresh offer is published with it.");
+    }
+    return requestItemChanges(this.handoverContext(), TelegramLiveRuntime.handoverItemId(itemId), { requirements });
+  }
+
   private panelStatus(roster: TeamRoster): TeamPanelStatus {
     const owner = roster.members[0];
     const teammate = roster.members.find(member => member.botId !== owner?.botId) ?? null;
@@ -379,7 +504,7 @@ export class TelegramLiveRuntime {
       ? null
       : `Ask ${owner.personLabel} to add @${teammate.botUsername} to the team group and make it an administrator with Pin messages.`;
     const inviteLink = teammate === null ? null : this.storedTeamInvite(`${roster.teamId}:${teammate.botId}`)?.inviteLink ?? null;
-    return { teamId: roster.teamId, groupChatId: roster.groupChatId, members: roster.members, instruction, inviteLink };
+    return { teamId: roster.teamId, groupChatId: roster.groupChatId, members: roster.members, instruction, inviteLink, handoverEnabled: this.settings().handoverEnabled };
   }
 
   private async teamInvite(session: Session, roster: TeamRoster, memberBotId: string): Promise<string | null> {
@@ -544,8 +669,12 @@ export class TelegramLiveRuntime {
     const api = this.options.createApi?.(token, contentForRef) ?? new HttpTelegramBotApi({ token, contentForRef });
     const control = new TaskControlService(() => {
       const current = this.settings();
-      return { enabled: current.enabled, teamEnabled: current.teamEnabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
+      return { enabled: current.enabled, teamEnabled: current.teamEnabled, handoverEnabled: current.handoverEnabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
     });
+    // C1: the seam H04 left has a production caller from here. Every tap has
+    // already passed the capability gate in TaskControlService, so this only
+    // routes it; nothing below re-decides whether handover is allowed.
+    control.registerHandoverTapHandler(tap => handleHandoverTap(this.surfaceContext(botId), tap));
     const controller = new AbortController();
     const session: Session = { controller, botId, api, control, adapter: undefined as unknown as TelegramAdapter, done: Promise.resolve(), delivering: null };
     session.adapter = new TelegramAdapter(botId, api, control, {
@@ -629,7 +758,7 @@ export class TelegramLiveRuntime {
     this.log.info(`connected as @${this.bot?.username ?? "unknown"}`);
     // The command menu is cosmetic: commands typed without it still answer, so a failure only logs.
     void session.api.setMyCommands(COMMANDS).catch(error => this.log.warn(this.safe(`setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`)));
-    await Promise.all([this.pollLoop(session), this.deliverLoop(session)]);
+    await Promise.all([this.pollLoop(session), this.deliverLoop(session), this.controlRecordLoop(session)]);
   }
 
   private async pollLoop(session: Session): Promise<void> {
@@ -706,6 +835,43 @@ export class TelegramLiveRuntime {
         this.log.warn(this.safe(`delivery cycle failed: ${error instanceof Error ? error.message : String(error)}`));
       }
       await this.sleep(this.deliverIntervalMs, signal);
+    }
+  }
+
+  /**
+   * The shared control-record read (C1, criterion 2).
+   *
+   * This is what makes an offer arrive without anyone telling a workstation to
+   * look. Before it existed, `discoverHandoverOffer` had no caller: a receiver
+   * could only have found an offer by being told an item id out of band, which
+   * is not a product. It reads the records the shared repository carries, at the
+   * recorded 5-second default, and does only this workstation's own business
+   * with them.
+   *
+   * It is deliberately a third loop rather than more work inside `deliverLoop`.
+   * A record read talks to the project repository and can block on a network for
+   * seconds; the deliver loop is what gets messages onto a phone, and coupling
+   * the two would make an unreachable remote look like a dead bot.
+   */
+  private async controlRecordLoop(session: Session): Promise<void> {
+    const { signal } = session.controller;
+    while (!signal.aborted) {
+      try {
+        const current = this.settings();
+        if (current.teamEnabled && current.handoverEnabled) {
+          // Refreshed here, so the policy a start re-reads immediately before
+          // spawning is the current one rather than one cached at claim time.
+          this.handoverProviders = (await detectProviders()).filter(one => one.available).map(one => one.id);
+          if (signal.aborted) return;
+          await pollControlRecords(this.surfaceContext(session.botId));
+        }
+      } catch (error) {
+        this.log.warn(this.safe(`control record read failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      // Deliberately not `this.sleep`: that seam is the transport's backoff, and
+      // a test that accelerates a retry must not also accelerate the product's
+      // own 5-second record cadence, which tm4.md records as a default.
+      await abortableSleep(this.controlReadIntervalMs, signal);
     }
   }
 
@@ -1492,7 +1658,7 @@ export class TelegramLiveRuntime {
 }
 
 export const telegramRuntime = new TelegramLiveRuntime({
-  settings: () => ({ ...appSettings.taskControl, teamEnabled: appSettings.team.enabled }),
+  settings: () => ({ ...appSettings.taskControl, teamEnabled: appSettings.team.enabled, handoverEnabled: appSettings.team.handoverEnabled }),
   credential: bootTelegramCredential,
   ...(harnessSeams.telegramApiBaseUrl === null && harnessSeams.telegramPollTimeoutSeconds === null
     ? {}
