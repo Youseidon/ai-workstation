@@ -88,6 +88,16 @@ const FIELDS: FieldDef[] = [
       "Enables shared Team setup and roster controls. Personal Telegram task control remains available while this is off.",
   },
   {
+    key: "team.handoverEnabled",
+    label: "Enable handover",
+    group: "Task Control",
+    type: "boolean",
+    envVar: "TEAM_HANDOVER_ENABLED",
+    fallback: false,
+    description:
+      "Lets a work item be captured, offered to the team and run by a teammate on their own workstation, under their own provider login, settings and quota. Team must be enabled as well. Item threads, grants and personal control all keep working while this is off, and every handover tap is refused.",
+  },
+  {
     key: "taskControl.notificationsEnabled",
     label: "Notifications",
     group: "Task Control",
@@ -649,6 +659,15 @@ export const settings = {
   team: {
     get enabled(): boolean {
       return flag("team.enabled");
+    },
+    /**
+     * Handover's own capability (H04). It is separate from `team.enabled` because
+     * the item thread, its grants and its views shipped in TM2 and TM3 while
+     * handover did not, and because G02's evidence half is what opens it. Both
+     * are false by default, and handover needs both.
+     */
+    get handoverEnabled(): boolean {
+      return flag("team.handoverEnabled");
     },
   },
 
