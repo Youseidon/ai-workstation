@@ -104,7 +104,13 @@ Outstanding since before this session; needs Yousef's time, not code.
 
 ### M-2. main and origin/main have genuinely diverged
 
-**DECIDED 2026-09-22: keep it local. No push.**
+**CLOSED 2026-09-22 by the reconcile `a641b0c`.** main is now 331 ahead of `origin/main` and **0 behind**.
+The divergence is gone; what it left behind is **M-8**.
+Still nothing pushed, and `git branch -r --contains HEAD` is still empty, so the no-remote-write constraint is untouched - jd's "keep it local" ruling of 2026-09-22 covered pushing, and reconciling locally does not reverse it.
+
+The history below is kept because the audits cite it.
+
+**Superseded ruling of 2026-09-22: keep it local. No push.**
 
 jd's ruling: the Team work stays on this machine for now and `origin/main` is left untouched.
 The standing no-push constraint therefore continues to hold, and the divergence remains a decision to revisit later rather than an open question.
@@ -128,6 +134,16 @@ Two further checks are known to mismatch how jd chose to run the work, and the a
 - **A4** requires LT-4 recorded with a date and outcome. LT-4 is deferred by operator instruction of 2026-09-18 pending Yousef (gap M-1), and V5's re-run is sequenced after V4 in any case.
 
 The instrument stays the auditor's and jd's. Nothing in it was edited.
+
+Three further mismatches are consequences of jd's 2026-09-22 decision to reconcile before auditing, and are recorded rather than failed:
+
+- **D2** is no longer "is the range linear". `git log --merges dc3e9de..main` returns **three** commits, not the one jd anticipated: the reconcile `a641b0c`, plus `b855ec2` and `fa92586`, which are Yousef's own pull-request merges and arrived inside his 29 commits. Record the honest reading: **no merge commit is a task landing**, every task still landed by fast-forward.
+- **D9** must account for **29 commits owned by no tracker row**. They are Yousef's, were never claimed by this track, and are out of range rather than unexplained. The check that still bites is that no commit *of ours* in the range lacks a row.
+- **A2 and A3** must cite the post-merge numbers, which are **not green**: server 486/617, four workspaces typecheck clean, web lint 17 errors and 11 warnings with every error in upstream's own files. This is why V4 is blocked on M-8.
+
+Also for the auditors: H07's close guard has **server-tier proof only and no T1 row**, so treat it as a known end-to-end coverage gap rather than as covered.
+
+
 
 ### M-4. Two handover rules are still unruled
 
@@ -183,6 +199,27 @@ H07 reverted the attempt entirely rather than weaken that assertion, which was t
 
 The real question is which reading is right, and it is a design question rather than a bug: does an acknowledged stop end the handover (H04), or is a stopped-but-unreturned item still held (ruling 7)? There is work on the branch in both readings.
 Needs jd.
+
+### M-8. Upstream's run lifecycle contradicts Team's verified expectations
+
+Found by the reconcile `a641b0c`, and the reason the server suite is **486 of 617** on the merged tree.
+
+This is not a merge resolution error, and it is worth being precise about that.
+Yousef deliberately changed what happens when a run ends without posting a status.
+`applyEndOfRunStatus` now writes `to: decision.to ?? "UNREPORTED"`, where this side wrote `BLOCKED`, and every status write goes through a `writeStatus` choke point with a `recoverableBlocker` refusal in front of it.
+His reasoning is recorded in his own comments and is sound: a bare fall-through to `FAILED` meant nothing ever *decided* an item had failed, and "the run said nothing" was indistinguishable from "the process failed".
+
+Team's fixtures encode the old behaviour.
+`humanInput`'s fixture is the clearest case: it called `finishAgentRun` and relied on the prompt becoming `BLOCKED` so a human could answer it.
+Posting the block explicitly took that file from 0 of 11 to 3 of 11, which confirms the mechanism but leaves the rest as genuine disagreements about what the app should do.
+
+The 131 failures by file: `telegramLiveRuntime` 26, `teamHandoverRun` 23, `telegramSummary` 17, `pipelineScheduler` 11, `teamResultApply` 10, `humanInput` 8, `taskControl` 5, `teamControlRecord` 4, `teamHandoverSurface` 3, `teamHandoverCapture` 3, `runService` 3, `agentProgressTools` 3, `workspaceApi` 2, `teamItems` 2, and single failures elsewhere.
+
+**Why this is not merge work.** Resolving it means deciding, case by case, whether the Team assertion or Yousef's new lifecycle is correct, across F01 to F09 and H01 to H07 - the exact behaviour Phase V certified at 421/421.
+That is re-verification of the Team track against a changed platform, and doing it inline would quietly rewrite evidence jd has already signed off.
+
+**jd's decision of 2026-09-22**: scope it as its own task with its own worker and branch, red-first, with evidence per case, rather than have the orchestrator make 128 semantic calls unreviewed.
+**V4 and V5 are blocked on it**, because an audit is worth what the tree it audits is worth.
 
 ## Low
 
