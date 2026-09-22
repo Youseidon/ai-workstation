@@ -132,10 +132,24 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
 test("startConsult does not take the writer lock and forces the consult sandbox", () => {
   const body = functionBody(readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8"), "startConsult");
   assert.doesNotMatch(body, /activeForWorkspace|activePipelineForWorkspace|beginAgentRun|onExecuteEnded/);
-  assert.doesNotMatch(body, /curl -fsS|agentApiUrl/);
+  // Upstream now hands a consult run a read-only context GET, so the bare
+  // presence of `curl` no longer proves anything. The behavioural question is
+  // unchanged - a consult has no write path - so it is pinned directly: the
+  // Progress API base and its tool binding stay absent, and every curl the
+  // prompt hands out is the one authenticated GET of the context endpoint.
+  assert.doesNotMatch(body, /agentApiUrl|bindAgentProgressTools|PROGRESS_TOOL_NAMES/);
+  assert.match(body, /const contextUrl = `http:\/\/127\.0\.0\.1:\$\{config\.port\}\/api\/agent\/runs\/\$\{plannedRunId\}\/context`/);
+  const curls = [...body.matchAll(/curl\b/g)].length;
+  const contextGets = [...body.matchAll(/curl -fsS -H 'Authorization: Bearer \$\{credential\.token\}' \$\{contextUrl\}/g)].length;
+  assert.ok(curls > 0, "a consult run is told how to fetch its context");
+  assert.equal(contextGets, curls);
   assert.match(body, /consultsForWorkspace/);
   assert.match(body, /beginConsultRun/);
-  assert.match(body, /consultContextText/);
+  // The consult still gets the authoritative workspace context; upstream serves
+  // it from the context endpoint rather than pasting it into the run prompt, so
+  // the join is asserted where it now lives.
+  const contextRoute = readFileSync(new URL("../src/agentProgressApi.ts", import.meta.url), "utf8");
+  assert.match(contextRoute, /run\.role === "consult"\) return \{ purpose: "consult", markdown: consultContextText\(/);
   assert.match(body, /permissionOverride:\s*"consult"/);
   assert.doesNotMatch(body, /permissionOverride:\s*"inherit"/);
   assert.doesNotMatch(body, /hostAccess/);
