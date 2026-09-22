@@ -338,13 +338,20 @@ test("S-CLT-17/18: after the run ends, tools cannot overwrite the finalized stat
     const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
     workspaces.finishAgentRun(run.runId, "done");
     runContexts.complete(run.runId);
-    assert.equal(workspaces.resolvePrompt(f.workspace.id, f.prompt.id).status, "BLOCKED");
+    // A run that ends without posting now finalizes as UNREPORTED rather than
+    // BLOCKED. Upstream's reading is the right one: BLOCKED is what the
+    // pipeline parks on for a human, and "the run said nothing" is not a
+    // question anyone can answer. The assertion still pins the same thing -
+    // that the end of the run finalizes a status, that the status names the
+    // cause, and that a late tool call cannot overwrite it.
+    const finalized = "UNREPORTED";
+    assert.equal(workspaces.resolvePrompt(f.workspace.id, f.prompt.id).status, finalized);
     const events = workspaces.promptHistory(f.prompt.id).events as Array<{ reason: string }>;
-    assert.ok(events.some((event) => /without posting the required DONE or BLOCKED status/.test(event.reason)));
+    assert.ok(events.some((event) => /ended done without posting a status/.test(event.reason)));
     const late = await callTool(tools, "post_status", DONE);
     assert.ok(!late.schemaRejected && late.isError);
     assert.match(late.text, /^(run_not_active|invalid_run_token): /);
-    assert.equal(workspaces.resolvePrompt(f.workspace.id, f.prompt.id).status, "BLOCKED");
+    assert.equal(workspaces.resolvePrompt(f.workspace.id, f.prompt.id).status, finalized);
   } finally {
     f.cleanup();
   }

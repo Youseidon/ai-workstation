@@ -6,9 +6,14 @@ import test from "node:test";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { respondAndContinue, saveHumanResponse } from "../src/humanInput.ts";
 import { setPipelineStationStarter } from "../src/pipelineScheduler.ts";
+import { coolingFor, resetProviderHealth } from "../src/providerHealth.ts";
 import { workspaces } from "../src/workspaces.ts";
 
 function fixture() {
+  // A station start that fails now marks its provider cooling, and that store
+  // is process-global. Without this, one test's failed start makes the next
+  // test's station unstartable for no reason of its own.
+  resetProviderHealth();
   const dir = mkdtempSync(join(tmpdir(), "human-input-"));
   const workspace = workspaces.create({ name: dir, workDirectory: dir });
   const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
@@ -53,15 +58,29 @@ test("a TODO task with an unanswered handoff stays in attention and accepts a fo
 });
 
 
+/**
+ * A suite pipeline run parked on the fixture's work item, waiting for a human.
+ *
+ * Upstream's flowchart steps hang off a named pipeline rather than the suite,
+ * so a suite run with no named parent resolves no steps and completes on its
+ * first advance instead of starting a station. Every parked run below is
+ * therefore parented and stepped, the way a played one is.
+ */
+function parked(f: ReturnType<typeof fixture>, label: string) {
+  const pipeline = workspaces.createPipeline({ workspaceId: f.workspace.id, name: `Pipeline ${label}`, suiteIds: [f.suite.id] });
+  workspaces.addNamedPipelineStep(pipeline.id, f.prompt.id, { provider: "claude" });
+  const named = workspaces.createNamedPipelineRun({ id: `${label}-named-${f.workspace.id}`, pipelineId: pipeline.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+  const suite = workspaces.createPipelineRun({ id: `${label}-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: named.id });
+  workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+  workspaces.updateNamedPipelineRun(named.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suite.id });
+  return { pipeline, named, suite };
+}
+
 for (const restarted of [false, true]) test(`answers resume their owning named pipeline${restarted ? " after a server restart" : ""} without duplicate execution`, async () => {
   const f = fixture();
   let starts = 0;
   try {
-    const pipeline = workspaces.createPipeline({ workspaceId: f.workspace.id, name: "Pipeline", suiteIds: [f.suite.id] });
-    const named = workspaces.createNamedPipelineRun({ id: `named-${f.workspace.id}`, pipelineId: pipeline.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
-    const suite = workspaces.createPipelineRun({ id: `suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: named.id });
-    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
-    workspaces.updateNamedPipelineRun(named.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suite.id });
+    const { pipeline, named, suite } = parked(f, "named");
     if (restarted) {
       workspaces.updatePipelineRun(suite.id, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
       workspaces.updateNamedPipelineRun(named.id, { state: "INTERRUPTED", stopReason: "server_restart", endedAt: new Date().toISOString() });
@@ -88,18 +107,33 @@ for (const restarted of [false, true]) test(`answers resume their owning named p
 test("failed continuation preserves the answer and retries without another human response", async () => {
   const f = fixture();
   try {
-    const suite = workspaces.createPipelineRun({ id: `suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
-    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    parked(f, "suite");
     setPipelineStationStarter(async () => { throw new Error("Agent unavailable"); });
     await new Promise(resolve => setTimeout(resolve, 5));
     workspaces.updateHandoff(f.handoff.id, { completedAt: new Date().toISOString() });
     const result = await respondAndContinue(f.prompt.id, { content: "Use directory.example", provider: "claude" });
-    assert.equal(result.started, false);
-    assert.match(result.error!, /Agent unavailable/);
+    // A station that cannot start no longer fails the resume: upstream parks the
+    // pipeline on `no_provider_available` so it can start itself once a provider
+    // is free again, rather than discarding an answer that was already applied
+    // and making the person press Resume a second time. The question this test
+    // asks is unchanged - the answer survives and the retry needs no new one -
+    // and the failure is still recorded rather than swallowed.
+    assert.equal(result.started, true, result.error);
+    const parkedRun = workspaces.activePipeline(f.suite.id);
+    assert.equal(parkedRun?.state, "WAITING_HUMAN");
+    assert.equal(parkedRun?.waitReason, "no_provider_available");
+    assert.equal(parkedRun?.currentRunId, null);
+    assert.notEqual(coolingFor("claude"), null, "the failed start is recorded against the provider");
     const count = workspaces.promptActivity(f.prompt.id).remarks.length;
-    setPipelineStationStarter(async () => ({ runId: "retry-successor" }));
+    // The retry is what the title is about, so it is checked by what the station
+    // did rather than by the reported flag, which is now true either way.
+    let retries = 0;
+    resetProviderHealth();
+    setPipelineStationStarter(async () => { retries++; return { runId: "retry-successor" }; });
     const retry = await respondAndContinue(f.prompt.id, { responseId: result.responseId, provider: "claude" });
     assert.equal(retry.started, true, retry.error);
+    assert.equal(retries, 1, "the station started on the retry, with no new human response");
+    assert.equal(workspaces.activePipeline(f.suite.id)?.currentRunId, "retry-successor");
     assert.equal(workspaces.promptActivity(f.prompt.id).remarks.length, count);
     await assert.rejects(respondAndContinue(f.prompt.id, { responseId: -1, provider: "claude" }), /no longer current/);
   } finally { setPipelineStationStarter(null); f.cleanup(); }
@@ -115,8 +149,7 @@ test("save-only needs no provider and durably blocks task starts until explicit 
   const f = fixture();
   let starts = 0;
   try {
-    const suite = workspaces.createPipelineRun({ id: `saved-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
-    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    const { suite } = parked(f, "saved");
     const expectedRevision = await currentQuestion(f);
     const saved = await saveHumanResponse(f.prompt.id, { content: "Use the approved directory", expectedRevision });
     assert.equal(saved.started, false);
@@ -145,39 +178,62 @@ test("save-only needs no provider and durably blocks task starts until explicit 
   } finally { setPipelineStationStarter(null); f.cleanup(); }
 });
 
-test("failed resume keeps the saved-answer hold and allows a later explicit retry", async () => {
+test("failed resume parks the station rather than the answer, and allows a later explicit retry", async () => {
   const f = fixture();
+  let retries = 0;
   try {
-    const suite = workspaces.createPipelineRun({ id: `held-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
-    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    parked(f, "held");
     const saved = await saveHumanResponse(f.prompt.id, { content: "Approved", expectedRevision: await currentQuestion(f) });
     setPipelineStationStarter(async () => { throw new Error("No allowance available"); });
     const failed = await respondAndContinue(f.prompt.id, { responseId: saved.responseId, expectedRevision: saved.revision, provider: "claude" });
-    assert.equal(failed.started, false);
-    assert.match(failed.error!, /No allowance/);
-    assert.equal(workspaces.humanInputState(f.prompt.id).savedResponseId, saved.responseId);
-    setPipelineStationStarter(async () => ({ runId: "available-now" }));
-    const retried = await respondAndContinue(f.prompt.id, { responseId: saved.responseId, expectedRevision: failed.revision, provider: "claude" });
+    // The saved answer is no longer re-held on a failed start, because upstream's
+    // start no longer fails: a provider with no allowance is a transient capacity
+    // fact, so the pipeline parks on `no_provider_available` and can start itself
+    // when one frees up, instead of putting an applied answer back in the
+    // person's hands for a problem that was never theirs. The recoverable state
+    // is still asserted, on the pipeline rather than on the answer.
+    assert.equal(failed.started, true, failed.error);
+    const held = workspaces.activePipeline(f.suite.id);
+    assert.equal(held?.state, "WAITING_HUMAN");
+    assert.equal(held?.waitReason, "no_provider_available");
+    assert.equal(held?.currentRunId, null);
+    assert.notEqual(coolingFor("claude"), null, "the failed start is recorded against the provider");
+    assert.equal(workspaces.promptOutcome(f.prompt.id).status, "TODO", "the answer stays applied");
+    resetProviderHealth();
+    setPipelineStationStarter(async () => { retries++; return { runId: "available-now" }; });
+    // The answer was applied, so the revision moved on with it; the retry carries
+    // the current one, as any surface offering Resume would.
+    const retried = await respondAndContinue(f.prompt.id, { responseId: saved.responseId, expectedRevision: workspaces.humanInputState(f.prompt.id).revision, provider: "claude" });
     assert.equal(retried.started, true, retried.error);
+    assert.equal(retries, 1, "the explicit retry starts the station with no new human response");
+    assert.equal(workspaces.activePipeline(f.suite.id)?.currentRunId, "available-now");
   } finally { setPipelineStationStarter(null); f.cleanup(); }
 });
 
-test("a fresh answer whose resume fails becomes a saved answer that can be resumed later", async () => {
+test("a fresh answer whose resume fails stays current and can be resumed later", async () => {
   const f = fixture();
+  let retries = 0;
   try {
-    const suite = workspaces.createPipelineRun({ id: `fresh-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
-    workspaces.updatePipelineRun(suite.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    parked(f, "fresh");
     setPipelineStationStarter(async () => { throw new Error("Provider claude is disabled"); });
     const failed = await respondAndContinue(f.prompt.id, { content: "Ship it", expectedRevision: await currentQuestion(f), provider: "claude" });
-    assert.equal(failed.started, false);
-    assert.match(failed.error!, /disabled/);
+    // Same change as the test above: a station that cannot start parks the
+    // pipeline instead of failing the answer, so the answer is applied and the
+    // item is TODO rather than held. What still has to hold is that this exact
+    // response remains the current one and resumes the work later.
+    assert.equal(failed.started, true, failed.error);
     const activity = workspaces.promptActivity(f.prompt.id);
-    assert.equal(activity.humanInput.savedResponseId, failed.responseId);
-    assert.equal(activity.item.prompt.humanResponseHeld, true);
-    assert.equal(activity.item.operationalState, "AWAITING_RESPONSE");
-    setPipelineStationStarter(async () => ({ runId: "available-now" }));
-    const retried = await respondAndContinue(f.prompt.id, { responseId: failed.responseId, expectedRevision: failed.revision, provider: "claude" });
+    assert.equal(activity.humanInput.savedResponseId, null);
+    assert.equal(activity.item.prompt.humanResponseHeld, false);
+    assert.equal(activity.item.prompt.status, "TODO");
+    assert.equal(activity.item.operationalState, "READY");
+    assert.equal(workspaces.activePipeline(f.suite.id)?.waitReason, "no_provider_available");
+    resetProviderHealth();
+    setPipelineStationStarter(async () => { retries++; return { runId: "available-now" }; });
+    const retried = await respondAndContinue(f.prompt.id, { responseId: failed.responseId, expectedRevision: workspaces.humanInputState(f.prompt.id).revision, provider: "claude" });
     assert.equal(retried.started, true, retried.error);
+    assert.equal(retries, 1, "the same response resumes the work without a new one");
+    await assert.rejects(respondAndContinue(f.prompt.id, { responseId: -1, provider: "claude" }), /no longer current/);
   } finally { setPipelineStationStarter(null); f.cleanup(); }
 });
 
