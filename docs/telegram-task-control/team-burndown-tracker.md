@@ -24,7 +24,10 @@ State as of 2026-09-22, after the reconcile:
 - Order of what is left in Phase V: **V4** audits 3 and 4, then **V5** the LT-4 re-run.
 - **V2 and V3 are done.** V2: full server suite 417/417 three times against one unchanged root, full T1 suite 127/127 three times, typecheck clean across four workspaces, lint exit 0 with 0 errors and 5 flagged warnings. V3: both burn-in files at 3 repeats, 18 of 18 green, zero flaky. **Gap H-3 and G02 closed inside V3.** The next task is **V4**, audits 3 and 4.
 - **Testing is no longer parked.** It was parked during implementation by jd's instruction of 2026-09-20; implementation has now finished, so the parked work is Phase V and is gap C2. The Phase V suites and the harness are in scope. The standing rule that never two harness runs happen at once still holds.
-- **Nothing is in flight**: no worktree, no task branch, `git status` clean. The next task is **V4**, audits 3 and 4.
+- **M8 is in flight**: worker on `fix/M8-run-lifecycle-reconcile`, worktree `/home/junaid/aw-m8`, created from main at `b24804d`, dependencies installed and the install's `package-lock.json` change reverted so the worker started clean.
+  It owns gap **M-8**, the run-lifecycle reconciliation, and is scoped to `server/test/` only - any product change it finds is a BLOCKED report for jd, not its to make.
+  `git status` on main is clean and no harness run should start while it is working.
+- The next task after M8 is **V4**, audits 3 and 4, which are blocked on M8 because an audit describes the tree it is run against.
 - Migration numbers: **renumbered by the reconcile.** F02, F07 and H02 took 27, 28 and 29 before it and now hold **50, 51 and 52**; every migration of ours moved by +23 from 14-29 to 37-52, order preserved.
   The reconcile added **53**, which recreates the `handoff` table upstream's own migration 29 drops. The next free number is **54**.
   Yousef's migrations occupy 14-36 and are not ours to renumber; the collision and the ruling are recorded in the log below.
