@@ -19,9 +19,12 @@ import {
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AskChip } from "@/components/AgentDock";
 import { SettingRow } from "@/components/SettingField";
+import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
+import { GROUP_BLURB, GROUP_TITLE } from "@/lib/settingsGroups";
 import { PageChrome } from "@/components/shell/chrome";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import { Switch } from "@/components/ui/Switch";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { CountUp } from "@/components/CountUp";
@@ -64,6 +67,7 @@ const SETTINGS_GROUP: Record<ProviderId, string> = {
   codex: "Codex CLI",
   cursor: "Cursor CLI",
   grok: "Grok CLI",
+  copilot: "GitHub Copilot",
 };
 
 function fleetSummary(writing: number, asking: number): string {
@@ -85,12 +89,12 @@ export function AgentsView() {
   const { providers, runs, items, lastRun, connection, interrupt, refreshProviders } =
     useAgentConsole();
   const credits = useProviderUsage(true);
-  const { snapshot, saving, errors: saveErrors, save, reset } = useSettings(SERVER_URL);
+  const { snapshot, saving, errors: saveErrors, save, reset, reload } = useSettings(SERVER_URL);
   const models = useModelSelection(providers);
   const dialogs = useDialogs();
   const [drafts, setDrafts] = useState<Record<string, SettingValue>>({});
   const [savingEnabled, setSavingEnabled] = useState<ProviderId | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState<ProviderId | null>(null);
+  const [configuring, setConfiguring] = useState<ProviderId | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [taskControlCapability, setTaskControlCapability] = useState<TaskControlCapability | null>(null);
 
@@ -122,18 +126,15 @@ export function AgentsView() {
     });
   }, [drafts, snapshot]);
 
-  const generalFields = snapshot?.fields.filter((field) => field.group === "General") ?? [];
-  const generalDirty = dirtyKeys.filter((key) => generalFields.some((field) => field.key === key));
-  const taskControlFields = snapshot?.fields.filter((field) => field.group === "Task Control") ?? [];
-  const taskControlDirty = dirtyKeys.filter((key) => taskControlFields.some((field) => field.key === key));
-  // The panel follows the transport the operator has chosen, saved or not, so choosing
-  // Telegram gives immediate feedback (live status, missing token) instead of nothing.
-  const taskControlTransport = drafts["taskControl.transport"] ?? taskControlFields.find((field) => field.key === "taskControl.transport")?.value;
-  const teamEnabled = taskControlFields.find((field) => field.key === "team.enabled")?.value === true;
-
-  useEffect(() => {
-    void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
-  }, [snapshot]);
+  /*
+   * Every group that is not a provider's own settings. Derived from
+   * SETTINGS_GROUP rather than listed by hand: "Run budgets" and "Pipeline
+   * policy" were both invisible here because the page filtered for "General"
+   * alone, so a new group silently had nowhere to render.
+   */
+  const providerGroups = new Set(Object.values(SETTINGS_GROUP));
+  const sharedGroups = (snapshot?.groups ?? []).filter((group) => !providerGroups.has(group));
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -234,136 +235,38 @@ export function AgentsView() {
           )}
         </header>
 
-        {generalFields.length > 0 && (
-          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
-            <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Runtime</h2>
-            <p className="mt-1 text-[11px] text-fg-dim">
-              Shared with every provider. Host access enables live local API calls, docker compose, and other host services; saved prompts can fall back to inline status reporting.
-            </p>
-            {generalFields.map((field) => (
-              <SettingRow
-                key={field.key}
-                field={field}
-                draft={drafts[field.key]}
-                disabled={saving}
-                onChange={(key, value) => {
-                  setNotice(null);
-                  setDrafts((current) => ({ ...current, [key]: value }));
-                }}
-                onRevert={(key) => {
-                  setNotice(null);
-                  void reset([key]);
-                  setDrafts((current) => {
-                    const next = { ...current };
-                    delete next[key];
-                    return next;
-                  });
-                }}
-              />
-            ))}
-            {generalDirty.length > 0 && (
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setDrafts((current) => {
-                      const next = { ...current };
-                      for (const key of generalDirty) delete next[key];
-                      return next;
-                    });
-                  }}
-                  disabled={saving}
-                >
-                  Discard
-                </Button>
-                <Button
-                  size="sm"
-                  variant="success"
-                  onClick={() => void saveDrafts(generalDirty)}
-                  loading={saving}
-                >
-                  Save {generalDirty.length}
-                </Button>
-              </div>
-            )}
-          </section>
+        {/* Shared settings open as dialogs rather than sitting inline, so the
+            same form can be reached from the page each group actually governs. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {sharedGroups.map((group) => {
+            const count = snapshot?.fields.filter((field) => field.group === group).length ?? 0;
+            const pending = dirtyKeys.filter((key) =>
+              snapshot?.fields.some((field) => field.key === key && field.group === group),
+            ).length;
+            return (
+              <Button
+                key={group}
+                size="sm"
+                variant="secondary"
+                onClick={() => setOpenGroup(group)}
+                title={GROUP_BLURB[group]}
+              >
+                {GROUP_TITLE[group] ?? group}
+                <span className="ml-1.5 text-fg-dim">{pending > 0 ? `${pending} unsaved` : count}</span>
+              </Button>
+            );
+          })}
+        </div>
+
+        {openGroup !== null && (
+          <SettingsGroupDialog
+            group={openGroup}
+            onClose={() => setOpenGroup(null)}
+            onSaved={() => void reload()}
+          />
         )}
 
-        {taskControlFields.length > 0 && (
-          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
-              {taskControlCapability !== null && (
-                <Badge tone={CAPABILITY_BADGE[taskControlCapability.setup].tone}>
-                  {CAPABILITY_BADGE[taskControlCapability.setup].label}
-                </Badge>
-              )}
-            </div>
-            <p className="mt-1 text-[11px] text-fg-dim">
-              {taskControlCapability?.reason ?? "Personal task controls stay local until the live Telegram transport is enabled and a phone is paired."}
-            </p>
-            {taskControlFields.map((field) => (
-              <SettingRow
-                key={field.key}
-                field={field}
-                draft={drafts[field.key]}
-                disabled={saving}
-                onChange={(key, value) => {
-                  setNotice(null);
-                  setDrafts((current) => ({ ...current, [key]: value }));
-                }}
-                onRevert={(key) => {
-                  setNotice(null);
-                  void reset([key]);
-                  setDrafts((current) => {
-                    const next = { ...current };
-                    delete next[key];
-                    return next;
-                  });
-                }}
-              />
-            ))}
-            {taskControlDirty.length > 0 && (
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setDrafts((current) => {
-                      const next = { ...current };
-                      for (const key of taskControlDirty) delete next[key];
-                      return next;
-                    });
-                  }}
-                  disabled={saving}
-                >
-                  Discard
-                </Button>
-                <Button
-                  size="sm"
-                  variant="success"
-                  onClick={() => void saveDrafts(taskControlDirty)}
-                  loading={saving}
-                >
-                  Save {taskControlDirty.length}
-                </Button>
-              </div>
-            )}
-            {taskControlTransport === "telegram" && (
-              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
-            )}
-            {taskControlTransport === "telegram" && teamEnabled && (
-              <>
-                <TeamStatusPanel />
-                <TeamCreatePanel />
-                <TeamJoinPanel />
-              </>
-            )}
-          </section>
-        )}
-
-        <ul className="grid gap-3 xl:grid-cols-2">
+        <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {agents.map((agent) => {
             const info = providers.find((provider) => provider.id === agent.provider);
             if (info === undefined) return null;
@@ -395,10 +298,15 @@ export function AgentsView() {
                 usage={credits.usage?.[agent.provider] ?? null}
                 warnings={credits.warnings?.[agent.provider] ?? []}
                 usageLoading={credits.loading && credits.usage === null}
-                settingsOpen={settingsOpen === agent.provider}
-                onToggleSettings={() =>
-                  setSettingsOpen((current) => (current === agent.provider ? null : agent.provider))
-                }
+                configureOpen={configuring === agent.provider}
+                onOpenConfigure={() => {
+                  // A stale "Saved 2 settings." from another card would read as
+                  // feedback for this one.
+                  setNotice(null);
+                  setConfiguring(agent.provider);
+                }}
+                onCloseConfigure={() => setConfiguring(null)}
+                notice={configuring === agent.provider ? notice : null}
                 fields={groupFields}
                 drafts={drafts}
                 fieldsDisabled={saving}
@@ -469,8 +377,10 @@ function AgentCard({
   usage,
   warnings,
   usageLoading,
-  settingsOpen,
-  onToggleSettings,
+  configureOpen,
+  onOpenConfigure,
+  onCloseConfigure,
+  notice,
   fields,
   drafts,
   fieldsDisabled,
@@ -494,8 +404,10 @@ function AgentCard({
   usage: ProviderUsage | null;
   warnings: QuotaWarning[];
   usageLoading: boolean;
-  settingsOpen: boolean;
-  onToggleSettings(): void;
+  configureOpen: boolean;
+  onOpenConfigure(): void;
+  onCloseConfigure(): void;
+  notice: string | null;
   fields: SettingField[];
   drafts: Record<string, SettingValue>;
   fieldsDisabled: boolean;
@@ -514,7 +426,7 @@ function AgentCard({
   return (
     <li
       className={cn(
-        "relative flex flex-col overflow-hidden rounded-panel border bg-surface-1 p-4 transition-colors",
+        "relative flex flex-col overflow-hidden rounded-panel border bg-surface-1 p-3 transition-colors",
         busy ? "border-line-strong" : "border-line",
         (!enabled || agent.activity === "offline") && "opacity-70",
       )}
@@ -526,21 +438,20 @@ function AgentCard({
         />
       )}
 
-      <div className="flex items-start gap-3">
+      <div className="flex items-center gap-2.5">
         <AgentAvatar
           provider={agent.provider}
           activity={enabled ? agent.activity : "offline"}
-          size={44}
+          size={30}
           title={`${info.label}: ${ACTIVITY_LABEL[agent.activity]}`}
         />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("text-[13px] font-semibold", theme.text)}>{info.label}</span>
+          <div className="flex items-center gap-1.5">
+            <span className={cn("truncate text-[12px] font-semibold", theme.text)}>{info.label}</span>
             <Badge tone={ACTIVITY_TONE[enabled ? agent.activity : "offline"]} dot pulse={busy}>
               {enabled ? ACTIVITY_LABEL[agent.activity] : "Off"}
             </Badge>
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-fg-dim">{label ?? "provider default"}</div>
         </div>
         <Switch
           checked={enabled}
@@ -552,47 +463,37 @@ function AgentCard({
 
       <p
         className={cn(
-          "mt-3 min-h-[2.5rem] text-xs leading-relaxed",
+          "mt-2 line-clamp-2 text-[11px] leading-snug",
           !enabled || agent.activity === "offline" ? "text-fg-dim" : "text-fg-muted",
         )}
       >
-        <span className="line-clamp-2">
-          {!enabled ? "Turned off — hidden from the agent picker." : agent.caption}
-        </span>
+        {!enabled ? "Turned off — hidden from the agent picker." : agent.caption}
       </p>
-
-      <ModelRow
-        provider={info}
-        selected={model}
-        pinned={modelPinned}
-        onSelect={onPickModel}
-        onClear={onClearModel}
-      />
 
       {agent.run !== null && (
         <>
-          <dl className="mt-3 grid grid-cols-2 gap-2 border-t border-line pt-3 text-[11px]">
+          <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 border-t border-line pt-2 text-[11px]">
             <div>
-              <dt className="text-fg-dim">elapsed</dt>
+              <dt className="text-[10px] text-fg-dim">elapsed</dt>
               <dd className="numeric text-fg">{formatElapsed(agent.run.elapsedMs)}</dd>
             </div>
             <div>
-              <dt className="text-fg-dim">tokens</dt>
+              <dt className="text-[10px] text-fg-dim">tokens</dt>
               <dd className="numeric text-fg">
                 {agent.run.usage === null ? "—" : formatTokens(agent.run.usage.totalTokens)}
               </dd>
             </div>
             <div className="col-span-2 min-w-0">
-              <dt className="text-fg-dim">workspace</dt>
+              <dt className="text-[10px] text-fg-dim">workspace</dt>
               <dd className="truncate text-fg" title={agent.run.workspace.workDirectory}>
                 {agent.run.workspace.name}
               </dd>
             </div>
           </dl>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-2 flex gap-1.5">
             <Link
               href="/"
-              className="flex-1 rounded-md px-2 py-1.5 text-center text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
+              className="flex-1 rounded-md px-2 py-1 text-center text-[11px] text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
             >
               Transcript
             </Link>
@@ -604,7 +505,7 @@ function AgentCard({
       )}
 
       {agent.consultCount > 0 && (
-        <div className={cn("flex flex-col gap-1.5", agent.run !== null ? "mt-3" : "mt-2 border-t border-line pt-3")}>
+        <div className={cn("flex flex-col gap-1.5", agent.run !== null ? "mt-2" : "mt-2 border-t border-line pt-2")}>
           <div className="text-[10px] uppercase tracking-wider text-fg-dim">
             {agent.consultCount} asking
           </div>
@@ -624,61 +525,186 @@ function AgentCard({
 
       <UsageBlock usage={usage} warnings={warnings} loading={usageLoading} available={enabled && agent.available} />
 
-      <div className="mt-3 border-t border-line pt-3">
+      {/* mt-auto keeps the trigger on the baseline of every card in a row. */}
+      <div className="mt-auto pt-2">
         <button
           type="button"
-          onClick={onToggleSettings}
-          className="flex w-full items-center justify-between gap-2 text-left text-[11px] text-fg-muted transition-colors hover:text-fg"
+          onClick={onOpenConfigure}
+          aria-haspopup="dialog"
+          className="flex w-full items-center justify-between gap-2 rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[11px] text-fg-muted transition-colors hover:border-line-strong hover:bg-surface-3 hover:text-fg"
         >
-          <span className="uppercase tracking-wider text-fg-dim">Settings</span>
-          <span aria-hidden className="text-fg-dim">
-            {settingsOpen ? "▴" : "▾"}
+          <span className="flex items-center gap-1.5">
+            <GearIcon />
+            Model &amp; settings
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            {dirtyKeys.length > 0 && (
+              <span className="shrink-0 rounded bg-warning/15 px-1 text-[9px] uppercase tracking-wider text-warning">
+                {dirtyKeys.length} unsaved
+              </span>
+            )}
+            <span className="truncate text-fg-dim">{label ?? "default"}</span>
           </span>
         </button>
-        {settingsOpen && (
-          <div className="mt-2">
-            {fields.length === 0 ? (
-              <p className="py-2 text-[11px] text-fg-dim">Settings are still loading…</p>
-            ) : (
-              fields.map((field) => (
-                <SettingRow
-                  key={field.key}
-                  field={field}
-                  draft={drafts[field.key]}
-                  disabled={fieldsDisabled}
-                  onChange={onDraftChange}
-                  onRevert={onRevert}
-                />
-              ))
-            )}
-            {dirtyKeys.length > 0 && (
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <Button size="sm" variant="ghost" onClick={onDiscardSettings} disabled={fieldsDisabled}>
-                  Discard
-                </Button>
-                <Button size="sm" variant="success" onClick={onSaveSettings} loading={fieldsDisabled}>
-                  Save {dirtyKeys.length}
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
-      <footer className="mt-3 flex flex-wrap gap-x-3 gap-y-1 border-t border-line pt-3 text-[10px] text-fg-dim">
-        <span title="version">{info.version ?? "version unknown"}</span>
-        <span title="binary" className="truncate">
-          {info.binary ?? info.transport}
+      <ConfigureDialog
+        open={configureOpen}
+        onClose={onCloseConfigure}
+        info={info}
+        notice={notice}
+        model={model}
+        modelPinned={modelPinned}
+        onPickModel={onPickModel}
+        onClearModel={onClearModel}
+        fields={fields}
+        drafts={drafts}
+        fieldsDisabled={fieldsDisabled}
+        dirtyKeys={dirtyKeys}
+        onDraftChange={onDraftChange}
+        onRevert={onRevert}
+        onSaveSettings={onSaveSettings}
+        onDiscardSettings={onDiscardSettings}
+      />
+
+      <footer className="mt-2 flex items-baseline gap-2 border-t border-line pt-2 text-[10px] text-fg-dim">
+        <span title={info.binary ?? info.transport} className="shrink-0">
+          {info.version ?? "version unknown"}
         </span>
-        <span title="permission mode">{info.permissionMode}</span>
+        <span title="permission mode" className="min-w-0 flex-1 truncate text-right">
+          {info.permissionMode}
+        </span>
       </footer>
     </li>
   );
 }
 
+function GearIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0">
+      <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M8 1.4v1.6M8 13v1.6M1.4 8h1.6M13 8h1.6M3.3 3.3l1.2 1.2M11.5 11.5l1.2 1.2M12.7 3.3l-1.2 1.2M4.5 11.5l-1.2 1.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * One provider's model choice and its own settings, in a dialog.
+ *
+ * Both used to expand inside the card, which pushed every other card down the
+ * grid to read one agent's configuration. A dialog keeps the board still and
+ * gives the setting rows the width they were designed for.
+ */
+function ConfigureDialog({
+  open,
+  onClose,
+  info,
+  notice,
+  model,
+  modelPinned,
+  onPickModel,
+  onClearModel,
+  fields,
+  drafts,
+  fieldsDisabled,
+  dirtyKeys,
+  onDraftChange,
+  onRevert,
+  onSaveSettings,
+  onDiscardSettings,
+}: {
+  open: boolean;
+  onClose(): void;
+  info: ProviderInfo;
+  notice: string | null;
+  model: string | null;
+  modelPinned: boolean;
+  onPickModel(model: string | null): void;
+  onClearModel(): void;
+  fields: SettingField[];
+  drafts: Record<string, SettingValue>;
+  fieldsDisabled: boolean;
+  dirtyKeys: string[];
+  onDraftChange(key: string, value: SettingValue): void;
+  onRevert(key: string): void;
+  onSaveSettings(): void;
+  onDiscardSettings(): void;
+}) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="lg"
+      title={info.label}
+      description="The model this agent runs with next, and the provider's own settings. Model choice applies immediately; settings need saving."
+      footer={
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="min-w-0 truncate text-[11px] text-fg-dim">
+            {dirtyKeys.length > 0
+              ? `${dirtyKeys.length} unsaved change${dirtyKeys.length === 1 ? "" : "s"}`
+              : (notice ?? "")}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            {dirtyKeys.length > 0 && (
+              <Button size="sm" variant="ghost" onClick={onDiscardSettings} disabled={fieldsDisabled}>
+                Discard
+              </Button>
+            )}
+            {dirtyKeys.length > 0 ? (
+              <Button size="sm" variant="success" onClick={onSaveSettings} loading={fieldsDisabled}>
+                Save {dirtyKeys.length}
+              </Button>
+            ) : (
+              <Button size="sm" onClick={onClose}>
+                Done
+              </Button>
+            )}
+          </span>
+        </div>
+      }
+    >
+      <section>
+        <h3 className="text-[10px] uppercase tracking-wider text-fg-dim">Model</h3>
+        <div className="mt-2">
+          <ModelRow
+            provider={info}
+            selected={model}
+            pinned={modelPinned}
+            onSelect={onPickModel}
+            onClear={onClearModel}
+          />
+        </div>
+      </section>
+
+      <section className="mt-4 border-t border-line pt-4">
+        <h3 className="text-[10px] uppercase tracking-wider text-fg-dim">Settings</h3>
+        {fields.length === 0 ? (
+          <p className="py-2 text-[11px] text-fg-dim">Settings are still loading…</p>
+        ) : (
+          fields.map((field) => (
+            <SettingRow
+              key={field.key}
+              field={field}
+              draft={drafts[field.key]}
+              disabled={fieldsDisabled}
+              onChange={onDraftChange}
+              onRevert={onRevert}
+            />
+          ))
+        )}
+      </section>
+    </Modal>
+  );
+}
+
 /**
  * Compact model picker for a single provider card — same catalog and pin
- * semantics as AgentPicker, laid out as an always-visible row.
+ * semantics as AgentPicker.
  */
 function ModelRow({
   provider,
@@ -698,8 +724,7 @@ function ModelRow({
   const options = MODEL_CATALOG[provider.id];
 
   return (
-    <div className="mt-3 border-t border-line pt-3">
-      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-fg-dim">Model</div>
+    <div>
       <div className="flex flex-wrap gap-1">
         {options.map((option) => {
           const isSelected = option.id === selected;

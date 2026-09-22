@@ -82,8 +82,11 @@ async function submit(promptId: number, input: Record<string, unknown>, resume: 
         const suiteRun = run.currentSuiteRunId === null ? null : workspaces.pipelineById(run.currentSuiteRunId);
         return { ...saved, started: true, runId: suiteRun?.currentRunId ?? null };
       }
-      const run = await pipelineScheduler.play(prompt.suiteId);
-      return { ...saved, started: true, runId: run.currentRunId };
+      // Suite-level play is gone; resuming after a human answer is the
+      // scheduler's own `onPromptResponded`, which restarts the parked station.
+      await pipelineScheduler.onPromptResponded(promptId);
+      const resumed = workspaces.activePipeline(prompt.suiteId);
+      return { ...saved, started: true, runId: resumed?.currentRunId ?? null };
     }
     const run = await startExecute({ workspaceId: workspace.id, promptId, provider: input.provider as ProviderId, model: (input.model as string | null | undefined) ?? null });
     return { ...saved, started: true, runId: run.runId };

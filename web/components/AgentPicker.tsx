@@ -14,7 +14,7 @@ import { useProviderUsage } from "@/lib/providerUsage";
 import { providerTheme } from "@/lib/providerTheme";
 
 /**
- * One control for "which agent, which model". Replaces the four static split
+ * One control for "which agent, which model". Replaces the static split
  * pills: the trigger shows the active choice, and the popover carries status,
  * usage and the model list for every provider.
  */
@@ -283,6 +283,14 @@ function ProviderRow({
                 )}
                 title={provider.available ? "available" : (provider.reason ?? "unavailable")}
               />
+              {provider.cooling !== null && (
+                <span
+                  className="rounded-full bg-caution/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-caution"
+                  title={provider.cooling.because}
+                >
+                  cooling
+                </span>
+              )}
               <span className="truncate text-[11px] text-fg-dim">{state.caption}</span>
             </span>
             {used !== null && (

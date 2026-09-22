@@ -1,17 +1,71 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { TextArea } from "@/components/ui/Field";
 import Link from "next/link";
-import type { OperationsPrompt, OperationsSuite, StartUnknownClassification } from "@agent-console/shared";
+import type { CompletionAuditRecord, OperationsPrompt, OperationsSuite, StartUnknownClassification, StatusDefinition } from "@agent-console/shared";
 import { LogPanel } from "@/components/LogPanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { TeamThreadPanel } from "@/components/tasks/TeamThreadPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
+import { DefinitionOfDonePanel } from "@/components/pipeline/DefinitionOfDonePanel";
+import { WhyThisStatus } from "./WhyThisStatus";
 
 type DetailTab = "overview" | "sessions" | "activity";
+
+const VERDICT_TONE = {
+  COMPLETE: { border: "border-success/30", bg: "bg-success/5", text: "text-success" },
+  INCOMPLETE: { border: "border-warning/30", bg: "bg-warning/5", text: "text-warning" },
+  UNVERIFIABLE: { border: "border-caution/30", bg: "bg-caution/10", text: "text-caution" },
+} as const;
+
+/**
+ * The answer an operator comes back hours later to look for: did the agent that
+ * vanished without posting a status actually finish the work? Verdict first,
+ * then the checks it stands on — a verdict with no visible evidence behind it
+ * is exactly the thing this feature exists to stop trusting.
+ */
+function CompletionAuditCard({ audit }: { audit: CompletionAuditRecord }): React.ReactElement {
+  const tone = audit.verdict === null ? { border: "border-info/30", bg: "bg-info/5", text: "text-info" } : VERDICT_TONE[audit.verdict];
+  return (
+    <div className={cn("rounded-panel border p-4", tone.border, tone.bg)}>
+      <div className={cn("text-[10px] uppercase tracking-wider", tone.text)}>
+        Completion audit · {audit.verdict === null ? audit.state.toLowerCase() : audit.verdict.toLowerCase()}
+        {audit.applied && " · station closed"}
+      </div>
+      <div className="mt-1 text-xs text-fg-muted">
+        Read-only {audit.provider} check of the run that ended without posting a status
+        {audit.report === null ? "" : ` · ${audit.report.confidence.toLowerCase()} confidence`}
+      </div>
+      {audit.report !== null && audit.report.checks.length > 0 && (
+        <div className="mt-3 space-y-1 text-xs">
+          {audit.report.checks.slice(0, 8).map((check) => (
+            <div key={check.criterion} className="flex gap-2">
+              <span className={cn("shrink-0 font-mono", check.result === "PASSED" ? "text-success" : check.result === "FAILED" ? "text-danger" : "text-fg-dim")}>
+                {check.result === "PASSED" ? "✓" : check.result === "FAILED" ? "✗" : "?"}
+              </span>
+              <span className="text-fg-muted">
+                {check.criterion}
+                {check.evidence === "" ? "" : <span className="text-fg-dim"> — {check.evidence}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {audit.report !== null && audit.report.remainingWork.length > 0 && (
+        <div className="mt-3 text-xs">
+          <div className="mb-1 text-fg-dim">Still missing</div>
+          {audit.report.remainingWork.slice(0, 6).map((entry) => <div key={entry} className="text-fg-muted">• {entry}</div>)}
+        </div>
+      )}
+      {audit.error !== null && <div className="mt-2 text-xs text-warning">{audit.error}</div>}
+    </div>
+  );
+}
 
 type ActivityPayload = Awaited<ReturnType<typeof import("@/lib/workspacesApi").workspaceApi.activity>>;
 
@@ -23,7 +77,11 @@ export function activityRemarkLabel(entry: ActivityPayload["remarks"][number]): 
 export function WorkItemDetail({
   suite,
   item,
+  parent,
   activity,
+  statusCatalog,
+  triggerSentences,
+  response,
   busy,
   canStart,
   verifyingItem,
@@ -34,13 +92,23 @@ export function WorkItemDetail({
   onStop,
   onRecover,
   onClassifyStartUnknown,
+  onAudit,
   onRespond,
+  onResponseChange,
+  onComplete,
   onVerifyItem,
+  onSelectChild,
   onClose,
 }: {
   suite: OperationsSuite | null;
   item: OperationsPrompt | null;
+  /** Immediate parent when this row is a decompose sub-step. */
+  parent?: OperationsPrompt | null;
   activity: ActivityPayload | null;
+  /** Resolved catalog from the operations snapshot, so renames show here too. */
+  statusCatalog: readonly StatusDefinition[];
+  triggerSentences: Record<string, string>;
+  response: string;
   busy: boolean;
   canStart: boolean;
   verifyingItem: boolean;
@@ -51,8 +119,12 @@ export function WorkItemDetail({
   onStop(): void;
   onRecover(): void;
   onClassifyStartUnknown(classification: StartUnknownClassification, expectedStartIntentId: string): void;
+  onAudit(): void;
   onRespond(): void;
+  onResponseChange(value: string): void;
+  onComplete(): void;
   onVerifyItem(): void;
+  onSelectChild?(promptId: number): void;
   onClose?(): void;
 }) {
   const [tab, setTab] = useState<DetailTab>("overview");
@@ -108,6 +180,15 @@ export function WorkItemDetail({
       <header className="border-b border-line px-4 py-3">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
+            {parent != null && (
+              <button
+                type="button"
+                onClick={() => onSelectChild?.(parent.prompt.id)}
+                className="mb-1 truncate text-[10px] text-accent hover:underline"
+              >
+                ← {parent.prompt.externalKey ?? parent.prompt.title}
+              </button>
+            )}
             <Badge tone={TONE[item.operationalState]} dot pulse={item.operationalState === "WORKING"}>
               {LABEL[item.operationalState]}
             </Badge>
@@ -187,6 +268,57 @@ export function WorkItemDetail({
                 {item.latestHandoff.error !== null && <div className="mt-2 text-xs text-warning">{item.latestHandoff.error}</div>}
               </div>
             )}
+            {item.latestAudit !== null && <CompletionAuditCard audit={item.latestAudit} />}
+            {/* The answer to "why is it showing this", from the ledger rather
+                than reconstructed at render time. First thing in the overview
+                because it is the first thing an operator asks of a status they
+                do not trust. */}
+            <WhyThisStatus
+              item={item}
+              events={activity !== null && activity.item.prompt.id === item.prompt.id ? activity.events : []}
+              catalog={statusCatalog}
+              triggerSentences={triggerSentences}
+            />
+
+            {/* What this item has to satisfy before it closes, and where each
+                criterion currently stands. Directly under "why this status"
+                because when the answer up there is "a criterion did not pass",
+                this is the next thing the operator wants. */}
+            <DefinitionOfDonePanel scope="prompt" scopeId={item.prompt.id} promptId={item.prompt.id} />
+
+            {item.children.length > 0 && (
+              <section className="rounded-panel border border-line bg-surface-1 p-4">
+                <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
+                  Sub-steps · {item.children.length}
+                </div>
+                <ul className="space-y-1.5">
+                  {item.children.map((child) => (
+                    <li key={child.prompt.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectChild?.(child.prompt.id)}
+                        className="flex w-full items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">
+                          {child.prompt.externalKey !== null && (
+                            <span className="mr-2 text-[11px] font-semibold text-fg-muted">
+                              {child.prompt.externalKey}
+                            </span>
+                          )}
+                          {child.prompt.title}
+                        </span>
+                        <Badge tone={TONE[child.operationalState]}>{LABEL[child.operationalState]}</Badge>
+                        {child.childAttention !== null && (
+                          <Badge tone={TONE[child.childAttention]}>
+                            {LABEL[child.childAttention].toLowerCase()}
+                          </Badge>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             {item.prompt.recovery.kind === "start_unknown" && (
               <div
                 role="status"
@@ -209,6 +341,7 @@ export function WorkItemDetail({
                 )}
               </div>
             )}
+
             <div className="flex flex-wrap gap-2">
               {item.operationalState === "READY" && (
                 <Button size="sm" variant="success" disabled={!canStart || busy} onClick={onRun}>
@@ -216,9 +349,21 @@ export function WorkItemDetail({
                 </Button>
               )}
               {item.operationalState === "RECOVERY_NEEDED" && item.prompt.recovery.kind !== "start_unknown" && (
-                <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
-                  Recover and resume
-                </Button>
+                <>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={onRecover}>
+                    Recover and resume
+                  </Button>
+                  {/* Recovering re-runs the work. Ask first whether it needs re-running. */}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={onAudit}
+                    title="Send a read-only agent to check whether the work was already finished"
+                  >
+                    Audit what the run left
+                  </Button>
+                </>
               )}
               {item.operationalState === "RECOVERY_NEEDED" && item.prompt.recovery.kind === "start_unknown" && (
                 <Badge tone="warning">Recovery blocked</Badge>
@@ -256,6 +401,48 @@ export function WorkItemDetail({
                   Latest intervention
                 </div>
                 <div className="whitespace-pre-wrap text-sm leading-6">{item.latestIntervention}</div>
+              </div>
+            )}
+
+            {(item.operationalState === "BLOCKED" || item.prompt.recoverable) && (
+              <div className="rounded-panel border border-line bg-surface-1 p-4">
+                <TextArea
+                  label={item.operationalState === "BLOCKED" ? "Your response" : "Evidence"}
+                  rows={4}
+                  value={response}
+                  hint={
+                    item.operationalState === "BLOCKED"
+                      ? "Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
+                      : "Paste the agent's own summary here if the work is already finished, then mark it complete."
+                  }
+                  placeholder="What the agent needs to know to continue…"
+                  onChange={(event) => onResponseChange(event.target.value)}
+                />
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {item.operationalState === "BLOCKED" && (
+                    <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
+                      Respond and resume
+                    </Button>
+                  )}
+                  {/*
+                    For work that is finished but whose status never landed —
+                    an interrupted run, a rejected final Progress call. The box
+                    above becomes the recorded verification summary, so this is
+                    deliberately disabled until there is evidence to record.
+                  */}
+                  <Button
+                    variant="secondary"
+                    disabled={busy || response.trim() === ""}
+                    onClick={onComplete}
+                    title={
+                      response.trim() === ""
+                        ? "Paste the evidence that this work is finished before marking it complete"
+                        : "Record this as DONE without running the agent again. Your override is always honoured, including over an unmet definition of done — and is recorded as such."
+                    }
+                  >
+                    Mark complete
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -297,6 +484,10 @@ export function WorkItemDetail({
                     >
                       {run.state.toLowerCase()}
                     </Badge>
+                    <Badge tone="neutral">{run.role}</Badge>
+                    {sessionEndReason(run.state, run.events) !== null && (
+                      <Badge tone="neutral">{sessionEndReason(run.state, run.events)}</Badge>
+                    )}
                   </div>
                   <div className="mt-1 text-[10px] text-fg-dim">
                     {new Date(run.startedAt).toLocaleString()} · {run.events.length} events

@@ -1,9 +1,13 @@
 "use client";
 
 import type { ReactNode } from "react";
+import type { StatusTone } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 
-export type Tone = "neutral" | "accent" | "success" | "warning" | "caution" | "danger" | "info" | "violet";
+/* Owned by `shared` so the pipeline rule table can name a tone without the
+   server depending on this component. Aliased rather than re-declared: two
+   copies of this union would drift the moment either side gained a role. */
+export type Tone = StatusTone;
 
 /* Spelled out rather than interpolated, because Tailwind resolves class names
    at build time. Each entry is token-based, so it re-colours with the theme. */

@@ -9,6 +9,7 @@ const themes = [
 const foregrounds = [
   "fg", "fg-muted", "fg-dim", "accent", "success", "warning", "caution",
   "danger", "info", "violet", "agent-claude", "agent-codex", "agent-cursor", "agent-grok",
+  "agent-copilot",
 ];
 const surfaces = ["surface-0", "surface-1", "surface-2", "surface-3"];
 

@@ -28,7 +28,7 @@ const FILTER_STATE: Record<TaskFilter, PromptOperationalState> = {
   recovery: "RECOVERY_NEEDED",
   failed: "FAILED",
   ready: "READY",
-  done: "COMPLETE",
+  done: "DONE",
 };
 
 const FILTER_TITLE: Record<TaskFilter, string> = {

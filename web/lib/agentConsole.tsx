@@ -88,6 +88,8 @@ function sourceText(source: RunSource): string {
       return source.displayText;
     case "clarification":
       return `Clarifying ${source.promptKey ?? source.title}: ${source.question}`;
+    case "handoff":
+      return `Preparing handoff for ${source.promptKey ?? source.title}`;
     case "verification":
       return source.promptKey === null
         ? `Verifying suite ${source.suiteKey === null ? source.suiteName : `${source.suiteKey} — ${source.suiteName}`}`
@@ -96,8 +98,16 @@ function sourceText(source: RunSource): string {
       return `Selected saved prompt: ${source.promptKey === null ? "" : `${source.promptKey} — `}${source.title}\n${source.programName} / ${source.suiteName}`;
     case "consult":
       return `Consulting: ${source.question}`;
-    case "handoff":
-      return `Preparing handoff for ${source.promptKey ?? source.title}`;
+    case "audit":
+      return `Auditing whether ${source.promptKey ?? source.title} was actually finished`;
+    case "wrapup":
+      return `Wrapping up ${source.promptKey ?? source.title}: the run before this one was stopped by its budget (${source.stopReason}) and is recording what it verified and what remains`;
+    case "author":
+      return source.revision === true
+        ? `Proposing changes to ${source.programName ?? "a program"} (draft ${source.draftId}): ${source.goal}`
+        : `Drafting a program (draft ${source.draftId}): ${source.goal}`;
+    case "instructions":
+      return `Proposing changes to ${source.file} (proposal ${source.proposalId}): ${source.goal}`;
   }
 }
 

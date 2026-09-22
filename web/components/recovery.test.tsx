@@ -1,3 +1,4 @@
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES } from "@agent-console/shared";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -9,6 +10,8 @@ import { activityRemarkLabel, WorkItemDetail } from "./tasks/WorkItemDetail";
 function prompt(overrides: Partial<PromptOption> = {}): PromptOption {
   return {
     id: 1,
+    parentPromptId: null,
+    childOrder: 0,
     title: "Recover local task control",
     content: "do it",
     suiteId: 2,
@@ -42,6 +45,12 @@ function prompt(overrides: Partial<PromptOption> = {}): PromptOption {
 function operationsPrompt(item: PromptOption = prompt()): OperationsPrompt {
   return {
     prompt: item,
+    humanIntervention: null,
+    latestAudit: null,
+    continuation: null,
+    children: [],
+    childAttention: null,
+    childAttentionCount: 0,
     workspace: {
       id: 7,
       name: "Fixture",
@@ -61,10 +70,8 @@ function operationsPrompt(item: PromptOption = prompt()): OperationsPrompt {
       provider: null,
       model: null,
       onDone: "continue",
-      onBlocked: "wait",
-      retryLimit: 1,
-      recoverProvider: null,
-      recoverModel: null,
+      onUnfinished: "continue",
+      fallbackProviders: [],
       enabled: false,
       stepOrder: 0,
     },
@@ -88,7 +95,12 @@ function suite(item: OperationsPrompt): OperationsSuite {
       FAILED: 0,
       READY: 0,
       WAITING_DEPENDENCY: 0,
-      COMPLETE: 0,
+      DONE: 0,
+      BLOCKED: 0,
+      TODO: 0,
+      IN_PROGRESS: 0,
+      UNREPORTED: 0,
+      NEEDS_REVIEW: 0,
       SKIPPED: 0,
     },
     attentionCount: 1,
@@ -96,7 +108,7 @@ function suite(item: OperationsPrompt): OperationsSuite {
     sessions: [],
     latestVerification: null,
     pipeline: {
-      defaults: { suiteId: 2, defaultProvider: null, defaultModel: null },
+      defaults: { suiteId: 2, defaultProvider: null, defaultModel: null, defaultFallbackProviders: [] },
       active: null,
       latest: null,
     },
@@ -121,6 +133,8 @@ test("ContextPicker shows START_UNKNOWN guidance without blind recovery or relea
         description: "",
         workDirectory: "/tmp/agent-console-m4-fixture",
         workDirectoryExists: true,
+        claudeMd: "",
+        agentsMd: "",
         createdAt: "2026-09-13T09:00:00.000Z",
         updatedAt: "2026-09-13T09:00:00.000Z",
       }}
@@ -160,6 +174,12 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
       onRecover={() => {}}
       onClassifyStartUnknown={() => {}}
       onRespond={() => {}}
+      onResponseChange={() => {}}
+      onAudit={() => {}}
+      onComplete={() => {}}
+      response=""
+      statusCatalog={DEFAULT_STATUS_CATALOG}
+      triggerSentences={DEFAULT_TRIGGER_SENTENCES}
       onVerifyItem={() => {}}
     />,
   );

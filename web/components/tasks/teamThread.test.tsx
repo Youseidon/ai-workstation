@@ -34,7 +34,7 @@ test("B2: the Open Team thread control is enabled only with a roster and a task 
   assert.equal(noRoster.enabled, false);
   assert.match(noRoster.enabled === false ? noRoster.reason : "", /Create or join a Team/);
 
-  for (const state of ["WORKING", "READY", "RECOVERY_NEEDED", "FAILED", "WAITING_DEPENDENCY", "COMPLETE", "SKIPPED"] as const) {
+  for (const state of ["WORKING", "READY", "RECOVERY_NEEDED", "FAILED", "WAITING_DEPENDENCY", "DONE", "SKIPPED"] as const) {
     const blocked = teamThreadAvailability(team(), item(state));
     assert.equal(blocked.enabled, false, `${state} must not offer a Team thread`);
     assert.match(blocked.enabled === false ? blocked.reason : "", /awaiting a response/);

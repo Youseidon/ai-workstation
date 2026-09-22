@@ -62,7 +62,7 @@ async function startSuccessorFromHandoff(handoff:HandoffRecord,args:HandoffArgs)
   if(args.namedPipelineId!==undefined){
     // Station assignments outrank pipeline defaults. Save the explicit choice
     // on this station so the successor and subsequent retries use it.
-    if (!pipelineOverride) workspaces.upsertPipelineRule(args.promptId, { provider: successorProvider, model: successorModel });
+    if (!pipelineOverride) workspaces.upsertNamedPipelineRule(args.namedPipelineId, args.promptId, { provider: successorProvider, model: successorModel });
     const {pipelineScheduler}=await import("./pipelineScheduler.ts");const named=await pipelineScheduler.playNamed(args.namedPipelineId,{provider:successorProvider,model:successorModel});const suite=named.currentSuiteRunId===null?null:workspaces.pipelineById(named.currentSuiteRunId);workspaces.updateHandoff(handoff.id,{successorRunId:suite?.currentRunId??null});
     return{started:true,handoffId:handoff.id,runId:suite?.currentRunId??null,reusedReady:true};
   }

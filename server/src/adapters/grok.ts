@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -406,11 +407,21 @@ export class GrokAdapter extends SpawnAdapter {
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const consult = opts.permissionOverride !== "inherit";
+    // grok only names its session in the terminal `end`/`result` line, which is
+    // exactly the line a budget-stopped run never emits. `--session-id` lets us
+    // name it ourselves instead, so the id exists before the first tool call.
+    // Verified against grok 1.0.13 (`grok --help`): `-s, --session-id` sets the
+    // UUID of a *new* conversation, `-r, --resume` continues an existing one,
+    // and the two must not be combined without `--fork-session`.
+    const resumeSessionId = opts.resumeSessionId ?? null;
+    const sessionId = resumeSessionId ?? randomUUID();
     const args = [
       "--output-format", "streaming-json",
       "--cwd", opts.cwd,
       "--permission-mode", consult ? "plan" : effectiveGrokPermissionMode(),
       "--sandbox", consult ? "workspace" : effectiveGrokSandboxMode(),
+      // An optional-value flag, so the id has to be attached with `=`.
+      ...(resumeSessionId === null ? ["--session-id", sessionId] : [`--resume=${resumeSessionId}`]),
     ];
     const model = opts.model ?? settings.grok.model;
     if (model !== null) args.push("-m", model);
@@ -421,7 +432,7 @@ export class GrokAdapter extends SpawnAdapter {
     args.push("-p", prompt);
     const env: NodeJS.ProcessEnv = {};
     if (settings.grok.apiKey !== null) env.XAI_API_KEY = settings.grok.apiKey;
-    return { args, env: Object.keys(env).length > 0 ? env : undefined };
+    return { args, env: Object.keys(env).length > 0 ? env : undefined, sessionId };
   }
 
   protected createMapper(): StreamMapper {

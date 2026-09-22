@@ -407,6 +407,65 @@ function centsToDollars(value: unknown): number | null {
   return raw / 100;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Copilot — GET api.github.com/copilot_internal/user                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Copilot's entitlement is a monthly allowance of requests, not a token budget:
+ * `quota_snapshots` reports `percent_remaining` per quota id and the account
+ * shares one `quota_reset_date`. Premium interactions are the meter that runs
+ * out first on a paid plan; the token-billed `chat` quota is what a free plan
+ * has instead. Only the one that actually has a quota is reported — the other
+ * ids are omitted rather than shown as 0%.
+ */
+export function parseCopilotQuota(payload: unknown): {
+  plan: string | null;
+  windows: ProviderUsageWindow[];
+} {
+  const root = asRecord(payload) ?? {};
+  const snapshots = asRecord(root.quota_snapshots) ?? {};
+  const resetsAt = copilotResetIso(root.quota_reset_date);
+
+  const windows: ProviderUsageWindow[] = [];
+  const snapshot =
+    pickCopilotQuota(snapshots.premium_interactions) ?? pickCopilotQuota(snapshots.chat);
+  if (snapshot !== null) {
+    // A calendar month, not a rolling window: Copilot resets everyone on the 1st.
+    const next = windowOf("monthly", snapshot.usedPercent, resetsAt, null);
+    if (next) windows.push(next);
+  }
+
+  return { plan: copilotPlanName(root), windows };
+}
+
+/** Null when the account has no allowance of this kind (unlimited, or not sold). */
+function pickCopilotQuota(value: unknown): { usedPercent: number | null } | null {
+  const quota = asRecord(value);
+  if (quota === null) return null;
+  if (quota.unlimited === true) return null;
+  if (quota.has_quota === false) return null;
+  const remaining = usedPercent(quota.percent_remaining);
+  if (remaining === null) return null;
+  return { usedPercent: clampPercent(100 - remaining) };
+}
+
+/** `quota_reset_date` is a bare calendar day (e.g. "2026-10-01"), UTC midnight. */
+function copilotResetIso(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return isoFromUnknown(value);
+  }
+  return isoFromUnknown(`${value.trim()}T00:00:00Z`);
+}
+
+function copilotPlanName(root: Record<string, unknown>): string | null {
+  const plan = typeof root.copilot_plan === "string" ? root.copilot_plan : null;
+  const sku = typeof root.access_type_sku === "string" ? root.access_type_sku : null;
+  // "free_limited_copilot" is the only distinction the plan name itself hides.
+  if (plan !== null && sku !== null && sku.includes("free")) return `${plan} · free`;
+  return plan ?? sku;
+}
+
 export function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });

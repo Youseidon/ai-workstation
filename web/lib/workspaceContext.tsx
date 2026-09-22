@@ -59,11 +59,10 @@ function persistId(id: number | null) {
   }
 }
 
-/** Keep `?workspace=` in sync when the URL already carries one (deep links). */
+/** Keep the selected workspace in the URL so hard refreshes preserve it. */
 function syncUrlWorkspace(id: number | null) {
   try {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has("workspace")) return;
     if (id === null) url.searchParams.delete("workspace");
     else url.searchParams.set("workspace", String(id));
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
@@ -83,6 +82,8 @@ function pickId(list: WorkspaceRecord[], preferred: number | null): number | nul
  */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  // Keep the server render and the browser's first render identical. The
+  // initial refresh selects the URL/stored workspace after hydration.
   const [workspaceId, setWorkspaceIdState] = useState<number | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus>("loading");
   const [error, setError] = useState<string | null>(null);

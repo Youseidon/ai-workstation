@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES } from "@agent-console/shared";
 import type { OperationsPrompt, OperationsSnapshot, StartUnknownClassification } from "@agent-console/shared";
 import { PageChrome } from "@/components/shell/chrome";
 import { VerificationPanel } from "@/components/VerificationPanel";
@@ -12,7 +13,13 @@ import { SuiteHeader } from "@/components/tasks/SuiteHeader";
 import { SuiteRail } from "@/components/tasks/SuiteRail";
 import { HumanInputDialog } from "@/components/HumanInputDialog";
 import { WorkItemDetail } from "@/components/tasks/WorkItemDetail";
-import { WorkItemList, type TasksFilter } from "@/components/tasks/WorkItemList";
+import { WorkItemList } from "@/components/tasks/WorkItemList";
+import {
+  findOperationsPromptInSuite,
+  findParentPrompt,
+  suiteContainsPrompt,
+  type TasksFilter,
+} from "@/components/tasks/tree";
 import { cn } from "@/lib/cn";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole } from "@/lib/agentConsole";
@@ -49,6 +56,7 @@ export function TasksView() {
   );
   const [busy, setBusy] = useState(false);
   const [auditing, setAuditing] = useState(false);
+  const [response, setResponse] = useState("");
   const [inputItem, setInputItem] = useState<OperationsPrompt | null>(null);
   const [pane, setPane] = useState<Pane>("list");
   const [focusRecordId, setFocusRecordId] = useState<number | null>(null);
@@ -179,26 +187,16 @@ export function TasksView() {
   // A deep-linked prompt implies its suite, even before the user picks one.
   const suite =
     suites.find((item) => item.id === suiteId) ??
-    (promptId === null
-      ? undefined
-      : suites.find((item) => item.prompts.some((p) => p.prompt.id === promptId))) ??
+    (promptId === null ? undefined : suites.find((item) => suiteContainsPrompt(item, promptId))) ??
     suites[0] ??
     null;
 
-  const prompts = useMemo(
-    () =>
-      suite?.prompts.filter(
-        (item) =>
-          filter === "all" ||
-          (filter === "attention" && item.attention) ||
-          (filter === "working" && item.operationalState === "WORKING"),
-      ) ?? [],
-    [suite, filter],
-  );
-
-  // Fall back to the first row rather than storing a correction in state.
+  // Prefer the deep-linked / clicked id when it exists anywhere in the tree;
+  // otherwise fall back to the first station root.
   const activePromptId =
-    prompts.some((item) => item.prompt.id === promptId) ? promptId : prompts[0]?.prompt.id ?? null;
+    suite !== null && promptId !== null && findOperationsPromptInSuite(suite, promptId) !== null
+      ? promptId
+      : (suite?.prompts[0]?.prompt.id ?? null);
 
   const providerInfo = console_.providers.find((item) => item.id === provider) ?? null;
   const models = useModelSelection(console_.providers);
@@ -240,7 +238,14 @@ export function TasksView() {
   // actually selected — the fetch is async and the selection can move under it.
   const item =
     activity !== null && activity.item.prompt.id === activePromptId ? activity.item : null;
-  const listItem = prompts.find((entry) => entry.prompt.id === activePromptId) ?? item;
+  const listItem =
+    (suite !== null && activePromptId !== null
+      ? findOperationsPromptInSuite(suite, activePromptId)
+      : null) ?? item;
+  const parentItem =
+    suite !== null && listItem !== null
+      ? findParentPrompt(suite.prompts, listItem.prompt.id)
+      : null;
   const canStart =
     console_.connection === "open" &&
     listItem !== null &&
@@ -283,6 +288,39 @@ export function TasksView() {
     if (!ok) toast.error("Could not start", "The agent connection is unavailable.");
   };
 
+  /**
+   * Records a parked station as DONE with the evidence in the response box,
+   * without spending an agent run to re-report work that is already finished.
+   */
+  const markComplete = (target: OperationsPrompt | null = listItem) =>
+    void act(async () => {
+      if (target === null) return;
+      await workspaceApi.completePrompt(SERVER_URL, target.prompt.id, response.trim());
+      setResponse("");
+    }, "Marked complete");
+
+  const respond = () =>
+    void act(async () => {
+      if (listItem === null) return;
+      await workspaceApi.respond(
+        SERVER_URL,
+        listItem.prompt.id,
+        response.trim() ||
+          "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.",
+      );
+      setResponse("");
+      if (
+        !console_.startRun(
+          listItem.workspace.id,
+          provider,
+          { promptId: listItem.prompt.id },
+          selectedModel,
+        )
+      ) {
+        throw new Error("Response saved, but the agent connection was unavailable. Run it from Chat.");
+      }
+    }, "Response sent");
+
   const recoverAndResume = (target: OperationsPrompt | null = listItem) =>
     void act(async () => {
       if (target === null) return;
@@ -319,6 +357,16 @@ export function TasksView() {
       });
     }, "Start classified");
   };
+  /**
+   * Ask a different, read-only agent whether the work is already done. Only
+   * offered on a station whose run vanished without posting a status — the
+   * server refuses it for a station that asked a human a question.
+   */
+  const auditCompletion = (target: OperationsPrompt | null = listItem) =>
+    void act(async () => {
+      if (target === null) return;
+      await workspaceApi.startAudit(SERVER_URL, target.prompt.id);
+    }, "Audit started");
 
   const stopAgent = async (target: OperationsPrompt | null = listItem) => {
     if (target?.prompt.currentRun == null) return;
@@ -432,7 +480,15 @@ export function TasksView() {
   const detailProps = {
     suite,
     item: listItem,
+    onResponseChange: setResponse,
+    parent: parentItem,
     activity,
+    // From the snapshot, not the shipped defaults, so a status the operator has
+    // renamed reads the same here as it does on the board. The defaults stand
+    // in only for the moment before the first snapshot arrives.
+    statusCatalog: snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG,
+    triggerSentences: snapshot?.triggerSentences ?? DEFAULT_TRIGGER_SENTENCES,
+    response,
     busy,
     canStart,
     verifyingItem: liveVerification !== null,
@@ -446,8 +502,12 @@ export function TasksView() {
       if (listItem === null || listItem.prompt.recovery.startIntentId !== expectedStartIntentId) return;
       void classifyStartUnknown(classification);
     },
-    onRespond: () => setInputItem(listItem),
+    onAudit: () => auditCompletion(),
+    onRespond: respond,
+    onComplete: () => markComplete(),
+
     onVerifyItem: () => void verifyWorkItem(),
+    onSelectChild: selectPrompt,
   } as const;
 
   return (
@@ -511,7 +571,7 @@ export function TasksView() {
             {suite === null ? (
               <p className="text-sm text-fg-dim">Select a suite to see its work items.</p>
             ) : (
-              <div className="mx-auto max-w-4xl space-y-4">
+              <div className="w-full space-y-4">
                 <SuiteHeader
                   suite={suite}
                   providerLabel={providerInfo?.label ?? provider}
@@ -538,7 +598,6 @@ export function TasksView() {
 
                 <WorkItemList
                   suite={suite}
-                  prompts={prompts}
                   filter={filter}
                   activePromptId={activePromptId}
                   busy={busy}
@@ -549,7 +608,7 @@ export function TasksView() {
                   onRun={(entry) => start(entry)}
                   onStop={(entry) => void stopAgent(entry)}
                   onRecover={(entry) => recoverAndResume(entry)}
-                  onRespond={(entry) => {
+              onRespond={(entry) => {
                     selectPrompt(entry.prompt.id);
                   }}
                 />

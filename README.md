@@ -1,14 +1,14 @@
 # Multi-Agent Live Console
 
-A self-hosted web console that gives four local CLI coding agents — **Claude Code**,
-**Codex CLI**, **Cursor CLI**, and **Grok CLI** — one shared browser UI. Type a prompt, pick a
+A self-hosted web console that gives five local CLI coding agents — **Claude Code**,
+**Codex CLI**, **Cursor CLI**, **Grok CLI**, and **GitHub Copilot** — one shared browser UI. Type a prompt, pick a
 provider, and watch that agent work in real time: streamed assistant text,
 collapsible tool calls and results, a server-side elapsed clock, and live token
 counts, all rendered as a scrolling terminal-style log.
 
 ```
 ┌─ agent console ──────────────────────────────────────────────────────────┐
-│  ● Claude Code   ● Codex CLI   ○ Cursor CLI   ● Grok CLI       clear log │
+│  ● Claude Code  ● Codex CLI  ○ Cursor CLI  ● Grok CLI  ● Copilot  clear │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 11:44:02  CODEX   ❯ create hello.txt containing "it works"               │
 │ 11:44:06  CODEX   I'll write the file and verify it.                     │
@@ -34,13 +34,13 @@ See the [Telegram task control and teammate takeover design](docs/telegram-task-
 ```bash
 npm install
 cp .env.example .env
-npm run dev               # starts the WebSocket backend and the Next.js frontend
+npm run serve             # builds, then runs the backend and frontend without watch
 ```
 
 Open <http://localhost:3000>. The backend listens on <http://127.0.0.1:4000>
 (`/api/providers`, `/api/health`, and the WebSocket at `/ws`).
 
-Run them separately if you prefer: `npm run dev:server` and `npm run dev:web`.
+## Running a live pipeline
 
 ### Side-by-side Team pilot
 
@@ -77,6 +77,62 @@ workstation's `.env`, `.agent-console`, bot token or provider credentials.
 
 `npm run build` typechecks the server and builds the frontend; `npm run start`
 runs both without watch mode.
+**`npm run serve` is the only way to run a pipeline that is doing real work.**
+
+`npm run dev` runs the server under `tsx watch`. Saving a file restarts it,
+which kills every agent in flight and applies any new migration to the database
+immediately — 22 of the first 34 pipeline runs on this console died exactly that
+way, mid-edit, and none of them resumed on their own. `serve` builds once and
+watches nothing, so editing code cannot touch a running suite.
+
+```bash
+npm run serve             # live: server on :4000, web on :3000, no file watching
+npm run dev:sandbox       # development: a copy of the database on :4100 / :3100
+```
+
+`dev:sandbox` copies `~/.local/state/agent-console/console.sqlite` (and its WAL)
+to `/tmp/agent-console-sandbox/`, then starts the watch server against the copy
+on its own ports. Pass `--keep` to reuse the existing copy instead of taking a
+fresh one (`npm run dev:sandbox -- --keep`). The live database is never opened.
+
+Plain `npm run dev` refuses to start when it would open the live database at its
+default path. Point `AGENT_CONSOLE_DB` somewhere disposable, use `dev:sandbox`,
+or set `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` if you mean it. If a `serve` process
+already holds the lock, the message says so and points at `dev:sandbox`.
+
+### Pipeline behaviour
+
+When a station's run ends, the scheduler has exactly three answers:
+
+| The run ended… | Decision | What the rail does |
+|---|---|---|
+| Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
+| Agent posted **BLOCKED** with a concrete external action only a human can take | **park** `human_question` | the only human stop — answer it, then Resume |
+| Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
+| Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
+
+There is no automatic handoff, remediation, or retry/recover chain. Resume on a
+parked station writes a USER ledger row and grants a fresh unfinished-continuation
+allowance. Station rules expose `onDone` (`continue` / `stop` / `skip_rest`) and
+`onUnfinished` (`continue` / `skip` / `wait`).
+
+A pipeline that *is* interrupted — the machine rebooted, the console was
+restarted or killed — comes back by itself: about ten seconds after boot, every
+run marked `INTERRUPTED` by a restart in the last 24 hours is resumed on the
+station it was holding, on the same working tree. Nothing is marked done or
+failed; the station is simply re-queued, and the ledger records `restart_resume`
+as the cause. A run **you** stopped with the Stop control stays stopped. This is
+the `pipeline.onRestart` setting; set it to `newRun` or `resumeSameRun` to go
+back to waiting for a button.
+
+Only a `serve` process resumes anything. A sandbox copies the database, not the
+world — its workspace rows still name your real project directories — so a
+development server that resumed the live console's pipeline would launch a real
+agent into a real repository. It logs what it is leaving alone instead.
+
+Run the two halves separately if you prefer: `npm run dev:server` /
+`npm run dev:web`, or `npm run serve:server` / `npm run serve:web`.
+`npm run build` typechecks the server and builds the frontend.
 
 ### Requirements
 
@@ -95,6 +151,7 @@ runs both without watch mode.
 | Codex CLI | `codex exec --json` (spawned) | `codex` on `PATH` + `OPENAI_API_KEY` or `codex login` | yes |
 | Cursor CLI | `cursor-agent -p --output-format …` (spawned) | `cursor-agent` on `PATH` + `cursor-agent login` | not reliably — the stat is hidden rather than faked |
 | Grok CLI | `grok -p --output-format streaming-json` (spawned) | `grok` on `PATH` + `XAI_API_KEY` or `grok login` | yes |
+| GitHub Copilot | `copilot -p --output-format json` (spawned) | `copilot` on `PATH` + `copilot login`, `COPILOT_GITHUB_TOKEN`, or a Copilot-enabled `gh` login | yes |
 
 ### How detection works
 
@@ -119,6 +176,15 @@ per provider. Nothing is hardcoded to an install path.
   satisfied by `XAI_API_KEY` or by `auth.json` under `$GROK_HOME` (default
   `~/.grok`). If that heuristic is wrong for your install, set
   `GROK_ASSUME_AUTHENTICATED=true`.
+- **Copilot** — same `$PATH` lookup for `COPILOT_BIN` (default `copilot`). Auth
+  is resolved in the CLI's own order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
+  `GITHUB_TOKEN`, a plaintext credential file under `$COPILOT_HOME` (default
+  `~/.copilot`), then `gh auth token`. A `copilot login` normally stores its
+  token in the **OS credential store**, which this server cannot read — if you
+  logged in that way and nothing else applies, set
+  `COPILOT_ASSUME_AUTHENTICATED=true`. Plan usage (the monthly premium-request
+  or chat allowance and its reset date) comes from GitHub's own
+  `copilot_internal/user` endpoint using that token.
 
 Unavailable providers cannot be selected; hovering the button shows why
 (`codex not found on PATH`, `ANTHROPIC_API_KEY not set…`). The ↻ button re-runs
@@ -139,6 +205,10 @@ provider's model list. Two other ways to get there:
 
 The catalog lives in `shared/src/index.ts` (`MODEL_CATALOG`) — the codex slugs
 come from that CLI's own model cache and the grok ones from `grok models`.
+Copilot is the exception: its model list is per-account, and `--model` rejects
+any id the plan's picker does not expose (a free plan exposes none, only
+`auto`), so only `default` and `auto` are listed and everything else goes
+through the custom-model field.
 
 **Precedence** for a run is: model picked in the header → the provider's `Model`
 setting → the provider's own default (nothing is passed). Picking a model in the
@@ -149,14 +219,19 @@ next to the timestamp and a transcript that mixes providers stays readable.
 
 ### ⚠️ CLI flags drift
 
-Codex's, Cursor's, and Grok's headless/JSON flags change between releases. The flags here
-were verified against **codex-cli 0.150.1** and **grok 1.0.5**; the Cursor mapper was written
+Codex's, Cursor's, Grok's, and Copilot's headless/JSON flags change between releases. The
+flags here were verified against **codex-cli 0.153.0**, **cursor-agent 2026.09.02**,
+**grok 1.0.13**, and **GitHub Copilot CLI 1.0.82**; the Cursor mapper was written
 against the documented `stream-json` shape and is deliberately tolerant of
-unknown event types. **Check `codex --help`, `codex exec --help`,
-`cursor-agent --help`, and `grok --help` for your installed versions** before assuming a
-mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
-`CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` so you can adjust without editing code, and
-`CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
+unknown event types.
+
+The **session-resume** flags each adapter uses for a wrap-up turn drift the same way, and
+`codex exec resume` in particular takes a *different* option set from `codex exec` (no `-C`,
+no `-s`, no `--color`) — check `codex exec resume --help` too. **Check `codex --help`, `codex exec --help`,
+`cursor-agent --help`, `grok --help`, and `copilot --help` for your installed versions** before
+assuming a mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
+`CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` / `COPILOT_EXTRA_ARGS` so you can adjust without editing
+code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 
 ---
 
@@ -164,10 +239,11 @@ mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_AR
 
 Everything in `.env` that is safe to change while the server is running is also
 editable from the **Agents** page — per-provider default model, permission/sandbox
-mode, binary name, extra CLI arguments, API keys, and host access. (Day-to-day
-model switching happens in the header, not here; the `Model` field only supplies
-the fallback.) Changes are saved to `.agent-console/settings.json` (mode `0600`,
-gitignored) and survive restarts.
+mode, binary name, extra CLI arguments, API keys, host access, run budgets,
+pipeline policy, and transcript retention. (Day-to-day model switching happens in
+the header, not here; the `Model` field only supplies the fallback.) Changes are
+saved to `.agent-console/settings.json` (mode `0600`, gitignored) and survive
+restarts.
 
 - **Layering** — `.env` supplies the default for every field; saved overrides sit
   on top. A field edited back to its `.env` value drops the override entirely.
@@ -181,6 +257,9 @@ gitignored) and survive restarts.
 - **Dangerous values are called out** — selecting `bypassPermissions`,
   `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, or turning on
   **Host access** is flagged inline and asks for confirmation before saving.
+  `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, Copilot
+  `allow-all-paths` / `yolo`, or turning on
+  **Host access (Docker)** is flagged inline and asks for confirmation before saving.
 
 The Agents page is generated from the field table in `server/src/settings.ts`.
 Adding a new tunable is one entry there — label, group, type, `.env` variable,
@@ -197,11 +276,31 @@ contains programs, programs contain suites, and suites contain reusable
 prompts. The console lets you select a workspace and either type a custom
 prompt or choose one of those saved prompts.
 
-Data is stored in `.agent-console/console.sqlite`. The browser only uses the
+Data is stored in `$XDG_STATE_HOME/agent-console/console.sqlite` (falling back
+to `~/.local/state/agent-console/`), **deliberately outside the repository**. A
+workspace usually points at this repo, and that directory is an agent's cwd with
+write access — a database sitting inside it could be changed without going
+through the API, leaving a status with no recorded cause. An existing
+`.agent-console/console.sqlite` is copied to the new location on first start and
+left in place; `AGENT_CONSOLE_DB` overrides both. The server refuses to start if
+the resolved path is inside any workspace's directory. The browser only uses the
 REST API; it never reads or writes SQLite directly. There is no default
 workspace: create one on the Workspaces page, pointing it at an existing
 directory, before you can add programs, suites, or run an agent. Each run
 uses that workspace's directory as `cwd`.
+
+Transcript events (`agent_run_event`) are capped by the **Retention** settings
+(`RETENTION_EVENTS_PER_RUN`, `RETENTION_EVENT_AGE_DAYS`,
+`RETENTION_KEEP_FINAL_EVENTS`): a sweep runs a minute after boot and then every
+six hours, deleting oldest events first while always keeping the last N of each
+run. Runs, remarks, status events and commands are not touched. Deletes free
+pages inside the file; reclaiming them on disk needs an offline `VACUUM` when
+`auto_vacuum` is not incremental (the default):
+
+```bash
+# Stop every console process first — VACUUM needs the file to itself.
+sqlite3 ~/.local/state/agent-console/console.sqlite 'VACUUM;'
+```
 
 Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
 CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
@@ -215,10 +314,74 @@ inserts the previewed structure in one transaction. Both accept `rootPath` and
 SQLite, shared standing instructions are copied into the workspace description,
 and no source path, file hash, or continuing filesystem link is stored.
 
+### Letting an agent write the program
+
+A program can also be drafted by an agent rather than typed. On the Workspaces
+page, say what the program should achieve and pick a provider: the agent reads
+that workspace's working tree and proposes suites and the work items inside
+them, each one a session's worth of work with its own `## Verify` block.
+
+**Nothing it writes reaches the library.** An author run has no work item, so it
+cannot post a status, a remark or a decompose; the only thing it can write is a
+row in `program_draft`, which nothing reads until you apply it. You edit the
+draft in place — retitle, rewrite, delete, reorder, fix dependencies — and then
+press **Create program**, which is the single place a draft becomes rows in
+`program`, `suite` and `prompt`, in one transaction, through the same code path
+the disk importer uses. Tick *and a pipeline to run it* to stage every suite and
+work item at the same time.
+
+The agent posts through two commands, and a run that is stopped halfway leaves a
+partial draft the next run continues rather than nothing at all:
+
+```bash
+agent-step propose-program --file program.json   # the program and its suites
+agent-step propose-suite   --file suite.json     # one suite's work items
+```
+
+Keys are assigned by the server (`S1`, `S1-01`, …), never by the agent, so a
+model cannot collide with the unique indexes at the end of a long run. Re-posting
+a suite replaces that suite's work items, which is also how **Revise** works: tell
+the agent what to change and it edits the draft it can already see.
+
+The author run reads the tree but starts with ordinary write permissions —
+`agent-step` is a shell command talking to 127.0.0.1, and a read-only sandbox
+blocks that outright on Codex. So it holds the workspace's writer lock for its
+duration, exactly like an execute run, and "do not change the tree" is an
+instruction in its brief rather than a sandbox. The guarantee that matters is the
+other one: the draft table, and your approval.
+
+REST: `GET|POST /api/workspaces/:id/program-drafts`, and
+`GET|PATCH|DELETE /api/program-drafts/:id` with `/apply`, `/discard` and
+`/revise`.
+
 When a saved prompt runs, its body is not pasted into the composer or transcript.
-The server creates a persisted run and random bearer token, then gives the
-provider a short bootstrap instruction pointing to
-`GET /api/agent/runs/:runId/context`. That
+The server creates a persisted run and a random bearer token, writes a per-run
+`agent-step` launcher with that credential baked in (mode `0700`, removed when
+the run ends), and tells the agent to use it:
+
+```bash
+agent-step remark     --kind PROGRESS --text "What changed or was verified"
+agent-step done       --verification "The commands you ran and what you observed"
+agent-step repair-verify --file repair.json  # one observed-failing Verify line; audited and re-run
+agent-step continue   --remaining "What is left, as instructions for the next run on this tree"
+agent-step blocked    --reason "Observed evidence" --action "What only a human can do"
+```
+
+`repair.json` contains `oldCommand`, `newCommand`, and `reason`. The server only
+accepts the exact command it most recently observed failing, revisions the old
+work-item text, refuses unconditional-success replacements or replacements that
+drop the original targets/tools, and immediately runs the corrected criterion.
+Requests for a human to edit source, tests, config, or that Verify recipe are
+refused as recoverable work; the agent must repair it or post `continue`.
+
+The credential is per-run rather than per-process because the Claude adapter
+runs its SDK in-process, so environment variables would be shared by every
+concurrent run. The raw HTTP contract stays documented and working as a
+fallback. Every call an agent makes — accepted, refused or replayed — appears in
+the transcript as a flagged `⛁` line with the tables it touched, so a run that
+never reported is visibly different from one that reported and was refused.
+
+The underlying endpoint is still `GET /api/agent/runs/:runId/context`. That
 read-only endpoint composes workspace instructions, program and suite context,
 prompt content, dependency results, and gate information directly from SQLite.
 It returns Markdown by default and JSON for `Accept: application/json`, expires
@@ -251,10 +414,12 @@ changed at any time from the Agents page:
 | Provider | Env var | Default | What it means |
 |---|---|---|---|
 | **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker, local backend APIs, and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`. Needed for live Progress API calls from sandboxed CLIs and for `docker compose` — Codex's `workspace-write` sandbox cannot connect to host services such as `/var/run/docker.sock`, but saved-prompt execution can fall back to inline context and final status reporting. |
+| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`, Copilot `yolo`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
 | Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
 | Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
 | Cursor | `CURSOR_FORCE` | `true` | Cursor has no sandbox: `--force` means it will not stop to ask. Set `false` to keep approvals on (headless runs may then stall). |
 | Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to the selected workspace directory. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
+| Copilot | `COPILOT_PERMISSION_MODE` | `allow-all-tools` | A headless `copilot -p` run cannot show an approval prompt, so tool approval is always pre-granted (`--allow-all-tools`); this picks how far outside the workspace that reaches. File access stays inside the working directory (plus the system temp dir) by default. `plan` is read-only planning with the built-in write tools denied; `allow-all-paths` and `yolo` drop that containment. Copilot's own OS-level command sandbox is experimental and is not used — shell commands run with your user's access. |
 
 `CLAUDE_PERMISSION_MODE=default` and `GROK_PERMISSION_MODE=default` are a poor
 fit for a headless console: prompts have nowhere to go, so tool calls get denied
@@ -289,6 +454,7 @@ server/src/
     codex.ts             codex JSONL → normalized events
     cursor.ts            cursor JSON → normalized events
     grok.ts              grok streaming-json → normalized events
+    copilot.ts           copilot JSON envelopes → normalized events
     spawnAdapter.ts      shared spawn/JSONL/stderr/interrupt machinery
 web/
   lib/useAgentConsole.ts WebSocket client, reconnect, state reduction
@@ -316,7 +482,8 @@ assistant_text | tool_use | tool_result | status | result | error
 ```
 
 Provider-specific shapes (`SDKMessage`, codex `item.completed`, cursor
-`stream-json`, grok `streaming-json`) never leave the adapter. Adding another
+`stream-json`, grok `streaming-json`, copilot `assistant.*`/`tool.*` envelopes)
+never leave the adapter. Adding another
 provider is one new file in `server/src/adapters/` plus one line in
 `registry.ts` (and `"id"` on `PROVIDER_IDS` plus a chip colour) — the transport
 layer and the rest of the frontend stay untouched.
@@ -361,7 +528,8 @@ plus a boolean for whether each key is set.
 Note that keys saved through the Agents page are stored in
 `.agent-console/settings.json` in plain text (file mode `0600`). If you would
 rather not have them on disk in that form, leave those fields empty and use
-`.env` or your provider's own login (`claude`, `codex login`, `grok login`).
+`.env` or your provider's own login (`claude`, `codex login`, `grok login`,
+`copilot login`).
 
 ---
 
@@ -371,8 +539,8 @@ rather not have them on disk in that form, leave those fields empty and use
 trusted network without adding authentication.**
 
 It has no auth system by design, and anyone who can reach the port can run
-arbitrary code and file operations in any configured workspace through four
-different agents with four different permission models — including modes that
+arbitrary code and file operations in any configured workspace through five
+different agents with five different permission models — including modes that
 disable sandboxing entirely. The settings endpoints are unauthenticated too:
 reaching the port is enough to disable a sandbox or read whether an API key is
 configured. The server binds `127.0.0.1` by default and rejects WebSocket

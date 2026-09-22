@@ -107,7 +107,7 @@ export function ReportView() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6 p-5">
+      <div className="flex w-full flex-col gap-6 p-5">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
             <p className="text-xs text-fg-dim">

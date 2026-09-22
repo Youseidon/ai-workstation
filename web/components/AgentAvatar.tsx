@@ -6,7 +6,7 @@ import { providerTheme } from "@/lib/providerTheme";
 import type { AgentActivity } from "@/lib/agentState";
 
 /**
- * The core glyph for each agent — a distinct silhouette so the four are
+ * The core glyph for each agent — a distinct silhouette so they are
  * tellable apart at 20px, drawn on a 48×48 grid centred on (24, 24).
  *
  * Inline SVG rather than image assets: it inherits the agent's themed hue
@@ -38,6 +38,12 @@ const CORE: Record<ProviderId, React.ReactNode> = {
   grok: (
     <g stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
       <path d="M17 17l14 14M31 17L17 31" />
+    </g>
+  ),
+  // Goggles, for the copilot.
+  copilot: (
+    <g fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+      <path d="M14 22.5c3-1.5 6.7-1.5 10 0 3.3-1.5 7-1.5 10 0v4a5 5 0 0 1-5 5h-2.6a3 3 0 0 1-2.4-1.2L24 29l-2.4 3.3A3 3 0 0 1 19 33h-2a5 5 0 0 1-5-5z" transform="translate(1 -2)" />
     </g>
   ),
 };

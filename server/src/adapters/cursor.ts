@@ -50,13 +50,44 @@ interface CursorEvent {
   is_error?: boolean;
   error?: { message?: string } | string;
   usage?: Record<string, number> | null;
-  // Cursor also emits flat tool events in some versions.
-  tool_call?: { id?: string; name?: string; input?: unknown; output?: unknown };
+  // Current Cursor versions nest calls by tool kind (for example,
+  // `tool_call.readToolCall.args`). Older versions used this flat shape.
+  tool_call?: Record<string, unknown>;
   call_id?: string;
   name?: string;
   input?: unknown;
   output?: unknown;
   status?: string;
+}
+
+interface ParsedToolCall {
+  id?: string;
+  name?: string;
+  input?: unknown;
+  output?: unknown;
+  isError?: boolean;
+}
+
+export function cursorAgentArgs(input: {
+  prompt: string;
+  outputFormat: string;
+  force: boolean;
+  model: string | null;
+  extraArgs: string[];
+  /** Continue this chat instead of opening a new one. */
+  resumeSessionId?: string | null;
+}): string[] {
+  const args = ["-p", "--output-format", input.outputFormat];
+  // `--resume [chatId]` takes an *optional* value, so the id has to be attached
+  // with `=`; passed as a separate argv entry it is read as the prompt and a
+  // session picker opens instead. Verified against cursor-agent 2026.09.02.
+  if (typeof input.resumeSessionId === "string" && input.resumeSessionId !== "") {
+    args.push(`--resume=${input.resumeSessionId}`);
+  }
+  if (input.force) args.push("--force");
+  if (input.model !== null) args.push("--model", input.model);
+  args.push(...input.extraArgs, input.prompt);
+  return args;
 }
 
 function toUsage(raw: Record<string, number> | null | undefined): TokenUsage | null {
@@ -89,7 +120,7 @@ function stringifyContent(content: unknown): string {
   return JSON.stringify(content, null, 2);
 }
 
-class CursorMapper implements StreamMapper {
+export class CursorMapper implements StreamMapper {
   settled = false;
   private usage: TokenUsage | null = null;
   private lastText: string | null = null;
@@ -100,11 +131,15 @@ class CursorMapper implements StreamMapper {
     const event = value as CursorEvent;
     switch (event.type) {
       case "system":
+        // `session_id` is Cursor's chat id, and it arrives on the first line —
+        // which is what makes a wrap-up turn possible after a budget stop kills
+        // the process long before any result event.
         return [{
           type: "status",
           payload: {
             state: "running",
             detail: event.model ? `model ${event.model}` : (event.subtype ?? "session started"),
+            sessionId: event.session_id ?? null,
           },
         }];
       case "assistant":
@@ -112,6 +147,7 @@ class CursorMapper implements StreamMapper {
       case "user":
         return this.mapUser(event);
       case "tool_call":
+        return this.mapFlatToolCall(event, event.subtype === "completed" ? "result" : "start");
       case "tool_use":
         return this.mapFlatToolCall(event, "start");
       case "tool_result":
@@ -189,8 +225,9 @@ class CursorMapper implements StreamMapper {
     const blockId = `${event.message?.id ?? event.session_id ?? "cursor"}:${index}`;
     return {
       type: "assistant_text",
-      // Cursor sends whole blocks per event, so replace rather than append.
-      payload: { blockId, delta: false, text, kind },
+      // stream-json assistant events are incremental chunks. They share a
+      // session block id and must be concatenated to reconstruct the response.
+      payload: { blockId, delta: true, text, kind },
     };
   }
 
@@ -218,13 +255,13 @@ class CursorMapper implements StreamMapper {
   }
 
   private mapFlatToolCall(event: CursorEvent, phase: "start" | "result"): AdapterEvent[] {
-    const raw = event.tool_call ?? {
+    const raw = parseToolCall(event.tool_call) ?? {
       id: event.call_id,
       name: event.name,
       input: event.input,
       output: event.output,
     };
-    const toolUseId = raw.id ?? `cursor_tool_${this.blockCounter++}`;
+    const toolUseId = raw.id ?? event.call_id ?? `cursor_tool_${this.blockCounter++}`;
     const name = raw.name ?? "tool";
     if (phase === "start") {
       this.toolNames.set(toolUseId, name);
@@ -244,7 +281,7 @@ class CursorMapper implements StreamMapper {
       payload: {
         toolUseId,
         name: this.toolNames.get(toolUseId) ?? name,
-        isError: event.is_error === true || event.status === "failed",
+        isError: raw.isError === true || event.is_error === true || event.status === "failed",
         summary: oneLine(output || "completed"),
         output,
         exitCode: null,
@@ -255,6 +292,40 @@ class CursorMapper implements StreamMapper {
   finish(): AdapterEvent[] {
     return [];
   }
+}
+
+/** Normalize both Cursor's nested stream-json envelope and its legacy flat one. */
+function parseToolCall(value: Record<string, unknown> | undefined): ParsedToolCall | null {
+  if (!value) return null;
+
+  if ("name" in value || "input" in value || "output" in value || "id" in value) {
+    return {
+      id: typeof value.id === "string" ? value.id : undefined,
+      name: typeof value.name === "string" ? value.name : undefined,
+      input: value.input,
+      output: value.output,
+    };
+  }
+
+  for (const [kind, candidate] of Object.entries(value)) {
+    if (!isRecord(candidate)) continue;
+    const result = isRecord(candidate.result) ? candidate.result : null;
+    const failed = result !== null && ("error" in result || "failure" in result);
+    const output = result === null
+      ? undefined
+      : result.success ?? result.error ?? result.failure ?? result;
+    return {
+      name: kind.replace(/ToolCall$/, "") || kind,
+      input: candidate.args,
+      output,
+      isError: failed,
+    };
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export class CursorAdapter extends SpawnAdapter {
@@ -343,13 +414,19 @@ export class CursorAdapter extends SpawnAdapter {
   }
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
-    const args = ["-p", "--output-format", settings.cursor.outputFormat];
-    if (effectiveCursorForce()) args.push("--force");
     const model = opts.model ?? settings.cursor.model;
-    if (model !== null) args.push("-m", model);
-    args.push(...settings.cursor.extraArgs);
-    args.push(prompt);
-    return { args };
+    const resumeSessionId = opts.resumeSessionId ?? null;
+    return {
+      args: cursorAgentArgs({
+        prompt,
+        outputFormat: settings.cursor.outputFormat,
+        force: effectiveCursorForce(),
+        model,
+        extraArgs: settings.cursor.extraArgs,
+        resumeSessionId,
+      }),
+      ...(resumeSessionId === null ? {} : { sessionId: resumeSessionId }),
+    };
   }
 
   protected createMapper(): StreamMapper {

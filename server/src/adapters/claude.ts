@@ -186,6 +186,12 @@ export function claudeQueryOptions(opts: RunOptions, abortController: AbortContr
   if (opts.progressTools !== undefined) {
     options.mcpServers = { [CLAUDE_PROGRESS_SERVER_NAME]: claudeProgressMcpServer(opts.progressTools) };
   }
+  // Continue the same conversation rather than replaying its context: the
+  // wrap-up turn after a budget stop is only cheap because the session
+  // already holds everything the run learned.
+  if (typeof opts.resumeSessionId === "string" && opts.resumeSessionId !== "") {
+    options.resume = opts.resumeSessionId;
+  }
   const model = opts.model ?? settings.claude.model;
   if (model !== null) options.model = model;
   if (settings.claude.maxTurns !== null) options.maxTurns = settings.claude.maxTurns;
@@ -391,6 +397,10 @@ export class ClaudeAdapter implements AgentAdapter {
             payload: {
               state: "running",
               detail: `${message.model} · ${message.tools.length} tools · ${message.permissionMode}`,
+              // The SDK's own session id, banked on the init message: it is
+              // what `resume` takes, and a budget stop aborts the query long
+              // before any result message would carry it.
+              sessionId: message.session_id ?? null,
             },
           };
         }

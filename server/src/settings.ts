@@ -1,8 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
+import {
+  DEFAULT_PIPELINE_POLICY,
+  isDodEnforcement,
+  isOnDoneAction,
+  isOnUnfinishedAction,
+  isProviderId,
+  isRestartPolicy,
+  type PipelinePolicy,
+  type PauseMode,
+  type ProviderId,
+} from "@agent-console/shared";
 import type {
-  ProviderId,
   SettingField,
   SettingOption,
   SettingType,
@@ -43,9 +53,205 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Task Control", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI"] as const;
+export const GROUPS = ["General", "Task Control", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
 
 const FIELDS: FieldDef[] = [
+  {
+    key: "budget.maxToolResultBytes",
+    label: "Max tool result size (bytes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_RESULT_BYTES",
+    fallback: 8192,
+    description:
+      "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
+  },
+  {
+    key: "budget.maxToolCalls",
+    label: "Max tool calls per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_CALLS",
+    fallback: 1000,
+    description:
+      "A safety ceiling, not a working limit. When it is reached the run gets a wrap-up turn to record its progress, then continues in a fresh run. 0 disables.",
+  },
+  {
+    key: "budget.maxWallClockMinutes",
+    label: "Max wall clock per run (minutes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_WALL_CLOCK_MINUTES",
+    fallback: 90,
+    description: "Hard time limit for one run. Reaching it earns a wrap-up turn, not a lost run. 0 disables.",
+  },
+  {
+    key: "budget.maxInputTokens",
+    label: "Max input tokens per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_INPUT_TOKENS",
+    fallback: 8000000,
+    description:
+      "Cumulative input tokens, weighted by cost: cache reads count at their cache-read rate, not at full price. This is the number that turns into money — an agentic loop resends its whole transcript every turn, and almost all of that is cached. 0 disables.",
+  },
+  {
+    key: "budget.maxToolOutputBytes",
+    label: "Max total tool output per run (bytes)",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_OUTPUT_BYTES",
+    fallback: 8388608,
+    description: "Cumulative size of every tool result in one run. A ceiling on context flooding, not a working limit. 0 disables.",
+  },
+  {
+    key: "budget.noProgressToolCalls",
+    label: "No-progress tool calls",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_NO_PROGRESS_TOOL_CALLS",
+    fallback: 25,
+    description:
+      "Stops a run repeating the same tool call with the same input this many times in a row — the signature of a thrash loop. 0 disables.",
+  },
+  {
+    key: "pipeline.pauseMode",
+    label: "What Pause does",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_PAUSE_MODE",
+    fallback: "graceful",
+    description:
+      "Graceful lets the station's agent finish and applies its result, then holds before the next one. "
+      + "Immediate interrupts the agent straight away but keeps the run resumable, unlike Stop.",
+    options: [
+      option("graceful", "Let the current station finish", "The agent completes; its DONE or BLOCKED still applies"),
+      option("immediate", "Interrupt the agent now", "Stops the agent, but the run stays resumable"),
+    ],
+  },
+  {
+    key: "pipeline.stopInterruptsAgent",
+    label: "Stop interrupts the running agent",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_STOP_INTERRUPTS_AGENT",
+    fallback: true,
+    description:
+      "On, Stop kills the agent working right now and its station stays unfinished. Off, Stop only ends "
+      + "auto-advance and lets that agent finish what it started.",
+  },
+  {
+    key: "pipeline.onRestart",
+    label: "After a server restart",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_ON_RESTART",
+    fallback: "autoResume",
+    description:
+      "A run holding a station when the server restarts is marked interrupted. This decides what happens "
+      + "next. Only the first option relaunches anything by itself; under the other two nothing starts "
+      + "until you press the button.",
+    options: [
+      option(
+        "autoResume",
+        "Resume it automatically",
+        "Resume every interrupted pipeline by itself a few seconds after boot. The station whose agent "
+          + "died is re-run on the same working tree; nothing is marked done or failed.",
+      ),
+      option("newRun", "Offer a fresh run", "Starts again from the first unfinished station"),
+      option("resumeSameRun", "Offer to continue the same run", "Picks the interrupted run back up where it stopped"),
+    ],
+  },
+  {
+    key: "pipeline.maxContinuations",
+    label: "Max continuations per station",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_CONTINUATIONS",
+    fallback: 4,
+    description:
+      "How many unfinished endings (crash, unreported, verification failure) one station may take "
+      + "before a reviewer is sent and the rail parks. An agent's own continue does not spend this. "
+      + "An operator Resume grants a fresh allowance.",
+  },
+  {
+    key: "pipeline.reviewAfterContinuations",
+    label: "Review after continuations run out",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_REVIEW_AFTER_CONTINUATIONS",
+    fallback: true,
+    description:
+      "When a station uses up its unfinished-continuation allowance, send one read-only completion audit before parking. "
+      + "Off parks as continuations_exhausted immediately.",
+  },
+  {
+    key: "pipeline.defaultOnUnfinished",
+    label: "Default rule when a station does not finish",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_UNFINISHED",
+    fallback: "continue",
+    description:
+      "The 'on unfinished' rule a station starts with, before anyone configures it on the flowchart. "
+      + "Existing stations keep whatever they were given.",
+    options: [
+      option("continue", "Continue the station", "Re-run it; unfinished endings are capped, agent continues are not"),
+      option("wait", "Wait for a human", "The run parks immediately"),
+      option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
+    ],
+    isDangerous: (value) => value === "skip",
+  },
+  {
+    key: "pipeline.dodEnforcement",
+    label: "When a definition of done is not met",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DOD_ENFORCEMENT",
+    fallback: "block",
+    description:
+      "A work item's definition of done is a list of criteria — prose a reviewer judges, commands "
+      + "this server runs itself and checks the exit code of, and whether every sub-step is closed. "
+      + "This is the house default for what happens when a required criterion does not pass; a "
+      + "workspace, program, suite or single item can say something different. With no criteria "
+      + "written anywhere, there is nothing to fail and this setting does nothing.",
+    options: [
+      option("block", "Refuse to close the work item", "It lands in Needs review, with the failing criteria and the real command output recorded as its evidence"),
+      option("warn", "Close it anyway, but record what did not pass", "The item completes; the failing criteria are still visible on it", true),
+      option("off", "Do not check", "Nothing is evaluated and no evidence is recorded", true),
+    ],
+    isDangerous: (value) => value !== "block",
+  },
+  {
+    key: "pipeline.defaultOnDone",
+    label: "Default rule when a station finishes",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_DONE",
+    fallback: "continue",
+    description:
+      "The 'on done' rule a station starts with, before anyone configures it on the flowchart.",
+    options: [
+      option("continue", "Continue to the next station", "The usual rail behaviour"),
+      option("stop", "Stop the run", "Finishing this station ends the run"),
+      option("skip_rest", "Skip the rest of the stage", "Marks every later station SKIPPED", true),
+    ],
+    isDangerous: (value) => value === "skip_rest",
+  },
+  {
+    key: "pipeline.fallbackProviders",
+    label: "Default provider fallbacks",
+    group: "Pipeline policy",
+    type: "string",
+    envVar: "PIPELINE_FALLBACK_PROVIDERS",
+    fallback: "codex,claude,cursor",
+    placeholder: "codex,claude,cursor",
+    description:
+      "Ordered comma-separated providers to try when a station's own agent cannot start or dies "
+      + "before doing any work (capacity, quota, auth, network). A station or suite can override "
+      + "this list. The failing provider is marked cooling and skipped until it recovers.",
+  },
+
   {
     key: "statusIntervalMs",
     label: "Status heartbeat (ms)",
@@ -64,7 +270,7 @@ const FIELDS: FieldDef[] = [
     envVar: "AGENT_HOST_ACCESS",
     fallback: false,
     description:
-      "Lets every provider reach Docker, local backend APIs, and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, and Grok's OS sandbox is turned off. Needed for live saved-prompt Progress API calls from sandboxed CLIs, docker compose, local stacks, and /var/run/docker.sock. Saved-prompt execution can fall back to inline context and final status reporting while this is off. The per-provider sandbox settings below are ignored while this is on.",
+      "Lets every provider reach Docker, local backend APIs, and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, Grok's OS sandbox is turned off, and Copilot runs yolo. Needed for live saved-prompt Progress API calls from sandboxed CLIs, docker compose, local stacks, and /var/run/docker.sock. Saved-prompt execution can fall back to inline context and final status reporting while this is off. The per-provider sandbox settings below are ignored while this is on.",
     isDangerous: (value) => value === true,
   },
   {
@@ -152,6 +358,37 @@ const FIELDS: FieldDef[] = [
     placeholder: "local-fake-bot",
     description:
       "Bot identity label for fake task-control records. The live transport derives its identity from the token instead. Do not store a live bot token here.",
+  },
+
+  {
+    key: "retention.eventsPerRun",
+    label: "Events kept per run",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENTS_PER_RUN",
+    fallback: 4000,
+    description:
+      "Ceiling on how many transcript events one run may keep. Older events are deleted first; the most recent ones stay so a station's \"what happened\" remains readable. Applies to runs that have not aged out.",
+  },
+  {
+    key: "retention.eventAgeDays",
+    label: "Event age before thin keep (days)",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENT_AGE_DAYS",
+    fallback: 30,
+    description:
+      "After a run has been ended this many days, only the last \"final events\" count is kept. Live and recent runs still use the per-run ceiling. 0 disables age thinning.",
+  },
+  {
+    key: "retention.keepFinalEvents",
+    label: "Final events always kept",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_KEEP_FINAL_EVENTS",
+    fallback: 200,
+    description:
+      "The last N events of every run are always kept, even after age thinning, so the end of a station's transcript stays readable.",
   },
 
   {
@@ -478,6 +715,132 @@ const FIELDS: FieldDef[] = [
     fallback: "",
     description: "Appended verbatim to the grok invocation. Quoted tokens are respected.",
   },
+
+  {
+    key: "copilot.enabled",
+    label: "Enabled",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ENABLED",
+    fallback: true,
+    description: "When off, GitHub Copilot is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "copilot.githubToken",
+    label: "COPILOT_GITHUB_TOKEN",
+    group: "GitHub Copilot",
+    type: "password",
+    envVar: "COPILOT_GITHUB_TOKEN",
+    fallback: "",
+    placeholder: "gho_… or github_pat_…",
+    description:
+      "Optional. Leave empty to reuse an existing `copilot login`, GH_TOKEN, or `gh auth login`. Classic ghp_ tokens are not accepted by Copilot. Stored server-side only and never sent to the browser.",
+  },
+  {
+    key: "copilot.binary",
+    label: "Binary",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_BIN",
+    fallback: "copilot",
+    placeholder: "copilot",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "copilot.model",
+    label: "Model",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the copilot default",
+    description:
+      "Default model when no model is picked in the header, passed as `--model`. Copilot only accepts ids your plan's model picker exposes — `auto` always works. The header dropdown overrides this per run.",
+  },
+  {
+    key: "copilot.permissionMode",
+    label: "Permission mode",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_PERMISSION_MODE",
+    fallback: "allow-all-tools",
+    description:
+      "How much a headless Copilot run may touch. Tool approval is always pre-granted — a non-interactive run has nowhere to prompt — so this chooses how far outside the workspace that reaches. Overridden to yolo while Host access is on.",
+    options: [
+      option("allow-all-tools", "allow-all-tools", "Tools run automatically; file access stays inside the workspace (recommended)"),
+      option("plan", "plan", "Read-only planning; the built-in file-write tools are denied"),
+      option("allow-all-paths", "allow-all-paths", "Also drops path verification — the agent can read and write anywhere", true),
+      option("yolo", "yolo", "All tools, all paths, all URLs", true),
+    ],
+    isDangerous: (value) => value === "yolo" || value === "allow-all-paths",
+  },
+  {
+    key: "copilot.reasoningEffort",
+    label: "Reasoning effort",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_REASONING_EFFORT",
+    fallback: "",
+    description: "Passed as `--effort`. Leave on default to let the model decide.",
+    options: [
+      option("", "default", "Whatever the model picks"),
+      option("none", "none", null),
+      option("minimal", "minimal", null),
+      option("low", "low", null),
+      option("medium", "medium", null),
+      option("high", "high", null),
+      option("xhigh", "xhigh", null),
+      option("max", "max", "Slowest and priciest"),
+    ],
+  },
+  {
+    key: "copilot.maxAiCredits",
+    label: "Max AI credits",
+    group: "GitHub Copilot",
+    type: "number",
+    envVar: "COPILOT_MAX_AI_CREDITS",
+    fallback: 0,
+    description: "Stop the run once it has spent this many AI credits. 0 means no cap.",
+  },
+  {
+    key: "copilot.builtinMcpServers",
+    label: "Built-in GitHub MCP",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_BUILTIN_MCP",
+    fallback: true,
+    description:
+      "Copilot's bundled github-mcp-server, which lets a run read issues and pull requests. Turning it off (`--disable-builtin-mcps`) starts runs faster and keeps the prompt smaller.",
+  },
+  {
+    key: "copilot.remoteExport",
+    label: "Export sessions to GitHub",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_REMOTE_EXPORT",
+    fallback: false,
+    description:
+      "Copilot can publish a session to GitHub web and mobile and accept remote control from there. Off by default: runs started here are driven by this server, and the transcript stays local.",
+  },
+  {
+    key: "copilot.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description:
+      "Skip the login check. Needed when `copilot login` stored its token in the OS credential store, which this server cannot read.",
+  },
+  {
+    key: "copilot.extraArgs",
+    label: "Extra arguments",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the copilot invocation. Quoted tokens are respected.",
+  },
 ];
 
 const FIELDS_BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
@@ -627,6 +990,72 @@ export const settings = {
     return count("statusIntervalMs") || 1000;
   },
   /**
+   * Run budgets. One allowance, whatever the work item's depth.
+   *
+   * These used to be halved for a decomposed sub-step, on the theory that a
+   * slice of the parent's work deserves a slice of its allowance. In practice
+   * it is what killed 23 execute runs: a sub-step got 125 tool calls, Cursor
+   * spends about 30 a minute, and a run died three minutes in while it was
+   * still reading. A sub-step *is* the unit of work — the ceilings below are
+   * safety ceilings, and a run that reaches one now gets a wrap-up turn and a
+   * continuation rather than a silent kill.
+   */
+  budgetFor(): {
+    maxToolCalls: number | null;
+    maxWallClockMs: number | null;
+    maxInputTokens: number | null;
+    maxToolOutputBytes: number | null;
+    noProgressToolCalls: number | null;
+    maxToolResultBytes: number;
+  } {
+    const limit = (key: string, fallback: number): number | null => {
+      const base = count(key) || fallback;
+      return base <= 0 ? null : base;
+    };
+    return {
+      maxToolCalls: limit("budget.maxToolCalls", 1000),
+      maxWallClockMs: (() => {
+        const minutes = limit("budget.maxWallClockMinutes", 90);
+        return minutes === null ? null : minutes * 60_000;
+      })(),
+      // The money. Unchanged, and the one budget a wrap-up turn does not get.
+      maxInputTokens: limit("budget.maxInputTokens", 8_000_000),
+      maxToolOutputBytes: limit("budget.maxToolOutputBytes", 8_388_608),
+      // The thrash detector, not a ceiling on work.
+      noProgressToolCalls: (count("budget.noProgressToolCalls") || 25) > 0 ? count("budget.noProgressToolCalls") || 25 : null,
+      maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes") || 8192),
+    };
+  },
+  /**
+   * House rules for the pipeline transport, resolved once so the scheduler and
+   * the browser all read the same values. Anything
+   * unrecognised in the store falls back to the built-in default rather than
+   * reaching the rule table as a bad value.
+   */
+  get pipelinePolicy(): PipelinePolicy {
+    const pauseMode = text("pipeline.pauseMode");
+    const onDone = text("pipeline.defaultOnDone");
+    const onUnfinished = text("pipeline.defaultOnUnfinished");
+    const restart = text("pipeline.onRestart");
+    const enforcement = text("pipeline.dodEnforcement");
+    const maxContinuations = count("pipeline.maxContinuations");
+    const fallbackProviders = commaList("pipeline.fallbackProviders")
+      .filter(isProviderId)
+      .filter((id, index, all) => all.indexOf(id) === index);
+    return {
+      pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
+      stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
+      onRestart: isRestartPolicy(restart) ? restart : DEFAULT_PIPELINE_POLICY.onRestart,
+      maxContinuations: maxContinuations > 0 ? maxContinuations : DEFAULT_PIPELINE_POLICY.maxContinuations,
+      reviewAfterContinuations: flag("pipeline.reviewAfterContinuations"),
+      dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
+      defaultOnUnfinished: isOnUnfinishedAction(onUnfinished) ? onUnfinished : DEFAULT_PIPELINE_POLICY.defaultOnUnfinished,
+      defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
+      fallbackProviders: fallbackProviders.length > 0 ? fallbackProviders : DEFAULT_PIPELINE_POLICY.fallbackProviders,
+    };
+  },
+
+  /**
    * One switch that lifts every provider's sandbox/permission gate so Docker
    * and other host services work. Per-provider knobs still exist; this
    * overlays them at run time.
@@ -669,6 +1098,19 @@ export const settings = {
     get handoverEnabled(): boolean {
       return flag("team.handoverEnabled");
     },
+  },
+
+  /**
+   * How long transcript events stick around. Only `agent_run_event` is swept —
+   * runs, remarks, status events and commands are the record and stay.
+   */
+  get retention(): { eventsPerRun: number; eventAgeDays: number; keepFinalEvents: number } {
+    const eventsPerRun = Math.max(0, count("retention.eventsPerRun") || 4000);
+    const eventAgeDays = Math.max(0, count("retention.eventAgeDays") || 0);
+    // A zero keep would leave an aged run with no readable tail; floor at 1 when
+    // the field is somehow cleared rather than honouring a silent wipe.
+    const keepFinalEvents = Math.max(1, count("retention.keepFinalEvents") || 200);
+    return { eventsPerRun, eventAgeDays, keepFinalEvents };
   },
 
   claude: {
@@ -769,6 +1211,42 @@ export const settings = {
       return argvList("grok.extraArgs");
     },
   },
+
+  copilot: {
+    get enabled(): boolean {
+      return flag("copilot.enabled");
+    },
+    get githubToken(): string | null {
+      return optionalText("copilot.githubToken");
+    },
+    get binary(): string {
+      return text("copilot.binary") || "copilot";
+    },
+    get model(): string | null {
+      return optionalText("copilot.model");
+    },
+    get permissionMode(): string {
+      return text("copilot.permissionMode");
+    },
+    get reasoningEffort(): string | null {
+      return optionalText("copilot.reasoningEffort");
+    },
+    get maxAiCredits(): number | null {
+      return count("copilot.maxAiCredits") || null;
+    },
+    get builtinMcpServers(): boolean {
+      return flag("copilot.builtinMcpServers");
+    },
+    get remoteExport(): boolean {
+      return flag("copilot.remoteExport");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("copilot.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("copilot.extraArgs");
+    },
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -797,6 +1275,11 @@ function describeField(field: FieldDef): SettingField {
     dangerWhenTrue: field.type === "boolean" && (field.isDangerous?.(true) ?? false),
     requiresRestart: field.requiresRestart ?? false,
   };
+}
+
+/** Groups that actually have at least one field. Used by the UI-coverage test. */
+export function groupsWithFields(): string[] {
+  return [...GROUPS].filter((group) => FIELDS.some((field) => field.group === group));
 }
 
 export function snapshot(): SettingsSnapshot {
@@ -941,6 +1424,11 @@ export function savedPromptExecuteReachabilityProblem(provider: ProviderId): str
   return null;
 }
 
+/** Effective Copilot permission mode after the host-access overlay. */
+export function effectiveCopilotPermissionMode(): string {
+  return settings.hostAccess ? "yolo" : settings.copilot.permissionMode;
+}
+
 /** Effective Cursor --force after the host-access overlay. */
 export function effectiveCursorForce(): boolean {
   return settings.hostAccess ? true : settings.cursor.force;
@@ -970,6 +1458,8 @@ export function permissionForRun(
         return { mode: "plan · sandbox: workspace", hostAccessApplied: false };
       case "cursor":
         return { mode: "read-only-not-supported", hostAccessApplied: false };
+      case "copilot":
+        return { mode: "plan", hostAccessApplied: false };
     }
   }
   switch (provider) {
@@ -987,6 +1477,8 @@ export function permissionForRun(
         mode: effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
         hostAccessApplied: settings.hostAccess,
       };
+    case "copilot":
+      return { mode: effectiveCopilotPermissionMode(), hostAccessApplied: settings.hostAccess };
   }
 }
 

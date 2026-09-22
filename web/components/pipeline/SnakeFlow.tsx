@@ -10,15 +10,18 @@ import {
 } from "react";
 import { cn } from "@/lib/cn";
 
-/** Fixed card track width — cards never flex-shrink into each other. */
-const CARD_TRACK_PX = 288; // 18rem
+/** Minimum card track width — below this we drop a column rather than crush cards. */
+const MIN_CARD_PX = 200;
 const GUTTER_PX = 40; // room for a horizontal connector between cards
-const TURN_COL_PX = CARD_TRACK_PX; // junction aligns under a card column
+/** Soft ceiling so ultrawide monitors don't pack an unreadably dense row. */
+const MAX_COLS = 8;
 
-function columnsForWidth(width: number): number {
-  if (width < 640) return 1;
-  const fit = Math.max(1, Math.floor((width + GUTTER_PX) / (CARD_TRACK_PX + GUTTER_PX)));
-  return Math.min(3, fit);
+function columnsForWidth(width: number, itemCount: number): number {
+  if (width < 640 || itemCount <= 1) return 1;
+  const fit = Math.max(1, Math.floor((width + GUTTER_PX) / (MIN_CARD_PX + GUTTER_PX)));
+  // Prefer fewer columns when there aren't enough cards to fill a wider row, so
+  // the cards stretch across the available width instead of leaving empty tracks.
+  return Math.min(MAX_COLS, fit, itemCount);
 }
 
 type Row<T> = {
@@ -46,9 +49,9 @@ function chunkSnake<T>(items: T[], cols: number): Row<T>[] {
 }
 
 /**
- * Snake / zigzag flow: cards keep a fixed width, wrap without crowding, and
- * turn with a down-arrow into a junction box under the last card of a row.
- * The next card starts to the left of that box (even rows run right→left).
+ * Snake / zigzag flow: cards stretch to fill the available width, wrap by
+ * how many min-width tracks fit, and turn with a down-arrow into a junction
+ * box under the last card of a row. Even rows run right→left.
  */
 export function SnakeFlow<T>({
   items,
@@ -71,8 +74,8 @@ export function SnakeFlow<T>({
   const measure = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    setCols(columnsForWidth(el.clientWidth));
-  }, []);
+    setCols(columnsForWidth(el.clientWidth, items.length));
+  }, [items.length]);
 
   useEffect(() => {
     measure();
@@ -153,10 +156,10 @@ function SnakeRow<T>({
 
   return (
     <div
-      className="items-stretch gap-y-0"
+      className="w-full items-stretch gap-y-0"
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${cols}, ${CARD_TRACK_PX}px)`,
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         columnGap: GUTTER_PX,
         // Placement is explicit via gridColumn / startCol — do not justify the
         // track list, or RTL rows drift off the turn column.
@@ -174,7 +177,7 @@ function SnakeRow<T>({
         const direction = row.rtl ? "left" : "right";
 
         const card = (
-          <div className="relative min-w-0" style={{ width: CARD_TRACK_PX }}>
+          <div className="relative h-full min-w-0 w-full">
             {renderCard(entry.item, entry.index)}
             {showConnectorAfter && cols > 1 && (
               <HorizontalLink direction={direction} live={live} />
@@ -185,8 +188,8 @@ function SnakeRow<T>({
         return (
           <div
             key={getKey(entry.item, entry.index)}
-            className="relative min-w-0"
-            style={{ gridColumn, width: CARD_TRACK_PX }}
+            className="relative min-w-0 w-full"
+            style={{ gridColumn }}
           >
             {wrapItem ? wrapItem(card, entry.item, entry.index) : card}
           </div>
@@ -266,9 +269,10 @@ function TurnJunction({
 
   return (
     <div
+      className="w-full"
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${cols}, ${TURN_COL_PX}px)`,
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         columnGap: GUTTER_PX,
       }}
       aria-hidden

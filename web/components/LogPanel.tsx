@@ -18,6 +18,14 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
   // Auto-scroll is "pinned to bottom": scrolling up detaches, scrolling back
   // down re-attaches. Nothing yanks the view while the user is reading.
   const [pinned, setPinned] = useState(true);
+  // Isolating the app's own database traffic answers a question the full
+  // transcript buries: did this agent report what it did, and was it accepted?
+  // Offered only when there is traffic to isolate, so it is never a dead
+  // control on a run that never called.
+  const [dbOnly, setDbOnly] = useState(false);
+  const dbCount = items.filter((item) => item.kind === "db").length;
+  const dbRefused = items.filter((item) => item.kind === "db" && item.outcome === "rejected").length;
+  const shown = dbOnly ? items.filter((item) => item.kind === "db") : items;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -46,6 +54,24 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
           <div className="h-px w-1/3 animate-[ac-sweep_1.8s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-accent to-transparent" />
         </div>
       )}
+      {dbCount > 0 && (
+        <div className="absolute right-3 top-2 z-10">
+          <button
+            type="button"
+            onClick={() => setDbOnly((on) => !on)}
+            aria-pressed={dbOnly}
+            title="Show only this agent's reads and writes to the console's own database"
+            className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+              dbOnly
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-line bg-bg/80 text-fg-dim hover:text-fg"
+            }`}
+          >
+            database {dbCount}
+            {dbRefused > 0 && <span className="ml-1 text-danger">· {dbRefused} refused</span>}
+          </button>
+        </div>
+      )}
       <div ref={containerRef} className="h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-4">
         {items.length === 0 ? (
           <div className="text-fg-dim">
@@ -56,7 +82,7 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
             <div className="mt-3">pick a provider, type a prompt below, and watch it work.</div>
           </div>
         ) : (
-          items.map((item) => <LogEntry key={item.id} item={item} streaming={item.id === streamingId} />)
+          shown.map((item) => <LogEntry key={item.id} item={item} streaming={item.id === streamingId} />)
         )}
         <div className="h-2" />
       </div>
