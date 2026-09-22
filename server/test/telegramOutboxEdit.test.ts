@@ -323,7 +323,7 @@ test("S-L3-F1-04: migration 21 keeps every L1 outbox row as a send, unchanged, a
   const root = mkdtempSync(join(tmpdir(), "f1-migration-"));
   try {
     mkdirSync(join(root, ".agent-console"), { recursive: true });
-    const boot = () => spawnSync(process.execPath, ["--import", "tsx", "-e", "await import('./src/workspaces.ts')"], { cwd: serverDir, env: { PATH: process.env.PATH, HOME: root, AGENT_CONSOLE_REPO_ROOT: root }, encoding: "utf8", timeout: 60_000 });
+    const boot = () => spawnSync(process.execPath, ["--import", "tsx", "-e", "await import('./src/workspaces.ts')"], { cwd: serverDir, env: { PATH: process.env.PATH, HOME: root, AGENT_CONSOLE_REPO_ROOT: root, AGENT_CONSOLE_DB: join(root, ".agent-console/console.sqlite"), SETTINGS_FILE: join(root, ".agent-console/settings.json") }, encoding: "utf8", timeout: 60_000 });
     const first = boot();
     assert.equal(first.status, 0, first.stderr);
     const file = join(root, ".agent-console/console.sqlite");
@@ -340,7 +340,8 @@ test("S-L3-F1-04: migration 21 keeps every L1 outbox row as a send, unchanged, a
       ALTER TABLE telegram_outbox_v20 RENAME TO telegram_outbox;
       CREATE INDEX telegram_outbox_state_idx ON telegram_outbox(state, updated_at);
       CREATE INDEX telegram_outbox_sent_message_idx ON telegram_outbox(bot_id, chat_id, sent_message_id);
-      DELETE FROM schema_migration WHERE version = 21;
+      -- Migration 44 is what the reconcile a641b0c renumbered this migration 21 to.
+      DELETE FROM schema_migration WHERE version = 44;
       INSERT INTO telegram_outbox VALUES (1,'telegram-1','42',NULL,'{"kind":"text","text":"queued"}','QUEUED',0,NULL,'2026-09-14T01:00:00.000Z','2026-09-14T01:00:00.000Z',NULL,NULL);
       INSERT INTO telegram_outbox VALUES (2,'telegram-1','42',NULL,'{"kind":"personal_question","promptId":7}','SENT',1,NULL,'2026-09-14T01:00:01.000Z','2026-09-14T01:00:02.000Z',NULL,'311');
       INSERT INTO telegram_outbox VALUES (3,'telegram-1','42','9','{"kind":"text","text":"retrying"}','FAILED',2,'Telegram sendMessage failed (502)','2026-09-14T01:00:03.000Z','2026-09-14T01:00:04.000Z','2026-09-14T01:05:00.000Z',NULL);
@@ -356,7 +357,7 @@ test("S-L3-F1-04: migration 21 keeps every L1 outbox row as a send, unchanged, a
       try {
         const rows = migrated.prepare("SELECT * FROM telegram_outbox ORDER BY id").all() as Array<Record<string, unknown>>;
         assert.deepEqual(rows.map(({ operation, target_outbox_id, payload_version, ...rest }) => { assert.equal(operation, "send"); assert.equal(target_outbox_id, null); assert.equal(payload_version, 0); return rest; }), before, `boot ${run}`);
-        assert.deepEqual(migrated.prepare("SELECT version FROM schema_migration WHERE version IN (20,21) ORDER BY version").all(), [{ version: 20 }, { version: 21 }], "migration 21 is applied exactly once and 20 is untouched");
+        assert.deepEqual(migrated.prepare("SELECT version FROM schema_migration WHERE version IN (43,44) ORDER BY version").all(), [{ version: 43 }, { version: 44 }], "migration 21 (renumbered 44) is applied exactly once and 20 (renumbered 43) is untouched");
       } finally {
         migrated.close();
       }

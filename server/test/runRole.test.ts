@@ -61,9 +61,12 @@ test("the role CHECK on agent_run lists exactly RUN_ROLES", () => {
   // so the next person to add a role finds out here, in a unit test, rather than
   // from a CHECK constraint failure on a live database.
   const source = readFileSync(new URL("../src/workspaces.ts", import.meta.url), "utf8");
-  const checks = [...source.matchAll(/CHECK\(role IN \(([^)]*)\)\)/g)]
+  // Scoped to the `agent_run` rebuilds. A bare `CHECK(role IN (...))` search
+  // also finds `item_link.role`, whose values are requester/executor and have
+  // nothing to do with a run's role.
+  const checks = [...source.matchAll(/CREATE TABLE agent_run\w*\s*\([^;]*?CHECK\(role IN \(([^)]*)\)\)/g)]
     .map((match) => match[1]!.split(",").map((value) => value.trim().replace(/'/g, "")));
-  assert.ok(checks.length > 0, "no role CHECK found — the migration was rewritten");
+  assert.ok(checks.length > 0, "no role CHECK found - the migration was rewritten");
   // The newest rebuild is the one in force; the earlier ones are history.
   assert.deepEqual([...checks.at(-1)!].sort(), [...RUN_ROLES].sort());
 });

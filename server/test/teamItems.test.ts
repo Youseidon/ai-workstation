@@ -15,12 +15,21 @@ import { itemSubject, WorkspaceError, workspaces } from "../src/workspaces.ts";
  * child given its own repo root must not inherit them, or it writes to the
  * suite's database instead of the root under test. Same reasoning as
  * dodCommands.ts, which strips AGENT_CONSOLE_DB from verification commands.
+ *
+ * Deleting them is no longer enough. The database now defaults to the XDG
+ * state directory rather than the repo root, so a child with only a repo root
+ * resolves the developer's own live database - which the dev-on-live guard in
+ * workspaces.ts then refuses outright, and would otherwise have written to.
+ * The child is therefore pointed at its own file inside the root under test,
+ * which is also the path these migration checks open afterwards.
  */
 function childEnv(root: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, AGENT_CONSOLE_REPO_ROOT: root };
-  delete env.AGENT_CONSOLE_DB;
-  delete env.SETTINGS_FILE;
-  return env;
+  return {
+    ...process.env,
+    AGENT_CONSOLE_REPO_ROOT: root,
+    AGENT_CONSOLE_DB: join(root, ".agent-console/console.sqlite"),
+    SETTINGS_FILE: join(root, ".agent-console/settings.json"),
+  };
 }
 
 
@@ -96,7 +105,8 @@ test("TM-T0-5-25: migration 25 preserves C1 threads, anchors and indexes and run
       DROP TABLE telegram_thread;
       ALTER TABLE telegram_thread_v24 RENAME TO telegram_thread;
       CREATE UNIQUE INDEX telegram_thread_subject_uq ON telegram_thread(bot_id, chat_id, subject_kind, subject_id);
-      DELETE FROM schema_migration WHERE version=25;
+      -- Migration 48 is what the reconcile a641b0c renumbered this migration 25 to.
+      DELETE FROM schema_migration WHERE version=48;
     `);
     const beforeThreads = database.prepare("SELECT * FROM telegram_thread ORDER BY id").all();
     const beforeOutboxLinks = database.prepare("SELECT id,thread_id FROM telegram_outbox WHERE id IN (901,902) ORDER BY id").all();
@@ -113,7 +123,7 @@ test("TM-T0-5-25: migration 25 preserves C1 threads, anchors and indexes and run
         assert.deepEqual(check.prepare("SELECT id,thread_id FROM telegram_outbox WHERE id IN (901,902) ORDER BY id").all(), beforeOutboxLinks, `boot ${run} preserves outbox anchor links`);
         assert.deepEqual(check.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='telegram_thread_subject_uq'").get(), beforeIndex, `boot ${run} preserves the C1 unique index`);
         assert.deepEqual(check.prepare("SELECT ref,action,prompt_id,actor_id,chat_id,bot_id,expected_revision,expires_at FROM task_control_action WHERE ref='m25-action'").get(), beforeAction, `boot ${run} preserves the pre-upgrade action`);
-        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=25").all(), [{ version: 25 }], "migration is recorded once");
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=48").all(), [{ version: 48 }], "migration is recorded once");
         assert.deepEqual(check.pragma("foreign_key_check"), [], "the rebuilt graph has no foreign-key violations");
         assert.deepEqual(check.prepare("PRAGMA table_info(item_link)").all().map((column) => (column as { name: string }).name), ["item_id", "prompt_id", "role", "epoch", "control_head"]);
         assert.doesNotThrow(() => check.prepare("INSERT OR IGNORE INTO telegram_thread(bot_id,chat_id,subject_kind,subject_id,state,created_at,updated_at) VALUES('telegram-m25','42','item','awi1_000000000000000000000000','ACTIVE','now','now')").run());
@@ -180,7 +190,8 @@ test("TM-T0-5-28: migration 28 marks the anchors exactly once and preserves ever
       UPDATE telegram_outbox SET thread_id=812 WHERE id=912;
       UPDATE telegram_outbox SET thread_id=813 WHERE id=913;
       ALTER TABLE telegram_outbox DROP COLUMN anchor;
-      DELETE FROM schema_migration WHERE version=28;
+      -- Migration 51 is what the reconcile a641b0c renumbered this migration 28 to.
+      DELETE FROM schema_migration WHERE version=51;
     `);
     const OUTBOX_COLUMNS = "id,bot_id,chat_id,topic_id,payload_json,state,attempt_count,last_error,created_at,updated_at,next_attempt_at,sent_message_id,operation,target_outbox_id,payload_version,thread_id";
     const beforeOutbox = database.prepare(`SELECT ${OUTBOX_COLUMNS} FROM telegram_outbox ORDER BY id`).all();
@@ -200,7 +211,7 @@ test("TM-T0-5-28: migration 28 marks the anchors exactly once and preserves ever
       try {
         const columns = check.prepare("PRAGMA table_info(telegram_outbox)").all().map(column => (column as { name: string }).name);
         assert.deepEqual(columns.filter(name => name === "anchor"), ["anchor"], `boot ${run} adds the column exactly once`);
-        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=28").all(), [{ version: 28 }], `boot ${run} records the migration once`);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=51").all(), [{ version: 51 }], `boot ${run} records the migration once`);
 
         // The backfill marks precisely the rows a thread still points at. Row 913 is
         // the anchor a permanently failed send retired, and nothing in the schema

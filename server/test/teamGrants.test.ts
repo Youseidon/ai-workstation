@@ -15,12 +15,21 @@ import { workspaces } from "../src/workspaces.ts";
  * child given its own repo root must not inherit them, or it writes to the
  * suite's database instead of the root under test. Same reasoning as
  * dodCommands.ts, which strips AGENT_CONSOLE_DB from verification commands.
+ *
+ * Deleting them is no longer enough. The database now defaults to the XDG
+ * state directory rather than the repo root, so a child with only a repo root
+ * resolves the developer's own live database - which the dev-on-live guard in
+ * workspaces.ts then refuses outright, and would otherwise have written to.
+ * The child is therefore pointed at its own file inside the root under test,
+ * which is also the path these migration checks open afterwards.
  */
 function childEnv(root: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, AGENT_CONSOLE_REPO_ROOT: root };
-  delete env.AGENT_CONSOLE_DB;
-  delete env.SETTINGS_FILE;
-  return env;
+  return {
+    ...process.env,
+    AGENT_CONSOLE_REPO_ROOT: root,
+    AGENT_CONSOLE_DB: join(root, ".agent-console/console.sqlite"),
+    SETTINGS_FILE: join(root, ".agent-console/settings.json"),
+  };
 }
 
 
@@ -148,7 +157,8 @@ test("TM-T0-5-27: migration 27 adds the closed columns once and preserves item l
       DROP TABLE item_link;
       ALTER TABLE item_link_v26 RENAME TO item_link;
       CREATE INDEX item_link_prompt_idx ON item_link(prompt_id);
-      DELETE FROM schema_migration WHERE version=27;
+      -- Migration 50 is what the reconcile a641b0c renumbered this migration 27 to.
+      DELETE FROM schema_migration WHERE version=50;
     `);
     const before = database.prepare("SELECT item_id,prompt_id,role,epoch,control_head FROM item_link ORDER BY item_id").all();
     assert.equal(before.length, 1);
@@ -162,7 +172,7 @@ test("TM-T0-5-27: migration 27 adds the closed columns once and preserves item l
       const check = new Database(file, { readonly: true });
       try {
         assert.deepEqual(check.prepare("SELECT item_id,prompt_id,role,epoch,control_head FROM item_link ORDER BY item_id").all(), before, `boot ${run} preserves item links`);
-        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=27").all(), [{ version: 27 }]);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=50").all(), [{ version: 50 }]);
         const columns = check.prepare("PRAGMA table_info(item_link)").all().map(column => (column as { name: string }).name);
         assert.deepEqual(columns.slice(-2), ["closed_at", "closed_command_id"]);
         assert.deepEqual(check.prepare("SELECT closed_at,closed_command_id FROM item_link").all(), [{ closed_at: null, closed_command_id: null }], `boot ${run} leaves existing links open`);
@@ -190,6 +200,10 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       const prompt = workspaces.createChild('prompt', suite.id, { title: 'Pending card', content: 'Answer once' });
       const runId = 'm26-source-run';
       workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: 'claude', model: null, tokenHash: 'm26', expiresAt: '2099-01-01T00:00:00.000Z', role: 'execute' });
+      // Upstream's end-of-run ladder records UNREPORTED, not BLOCKED, when a run
+      // ends without posting a status, so the block this card answers is posted
+      // explicitly before the run is finished.
+      workspaces.updateAgentStatus(runId, { requestId: 'm26-blocked', expectedStatus: 'IN_PROGRESS', status: 'BLOCKED', reason: 'The owner must name the trade directory.', verificationSummary: 'Name the owner-supplied trade directory.' });
       workspaces.finishAgentRun(runId, 'done');
       const priorAnswer = workspaces.respondToBlockedPrompt(prompt.id, { content: 'Prior answer' });
       const handoff = workspaces.createHandoff({ id: 'm26-handoff', workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: 'claude', model: null });
@@ -199,8 +213,15 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       // millisecond on a fast machine, which leaves the prompt with no pending
       // question and rejects the card below as prompt_not_blocked.
       workspaces.updateHandoff(handoff.id, { state: 'READY', recommendation: 'WAIT_FOR_HUMAN', completedAt: new Date(Date.parse(priorAnswer.createdAt) + 1).toISOString() });
-      const pipeline = workspaces.createPipelineRun({ id: 'm26-pipeline', suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
+      // Upstream's flowchart steps belong to a named pipeline, so a suite run
+      // with no named parent now resolves no steps at all and completes on the
+      // first advance. The parked run is parented, the way a played one is.
+      const flowchart = workspaces.createPipeline({ workspaceId: workspace.id, name: 'Flowchart', suiteIds: [suite.id] });
+      workspaces.addNamedPipelineStep(flowchart.id, prompt.id, { provider: 'claude' });
+      const named = workspaces.createNamedPipelineRun({ id: 'm26-named', pipelineId: flowchart.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
+      const pipeline = workspaces.createPipelineRun({ id: 'm26-pipeline', suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null, pipelineRunId: named.id });
       workspaces.updatePipelineRun(pipeline.id, { state: 'WAITING_HUMAN', currentPromptId: prompt.id });
+      workspaces.updateNamedPipelineRun(named.id, { state: 'WAITING_HUMAN', currentSuiteId: suite.id, currentSuiteRunId: pipeline.id });
       const actor = workspaces.upsertTaskControlActor({ id: 'm26-actor', transport: 'fake_telegram', transportUserId: '101', chatId: '42', label: 'jd' });
       workspaces.createTaskControlAction({ ref: 'm26-action', action: 'answer_and_resume', promptId: prompt.id, actorId: actor.id, chatId: '42', botId: 'telegram-m26', messageId: 'card-26', expectedRevision: workspaces.humanInputState(prompt.id).revision, provider: 'claude', expiresAt: '2099-01-01T00:00:00.000Z' });
       workspaces.close();
@@ -231,7 +252,8 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       DROP TABLE task_control_action;
       ALTER TABLE task_control_action_v25 RENAME TO task_control_action;
       CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
-      DELETE FROM schema_migration WHERE version=26;
+      -- Migration 49 is what the reconcile a641b0c renumbered this migration 26 to.
+      DELETE FROM schema_migration WHERE version=49;
     `);
     const before = database.prepare("SELECT * FROM task_control_action ORDER BY ref").all();
     database.close();
@@ -243,7 +265,7 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       try {
         const preserved = check.prepare("SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id FROM task_control_action ORDER BY ref").all();
         assert.deepEqual(preserved, before, `boot ${run} preserves old action fields`);
-        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=26").all(), [{ version: 26 }]);
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=49").all(), [{ version: 49 }]);
         assert.deepEqual(check.pragma("foreign_key_check"), []);
         const columns = check.prepare("PRAGMA table_info(task_control_action)").all().map(column => (column as { name: string }).name);
         assert.deepEqual(columns.slice(-3), ["subject_kind", "item_id", "payload_json"]);
@@ -270,7 +292,7 @@ test("TM-T0-5-26: migration 26 preserves old cards and widens actions exactly on
       const input = { ref: 'm26-action', transportUserId: '101', chatId: '42', botId: 'telegram-m26', messageId: 'card-26', commandId: 'm26-command', content: 'Use blue.' };
       const first = await control.handleCallback(input);
       const duplicate = await control.handleCallback({ ...input, commandId: 'm26-duplicate' });
-      if (first.state !== 'APPLIED' || !first.started || duplicate.commandId !== first.commandId || starts !== 1) process.exitCode = 2;
+      if (first.state !== 'APPLIED' || !first.started || duplicate.commandId !== first.commandId || starts !== 1) { console.error('m26 apply: ' + JSON.stringify({ first, duplicate, starts })); process.exitCode = 2; }
       setPipelineStationStarter(null);
       workspaces.close();
     `);

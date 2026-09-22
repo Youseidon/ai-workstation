@@ -31,12 +31,21 @@ import { WorkspaceError, workspaces } from "../src/workspaces.ts";
  * child given its own repo root must not inherit them, or it writes to the
  * suite's database instead of the root under test. Same reasoning as
  * dodCommands.ts, which strips AGENT_CONSOLE_DB from verification commands.
+ *
+ * Deleting them is no longer enough. The database now defaults to the XDG
+ * state directory rather than the repo root, so a child with only a repo root
+ * resolves the developer's own live database - which the dev-on-live guard in
+ * workspaces.ts then refuses outright, and would otherwise have written to.
+ * The child is therefore pointed at its own file inside the root under test,
+ * which is also the path these migration checks open afterwards.
  */
 function childEnv(root: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, AGENT_CONSOLE_REPO_ROOT: root };
-  delete env.AGENT_CONSOLE_DB;
-  delete env.SETTINGS_FILE;
-  return env;
+  return {
+    ...process.env,
+    AGENT_CONSOLE_REPO_ROOT: root,
+    AGENT_CONSOLE_DB: join(root, ".agent-console/console.sqlite"),
+    SETTINGS_FILE: join(root, ".agent-console/settings.json"),
+  };
 }
 
 
@@ -673,7 +682,8 @@ test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebui
       DROP TABLE task_control_action;
       ALTER TABLE task_control_action_v28 RENAME TO task_control_action;
       CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
-      DELETE FROM schema_migration WHERE version=29;
+      -- Migration 52 is what the reconcile a641b0c renumbered this migration 29 to.
+      DELETE FROM schema_migration WHERE version=52;
     `);
     const beforeActions = database.prepare("SELECT * FROM task_control_action ORDER BY ref").all();
     const beforeReceipts = database.prepare("SELECT * FROM task_control_receipt ORDER BY command_id").all();
@@ -697,7 +707,7 @@ test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebui
         assert.deepEqual(check.prepare("SELECT id,anchor FROM telegram_outbox ORDER BY id").all(), beforeOutbox, `boot ${run} preserves F07's telegram_outbox.anchor`);
         assert.deepEqual(check.prepare("SELECT * FROM item_grant ORDER BY rowid").all(), beforeGrants, `boot ${run} preserves grants`);
         assert.deepEqual(check.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='task_control_action_prompt_idx'").get(), beforeIndex, `boot ${run} preserves the action index`);
-        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=29").all(), [{ version: 29 }], "migration 29 is recorded exactly once");
+        assert.deepEqual(check.prepare("SELECT version FROM schema_migration WHERE version=52").all(), [{ version: 52 }], "migration 29 (renumbered 52) is recorded exactly once");
         assert.deepEqual(check.pragma("foreign_key_check"), [], `boot ${run} leaves no foreign-key violation`);
         assert.deepEqual(
           check.prepare("PRAGMA table_info(task_control_action)").all().map(column => (column as { name: string }).name),
@@ -761,7 +771,7 @@ test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebui
     try {
       assert.deepEqual(final.prepare("SELECT command_id,state,started FROM task_control_receipt WHERE action_ref='m29-save'").all(), [{ command_id: "m29-save-command", state: "APPLIED", started: 0 }], "the pre-upgrade Save answer card applies exactly once");
       assert.deepEqual(final.prepare("SELECT command_id,state,started,run_id FROM task_control_receipt WHERE action_ref='m29-resume'").all(), [{ command_id: "m29-resume-command", state: "APPLIED", started: 1, run_id: "m29-resumed-run" }], "the pre-upgrade Answer and resume card applies exactly once");
-      assert.deepEqual(final.prepare("SELECT version FROM schema_migration WHERE version=29").all(), [{ version: 29 }], "a second boot duplicates no migration row");
+      assert.deepEqual(final.prepare("SELECT version FROM schema_migration WHERE version=52").all(), [{ version: 52 }], "a second boot duplicates no migration row");
       assert.deepEqual(final.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='task_control_action_prompt_idx'").all(), [{ name: "task_control_action_prompt_idx" }], "a second boot duplicates no index");
     } finally {
       final.close();
