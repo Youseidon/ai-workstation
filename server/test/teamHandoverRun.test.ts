@@ -956,7 +956,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
   await t.test("Sixth: no module path stops the other workstation's run", () => {
     // Comments are stripped, so this asserts on what the module does rather than
     // on what it says about itself.
-    const code = readFileSync(new URL("./teamHandoverRun.ts", import.meta.url), "utf8")
+    const code = readFileSync(new URL("../src/teamHandoverRun.ts", import.meta.url), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     assert.equal(/remoteStop|stopRemoteRun|forceRelease|seizeOwnership|overrideExecutor/.test(code), false,
       "no path exists by which env A stops env B's run, and no surface offers one");

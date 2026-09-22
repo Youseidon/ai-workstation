@@ -407,7 +407,7 @@ test("TM-T0-7: capture, preview and publish", async (t) => {
       assert.equal(failed.context.summary, null, "a failed summary does not invalidate captured evidence");
       assert.equal(failed.snapshotCommit, preview.snapshotCommit);
 
-      const source = readFileSync(new URL("./teamHandoverCapture.ts", import.meta.url), "utf8");
+      const source = readFileSync(new URL("../src/teamHandoverCapture.ts", import.meta.url), "utf8");
       assert.doesNotMatch(source, /anthropic|runAgent|startRun|adapters\//i, "capture generates the factual package without LLM calls");
       assert.doesNotMatch(source, /--force|force-with-lease|push\s+-f|update-ref\s+-d|--delete/, "no code path force-pushes or deletes a ref");
     } finally { f.dispose(); }
@@ -650,7 +650,7 @@ test("TM-T0-7: capture, preview and publish", async (t) => {
     // `action_not_available`. What replaced that refusal is a narrower one:
     // handover taps are still the first thing checked, and they are refused
     // unless Team *and* handover are both enabled.
-    const source = readFileSync(new URL("./taskControl.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../src/taskControl.ts", import.meta.url), "utf8");
     assert.match(source, /HANDOVER_ACTIONS as readonly string\[\]\)\.includes\(action\.action\)/,
       "handover taps are still recognised before anything else can read them as an ordinary resume");
     assert.match(source, /this\.config\.teamEnabled !== true\) return this\.reject\(input, "team_disabled"/,

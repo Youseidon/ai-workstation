@@ -130,7 +130,7 @@ test("S-CLT-20/21/25: the tool prompt carries no curl, token or URL; the HTTP pr
   const http = savedTaskExecutePrompt({ taskLabel: "REL-1", runId: "run_abc", token, progress: "http" });
   assert.match(http, /curl -fsS -H 'Authorization: Bearer tok_x+' \S+\/api\/agent\/runs\/run_abc\/context/);
   // The tool path does not depend on Host access: runService picks it from the adapter capability alone.
-  const source = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
   assert.match(source, /if \(getAdapter\(provider\)\.supportsProgressTools\) \{\s*progressTools = bindAgentProgressTools/);
 });
 
@@ -209,9 +209,9 @@ test("S-CLT-07/08/09: read-only runs are refused and never get write tools", asy
     assert.equal(workspaces.promptHistory(f.prompt.id).remarks.length, 0);
 
     // Only saved-task execute binds tools; consult, clarify and handoff start without them.
-    const source = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
     assert.equal(source.match(/bindAgentProgressTools\(/g)?.length, 1);
-    const handoffSource = readFileSync(new URL("./handoffCoordinator.ts", import.meta.url), "utf8");
+    const handoffSource = readFileSync(new URL("../src/handoffCoordinator.ts", import.meta.url), "utf8");
     assert.doesNotMatch(handoffSource, /progressTools/);
   } finally {
     f.cleanup();

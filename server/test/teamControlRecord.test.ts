@@ -311,7 +311,7 @@ test("TM-T0-6: the item control record builds protocol.md section 5, arbitrates 
       for (const commit of commits.slice(1)) {
         assert.equal(spawnSync("git", ["--git-dir", directory, "merge-base", "--is-ancestor", commit, commits[0]!]).status, 0);
       }
-      const source = readFileSync(new URL("./teamControlRecord.ts", import.meta.url), "utf8");
+      const source = readFileSync(new URL("../src/teamControlRecord.ts", import.meta.url), "utf8");
       assert.doesNotMatch(source, /--force|force-with-lease|push\s+-f|update-ref\s+-d|"-d"|--delete|"merge"/, "no code path force-pushes, deletes control history or merges two state.json files");
     } finally {
       rmSync(directory, { recursive: true, force: true });

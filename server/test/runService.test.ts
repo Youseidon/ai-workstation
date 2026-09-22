@@ -148,7 +148,7 @@ test("startConsult does not take the writer lock and forces the consult sandbox"
 });
 
 test("saved-prompt execute uses offline status reporting when the provider cannot reach the agent API", () => {
-  const source = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /agent_api_unreachable/);
   assert.match(source, /offlineCompletionProtocol/);
   assert.match(source, /parseOfflineAgentStatus/);
@@ -184,8 +184,8 @@ test("offline status request id is valid even when the run id contains underscor
 });
 
 test("offline status apply failures are surfaced through prompt finalization", () => {
-  const runService = readFileSync(new URL("./runService.ts", import.meta.url), "utf8");
-  const workspaces = readFileSync(new URL("./workspaces.ts", import.meta.url), "utf8");
+  const runService = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
+  const workspaces = readFileSync(new URL("../src/workspaces.ts", import.meta.url), "utf8");
   assert.match(runService, /offlineStatusApplyFailureReason/);
   assert.match(runService, /finishAgentRun\(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure\)/);
   assert.match(workspaces, /terminalStatusFailure/);
