@@ -298,6 +298,33 @@ That is a judgement about what those scenarios are for, which is the kind of cal
 Known to be in scope, beyond the fake itself: `l3-b-views` `/status` counts, `h4-time-seams` S-H4-02, `h6-route-proxy` S-L1-17, `h6-stale-updates` S-H6-21 and `l3-c1-threads` S-L3-C1-10 all failed and have not been traced to either cause yet.
 The 50 that did not run are serial-dependent on a failure earlier in their file, so the true count is higher than 57.
 
+### M-10. F05's supergroup upgrade has no harness case, and had two invented scenario ids
+
+**Registered 2026-09-25 on jd's ruling, closing the F05 half of audit 3's A1.**
+
+F05's third acceptance criterion reads: *"A harness case upgrades a group mid-test and shows the next anchor delivered to the new id with no manual repair."*
+It was not delivered, and it cannot be delivered without new work: **the e2e fake cannot upgrade a group at all.**
+`grep -rn "upgradeToSupergroup\|migrate_to_chat_id" e2e/src` returns nothing.
+
+What exists instead is the T0 half, two runtime cases in `server/test/telegramLiveRuntime.test.ts`: the refusal-carried `migrate_to_chat_id`, and the `migrate_from_chat_id` service message.
+Both pass. Both are honest work at a lower tier.
+Neither proves the repaired anchor reaches a phone, which is the criterion's actual subject.
+
+**The ids were the sharper half of this, and they are retired.**
+The two cases were named `TM-T1-8` and `TM-T1-9`.
+Neither id exists in any scenario table, in the plan, or in any T1 spec: `grep -rho "TM-T1-[0-9A-Za-z]*" docs/ | sort -u` lists 1, 1a, 1b, 2 to 7, H1 to H3 and the template `TM-T1-n`, and nothing else.
+An invented id in a test name is worse than a gap, because a later reader greps for coverage and finds it.
+Audit 3 caught `TM-T1-8`; `TM-T1-9` was the same defect in the adjacent test and was found here.
+Both now read `B8 (T0)`, the bug-log id the rest of the F track uses in that same file, and the block above them says in the source what has no T1 row and why.
+
+**Why this is Medium and not Low.**
+Audit 3 ranked it first of A1's five criteria for product risk, and the risk is coverage rather than a known defect: the supergroup upgrade is one of the two defects [team-burndown-dev-brief.md](team-burndown-dev-brief.md) calls unrecoverable from inside the app, `docs/e2e-scenarios/tm4.md:66` now treats F05's behaviour as load-bearing for the H track, and M-9 had just finished demonstrating what a tier gap hides - three merge-introduced defects that every tier but T1 reported as fine.
+
+**What is still open**, and is the decision this entry holds: whether to teach the e2e fake to upgrade a group and write the real T1 case.
+The brief sized that as large ("needs the fake to model a supergroup upgrade mid-test, which no scenario does yet").
+jd's ruling of 2026-09-25 was to register the deviation and retire the ids now, not to build it.
+Until it is built, **F05's third criterion is unmet and recorded as unmet**, rather than covered by a test that was named as though it were.
+
 ## Low
 
 | Id | Gap | Note |

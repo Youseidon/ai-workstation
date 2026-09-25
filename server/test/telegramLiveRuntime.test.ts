@@ -1274,7 +1274,19 @@ async function upgradeFixture(h: ReturnType<typeof harness>, groupChatId: string
   };
 }
 
-test("TM-T1-8 (T0): a group upgraded to a supergroup mid-run repairs itself and the next anchor reaches the new chat id", async () => {
+/*
+ * B8, the supergroup upgrade. These two cases are the T0 half and they are all
+ * there is: F05's third acceptance criterion asked for a harness case that
+ * upgrades a group mid-test, and there is none. The e2e fake cannot upgrade a
+ * group at all, so the behaviour below has no T1 row and no end-to-end proof
+ * that the repaired anchor reaches a phone.
+ *
+ * Both cases were once named TM-T1-8 and TM-T1-9, ids that exist in no scenario
+ * table and no plan. An invented id in a test name reads as coverage, so they
+ * carry the bug-log id the rest of the F track uses. The missing harness case is
+ * recorded as a deviation in team-gap-register.md, entry M-10.
+ */
+test("B8 (T0): a group upgraded to a supergroup mid-run repairs itself and the next anchor reaches the new chat id", async () => {
   const h = harness();
   const fromChatId = "-41001";
   const toChatId = "-1002000041001";
@@ -1314,7 +1326,7 @@ test("TM-T1-8 (T0): a group upgraded to a supergroup mid-run repairs itself and 
   }
 });
 
-test("TM-T1-9 (T0): the migrate_from_chat_id service message repairs the team before anything else is processed", async () => {
+test("B8 (T0): the migrate_from_chat_id service message repairs the team before anything else is processed", async () => {
   const h = harness();
   const fromChatId = "-41002";
   const toChatId = "-1002000041002";
