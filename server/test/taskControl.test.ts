@@ -29,6 +29,14 @@ function fixture() {
   const prompt = workspaces.createChild("prompt", suite.id, { title: "Task", content: "Use an owner-supplied list" }) as PromptRecord;
   const runId = `tc-run-${workspace.id}`;
   workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
+  // Upstream's end-of-run ladder records UNREPORTED, not BLOCKED, when a run ends
+  // without posting a status, so the block this fixture answers is posted
+  // explicitly before the run is finished.
+  workspaces.updateAgentStatus(runId, {
+    requestId: `blocked-${runId}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+    reason: "The owner must supply the trade directory.",
+    verificationSummary: "Supply the owner's trade directory.",
+  });
   workspaces.finishAgentRun(runId, "done");
   workspaces.respondToBlockedPrompt(prompt.id, { content: "Prior answer" });
   const handoff = workspaces.createHandoff({ id: `tc-handoff-${workspace.id}`, workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: "claude", model: null });
@@ -133,8 +141,15 @@ test("fake Telegram saves an answer, reissues current actions, and resumes once"
   const botId = `fake-bot-save-${f.workspace.id}`;
   let actorId: string | null = null;
   try {
-    const suiteRun = workspaces.createPipelineRun({ id: `tc-suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    // Upstream's flowchart steps hang off a named pipeline, so a suite run with
+    // no named parent resolves no steps and completes instead of starting a
+    // station. The parked run is parented and stepped, the way a played one is.
+    const flowchart = workspaces.createPipeline({ workspaceId: f.workspace.id, name: `tc-flow-${f.workspace.id}`, suiteIds: [f.suite.id] });
+    workspaces.addNamedPipelineStep(flowchart.id, f.prompt.id, { provider: "claude" });
+    const namedRun = workspaces.createNamedPipelineRun({ id: `tc-named-${f.workspace.id}`, pipelineId: flowchart.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    const suiteRun = workspaces.createPipelineRun({ id: `tc-suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: namedRun.id });
     workspaces.updatePipelineRun(suiteRun.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    workspaces.updateNamedPipelineRun(namedRun.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suiteRun.id });
     setPipelineStationStarter(async () => {
       starts++;
       const runId = `tc-resume-${f.workspace.id}`;
