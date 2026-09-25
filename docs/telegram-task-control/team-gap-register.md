@@ -298,6 +298,26 @@ That is a judgement about what those scenarios are for, which is the kind of cal
 Known to be in scope, beyond the fake itself: `l3-b-views` `/status` counts, `h4-time-seams` S-H4-02, `h6-route-proxy` S-L1-17, `h6-stale-updates` S-H6-21 and `l3-c1-threads` S-L3-C1-10 all failed and have not been traced to either cause yet.
 The 50 that did not run are serial-dependent on a failure earlier in their file, so the true count is higher than 57.
 
+### M-11. A thread closed on a still-blocked task keeps its pinned anchor forever
+
+**Registered 2026-09-25, closing the F02 half of audit 3's A1. Found by audit 3, whose finding 1 is that this file - the answer to "what is left" - had no row for it.**
+
+F02's acceptance criteria included *"retire and unpin the anchor the way completion does"*.
+It was deliberately not done, and the reason is good: retiring the anchor makes the thread unroutable, so a closed-but-blocked item would lose the only surface a person could reach it through.
+The bug log says so at the top of the B17 entry and in its header line.
+
+What nothing recorded is the consequence, which audit 3 verified in the code and the orchestrator confirmed:
+
+- `syncTeamItem` returns early for a closed link (`server/src/integrations/telegram/runtime.ts:1274`), so a closed item's anchor is never re-rendered.
+- `finishCompletedTeamItems` only ever reaches a `DONE` or `SKIPPED` prompt (`runtime.ts:1321`), so it can never reach a closed-but-blocked item.
+
+So the pinned anchor stays in the group indefinitely, showing a state the task left behind.
+Meanwhile `e47becc`'s commit message and the tracker both say "B1 to B19 are now all closed, deferred or pointed elsewhere", which is the sentence a later reader would trust.
+
+**What this needs is a decision, not obviously a fix.**
+Either a task owns the unpin and settles what a closed-but-blocked thread should look like, or this entry stands as the accepted trade with the bug log's reason.
+jd waived audit 3's A1 on 2026-09-25 with this recorded; the waiver is in the tracker.
+
 ### M-10. F05's supergroup upgrade has no harness case, and had two invented scenario ids
 
 **Registered 2026-09-25 on jd's ruling, closing the F05 half of audit 3's A1.**
@@ -332,7 +352,7 @@ Until it is built, **F05's third criterion is unmet and recorded as unmet**, rat
 | L-1 | **F10, the pilot rig**: B3 wrong port silently, B4 credentials inherited from the shell, B10 the launcher cannot be stopped by script, B19 the two instances share one working tree | Rig only, no product code. Needed before LT-5 and nothing else. |
 | L-2 | **G04's named fallback owner** | The orchestrator recorded Yousef as the only candidate in a two-person team and flagged it. jd has not confirmed the name. |
 | L-3 | **Opening the same item twice mints a second item** | `createItemLink` is called again on a repeat open. Found by F03, not in B1 to B19, left alone as out of scope. Worth its own entry if it is real. |
-| L-4 | **F03's two-width UI check cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. F03's own control still has no committed rig. |
+| L-4 | **F03's and F06's two-width UI checks cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. Neither F03's control nor F06's has a committed rig. **Widened 2026-09-25 to name F06**, which audit 3 found has the identical unreproducible criterion while only F03 was recorded; the only committed width rigs are `scripts/verify-m4-browser.mjs` and `scripts/verify-handover-browser.mjs`, both at 390px and 1280px, and neither touches `TeamStatusPanel`. Both halves are covered by jd's waiver of audit 3's A1, 2026-09-25. |
 | L-5 | **F03's `409 prompt_already_complete` is untested at the HTTP tier** | The test drives the runtime directly and relies on the generic `WorkspaceError` handler every other route already uses. |
 | L-6 | **F08's accepted trade** | An execute run that never ends leaves the anchor pinned and live rather than frozen and wrong. Judged the better failure and reversible if jd wants a bound. |
 | L-7 | **H03 chose the handover context file path** | `.agent-console/handover.json`, inside the snapshot tree only, never in the developer's worktree. The worker's choice, not the design's. |
@@ -340,6 +360,7 @@ Until it is built, **F05's third criterion is unmet and recorded as unmet**, rat
 | L-9 | **`special_file` is a fourth capture refusal** | Implemented from protocol.md section 9; tm4's matrix names only three. Recorded rather than added to the table. |
 | L-10 | **`h6-route-proxy.spec.ts:21` still cuts its call log by timestamp** | Same `call.at >= cutAt` shape F00B repaired in `l3F1.ts`. Left alone deliberately: the card records this file as already repaired under T20A, and re-cutting another task's repair with no failing symptom is churn. Residual risk flagged, not acted on. |
 | L-11 | **F00B's `l3F1.ts` change is shared with T3 and was validated only on the T1 path** | `e2e/tests/t3/l3-f1-edits-live.spec.ts` imports the same helper and could not be run here, because T3 needs live Telegram credentials which are forbidden. The change is backend-agnostic (`telegramCalls()` returns an append-only array under both T1 and T3, so an index cut behaves identically), but it is untested on T3. |
+| L-12 | **main carries `origin/main`'s 17 lint errors** | The `web` workspace lints at **19 problems, 17 errors and 2 warnings**, exit 1, and every error is in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's. `origin/main` does not pass lint either, and the F-track files lint clean on their own (`npx eslint components/tasks/TeamThreadPanel.tsx components/agents/TeamStatusPanel.tsx components/tasks/WorkItemDetail.tsx lib/workspacesApi.ts` is exit 0, no output). This is what audit 3 recorded as A2 FAIL on the lint tier, and **jd waived it on 2026-09-25**; nothing in the Team track can close it. Registered here so that no later claim of a green lint tier can be made by omission. |
 
 ## Closed while this register was open
 
@@ -360,9 +381,9 @@ TM-T1-H1 27.5s, TM-T1-H2 1.7m, TM-T1-H3 43.6s. The orchestrator re-ran them rath
 
 One fixture was corrected rather than one assertion weakened: TM-T1-H1's env A had to move off `main` before capture, because `main` is a protected product branch and this product never merges one automatically. The protected-branch refusal was already asserted at the server tier, so nothing lost coverage.
 
-### L-4, F03's unreproducible two-width check. Closed 2026-09-21 by H06.
+### L-4, the unreproducible two-width checks. Narrowed 2026-09-21 by H06, not closed.
 
-H06 committed its two-width rig as `scripts/verify-handover-browser.mjs` with an npm script rather than running it once and deleting it, which is the shape L-4 recorded as missing. F03's own control is still not covered by a committed rig, so L-4 is **narrowed, not fully closed**: the practice is fixed and F03's specific gap remains.
+H06 committed its two-width rig as `scripts/verify-handover-browser.mjs` with an npm script rather than running it once and deleting it, which is the shape L-4 recorded as missing. Neither F03's control nor F06's is covered by a committed rig, so L-4 is **narrowed, not fully closed**: the practice is fixed and the two specific gaps remain, which is why L-4 is still listed as open in the Low band above. The heading of this entry read "Closed" until 2026-09-25 while its own body said otherwise, which audit 3's finding 5 caught: a reader scanning headings got the wrong answer.
 
 ### H-1, the fixture that broke on its second run. Closed 2026-09-22 by F00B, commits `4070156..581aafd`.
 
