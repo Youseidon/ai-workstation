@@ -16,8 +16,12 @@ export async function runSavedTask(harness: HarnessEnvironment, args: { content?
 }
 
 export async function waitForRunEnd(task: SavedTask, runId: string, timeoutMs = 60_000) {
-  return eventually(`run ${runId} to end`, async () => {
+  const ended = await eventually(`run ${runId} to end`, async () => {
     const session = (await state.sessionsFor(task)).find((item) => item.id === runId);
     return session && !["STARTING", "RUNNING"].includes(session.state.toUpperCase()) ? session : undefined;
   }, timeoutMs);
+  // Read it back from the run's own endpoint once it has ended: the list this
+  // polls carries no transcript, so a scenario that asks what the agent emitted
+  // would otherwise be told "nothing" and believe it.
+  return state.session(ended.id);
 }

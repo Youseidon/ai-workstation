@@ -66,6 +66,16 @@ export const state = {
 
   history: (task: SavedTask) => request<PromptHistory>("GET", `/api/prompts/${task.promptId}/history`),
 
+  /**
+   * One session with its transcript. `/api/sessions` deliberately ships no
+   * events - the list is for the Activity pane's rows - so a run's events have to
+   * be read from the run's own endpoint.
+   */
+  async session(runId: string): Promise<AgentSession> {
+    const response = await request<{ session: AgentSession }>("GET", `/api/sessions/${runId}`);
+    return response.session;
+  },
+
   async sessionsFor(task: SavedTask): Promise<AgentSession[]> {
     const response = await request<{ sessions: AgentSession[] } | AgentSession[]>("GET", "/api/sessions");
     const sessions = Array.isArray(response) ? response : response.sessions;
