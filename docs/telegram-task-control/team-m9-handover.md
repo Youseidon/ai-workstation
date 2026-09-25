@@ -17,7 +17,7 @@ The tracker is the state of record; this is the working knowledge behind gap **M
 | Shared suite | 91 of 91 |
 | Web suite | 65 of 65 |
 | Typecheck | Clean on all four workspaces |
-| Web lint | 17 errors, 11 warnings. **Attribution needs re-measuring**, see section 5 |
+| Web lint | 17 errors, 11 warnings, all in upstream's own files. Re-measured, see section 5 |
 | **Full T1 suite** | **20 passed, 57 failed, 50 did not run.** This is M-9 |
 
 The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, long since merged into main.
@@ -73,6 +73,36 @@ Five failures have not been attributed to either cause and may be their own thin
 
 The 50 that did not run are serial-dependent on an earlier failure in their own file, so the true failure count is higher than 57.
 
+## 3.3 Was anything else of ours lost in the merge?
+
+Asked by jd on 2026-09-25, after the deleted Agents page section, and worth recording because the answer took real checking rather than a glance.
+
+**Why that section was lost.** The reconcile had 33 conflicted files, 107 content hunks and 7 modify/delete.
+`AgentsView.tsx` was restructured wholesale on upstream's side - inline settings sections became group buttons that open a dialog - and extended on ours.
+Where one side rewrites a file's body and the other adds to it, the import block and the JSX that uses it are far apart and resolve as separate hunks, so taking upstream's body while keeping our imports leaves a file that is internally inconsistent and still compiles.
+Nothing downstream complained: unused imports are not type errors, this lint config does not flag them at all, and the server suite never loads the web tree.
+**Only T1 could have caught it, and T1 had not been run since the merge.**
+
+**What was checked afterwards, and what each check found.**
+
+| Check | Result |
+| --- | --- |
+| Team/Telegram source files present, and none shrank, between `c405a58` and main | No file gone, none shorter |
+| The 36 server tests moved from `server/src/` to `server/test/` | All 36 have counterparts |
+| Team API route strings | **15 before, 15 now**, none lost |
+| Team and taskControl settings keys | **8 before, 8 now**, none lost |
+| Team tables created by migrations | All present. `team_thread_request` is a JSON `kind`, not a table |
+| Imported-but-unreferenced symbols across `web`, `server/src`, `shared/src`, `e2e/src` | 10, **none Team-related**. The five in `server/src/index.ts` are leftovers: upstream inlined those handlers at `index.ts:160`, so `/api/agent/` is served |
+| Components exported but never rendered | 4, and they are **exactly upstream's own 4** at `4fd0e65`. The merge orphaned nothing that is still orphaned |
+| Server suite | 617 of 617, which is the behavioural evidence for the server tier |
+
+The dead-import scan was validated before being trusted: run against `195eca2`, with the bug still present, it names all four missing panels.
+
+**What is still not verified, stated plainly.**
+The end-to-end tier is the only one that exercises Team code through a browser, and it is red for M-9's reasons.
+The structural checks above say nothing of ours is missing or unreferenced; they cannot say that everything present is correctly *wired to a user surface*, because that is precisely what the deleted section broke and precisely what T1 exists to prove.
+**Until T1 is green, treat UI wiring as the one unverified surface**, and do not let a green server suite stand in for it.
+
 ## 4. Things that will save you time
 
 **The harness could not boot at all until 2026-09-25.**
@@ -98,7 +128,7 @@ Worth deciding whether that glob should widen; it is recorded as a coverage gap,
 
 Section 5 of [team-reconcile-handover.md](team-reconcile-handover.md) still holds, with two additions made on 2026-09-25:
 
-- **Lint attribution must be re-measured.** The handover records 17 errors as "all in Yousef's own files". Five were dead symbols in `web/components/agents/AgentsView.tsx` - four unused panel imports, `CAPABILITY_BADGE` and an orphaned capability state - left behind when the merge deleted that file's Task Control section. That section is restored, so the count and its attribution should be measured again rather than quoted.
+- **Lint attribution stands, and was re-measured on 2026-09-25 rather than assumed.** 28 problems, 17 errors and 11 warnings, identical before and after the Agents page repair, every error in `components/activity/` or `components/pipeline/`. An earlier note in the tracker claiming five of them belonged to the deleted section was wrong and is withdrawn there.
 - **Check A2 fails on the T1 tier**, and the auditors should record that with M-9 named rather than treat it as unmeasured.
 
 ## 6. Standing constraints, unchanged
