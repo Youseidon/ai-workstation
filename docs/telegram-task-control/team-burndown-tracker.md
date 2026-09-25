@@ -16,7 +16,7 @@ A fixed entry says so at the top of the entry, with the task and commits that cl
 
 State as of 2026-09-25, after M-8 landed:
 
-- main is at `M9_TIP` in `/home/junaid/ai-workstation`, clean, **nothing pushed**.
+- main is at `250e085` in `/home/junaid/ai-workstation`, clean, **nothing pushed**.
   **M9 landed on 2026-09-25** by fast-forward, 8 commits, no merge commit, closing gaps **M-9 and M-5**.
   **The full T1 suite is 127 of 127** in 24.4 minutes, the first green pass since the reconcile, and the last tier that had never been measured after it.
   Server suite **618 of 618 three times against one unchanged root**, shared 91/91, web **94/94**, four workspaces typecheck, web lint unchanged at 17 errors.
