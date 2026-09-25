@@ -11,7 +11,7 @@ import type { ImportedProgram } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import type { ProgramBrief, ProgramBriefItem } from "./programBrief.ts";
 import { settings } from "./settings.ts";
-import { OPERATIONAL_STATES, operationalState } from "./operationalState.ts";
+import { OPERATIONAL_STATES, awaitsResponse, operationalState } from "./operationalState.ts";
 import { decide, endOfRunReason, endOfRunSignal } from "./statusTransition.ts";
 import type { RunOutcome } from "./statusTransition.ts";
 import { compactWorkItem, deriveVerdict, dossierHeading, parseReportItems, summarize, uniqueCommands } from "./suiteVerification.ts";
@@ -4741,7 +4741,7 @@ export const workspaces = {
     for (const workspace of db.prepare("SELECT id FROM workspace ORDER BY id").all() as Array<{ id: number }>) {
       for (const prompt of this.promptOptions(workspace.id)) {
         if (prompt.status === "DONE" || prompt.status === "SKIPPED") continue;
-        if (operationalState(prompt, this.pendingHumanQuestion(prompt.id) !== null) === "AWAITING_RESPONSE") awaiting.push(prompt);
+        if (awaitsResponse(operationalState(prompt, this.pendingHumanQuestion(prompt.id) !== null))) awaiting.push(prompt);
       }
     }
     return awaiting;

@@ -1,6 +1,7 @@
 import type { OperationsPrompt, OperationsSnapshot, OperationsSuite, PromptOperationalState, ProviderUsage } from "@agent-console/shared";
 import { lineText, type TaskSummary } from "../../telegramSummary.ts";
 import { formatCard, TELEGRAM_TEXT_LIMIT, type CardEntity } from "./card.ts";
+import { awaitsResponse } from "../../operationalState.ts";
 
 /*
  * Read-only status views (L3 slice B, RTC-24; user-flows section 9; docs/e2e-scenarios/l3-b.md).
@@ -188,7 +189,9 @@ function asOf(context: ViewContext): string {
 const prompts = (snapshot: OperationsSnapshot) => snapshot.suites.flatMap((suite) => suite.prompts.map((item) => ({ suite, item })));
 
 function matches(item: OperationsPrompt, filter: TaskFilter, now: Date): boolean {
-  if (item.operationalState !== FILTER_STATE[filter]) return false;
+  // `blocked` is every item waiting on a person, under either of the two names
+  // the status model gives that state.
+  if (filter === "blocked" ? !awaitsResponse(item.operationalState) : item.operationalState !== FILTER_STATE[filter]) return false;
   return filter !== "done" || now.getTime() - Date.parse(item.lastActivityAt) <= 24 * 60 * 60_000;
 }
 
