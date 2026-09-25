@@ -380,10 +380,16 @@ test("TM-T1-H3: the return crosses back and jd applies it from his phone", {
    * events as well as the transcript.
    *
    * Not asserted here, and recorded rather than implied: B28, closing or leaving
-   * the Telegram thread while a handover is live, because whether `/close` may
-   * happen at all mid-handover is M-4's open question and is jd's to rule; and a
-   * Telegram edit failure after a recorded application, which needs a fake that
-   * can fail one edit on demand.
+   * the Telegram thread while a handover is live; and a Telegram edit failure
+   * after a recorded application, which needs a fake that can fail one edit on
+   * demand.
+   *
+   * The `/close` half is no longer an open question, and this comment said it
+   * was for five days after it stopped being true. jd ruled M-4 rule 4.5 on
+   * 2026-09-22, the day after this was written: the close is refused while a
+   * handover is live. H07 shipped that guard, `d300b05..1f01acd`. What is still
+   * missing is the end-to-end row: the guard has server-tier proof only, so it
+   * is unasserted here for want of coverage, not for want of a ruling.
    */
   const team = await startTeamHarness({
     envA: { fakeProvider: "live", settings: HANDOVER_ON },
