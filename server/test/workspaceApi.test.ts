@@ -146,7 +146,14 @@ test("a blocked station whose work is done can be completed without another run"
     const before = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
     // The server restarted mid-run, so nothing ever recorded how it ended.
     assert.equal(before.status, "UNREPORTED");
-    assert.equal(before.recoverable, true, "recovery is offered, but it would re-run the work");
+    // Recovery is not even on offer yet: this tree gates it behind the start
+    // intent, and a restart leaves ownership of the provider process unknown
+    // until an operator classifies it. That makes the point below sharper
+    // rather than weaker — with the agent's evidence in hand, completing the
+    // station is the way out, and it needs neither another run nor that
+    // classification first.
+    assert.equal(before.recoverable, false);
+    assert.equal(before.recovery.kind, "start_unknown");
 
     const summary = "Build 0 warnings; 25/25 route replay green; burndown +6.";
     const response = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: summary });
