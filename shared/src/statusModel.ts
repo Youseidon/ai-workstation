@@ -401,7 +401,11 @@ export const DEFAULT_STATUS_CATALOG: readonly StatusDefinition[] = [
     satisfiesDependency: false,
     blocksParent: true,
     needsAttention: true,
-    precedence: 0,
+    // Matches BLOCKED, which this overlays: a parent that has a child waiting on
+    // a person must say so rather than look quietly in progress, and a state
+    // that needs attention with no precedence can never win a rollup. The two
+    // can never tie, because an item showing this one is not showing BLOCKED.
+    precedence: 30,
     onEnter: "none",
     locked: ["isTerminal", "satisfiesDependency", "blocksParent", "precedence", "onEnter"],
     lockedReason: NEVER_STORED,
