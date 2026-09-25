@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 
@@ -16,7 +16,22 @@ import Database from "better-sqlite3";
 
 export const repoRoot = resolve(import.meta.dirname, "../..");
 export const realAgentConsoleDir = join(repoRoot, ".agent-console");
-export const realDatabasePath = join(realAgentConsoleDir, "console.sqlite");
+
+/**
+ * The operator's real database now lives in XDG state, not in the repository,
+ * and the server copies an older one there on first boot while leaving the
+ * original behind. Both are checked: the state-dir one because it is the live
+ * database, and the repository one because an install that has not booted since
+ * the move still has its data there.
+ */
+function defaultDatabasePath(): string {
+  const state = process.env.XDG_STATE_HOME;
+  const base = state !== undefined && state.trim() !== "" ? resolve(state.trim()) : resolve(homedir(), ".local/state");
+  return resolve(base, "agent-console/console.sqlite");
+}
+
+export const realDatabasePath = defaultDatabasePath();
+export const legacyDatabasePath = join(realAgentConsoleDir, "console.sqlite");
 export const HARNESS_ROOT_PREFIX = join(tmpdir(), "ai-workstation-e2e-");
 
 function sha256(path: string): string | null {
@@ -45,7 +60,10 @@ export function fileHashes(): Record<string, string | null> {
 }
 
 /** Real database rows that point into a harness root. Must always be empty. */
-export function realDatabaseHarnessRows(databasePath = realDatabasePath): string[] {
+export function realDatabaseHarnessRows(databasePath?: string): string[] {
+  if (databasePath === undefined) {
+    return [realDatabasePath, legacyDatabasePath].flatMap((path) => realDatabaseHarnessRows(path));
+  }
   if (!existsSync(databasePath)) return [];
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
