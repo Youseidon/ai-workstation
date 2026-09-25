@@ -111,8 +111,16 @@ test("fake Telegram E2E posts a question, processes callbacks, and resumes once"
   let actorId: string | null = null;
   let starts = 0;
   try {
-    const suiteRun = workspaces.createPipelineRun({ id: `tg-suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    // A parked rail, shaped the way the app can actually build one: a suite run
+    // is a stage of a named pipeline run, never free-standing. Without the named
+    // parent and its step, the suite has no enabled steps at all, so resuming
+    // finds nothing ready and completes the rail instead of restarting it.
+    const flowchart = workspaces.createPipeline({ workspaceId: f.workspace.id, name: `Flowchart ${f.workspace.id}`, suiteIds: [f.suite.id] });
+    workspaces.addNamedPipelineStep(flowchart.id, f.prompt.id, { provider: "claude" });
+    const namedRun = workspaces.createNamedPipelineRun({ id: `tg-named-${f.workspace.id}`, pipelineId: flowchart.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
+    const suiteRun = workspaces.createPipelineRun({ id: `tg-suite-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null, pipelineRunId: namedRun.id });
     workspaces.updatePipelineRun(suiteRun.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
+    workspaces.updateNamedPipelineRun(namedRun.id, { state: "WAITING_HUMAN", currentSuiteId: f.suite.id, currentSuiteRunId: suiteRun.id });
     setPipelineStationStarter(async () => {
       starts++;
       const runId = `tg-resumed-${f.workspace.id}`;
