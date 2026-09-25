@@ -213,6 +213,13 @@ function fixture() {
   const prompt = workspaces.createChild("prompt", suite.id, { title, content: "Use an owner-supplied list" }) as PromptRecord;
   const runId = `tg-live-run-${workspace.id}`;
   workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
+  // Upstream's end-of-run ladder records UNREPORTED, not BLOCKED, when a run ends
+  // without posting a status, so the block this fixture answers is posted explicitly.
+  workspaces.updateAgentStatus(runId, {
+    requestId: `blocked-${runId}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+    reason: "The owner must supply the trade directory.",
+    verificationSummary: "Supply the owner's trade directory.",
+  });
   workspaces.finishAgentRun(runId, "done");
   workspaces.respondToBlockedPrompt(prompt.id, { content: "Prior answer" });
   const handoff = workspaces.createHandoff({ id: `tg-live-handoff-${workspace.id}`, workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: "claude", model: null });
@@ -244,7 +251,7 @@ async function pair(h: ReturnType<typeof harness>): Promise<string> {
 
 /* -------------------------------------------------------------------------- */
 
-test("a task blocked by its own agent shows the blocker on the phone, not a generic prompt", () => {
+test("a run that ended without posting a status shows that reason on the phone, not a generic prompt", () => {
   const dir = mkdtempSync(join(tmpdir(), "telegram-blocked-"));
   const workspace = workspaces.create({ name: dir, workDirectory: dir });
   try {
@@ -254,10 +261,13 @@ test("a task blocked by its own agent shows the blocker on the phone, not a gene
     const runId = `tg-blocked-run-${workspace.id}`;
     workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
     workspaces.finishAgentRun(runId, "done");
-    assert.equal(workspaces.promptActivity(prompt.id).item.prompt.status, "BLOCKED");
+    // UNREPORTED, not BLOCKED: upstream stopped treating "the run said nothing" as a
+    // verdict on the work. The point of this test is unchanged - the phone shows the
+    // real reason rather than a bland prompt.
+    assert.equal(workspaces.promptActivity(prompt.id).item.prompt.status, "UNREPORTED");
 
     const rendered = renderPersonalQuestion(prompt.id, []);
-    assert.match(rendered.question, /without posting the required DONE or BLOCKED status/);
+    assert.match(rendered.question, /without posting a status/);
   } finally {
     workspaces.remove(workspace.id);
     rmSync(dir, { recursive: true, force: true });

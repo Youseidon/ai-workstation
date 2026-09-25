@@ -38,7 +38,12 @@ export function renderPersonalQuestion(promptId: number, actions: Array<Pick<Tas
   const saved = activity.humanInput.savedResponseId !== null;
   // A task blocked by its own agent has no handoff question; its latest blocker
   // remark is what the operations view shows, so the phone shows it too.
-  const blocker = activity.item.prompt.status === "BLOCKED"
+  //
+  // UNREPORTED counts as well. A run that ends without posting a status still
+  // writes the BLOCKER remark saying so, and gating on BLOCKED alone sent the
+  // phone a bare "This task needs your input." while the real reason sat one
+  // row away - the generic prompt this renderer exists to avoid.
+  const blocker = ["BLOCKED", "UNREPORTED"].includes(activity.item.prompt.status)
     ? activity.remarks.filter(remark => remark.kind === "BLOCKER" || remark.kind === "DECISION_NEEDED").sort((a, b) => b.id - a.id)[0]?.content ?? null
     : null;
   const question = workspaces.pendingHumanQuestion(promptId)
