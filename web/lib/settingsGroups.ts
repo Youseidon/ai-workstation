@@ -12,6 +12,13 @@ export const PIPELINE_POLICY_GROUP = "Pipeline policy";
 /** Ceilings a single agent run cannot exceed. */
 export const RUN_BUDGETS_GROUP = "Run budgets";
 
+/**
+ * The phone transport and the Team switch. Rendered as its own section on the
+ * Agents page rather than as a generic group form, because the pairing, team
+ * and join panels belong with the settings that turn them on.
+ */
+export const TASK_CONTROL_GROUP = "Task Control";
+
 /** Display name where the group's own name is not the clearest heading. */
 export const GROUP_TITLE: Record<string, string> = { General: "Runtime" };
 

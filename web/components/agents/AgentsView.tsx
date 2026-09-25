@@ -20,7 +20,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { AskChip } from "@/components/AgentDock";
 import { SettingRow } from "@/components/SettingField";
 import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
-import { GROUP_BLURB, GROUP_TITLE } from "@/lib/settingsGroups";
+import { GROUP_BLURB, GROUP_TITLE, TASK_CONTROL_GROUP } from "@/lib/settingsGroups";
 import { PageChrome } from "@/components/shell/chrome";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -133,8 +133,27 @@ export function AgentsView() {
    * alone, so a new group silently had nowhere to render.
    */
   const providerGroups = new Set(Object.values(SETTINGS_GROUP));
-  const sharedGroups = (snapshot?.groups ?? []).filter((group) => !providerGroups.has(group));
+  /*
+   * Task Control is not a plain list of fields: the transport it names decides
+   * whether a phone can be paired at all, and the pairing, team and join panels
+   * hang off it. It keeps its own section below rather than becoming a button
+   * that opens a generic form, and is excluded here so it is not offered twice.
+   */
+  const sharedGroups = (snapshot?.groups ?? []).filter(
+    (group) => !providerGroups.has(group) && group !== TASK_CONTROL_GROUP,
+  );
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+
+  const taskControlFields = snapshot?.fields.filter((field) => field.group === TASK_CONTROL_GROUP) ?? [];
+  const taskControlDirty = dirtyKeys.filter((key) => taskControlFields.some((field) => field.key === key));
+  // The panel follows the transport the operator has chosen, saved or not, so choosing
+  // Telegram gives immediate feedback (live status, missing token) instead of nothing.
+  const taskControlTransport = drafts["taskControl.transport"] ?? taskControlFields.find((field) => field.key === "taskControl.transport")?.value;
+  const teamEnabled = taskControlFields.find((field) => field.key === "team.enabled")?.value === true;
+
+  useEffect(() => {
+    void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
+  }, [snapshot]);
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -264,6 +283,79 @@ export function AgentsView() {
             onClose={() => setOpenGroup(null)}
             onSaved={() => void reload()}
           />
+        )}
+
+        {taskControlFields.length > 0 && (
+          <section className="mb-4 rounded-panel border border-line bg-surface-1 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[11px] uppercase tracking-wider text-fg-dim">Task Control</h2>
+              {taskControlCapability !== null && (
+                <Badge tone={CAPABILITY_BADGE[taskControlCapability.setup].tone}>
+                  {CAPABILITY_BADGE[taskControlCapability.setup].label}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 text-[11px] text-fg-dim">
+              {taskControlCapability?.reason ?? "Personal task controls stay local until the live Telegram transport is enabled and a phone is paired."}
+            </p>
+            {taskControlFields.map((field) => (
+              <SettingRow
+                key={field.key}
+                field={field}
+                draft={drafts[field.key]}
+                disabled={saving}
+                onChange={(key, value) => {
+                  setNotice(null);
+                  setDrafts((current) => ({ ...current, [key]: value }));
+                }}
+                onRevert={(key) => {
+                  setNotice(null);
+                  void reset([key]);
+                  setDrafts((current) => {
+                    const next = { ...current };
+                    delete next[key];
+                    return next;
+                  });
+                }}
+              />
+            ))}
+            {taskControlDirty.length > 0 && (
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDrafts((current) => {
+                      const next = { ...current };
+                      for (const key of taskControlDirty) delete next[key];
+                      return next;
+                    });
+                  }}
+                  disabled={saving}
+                >
+                  Discard
+                </Button>
+                <Button
+                  size="sm"
+                  variant="success"
+                  onClick={() => void saveDrafts(taskControlDirty)}
+                  loading={saving}
+                >
+                  Save {taskControlDirty.length}
+                </Button>
+              </div>
+            )}
+            {taskControlTransport === "telegram" && (
+              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+            )}
+            {taskControlTransport === "telegram" && teamEnabled && (
+              <>
+                <TeamStatusPanel />
+                <TeamCreatePanel />
+                <TeamJoinPanel />
+              </>
+            )}
+          </section>
         )}
 
         <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
