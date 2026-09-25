@@ -171,7 +171,7 @@ function decodeInner(value: string): ViewRequest | null {
 
 /** The view a navigation tap asks for, or null for data that is not a well-formed `nv_` reference. */
 export function decodeNav(data: string): ViewRequest | null {
-  if (!data.startsWith("nv_") || Buffer.byteLength(data) > 64 || /[ -]/.test(data)) return null;
+  if (!data.startsWith("nv_") || Buffer.byteLength(data) > 64 || /[\x00-\x1f]/.test(data)) return null;
   return decodeInner(data.slice(3));
 }
 
