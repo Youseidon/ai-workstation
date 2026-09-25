@@ -8,9 +8,17 @@ checks that exposed them.
 [team-burndown-dev-brief.md](team-burndown-dev-brief.md) is the plan that closes
 them, and names the task that owns each one; progress is in
 [team-burndown-tracker.md](team-burndown-tracker.md).
-Fixed so far: B12 by F01; B14 and B17 by F02, except B17's pinned anchor.
-Closed by decision: B15 (R-B amended), B16 (merged into B11), B19 (rig note only).
-Everything else is still open.
+Each entry carries its own banner at the top, and that banner is the record.
+This index summarises them and was stale until 2026-09-25, when it still read
+"everything else is still open" against nine entries that had been fixed.
+
+Fixed by a task: B1 by F06; B2 and B7 by F03; B5, B6 and B18 by F09; B8 by F05;
+B9 and B11 by F07; B12 by F01; B13 by F08; B14 by F02; B17 by F02 apart from its
+pinned anchor, which is gap register M-11.
+Closed by decision: B15 (R-B amended), B16 (merged into B11 and fixed with it),
+B19 (rig note only).
+Still open: B3, B4 and B10 only. All three are pilot rig items, deferred with
+task F10 and carried as gap register L-1.
 
 ## B1 - a created team's join code cannot be recovered
 

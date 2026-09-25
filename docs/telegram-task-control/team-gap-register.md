@@ -73,6 +73,47 @@ Not run once since: the full server suite, the full T1 suite, every burn-in, aud
 The risk jd accepted, restated: a regression introduced early is not found until Phase V, with later tasks stacked on top of it.
 The mitigation is real - every task merged from its own branch by fast-forward, so Phase V can bisect by task - but until Phase V runs, **done means done by a task's own evidence, not proven harmless to everything else**.
 
+### C3. Two Team surfaces still compare `operationalState` to `AWAITING_RESPONSE` by hand, and the merge moved that value
+
+**Registered 2026-09-25. Found while closing audit 3's A1, not by any audit or any suite. Awaiting jd's decision; not yet reproduced end to end.**
+
+This is the **fourth** defect of the M-9 family and it survived M-9's fix.
+
+The mechanism, verified rather than inferred:
+
+```
+$ git show a641b0c^1:server/src/operationalState.ts   # ours, before the reconcile
+  if(prompt.status==="BLOCKED")return "AWAITING_RESPONSE";
+
+$ sed -n 47p server/src/operationalState.ts           # main today
+  if(prompt.status==="BLOCKED")return "BLOCKED";
+```
+
+M-9 introduced `awaitsResponse(state)` for exactly this and converted the two consumers it found - the Telegram `blocked` view filter and the awaiting-items list.
+**Two Team-owned consumers were not converted and still compare by hand.**
+
+`pendingHumanQuestion` is the other half of the mechanism, and it is what makes the state reachable rather than theoretical.
+It returns non-null only when a *handoff* record is READY and recommends `WAIT_FOR_HUMAN` (`server/src/workspaces.ts:4087-4095`).
+The ordinary Team path does not go through a handoff: an agent posts `{"status":"BLOCKED","reason":...,"options":[...]}`, the options ride on the status (`workspaces.ts:2459`), and no handoff row is written.
+So on the primary Team path `hasHumanQuestion` is false, `humanResponseHeld` is false, and `operationalState` returns **`BLOCKED`**.
+The codebase already knows these are two independent ways an item can need input - `runService.ts:300` and `humanInput.ts:61` both test `status === "BLOCKED" || pendingHumanQuestion !== null` - which is why `awaitsResponse` exists.
+
+| Surface | Line | What a person gets |
+| --- | --- | --- |
+| `/status` in a Team item thread | `server/src/teamItemViews.ts:169` | `Decision: none waiting` on a blocked task **while the owner's decision card is on their phone**. A teammate asking the thread what is happening is told nothing is waiting |
+| F03's **Open Team thread** control | `web/components/tasks/TeamThreadPanel.tsx:25` | Disabled on exactly the blocked task a person would want to pull a teammate into, with self-contradicting text: *"A Team thread opens on a task that is awaiting a response. This one is Needs you."* - and "Needs you" is the label for blocked |
+
+**Why every tier is green anyway.** This is the part to carry forward.
+
+- `teamItemViews.ts:169`'s Decision line has **no test at any tier**. `grep -rn "Decision: waiting\|Decision: none\|awaitingDecision" server/ e2e/` returns the two source lines and nothing else.
+- `teamThreadAvailability` **is** tested, and the test has a hole precisely where the merge moved the behaviour. `web/components/tasks/teamThread.test.tsx:30` asserts `AWAITING_RESPONSE` enables the control, then iterates a negative list of `WORKING`, `READY`, `RECOVERY_NEEDED`, `FAILED`, `WAITING_DEPENDENCY`, `DONE`, `SKIPPED`. **`BLOCKED` is in neither list**, because when the test was written `operationalState` could not return it. The test passes whichever way the gate behaves for the one state that now actually occurs.
+
+So the full server suite at 618/618, the full T1 suite at 127/127, the web suite at 94/94, four clean typechecks and a fresh auditor's independent reproduction of all of it are all consistent with both of these being broken.
+
+**What is not yet done**: neither has been reproduced end to end, which is the standard this track holds itself to and the reason M-9's defects were believed rather than argued.
+Doing that needs a T1 case driving a blocked-without-handoff Team item, which no scenario currently does.
+Whether to take that as a task, and whether the fix is `awaitsResponse` at these two sites plus a sweep of the remaining hand-written comparisons (`web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11`, `web/components/pipeline/status.ts:161`, the last being upstream's), is jd's call.
+
 ## High
 
 ### H-1. A fixture breaks on its second run, and burn-ins re-run by definition
@@ -353,7 +394,7 @@ Until it is built, **F05's third criterion is unmet and recorded as unmet**, rat
 | L-2 | **G04's named fallback owner** | The orchestrator recorded Yousef as the only candidate in a two-person team and flagged it. jd has not confirmed the name. |
 | L-3 | **Opening the same item twice mints a second item** | `createItemLink` is called again on a repeat open. Found by F03, not in B1 to B19, left alone as out of scope. Worth its own entry if it is real. |
 | L-4 | **F03's and F06's two-width UI checks cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. Neither F03's control nor F06's has a committed rig. **Widened 2026-09-25 to name F06**, which audit 3 found has the identical unreproducible criterion while only F03 was recorded; the only committed width rigs are `scripts/verify-m4-browser.mjs` and `scripts/verify-handover-browser.mjs`, both at 390px and 1280px, and neither touches `TeamStatusPanel`. Both halves are covered by jd's waiver of audit 3's A1, 2026-09-25. |
-| L-5 | **F03's `409 prompt_already_complete` is untested at the HTTP tier** | The test drives the runtime directly and relies on the generic `WorkspaceError` handler every other route already uses. |
+| L-5 | **F03's `409 prompt_already_complete` is untested at the HTTP tier, and its UI is stricter than its API** | The test drives the runtime directly and relies on the generic `WorkspaceError` handler every other route already uses. **Second half added 2026-09-25**, found by audit 3's finding 7: F03's row records both limits but only the first was registered. The panel enables the control on `AWAITING_RESPONSE` alone (`web/components/tasks/TeamThreadPanel.tsx:25`) while the route refuses only `DONE` and `SKIPPED`, so the UI forbids openings the API would allow. **This stopped being harmless at the reconcile and is now gap C3**, because `operationalState` no longer returns `AWAITING_RESPONSE` for a stored `BLOCKED` item. |
 | L-6 | **F08's accepted trade** | An execute run that never ends leaves the anchor pinned and live rather than frozen and wrong. Judged the better failure and reversible if jd wants a bound. |
 | L-7 | **H03 chose the handover context file path** | `.agent-console/handover.json`, inside the snapshot tree only, never in the developer's worktree. The worker's choice, not the design's. |
 | L-8 | **H05's clean non-fast-forward merge is unreachable in one round** | Because the baseline gate is strict, an undiverged checkout always fast-forwards. The path exists and the merge probe exercises it; no fixture was contrived to reach it end to end. |
