@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { OperationsPrompt } from "@agent-console/shared";
+import { awaitsResponse, type OperationsPrompt } from "@agent-console/shared";
 import { LABEL } from "@/components/pipeline/status";
 import { Button } from "@/components/ui/Button";
 import { SERVER_URL } from "@/lib/serverUrl";
@@ -22,7 +22,11 @@ export function teamThreadAvailability(team: TeamStatus, item: OperationsPrompt)
   if (team === null) {
     return { enabled: false, reason: "Create or join a Team in Agents settings first. A thread needs a roster to post into." };
   }
-  if (item.operationalState !== "AWAITING_RESPONSE") {
+  // C3: ask the predicate. A stored BLOCKED with no handoff record is the
+  // ordinary Team path, and comparing to AWAITING_RESPONSE by hand disabled this
+  // control on exactly the task a person is waiting on - telling the reader that
+  // a task the board labels "Needs you" was not awaiting a response.
+  if (!awaitsResponse(item.operationalState)) {
     return { enabled: false, reason: `A Team thread opens on a task that is awaiting a response. This one is ${LABEL[item.operationalState].toLowerCase()}.` };
   }
   return { enabled: true };

@@ -150,6 +150,26 @@ export function isStepDisplayStatus(value: unknown): value is StepDisplayStatus 
   return typeof value === "string" && (STEP_DISPLAY_STATUSES as readonly string[]).includes(value);
 }
 
+/**
+ * Both spellings of "this item is waiting on a person".
+ *
+ * `BLOCKED` is stored and labelled "Needs you"; `AWAITING_RESPONSE` is the live
+ * overlay for the same situation, and the catalog below documents it as an alias
+ * of `BLOCKED`. Two names for one state is survivable until something keys on
+ * one of them: the Telegram question loop and the `blocked` view filter both
+ * matched `AWAITING_RESPONSE` only, and when a merge made a blocked item report
+ * `BLOCKED` instead, every question card stopped reaching the phone and no test
+ * outside T1 noticed. Ask through here rather than comparing a state by hand.
+ *
+ * It lives in the status model rather than in the server because the web tier
+ * has the same two surfaces to get right: `/status` in a Team thread and the
+ * Open Team thread control both compared by hand, and both were wrong (C3).
+ * One predicate, one definition, both tiers.
+ */
+export function awaitsResponse(state: StepDisplayStatus): boolean {
+  return state === "AWAITING_RESPONSE" || state === "BLOCKED";
+}
+
 /** The overlays, as a set, for the places that need to reject them on a write. */
 export const OVERLAY_STATUSES: readonly StepDisplayStatus[] = [
   "WORKING", "READY", "WAITING_DEPENDENCY", "RECOVERY_NEEDED", "AWAITING_RESPONSE",

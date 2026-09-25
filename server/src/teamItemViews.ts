@@ -1,4 +1,5 @@
-import type { TaskControlAction } from "@agent-console/shared";
+import type { PromptOperationalState, TaskControlAction } from "@agent-console/shared";
+import { awaitsResponse } from "./operationalState.ts";
 import { lineText, type TaskSummary } from "./telegramSummary.ts";
 import { formatCard, renderedAge, withoutRenderedAge, type CardEntity } from "./integrations/telegram/card.ts";
 import type { RenderedView } from "./integrations/telegram/views.ts";
@@ -13,7 +14,7 @@ export interface ParsedTeamItemCommand {
 
 export interface TeamItemViewState {
   promptStatus: string;
-  operationalState: string;
+  operationalState: PromptOperationalState;
   /** The owning machine's own name, for the slots that name a workstation (B5). */
   ownerWorkstation: string;
   /** The owning person's Telegram display name, for the slots that name a person. */
@@ -166,7 +167,10 @@ export function teamItemAnchorAge(payload: unknown): string | null {
 export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummary, state: TeamItemViewState): RenderedView {
   if (command === "task") return renderTeamItemAnchor(summary, state);
   if (command === "status") {
-    const awaitingDecision = state.operationalState === "AWAITING_RESPONSE";
+    // C3: ask the predicate. A stored BLOCKED with no handoff record is the
+    // ordinary Team path, and comparing to AWAITING_RESPONSE by hand told a
+    // teammate no decision was waiting while the owner's card was on their phone.
+    const awaitingDecision = awaitsResponse(state.operationalState);
     return simpleView([
       `Item status · ${lineText(state.ownerWorkstation, 64)}`,
       `Execution: ${stateLabel(state.promptStatus)}`,

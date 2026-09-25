@@ -4,7 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { OperationsPrompt, PromptOperationalState } from "@agent-console/shared";
+import { STEP_DISPLAY_STATUSES, type OperationsPrompt, type PromptOperationalState } from "@agent-console/shared";
 import { teamThreadAvailability, TeamThreadControl } from "./TeamThreadPanel";
 
 type TeamStatus = Parameters<typeof teamThreadAvailability>[0];
@@ -27,17 +27,55 @@ function item(operationalState: PromptOperationalState): OperationsPrompt {
   return { prompt: { id: 42 }, operationalState } as unknown as OperationsPrompt;
 }
 
+/*
+ * C3. The negative list below used to be hand-written, and `BLOCKED` was in
+ * neither it nor the positive case - because when this test was written
+ * `operationalState` could not return `BLOCKED`. So the test passed whichever
+ * way the gate behaved for the one state that now actually occurs, and it went
+ * on passing while the control was disabled on exactly the task a person was
+ * waiting on.
+ *
+ * The positive set stays written out, because it is a claim about the product
+ * rather than a restatement of the predicate the product uses. The negative
+ * list is then everything else the status model has - `OPERATIONAL_STATES` is
+ * `[...STEP_DISPLAY_STATUSES]` - so a state added to, or moved within, the
+ * model cannot again be absent from both lists.
+ */
+const AWAITING: readonly PromptOperationalState[] = ["AWAITING_RESPONSE", "BLOCKED"];
+const NOT_AWAITING = STEP_DISPLAY_STATUSES.filter((state) => !AWAITING.includes(state));
+
+test("C3: every state in the status model is claimed by exactly one of the two lists", () => {
+  assert.deepEqual(
+    [...AWAITING, ...NOT_AWAITING].slice().sort(),
+    [...STEP_DISPLAY_STATUSES].slice().sort(),
+    "a state the model gained or lost must not be able to go missing from both lists",
+  );
+  for (const state of AWAITING) {
+    assert.ok(STEP_DISPLAY_STATUSES.includes(state), `${state} is no longer in the status model`);
+  }
+});
+
 test("B2: the Open Team thread control is enabled only with a roster and a task awaiting a response", () => {
-  assert.deepEqual(teamThreadAvailability(team(), item("AWAITING_RESPONSE")), { enabled: true });
+  // C3: BLOCKED is here as well as AWAITING_RESPONSE. It is the state the
+  // ordinary Team path actually produces - an agent stops with a BLOCKED status
+  // and no handoff record - and it is the one this case used to skip.
+  for (const state of AWAITING) {
+    assert.deepEqual(teamThreadAvailability(team(), item(state)), { enabled: true }, `${state} must offer a Team thread`);
+  }
 
   const noRoster = teamThreadAvailability(null, item("AWAITING_RESPONSE"));
   assert.equal(noRoster.enabled, false);
   assert.match(noRoster.enabled === false ? noRoster.reason : "", /Create or join a Team/);
 
-  for (const state of ["WORKING", "READY", "RECOVERY_NEEDED", "FAILED", "WAITING_DEPENDENCY", "DONE", "SKIPPED"] as const) {
+  for (const state of NOT_AWAITING) {
     const blocked = teamThreadAvailability(team(), item(state));
     assert.equal(blocked.enabled, false, `${state} must not offer a Team thread`);
-    assert.match(blocked.enabled === false ? blocked.reason : "", /awaiting a response/);
+    const reason = blocked.enabled === false ? blocked.reason : "";
+    assert.match(reason, /awaiting a response/);
+    // The reason names the item's own label, so it must never be produced for a
+    // state the board calls "Needs you": that sentence contradicted itself, and
+    // it is what a person read on the task they were being asked about (C3).
+    assert.doesNotMatch(reason, /this one is needs you/i, `${state} must not be told it is not awaiting a response while labelled "Needs you"`);
   }
 });
 

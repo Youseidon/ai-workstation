@@ -15,17 +15,12 @@ export const OPERATIONAL_STATES:PromptOperationalState[]=[...STEP_DISPLAY_STATUS
 /**
  * Both spellings of "this item is waiting on a person".
  *
- * `BLOCKED` is stored and labelled "Needs you"; `AWAITING_RESPONSE` is the live
- * overlay for the same situation, and the status model documents it as an alias
- * of `BLOCKED`. Two names for one state is survivable until something keys on
- * one of them: the Telegram question loop and the `blocked` view filter both
- * matched `AWAITING_RESPONSE` only, and when a merge made a blocked item report
- * `BLOCKED` instead, every question card stopped reaching the phone and no test
- * outside T1 noticed. Ask through here rather than comparing a state by hand.
+ * The predicate itself now lives in the status model, because the web tier asks
+ * it too (C3) and a copy on each side is how two names for one state got keyed
+ * on by hand in the first place. Re-exported here so the server keeps asking
+ * the question where it computes the answer.
  */
-export function awaitsResponse(state:PromptOperationalState):boolean {
-  return state==="AWAITING_RESPONSE"||state==="BLOCKED";
-}
+export { awaitsResponse } from "@agent-console/shared";
 
 export function operationalState(prompt:PromptOption, hasHumanQuestion = false):PromptOperationalState {
   if(prompt.currentRun?.processActive)return "WORKING";

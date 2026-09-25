@@ -2091,6 +2091,7 @@ export {
   STEP_SIGNALS,
   STEP_STATUSES,
   STEP_TRANSITIONS,
+  awaitsResponse,
   defaultStatusDefinition,
   describeTrigger,
   isStatusIcon,
