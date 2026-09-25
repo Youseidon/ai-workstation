@@ -114,6 +114,21 @@ So the full server suite at 618/618, the full T1 suite at 127/127, the web suite
 Doing that needs a T1 case driving a blocked-without-handoff Team item, which no scenario currently does.
 Whether to take that as a task, and whether the fix is `awaitsResponse` at these two sites plus a sweep of the remaining hand-written comparisons (`web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11`, `web/components/pipeline/status.ts:161`, the last being upstream's), is jd's call.
 
+
+**The task, carded 2026-09-26 on jd's ruling. Its own worker, its own branch, red at T1 first.**
+
+| # | Acceptance criterion |
+| --- | --- |
+| 1 | **Red before anything is fixed.** A T1 case drives a Team item to a stored `BLOCKED` with options and **no handoff record**, and asserts both surfaces below. It fails on `a23d1dd` with no product change in the tree, and the failing output goes in the tests-only commit message so the reproduction is verifiable in the branch rather than described. |
+| 2 | `/status` in that item's Team thread reports a decision waiting for the owner, not `Decision: none waiting`. |
+| 3 | F03's **Open Team thread** control is enabled for that item, and its disabled reason never again tells a person that a task labelled "Needs you" is not awaiting a response. |
+| 4 | Both sites ask `awaitsResponse` rather than comparing a state by hand: `server/src/teamItemViews.ts:169` and `web/components/tasks/TeamThreadPanel.tsx:25`. `awaitsResponse` already exists and already carries the comment explaining why; no second predicate is introduced. |
+| 5 | **The hole that hid it is closed, not just the defect.** `web/components/tasks/teamThread.test.tsx`'s negative list is derived from `OPERATIONAL_STATES` rather than hand-written, so a state added or moved in the status model cannot again be absent from both the positive case and the negative list. |
+| 6 | The full server suite and the full T1 suite are green at the end, with counts, and the T1 case from criterion 1 is among them. |
+| 7 | The remaining hand-written comparisons are **listed in the report and not changed**: `web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11` and `web/components/pipeline/status.ts:161`. The first three are personal-control surfaces, which invariant A5 says this track leaves unchanged, and the fourth is upstream's. Whether they are defects too is jd's call, and the report gives jd what it needs to make it. |
+
+Scope note for whoever takes it: criterion 1 is the whole point of the task. The fix itself is two lines. If the T1 case cannot be made to fail before the fix, **stop and say so** rather than fixing on the strength of the code reading - that would be the same mistake as trusting a structural check.
+
 ## High
 
 ### H-1. A fixture breaks on its second run, and burn-ins re-run by definition
