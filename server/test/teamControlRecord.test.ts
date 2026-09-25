@@ -638,8 +638,14 @@ test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebui
         // pendingHumanQuestion counts that answer as having answered it and the
         // card is refused as prompt_not_blocked.
         workspaces.updateHandoff(handoff.id, { state: 'READY', recommendation: 'WAIT_FOR_HUMAN', completedAt: new Date(Date.parse(priorAnswer.createdAt) + 1).toISOString() });
-        const pipeline = workspaces.createPipelineRun({ id: 'm29-pipeline-' + label, suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
+        // A suite run is a stage of a named pipeline run and its stations are
+        // that pipeline's steps; a free-standing one has no station to resume.
+        const flowchart = workspaces.createPipeline({ workspaceId: workspace.id, name: 'Flowchart ' + label, suiteIds: [suite.id] });
+        workspaces.addNamedPipelineStep(flowchart.id, prompt.id, { provider: 'claude' });
+        const named = workspaces.createNamedPipelineRun({ id: 'm29-named-' + label, pipelineId: flowchart.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null });
+        const pipeline = workspaces.createPipelineRun({ id: 'm29-pipeline-' + label, suiteId: suite.id, workspaceId: workspace.id, playProvider: 'claude', playModel: null, pipelineRunId: named.id });
         workspaces.updatePipelineRun(pipeline.id, { state: 'WAITING_HUMAN', currentPromptId: prompt.id });
+        workspaces.updateNamedPipelineRun(named.id, { state: 'WAITING_HUMAN', currentSuiteId: suite.id, currentSuiteRunId: pipeline.id });
         return prompt;
       };
       const savePrompt = seedBlocked('save');
