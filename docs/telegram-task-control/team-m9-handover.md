@@ -1,5 +1,9 @@
 # M-9 handover: the end-to-end tier
 
+**CLOSED 2026-09-25 by task M9, eight commits, `56d241c..b943650`, landed on main by fast-forward.**
+The full T1 suite is **127 of 127**. What this file predicted about the fake provider was right but incomplete: the fake was a symptom, and the cause was a second prompt builder the merge left behind. Two more product defects came out with it, one of which had killed the phone question card entirely.
+Read the closed **M-9** entry in [team-gap-register.md](team-gap-register.md) for what was found and how each item was classified; this file is kept for the working knowledge in sections 3.3 and 4, which still holds, and for section 5, which the V4 auditors need **with the two corrections the tracker's state block records**.
+
 Written 2026-09-25, by the orchestrator, for whoever picks this up in a fresh session.
 
 Read this after [team-burndown-tracker.md](team-burndown-tracker.md) and [team-gap-register.md](team-gap-register.md).
@@ -129,7 +133,9 @@ Worth deciding whether that glob should widen; it is recorded as a coverage gap,
 Section 5 of [team-reconcile-handover.md](team-reconcile-handover.md) still holds, with two additions made on 2026-09-25:
 
 - **Lint attribution stands, and was re-measured on 2026-09-25 rather than assumed.** 28 problems, 17 errors and 11 warnings, identical before and after the Agents page repair, every error in `components/activity/` or `components/pipeline/`. An earlier note in the tracker claiming five of them belonged to the deleted section was wrong and is withdrawn there.
-- **Check A2 fails on the T1 tier**, and the auditors should record that with M-9 named rather than treat it as unmeasured.
+- ~~**Check A2 fails on the T1 tier**~~ **Superseded 2026-09-25 by task M9: A2 passes on the T1 tier, 127 of 127.** Every tier A2 names is green on main.
+- **Corrected 2026-09-25 by task M9: the lint warning count above is wrong.** `npx eslint` in `web` gives 19 problems, **17 errors and 2 warnings**, measured identically on the M9 branch and on untouched main at `af7493f`. The 17 errors and the attribution stand exactly as written; the "11 warnings" does not reproduce and is withdrawn. Give the auditors 2.
+- **The server suite bar is 618, not 617**, after M9 added one test for the launcher carrying a blocked status's options.
 
 ## 6. Standing constraints, unchanged
 

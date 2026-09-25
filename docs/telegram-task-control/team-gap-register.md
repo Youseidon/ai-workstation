@@ -154,6 +154,11 @@ Also for the auditors: H07's close guard has **server-tier proof only and no T1 
 
 ### M-5. No npm script runs the Team web unit tests
 
+**CLOSED 2026-09-25 by task M9, commit `b943650`, on jd's decision to widen it now rather than after V4.**
+`npm run test --workspace web` covers both trees, 65 tests to **94**, and `test:web-ui` names the component tests alone. `test:quota-ui` keeps its four files exactly as `human-verification.md` cites them, so no recorded PASS row changes meaning.
+Widening found one red, **red since the merge and in `test:quota-ui`, the script the verification rows cite as passing**: it was 13 of 14. The tasks detail gained the definition-of-done panel, which raises toasts, so rendering it outside a `ToastProvider` throws where the app always supplies one at `app/layout.tsx:46`. A stale test, not a defect: it renders in the app's context now, with no assertion changed.
+
+
 F03's `web/components/tasks/teamThread.test.tsx` and F06's `web/components/agents/teamJoinCode.test.tsx` both exist and both pass.
 Neither is in any npm script, so they run only when invoked by hand.
 
@@ -231,6 +236,41 @@ That is re-verification of the Team track against a changed platform, and doing 
 **V4 and V5 are blocked on it**, because an audit is worth what the tree it audits is worth.
 
 ### M-9. The end-to-end tier has never been reconciled with upstream's agent prompt
+
+**CLOSED 2026-09-25 by task M9, eight commits, `56d241c..b943650`.**
+The **full T1 suite is 127 of 127** in 24.4 minutes, the first green pass since the reconcile.
+The server suite is **618 of 618 three times against one unchanged root** (617 plus one new test), shared 91 of 91, the web suite **94 of 94** now that the component tests run, all four workspaces typecheck, and web lint is unchanged at 17 errors.
+**The five failures this entry listed as untraced needed nothing of their own**: `S-L3-B-02` was a stale count, and `S-H4-02`, `S-L1-17`, `S-H6-21` and `S-L3-C1-10` went green with the product fixes below. Nothing was left unexplained.
+
+**The cause was not the fake provider.** The fake was a symptom. `startExecute` carried two prompt builders after the merge - ours, choosing between bound tools, the launcher and the offline protocol, and upstream's, inlining the context unconditionally - and upstream's came second and overwrote the choice.
+
+Three product defects, all merge-introduced, all invisible to every tier but T1:
+
+| Defect | What a user got | Where |
+| --- | --- | --- |
+| Two prompt builders, upstream's overwriting ours | On default settings - Host access off, Grok sandboxed - a saved-task run's only channel was a launcher its sandbox cannot reach, so the run ended UNREPORTED with the work possibly done | `runService.ts`, now `executeChannel` |
+| The launcher dropped the `options` a BLOCKED status carries | The phone's decision card offered nothing to choose between, and nothing downstream invents them | `agent-step blocked --options-file` |
+| `BLOCKED` stopped reading as awaiting a response | **No blocked task's question card reached the phone at all, and no blocked task appeared in any list.** The feature's primary path | `operationalState.ts`, now `awaitsResponse` |
+
+The third is the one to remember. A work item waiting on a person has two spellings in the status model - `BLOCKED`, stored and labelled "Needs you", and `AWAITING_RESPONSE`, the live overlay the model documents as an alias of it. Ours returned the overlay; upstream's returns the stored name. Neither is wrong, which is exactly why a merge could swap them silently, and the Telegram layer keyed on the overlay in two places. jd confirmed on 2026-09-25 that a blocked task's card reaching the phone is the intended purpose, so it was repaired rather than accepted.
+
+Four stale fixtures and one set of stale assertions, each classified rather than adjusted until green:
+
+| What | Class |
+| --- | --- |
+| The fake recognised a run by a curl line and the offline heading, neither of which the prompt has carried since the reconcile | Stale fixture |
+| `/api/sessions` ships no transcripts, so a run's events read as empty and S-H2-10 could not see a SIGKILL that was in the database | Stale fixture |
+| `S-L1-21` and `S-L3-A-13` built pipelines through routes that moved onto named pipelines, and died on a 404 in setup | Stale fixture |
+| `S-L3-B-02` counted one spelling of blocked, expecting 0 from a card that correctly said 1 | Stale fixture |
+| A failed run is FAILED and a silent one UNREPORTED, not BLOCKED: `S-H2-06`, `S-H2-09`, `S-H2-10`, `S-H2-12` and their scenario rows | Stale assertion |
+
+**What the H2 scenarios now assert, by jd's decision of 2026-09-25.**
+`S-H2-04` asserted a context fetch and "HTTP to 4100 only" from a curl the product gives nobody, and the launcher makes that call from a child process. It now asserts what is honestly observable: the launcher was minted for this run, the fake ran it for the remark and for DONE and called nothing itself, and the console's record for the run is exactly those two calls. The fake logs each call before making it, because the console ends the provider the moment a terminal status lands - a fake that logged only results had no record of the one call that mattered. `S-H2-07` keeps its claim, which the restored offline channel makes literally true: no launcher, no token, nothing run and nothing called.
+
+**Two findings worth carrying**, neither a T1 failure:
+
+- `views.ts` held a raw 0x00 and 0x1f where `[\x00-\x1f]` was meant. The regex behaved identically, so nothing failed - but the NUL made every tool treat the file as binary, and grep reports *no matches* in a binary file rather than saying it skipped it. Searching that file for a symbol returned nothing at all, which is how an auditor concludes a mapping does not exist. It is ours and predates the merge. Fixed in its own commit, `29a2c57`.
+- **`S-CLT-02` is now stale and was deliberately left alone.** It asserts a real Claude run calls `get_context`, which inlined context makes optional rather than required. That scenario needs a paid provider, so it cannot be run or verified here, and an assertion nobody can test is not one to adjust on reasoning alone. Recorded for whenever a paid run is authorised.
 
 Found on 2026-09-25 by running the full T1 suite for the first time since the reconcile, as part of M-8's own done criteria.
 **20 passed, 57 failed, 50 did not run.**
