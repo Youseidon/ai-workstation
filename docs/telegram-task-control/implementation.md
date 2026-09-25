@@ -1223,6 +1223,65 @@ Stated here because the counts above are the kind of thing a later reader quotes
 - **None of these fixes has live confirmation.** LT-4's re-run is V5, still unrun, and case 11 of the solo thread-grant check still reads PARTIAL against the pre-F02 behaviour.
 - No live Telegram credential, paid provider, remote write or push was used anywhere in the F track, and `team.enabled` and `team.handoverEnabled` both remain off by default.
 
+## 6f. H track close-out: TM4 handover
+
+Recorded 2026-09-26, closing audit 4's A6, which found no TM4 or H-track entry in this file at all - the same defect audit 3 found one track over.
+The H track built TM4, handover of a work item between two people's workstations.
+Its plan of record is section 5 of [`team-burndown-dev-brief.md`](../telegram-task-control/team-burndown-dev-brief.md), its rules are [`handover-rules.md`](../telegram-task-control/handover-rules.md) and its scenarios are [`tm4.md`](../e2e-scenarios/tm4.md).
+Range: `dc3e9de..main`.
+
+### The slices
+
+Every task landed on main from its own branch by fast-forward, and every branch and worktree was removed after it landed.
+Audit 4 confirmed the H span is strictly linear: `git log --merges 5b00ebe~1..1f01acd` is empty.
+
+| Slice | Delivered | Branch | Commits on main |
+| --- | --- | --- | --- |
+| H01 | `tm4.md`, the TM4 scenario table, skimmed by jd on 2026-09-21 | `tm/H01-tm4-scenarios` | `5b00ebe` |
+| H01b | jd's four rulings of 2026-09-21 folded into `tm4.md`. Documentation only | `tm/H01b-tm4-rulings` | `59a19a7` |
+| H02 | The item control record at `refs/aw/items/<item>/control`, and its migration | `tm/H02-control-record` | `013fec5..24c257d` |
+| H03 | Capture, preview and the open-call offer | `tm/H03-capture-and-offer` | `7d3fc6f..d5a528e` |
+| H04 | Discovery, accept, claim and the receiver's run under their own provider and policy | `tm/H04-accept-claim-run` | `1ad7dcc..bb77210` |
+| H05 | Return, review and apply, including the complete-baseline gate | `tm/H05-return-and-apply` | `123920e..a68ae98` |
+| H06 | **Closes gap C1**: the handover surface, six HTTP routes and the Telegram tap handler. Until this, no person could reach the engine | `tm/H06-handover-surface` | `2926149..04dca86` |
+| H07 | **Closes M-4 rule 4.5** by jd's ruling 7 of 2026-09-22: `/close` is refused while a handover is live | `tm/H07-refuse-close-while-live` | `d300b05..1f01acd` |
+
+**H01b, H06 and H07 have no card in the brief**, which is audit 4's A1 finding and is structural rather than sloppiness: H01b folded rulings jd made after the brief was written, H06 was opened mid-flight for gap C1 when H04 and H05 each independently found that nothing reached a user, and H07 exists because of a ruling made on 2026-09-22.
+Their acceptance criteria therefore live in the same tracker row that is also their evidence, which is what check A1 forbids.
+jd waived that half of A1 on 2026-09-26; the waiver is in the tracker.
+
+### Final verification on main
+
+Every command and count below was run by the audit 4 auditor on its own worktree of main at `a23d1dd`, independently of the orchestrator and of audit 3.
+
+| Tier | Command | Result |
+| --- | --- | --- |
+| Typecheck | `npm run typecheck` | exit 0, four workspaces |
+| Full T1 | `cd e2e && npx playwright test --project=t1` | `127 passed (23.0m)`, 0 failed, 0 skipped, 0 flaky |
+| Burn-in, A3 | `cd e2e && npx playwright test --repeat-each=3 --project=t1 tests/t1/tm4-handover.spec.ts` | `9 passed (8.6m)`, 0 flaky |
+| Full server suite, three times against one pinned root | `cd server && AGENT_CONSOLE_DB=<fixed> SETTINGS_FILE=<fixed> node --import tsx --test --test-concurrency=1 test/*.test.ts` | `# pass 618  # fail 0` each time, 113.3s / 103.5s / 101.8s |
+| Per-file | `teamControlRecord`, `teamHandoverCapture`, `teamHandoverRun`, `teamResultApply`, `teamHandoverSurface`, `taskControl` | 15, 19, 34, 25, 17, 12, all `# fail 0` |
+| Shared | `npm run test --workspace shared` | `# pass 91  # fail 0` |
+| Web | `npm run test --workspace web` | `# pass 94  # fail 0` |
+| Two-width rig | `npm run verify:handover-browser` | exit 0, PASS at 390 and 1280 |
+| Lint | `cd web && npx eslint .` | **exit 1**, `19 problems (17 errors, 2 warnings)` |
+
+The lint tier is the one red and it is not this track's.
+The auditor re-derived the attribution per file from `git log` rather than accepting it: all seven files carrying errors are upstream's, and no H-track file produces one.
+Registered as **L-12** and waived by jd; see the tracker.
+
+### What this evidence does not establish
+
+The H track's greens cover less than they appear to, and audit 4 was explicit about where.
+
+- **T1 proves the Telegram surface and only that surface.** `tm4-handover.spec.ts` publishes over HTTP and then drives real taps, but **never opens a browser**: `grep -nE "page\.|browser|goto|locator"` on the spec returns nothing. So the requester's web control `HandoverControl.tsx` has **no end-to-end proof that it is wired to the routes it calls**. Its evidence is a props-rendered React test plus the two-width rig, which renders the component in isolation with a CSS shim rather than the real Next.js page.
+- **H07's close guard has server-tier proof only.** `grep -rn handover_live e2e/` is empty. The data-loss path it shuts is asserted at the server tier and nowhere else.
+- **`9 passed` on the TM4 burn-in is not "TM-T1-H2 is covered".** That row's `must` clause in `tm4.md` specifies a simultaneous accept, a 2.5-minute drop, a quota partial return and a mid-run requirement question. The spec's own comments record that none is reachable, because the harness has one receiver. Written down honestly rather than hidden, and it bounds what the burn-in proves.
+- **The two-person runs have never happened.** `H-TM-LT3` and `H-TM-LT4` need two people on two machines and are gap M-1; the solo pilot is explicitly not a substitute. TM4's `LT-5` has no row in `human-verification.md` at all, not even one recording that it is blocked on F10.
+- This is the same lesson gap M-9 demonstrated and gap C3 repeats: **a green server suite is not evidence that a surface is wired to a person**, and only the end-to-end tier can settle it.
+
+No live Telegram credential, paid provider, remote write or push was used anywhere in the H track, and `team.enabled` and `team.handoverEnabled` both remain off by default.
+
 ## 7. Evidence still required
 
 At this implementation checkpoint, no Telegram bot has been connected, no peer
