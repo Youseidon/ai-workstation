@@ -12,7 +12,8 @@
     "verify:handover-browser": "node --import tsx ../scripts/verify-handover-browser.mjs --playwright @playwright/test",
     "test:handover-ui": "node --import tsx --test components/tasks/handoverControl.test.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
+    "test:web-ui": "node --import tsx --test $(find components -name '*.test.tsx' | sort)",
+    "test": "node --import tsx --test $(find test components \\( -name '*.test.ts' -o -name '*.test.tsx' \\) | sort)"
   },
   "dependencies": {
     "@agent-console/shared": "*",

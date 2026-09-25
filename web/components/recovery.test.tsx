@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { OperationsPrompt, OperationsSuite, PromptOption } from "@agent-console/shared";
 import { ContextPicker, promptState } from "./ContextPicker";
 import { activityRemarkLabel, WorkItemDetail } from "./tasks/WorkItemDetail";
+import { ToastProvider } from "./ui/Toast";
 
 function prompt(overrides: Partial<PromptOption> = {}): PromptOption {
   return {
@@ -158,7 +159,11 @@ test("ContextPicker shows START_UNKNOWN guidance without blind recovery or relea
 
 test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidance", () => {
   const item = operationsPrompt();
+  // The detail now carries the definition-of-done panel, which raises toasts, so
+  // it has to be rendered in the context the app always gives it (app/layout.tsx).
+  // Without the provider the hook throws and the whole detail fails to render.
   const html = renderToStaticMarkup(
+    <ToastProvider>
     <WorkItemDetail
       suite={suite(item)}
       item={item}
@@ -181,7 +186,8 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
       statusCatalog={DEFAULT_STATUS_CATALOG}
       triggerSentences={DEFAULT_TRIGGER_SENTENCES}
       onVerifyItem={() => {}}
-    />,
+    />
+    </ToastProvider>,
   );
 
   assert.match(html, /data-testid="start-unknown-warning"/);
