@@ -4,6 +4,9 @@ Created: 2026-09-20
 
 ## Start here
 
+**If you are resuming after the reconcile, read [team-reconcile-handover.md](team-reconcile-handover.md) first.**
+It holds the working knowledge behind row R1 and gap M-8, including the migration renumbering, the run-lifecycle change and the corrections V4's auditors must be given.
+
 Read this file, then **[team-gap-register.md](team-gap-register.md)**, which holds every open gap in four bands and is the answer to "what is left".
 Then [team-burndown-dev-brief.md](team-burndown-dev-brief.md) sections 2.1, 3, 6 and 7, then the open entries of [pilot-bug-log.md](pilot-bug-log.md).
 A fixed entry says so at the top of the entry, with the task and commits that closed it, so anything without that banner is still open.
