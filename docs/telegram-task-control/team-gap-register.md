@@ -152,6 +152,19 @@ C3 is a fourth, still open, found by reading rather than by any suite.
 
 The task: a T1 row that drives a live handover and asserts the close is refused, with the reason naming the handover, through the surface a person actually uses.
 
+
+**The task, carded 2026-09-26. Its own worker, its own branch.**
+
+Note first that this is a **deferred item coming due, not an oversight**. H07 judged that a T1 row belonged and said so at the time, leaving it to Phase V rather than writing it unasked, and its report told V4's auditors to treat the guard as a known end-to-end gap rather than as covered. Audit 4 did exactly that. Phase V is now where it is owed.
+
+| # | Acceptance criterion |
+| --- | --- |
+| 1 | A T1 row drives a **live handover** and asserts `/close` is refused, with the refusal naming the live handover, **through the surface a person actually uses** rather than by calling the guard. |
+| 2 | **The row is proven load-bearing by mutation**, which is this track's substitute for red-first when the code is already correct: disable the guard alone, show the new row goes red, restore it and show it green, and put both outputs in the commit message. F00B did this for its fixture fix and it is the reason that fix was believed. **A new test that has never failed proves nothing.** |
+| 3 | **Both `/close` paths are covered.** H07 recorded that the **text** command still mints its card and refuses on the tap rather than instead of the card, because refusing earlier meant turning two handlers async, and it chose one unbypassable guard over two that can diverge. That is a deliberate design, not a defect: assert what it actually does on both paths rather than asserting the tidier behaviour. |
+| 4 | Full server suite and full T1 green at the end, with counts, the new row among them. |
+| 5 | **Do not change the guard.** If driving it end to end reveals a behaviour difference from the server-tier tests, **report it and stop** - that is a finding, and deciding what the app should do is jd's. The one thing this task must not do is adjust product behaviour to make a new test pass. |
+
 ### C5. The requester's web handover surface has no end-to-end proof it is wired
 
 **Registered 2026-09-26 from audit 4. Its own task, by jd's ruling of 2026-09-26.**
@@ -165,6 +178,18 @@ What it has is a props-rendered React test and the two-width rig, and the rig re
 **This is precisely the claim gap C1 was about.** C1 was that the handover engine reached no user surface at all; H06 built the surface and closed it. What was never established is that the *web* half of that surface is connected, as opposed to present - and "present" and "wired" are different claims, which is the M-9 lesson in one line.
 
 The task: a T1 row that drives the requester's handover from the real page.
+
+
+**The task, carded 2026-09-26. Its own worker, its own branch. Sized larger than C4.**
+
+| # | Acceptance criterion |
+| --- | --- |
+| 1 | A T1 row drives the requester's handover **from the real page in a real browser**, not from props. The existing TM4 spec never opens one, so this is new capability in the handover spec rather than an added assertion. |
+| 2 | It asserts the **effect**, not the render: the offer reaches the control record and the routes actually fire. A test that proves the button exists would restate the evidence that already exists and close nothing. |
+| 3 | **Proven load-bearing by mutation**, as C4: break the control's wiring to its route alone, show the row goes red, restore and show green, both outputs in the commit message. This is the whole point of the task - C1 was "present but not wired", and only a test that fails when the wiring breaks can tell those apart. |
+| 4 | Full server suite and full T1 green at the end, with counts. |
+| 5 | **Report what is still not covered when you are done.** Driving one page does not make the web surface proven; say plainly which paths remain evidenced only by props-rendered tests and the two-width rig, so the next reader does not over-read this row the way `9 passed` on the TM4 burn-in can be over-read. |
+| 6 | If this turns out to need more than one row, or the harness cannot drive the page without new fixtures, **say so and stop** rather than growing the task silently. The size was flagged at carding and a bigger shape is jd's call. |
 
 ## High
 
