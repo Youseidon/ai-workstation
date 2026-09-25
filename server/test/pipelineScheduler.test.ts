@@ -551,6 +551,13 @@ for (const paused of [false, true]) test(`save-only holds a late completion call
     await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
     const promptId = ctx.prompts[0]!.id;
     const playing = workspaces.activePipeline(ctx.suite.id)!;
+    // The end-of-run ladder records UNREPORTED, not BLOCKED, for a run that ends
+    // without posting a status, so the question this answers is posted first.
+    workspaces.updateAgentStatus(playing.currentRunId!, {
+      requestId: `blockreq-${promptId}-${paused ? "p" : "r"}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+      reason: "The owner must confirm which edits to keep.",
+      verificationSummary: "Confirm which edits to keep.",
+    });
     workspaces.finishAgentRun(playing.currentRunId!, "done");
     if (paused) workspaces.updatePipelineRun(playing.id, { state: "PAUSED" });
     await saveHumanResponse(promptId, { content: "Keep the existing edits", expectedRevision: workspaces.humanInputState(promptId).revision });

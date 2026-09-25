@@ -28,6 +28,13 @@ function fixture() {
   const prompt = workspaces.createChild("prompt", suite.id, { title: "Task", content: "Use an owner-supplied list" }) as PromptRecord;
   const runId = `tg-run-${workspace.id}`;
   workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
+  // Upstream's end-of-run ladder records UNREPORTED, not BLOCKED, when a run ends
+  // without posting a status, so the block this fixture answers is posted explicitly.
+  workspaces.updateAgentStatus(runId, {
+    requestId: `blocked-${runId}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+    reason: "The owner must supply the trade directory.",
+    verificationSummary: "Supply the owner's trade directory.",
+  });
   workspaces.finishAgentRun(runId, "done");
   workspaces.respondToBlockedPrompt(prompt.id, { content: "Prior answer" });
   const handoff = workspaces.createHandoff({ id: `tg-handoff-${workspace.id}`, workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: "claude", model: null });
