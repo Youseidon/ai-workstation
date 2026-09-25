@@ -311,8 +311,11 @@ ${cmd} remark --kind PROGRESS --text "What changed or was verified"
 ${cmd} done --verification "Commands run and observable results"
 ${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
-${cmd} blocked --reason "Observed evidence" --action "Exact human action"
-${decompose}Every requestId must be unique for this run.
+${cmd} blocked --reason "Observed evidence" --action "Exact human action" [--options-file options.json]
+${decompose}
+When the human is choosing between courses of action, pass \`--options-file\` with the choices you weighed: \`[{"label": "...", "advantages": ["..."], "disadvantages": ["..."]}]\`. Report only trade-offs you actually weighed, and omit the file when there are none. Nothing generates them later, so a trade-off you leave out never reaches the human.
+
+Every requestId must be unique for this run.
 The launcher supplies one; do not reuse a requestId across calls.
 `;
 }

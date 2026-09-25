@@ -34,9 +34,13 @@ const USAGE = `agent-step — record progress and status for this work item.
   agent-step repair-verify --file repair.json
                                             Replace one demonstrably broken Verify
                                             command, then have the server re-run it
-  agent-step blocked --reason "…" --action "…"
+  agent-step blocked --reason "…" --action "…" [--options-file options.json]
                                             Stop for a human: evidence, and the exact
-                                            action only they can take
+                                            action only they can take. The file lists the
+                                            choices you actually weighed, as
+                                            [{"label":"…","advantages":["…"],"disadvantages":["…"]}];
+                                            nothing generates them later, so a trade-off
+                                            you leave out never reaches the human
   agent-step continue --remaining "…" [--verified "…"]
                                             Hand over: what still has to happen, as
                                             instructions for the run that resumes this
@@ -269,7 +273,18 @@ switch (command) {
         + "  Remaining implementation work is not a blocker; do it. This is for a concrete\n"
         + "  external dependency, after in-scope alternatives are exhausted.");
     }
-    await post("/status", { expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason, verificationSummary: action });
+    // The options are the difference between "an agent is stuck" and a card the
+    // human can decide from on their phone. Nothing downstream invents them, so
+    // a blocked post that drops them costs the human the choice.
+    let options;
+    if (typeof args["options-file"] === "string") {
+      let parsed;
+      try { parsed = JSON.parse(readFileSync(args["options-file"], "utf8")); } catch (error) { fail(`Could not read ${args["options-file"]}: ${error.message}`); }
+      options = Array.isArray(parsed) ? parsed : parsed?.options;
+      if (!Array.isArray(options)) fail("The options file must be a JSON array of {label, advantages, disadvantages}, or an object with an 'options' array.");
+      if (options.some((option) => typeof option?.label !== "string" || option.label.trim() === "")) fail("Every option needs a 'label' the human can choose by.");
+    }
+    await post("/status", { expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason, verificationSummary: action, ...(options ? { options } : {}) });
     break;
   }
   case "continue": {

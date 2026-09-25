@@ -32,23 +32,57 @@ export function agentApiReachabilityProblem(provider: ProviderId): string | null
   return savedPromptExecuteReachabilityProblem(provider);
 }
 
+/** Which channel a saved-task execute run reports its progress and outcome through. */
+export type ExecuteChannel = "tools" | "shim" | "offline";
+
 /**
- * The instruction that starts a saved-task execute run. In-process providers
- * get tools bound to the run credential, so the prompt carries no token and
- * the agent needs no shell or network permission to reach the local API.
+ * In-process adapters get tools bound to the run credential, so their prompt
+ * carries no token and they need no shell or network permission. Every spawned
+ * CLI gets the `agent-step` launcher instead - unless this provider's sandbox
+ * cannot reach the local console at all, in which case the run has no live
+ * channel and reports its outcome in its own final message.
+ *
+ * The choice has to be made here, in one place that the prompt builder is given
+ * the result of: a second branch that assembles a prompt of its own can be
+ * silently overwritten by the first, which is exactly what a merge did to this
+ * function and what left every sandboxed run unable to report (gap M-9).
+ */
+export function executeChannel(provider: ProviderId, reachabilityProblem: string | null): ExecuteChannel {
+  if (getAdapter(provider).supportsProgressTools) return "tools";
+  return reachabilityProblem === null ? "shim" : "offline";
+}
+
+const EXECUTE_PREAMBLE_LIVE = "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit \u2014 this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.";
+
+const EXECUTE_PREAMBLE_OFFLINE = "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit - this work item lives in a database outside this working directory, and nothing in this run can reach it. The status block described below is the only way your outcome is recorded, so do not finish without one.";
+
+/**
+ * The instruction that starts a saved-task execute run: the work item inlined,
+ * then the one channel this run reports through.
+ *
+ * The context is inlined rather than fetched. Handing it over as a tool result
+ * cost a turn before any work started, put it where it could not serve as a
+ * cached prompt prefix, and led agents to fetch it more than once and re-read a
+ * saved copy - three copies of the same text in one transcript. The endpoint
+ * stays for refreshes and for the Progress API.
  */
 export function savedTaskExecutePrompt(args: {
   taskLabel: string;
-  runId: string;
-  token: string;
-  progress: "tools" | "http";
+  context: string;
+  channel: ExecuteChannel;
+  contract: string;
 }): string {
-  const preamble = `Execute saved work item ${args.taskLabel}.`;
-  const rules = "The database is the source of truth. Do not search for a Markdown prompt file and never modify SQLite directly.";
-  if (args.progress === "tools") {
-    return `${preamble} Before doing anything else, call the \`${PROGRESS_TOOL_NAMES.getContext}\` tool to retrieve its authoritative context: the task, its dependencies, prior remarks and any human answers.\n\n${rules} Do the work the context describes, record remarks with the \`${PROGRESS_TOOL_NAMES.postRemark}\` tool, and record a final DONE or BLOCKED status with the \`${PROGRESS_TOOL_NAMES.postStatus}\` tool before finishing.\n\n${progressToolsMarkdown()}`;
-  }
-  return `${preamble} Before doing anything else, retrieve its authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${args.token}' ${agentApiUrl(args.runId, "context")}\n\n${rules} Follow the complete context returned by the endpoint, post remarks through its Progress API, and post a final DONE or BLOCKED status before finishing.`;
+  return [
+    `# Execute saved work item ${args.taskLabel}`,
+    "",
+    args.channel === "offline" ? EXECUTE_PREAMBLE_OFFLINE : EXECUTE_PREAMBLE_LIVE,
+    "",
+    "---",
+    "",
+    args.context,
+    "",
+    args.contract,
+  ].join("\n");
 }
 
 export interface OfflineAgentStatus {
@@ -298,36 +332,31 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       }
       activeContextRunId = plannedRunId;
       const taskLabel = record.externalKey ?? record.title;
-      if (getAdapter(provider).supportsProgressTools) {
-        progressTools = bindAgentProgressTools(plannedRunId, credential.token);
-        resolvedPrompt = savedTaskExecutePrompt({ taskLabel, runId: plannedRunId, token: credential.token, progress: "tools" });
-      } else if (reachabilityProblem === null) {
-        resolvedPrompt = savedTaskExecutePrompt({ taskLabel, runId: plannedRunId, token: credential.token, progress: "http" });
-      } else {
-        resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId))}\n\n${offlineCompletionProtocol(reachabilityProblem)}`;
-      }
       const depth = workspaces.decomposeDepth(promptId);
-      // One command with this run's credentials already in it, rather than a
-      // curl the model has to assemble. Per-run rather than per-process: the
-      // Claude adapter runs in this process, so credentials on process.env
-      // would be shared by every concurrent run.
-      const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
-      // The context is inlined rather than fetched. Handing it over as a tool
-      // result cost a turn before any work started, put it where it could not
-      // serve as a cached prompt prefix, and led agents to fetch it more than
-      // once and re-read a saved copy — three copies of the same text in one
-      // transcript. The endpoint stays for refreshes and for the Progress API.
-      resolvedPrompt = [
-        `# Execute saved work item ${record.externalKey ?? record.title}`,
-        "",
-        "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit — this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.",
-        "",
-        "---",
-        "",
-        contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
-        "",
-        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, shimPath }),
-      ].join("\n");
+      const channel = executeChannel(provider, reachabilityProblem);
+      let contract: string;
+      if (channel === "tools") {
+        progressTools = bindAgentProgressTools(plannedRunId, credential.token);
+        contract = progressToolsMarkdown();
+      } else if (channel === "shim") {
+        // One command with this run's credentials already in it, rather than a
+        // curl the model has to assemble. Per-run rather than per-process: the
+        // Claude adapter runs in this process, so credentials on process.env
+        // would be shared by every concurrent run.
+        const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+        contract = progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, shimPath });
+      } else {
+        // No launcher and no token on disk for a run that could never use them:
+        // this provider's sandbox has no route to the console, so the only thing
+        // that can carry its outcome out is the text of its final message.
+        contract = offlineCompletionProtocol(reachabilityProblem ?? "The local Progress API is not reachable from this provider sandbox.");
+      }
+      resolvedPrompt = savedTaskExecutePrompt({
+        taskLabel,
+        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
+        channel,
+        contract,
+      });
     }
   } else {
     resolvedPrompt = prompt?.trim() ?? "";

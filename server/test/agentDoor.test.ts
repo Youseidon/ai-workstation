@@ -267,6 +267,45 @@ test("the contract leads with the command, not a curl to assemble", () => {
   assert.ok(Buffer.byteLength(markdown) < 1024);
 });
 
+test("the blocked command can carry the choices a human decides from", () => {
+  // The options are a product requirement (L3 slice A2): the phone card is only
+  // decidable if the agent reported what it weighed. They travelled in the old
+  // curl contract, and the launcher has to carry them or the card loses them.
+  const markdown = progressApiMarkdown({
+    runId: "r1", token: "t", port: 4000, canDecompose: true, shimPath: "/tmp/x/agent-step",
+  });
+  assert.match(markdown, /blocked --reason .* --action .* \[--options-file options\.json\]/);
+  assert.match(markdown, /advantages/);
+  // And the command itself says so, for a model that reads the usage instead.
+  assert.match(run(["help"]).out, /blocked --reason .* \[--options-file options\.json\]/);
+
+  const dir = mkdtempSync(join(tmpdir(), "agent-door-options-"));
+  // A dead port: the file is checked before anything is sent, so a bad file is
+  // refused without spending a round trip, and a good one gets as far as the
+  // console being unreachable. What the server does with the options is
+  // S-L3-A2-11's job, end to end.
+  const creds = { AGENT_CONSOLE_RUN_URL: "http://127.0.0.1:1/api/agent/runs/r1", AGENT_CONSOLE_RUN_TOKEN: "tok" };
+  try {
+    const file = join(dir, "options.json");
+    writeFileSync(file, JSON.stringify({ notAnArray: true }));
+    const shaped = run(["blocked", "--reason", "r", "--action", "a", "--options-file", file], creds);
+    assert.equal(shaped.code, 1);
+    assert.match(shaped.err, /must be a JSON array of \{label, advantages, disadvantages\}/);
+
+    writeFileSync(file, JSON.stringify([{ advantages: ["fast"] }]));
+    const unlabelled = run(["blocked", "--reason", "r", "--action", "a", "--options-file", file], creds);
+    assert.equal(unlabelled.code, 1);
+    assert.match(unlabelled.err, /Every option needs a 'label'/);
+
+    writeFileSync(file, JSON.stringify([{ label: "Ship red", advantages: ["On brand"], disadvantages: ["Clashes"] }]));
+    const valid = run(["blocked", "--reason", "r", "--action", "a", "--options-file", file], creds);
+    assert.equal(valid.code, 1);
+    assert.match(valid.err, /Could not reach the console/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("with no launcher the raw contract is still there", () => {
   // A model that cannot run the command must still have a way to report.
   // Silently having none is the exact failure all of this guards against.

@@ -6,13 +6,14 @@ import test from "node:test";
 import { z } from "zod";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { claudePermissionConfig, claudeQueryOptions } from "../src/adapters/claude.ts";
+import { progressApiMarkdown } from "../src/agentContext.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { claudeProgressToolDefinitions } from "../src/adapters/claudeProgressTools.ts";
 import { getAdapter } from "../src/adapters/registry.ts";
-import { bindAgentProgressTools, readAgentContext } from "../src/agentProgressApi.ts";
+import { bindAgentProgressTools, progressToolsMarkdown, readAgentContext } from "../src/agentProgressApi.ts";
 import { buildCanUseTool } from "../src/lib/claudePermissions.ts";
 import { runContexts } from "../src/runContext.ts";
-import { agentApiReachabilityProblem, savedTaskExecutePrompt } from "../src/runService.ts";
+import { agentApiReachabilityProblem, executeChannel, savedTaskExecutePrompt } from "../src/runService.ts";
 import { settings } from "../src/settings.ts";
 import { workspaces } from "../src/workspaces.ts";
 
@@ -117,21 +118,43 @@ test("S-CLT-01/09/26: only runs given progress tools get the in-process server; 
   });
 });
 
-test("S-CLT-20/21/25: the tool prompt carries no curl, token or URL; the HTTP prompt is unchanged", () => {
+test("S-CLT-20/21/25: every channel is chosen once, and only the launcher channel carries a token", () => {
   const token = "tok_" + "x".repeat(32);
-  const tools = savedTaskExecutePrompt({ taskLabel: "REL-1", runId: "run_abc", token, progress: "tools" });
+  withHostAccess(false, () => {
+    assert.equal(executeChannel("claude", agentApiReachabilityProblem("claude")), "tools");
+    assert.equal(executeChannel("grok", agentApiReachabilityProblem("grok")), "offline");
+    assert.equal(executeChannel("cursor", agentApiReachabilityProblem("cursor")), "shim");
+  });
+  withHostAccess(true, () => {
+    assert.equal(executeChannel("grok", agentApiReachabilityProblem("grok")), "shim");
+  });
+
+  const context = "## Work item\n\nRename the INSTALL section.";
+  const tools = savedTaskExecutePrompt({ taskLabel: "REL-1", context, channel: "tools", contract: progressToolsMarkdown() });
   assert.doesNotMatch(tools, /curl|Bearer|\/api\/agent\/runs\//);
   assert.ok(!tools.includes(token));
-  assert.match(tools, /call the `get_context` tool/);
-  assert.match(tools, /`post_status` tool before finishing/);
-  assert.match(tools, /never modify SQLite directly/);
+  assert.match(tools, /`post_status` records exactly one terminal status/);
+  assert.match(tools, /never open or modify SQLite directly/);
   assert.match(tools, /## Progress tools/);
   assert.match(tools, /BLOCKED is only valid for a concrete external dependency/);
-  const http = savedTaskExecutePrompt({ taskLabel: "REL-1", runId: "run_abc", token, progress: "http" });
-  assert.match(http, /curl -fsS -H 'Authorization: Bearer tok_x+' \S+\/api\/agent\/runs\/run_abc\/context/);
-  // The tool path does not depend on Host access: runService picks it from the adapter capability alone.
+  assert.ok(tools.includes(context));
+
+  const shim = savedTaskExecutePrompt({ taskLabel: "REL-1", context, channel: "shim", contract: progressApiMarkdown({ runId: "run_abc", token, port: 4000, canDecompose: true, shimPath: "/tmp/run_abc/agent-step" }) });
+  assert.match(shim, /"\/tmp\/run_abc\/agent-step" done --verification/);
+  assert.doesNotMatch(shim, /curl/);
+  assert.ok(!shim.includes(token));
+
+  const offline = savedTaskExecutePrompt({ taskLabel: "REL-1", context, channel: "offline", contract: "## Offline completion reporting\n\nnone" });
+  assert.match(offline, /## Offline completion reporting/);
+  assert.doesNotMatch(offline, /agent-step|curl|Bearer/);
+  assert.match(offline, /nothing in this run can reach it/);
+
+  // The prompt is assembled in exactly one place. Two branches each building a
+  // prompt is what let a merge overwrite the offline one and leave every
+  // sandboxed run unable to report (gap M-9), and a green suite did not see it.
   const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
-  assert.match(source, /if \(getAdapter\(provider\)\.supportsProgressTools\) \{\s*progressTools = bindAgentProgressTools/);
+  const savedTaskBody = source.slice(source.indexOf("const taskLabel = record.externalKey"), source.indexOf("  } else {\n    resolvedPrompt = prompt?.trim()"));
+  assert.equal(savedTaskBody.match(/resolvedPrompt = /g)?.length, 1);
 });
 
 test("S-CLT-04/05/06/28: remarks, DONE status and context work through the tools without leaking the credential", async () => {
