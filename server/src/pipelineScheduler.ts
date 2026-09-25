@@ -833,7 +833,7 @@ async function startNextNamedStage(named: PipelineRun, preferPlayTarget = false)
   // A restarted run has no suite history of its own. Use the work item
   // outcomes to skip stages that were already finished by an earlier run.
   const next = pipeline.stages.slice(currentIndex + 1).find((stage) =>
-    workspaces.remainingPipelinePromptIds(stage.suiteId).some((promptId) => {
+    workspaces.remainingPipelinePromptIds(stage.suiteId, named.pipelineId).some((promptId) => {
       const status = workspaces.promptOutcome(promptId).status;
       return status !== "DONE" && status !== "SKIPPED";
     }),
