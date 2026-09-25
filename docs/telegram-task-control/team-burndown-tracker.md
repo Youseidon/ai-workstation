@@ -4,7 +4,10 @@ Created: 2026-09-20
 
 ## Start here
 
-**If you are resuming after the reconcile, read [team-reconcile-handover.md](team-reconcile-handover.md) first.**
+**If you are resuming after M-8, read [team-m9-handover.md](team-m9-handover.md) first.**
+It holds the working knowledge behind gap M-9, the state of every suite, and the answer to "is the Team code merged".
+
+[team-reconcile-handover.md](team-reconcile-handover.md) is the equivalent file for the reconcile and for M-8, which is closed.
 It holds the working knowledge behind row R1 and gap M-8, including the migration renumbering, the run-lifecycle change and the corrections V4's auditors must be given.
 
 Read this file, then **[team-gap-register.md](team-gap-register.md)**, which holds every open gap in four bands and is the answer to "what is left".
