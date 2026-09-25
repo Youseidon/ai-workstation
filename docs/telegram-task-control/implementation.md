@@ -1158,6 +1158,71 @@ Items 1, 2 and 5 write down what is already true. Items 3 and 4 were the genuine
 4. **Operational owner.** jd, **with a named fallback**, which is jd's amendment of 2026-09-20 to the drafted single-owner line. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members. The fallback matters because roster updates are signed by the owner and a revocation needs a fresh roster, so an unavailable owner means no member can be removed and no new member admitted. The fallback is Yousef, the only other roster member, and what he can do is deliberately narrower than ownership: he can reach the repository and read the records, but he cannot sign a roster update unless the owner's signing key has been handed over out of band as a separate, deliberate act. Until that happens the honest statement is that owner absence blocks roster changes and nothing else; threads, grants, personal control and an in-flight handover all continue. **jd should confirm the fallback is Yousef**, which the orchestrator assumed as the only candidate in a two-person team.
 5. **Enterprise data policy.** None applies. This is personal use by a two-person trusted team, and no customer or third-party data is expected in handed-over work. If that ever changes, retention and audience are the two items to revisit first.
 
+## 6e. F track close-out: the burn-down of the pilot's defects
+
+Recorded 2026-09-25, closing audit 3's A6, which found no F-track entry in this file at all.
+The F track burned down defects B1 to B19 from [`pilot-bug-log.md`](../telegram-task-control/pilot-bug-log.md), found by the solo Telegram pilot.
+Its plan of record is [`team-burndown-dev-brief.md`](../telegram-task-control/team-burndown-dev-brief.md) and its per-task evidence is in [`team-burndown-tracker.md`](../telegram-task-control/team-burndown-tracker.md).
+Range: `dc3e9de..main`.
+
+### The slices
+
+Every task landed on main from its own branch by fast-forward, and every branch and worktree was removed after it landed.
+
+| Slice | Closed | Branch | Commits on main |
+| --- | --- | --- | --- |
+| F00A | A pre-existing TM-T0-5-26 fixture failure found on main at `dc3e9de`, not caused by F01 | `fix/F00A-migration-26-fixture-timing` | `b72f21e` |
+| F01 | B12, `/help` and `/access` showing only current capabilities | `fix/F01-help-capabilities` | `506ea0a..7cca9cd` |
+| F02 | B14, and B17 apart from its pinned anchor. Owns the migration that adds `closed_at` and `closed_command_id` to `item_link` | `fix/F02-close-the-thread` | `32ce63c..cfb9d55` |
+| F03 | B2 and B7, opening a Team thread from the work item | `fix/F03-open-team-thread` | `fc01a2c..730fcde` |
+| F04 | B15, by decision: R-B amended to owner-initiated in the wording jd approved on 2026-09-20. Documentation only | none, applied on main | `a94da5e` |
+| F05 | B8, the supergroup upgrade and the local chat-id rewrite | `fix/F05-supergroup-upgrade` | `deb63fc..70c0cab` |
+| F06 | B1, reissuing a join code | `fix/F06-reissue-join-code` | `b43899c..b1b1143` |
+| F07 | B9, B11 and B16, bounding the anchor writes | `fix/F07-bound-anchor-writes` | `a5331a5..46b2522` |
+| F08 | B13, the completed anchor and its race with the run ending | `fix/F08-completed-anchor` | `9008c6f..e7d97cd` |
+| F09 | B5, B6, B18 and the age pluralization | `fix/F09-wording-papercuts` | `e7032e9..8b93dd9` |
+| F00B | Gap H-1, the two non-deterministic fixtures. Test-only, no product change | `fix/F00B-fixture-sweep` | `4070156..581aafd` |
+| F10 | Never started. Rig-only, deferred in gap register L-1 and needed only before LT-5 | none | none |
+
+Migration numbers in the F track's own commits were renumbered by the reconcile `a641b0c`: F02's 27 is now 50.
+Counts recorded inside the individual F rows (F02's 279/279, F07's 67/67, F09's 157/157 and the rest) were measured before that reconcile and do not reproduce on this tree.
+Only the figures below describe main.
+
+### Final verification on main
+
+Every command and count below was run by the audit 3 auditor on its own worktree of main at `3e21628`, independently of the orchestrator, and is reproduced here as A6 requires.
+The orchestrator had measured the same tiers separately during M9 and agrees on every figure; where the two runs differ it is only in wall-clock time.
+Main has advanced since `3e21628` by documentation commits alone, proven by `git diff --name-only 3e21628..main`, which lists only files under `docs/telegram-task-control/`.
+
+| Tier | Command | Result |
+| --- | --- | --- |
+| Typecheck | `npm run typecheck` | exit 0, four workspaces: shared, server, web, e2e |
+| Full T1 | `cd e2e && npx playwright test --project=t1` | `127 passed (27.1m)`, 0 failed, 0 skipped, 0 flaky |
+| Burn-in, A3 | `cd e2e && npx playwright test --repeat-each=3 --max-failures=1 --project=t1 tests/t1/tm3-grants.spec.ts` | `9 passed (6.3m)` |
+| Full server suite, three times against one unchanged root | `cd server && AGENT_CONSOLE_DB=<fixed> SETTINGS_FILE=<fixed> node --import tsx --test --test-concurrency=1 test/*.test.ts` | `# pass 618  # fail 0`, three times |
+| Shared | `npm run test --workspace shared` | `# pass 91  # fail 0` |
+| Web | `npm run test --workspace web` | `# pass 94  # fail 0` |
+| Lint | `cd web && npx eslint .` | **exit 1**, `19 problems (17 errors, 2 warnings)` |
+| Lint, F-track files only | `cd web && npx eslint components/tasks/TeamThreadPanel.tsx components/agents/TeamStatusPanel.tsx components/tasks/WorkItemDetail.tsx lib/workspacesApi.ts` | exit 0, no output |
+
+The server root was pinned deliberately.
+The workspace test script derives a database path from the shell pid, so three plain invocations each get a fresh database and the three-runs-against-one-root criterion would not actually be tested; `AGENT_CONSOLE_DB` was pinned as well as the repository root, which is the stricter reading, and it also passes.
+
+The lint tier is the one red, it is exit 1, and it is **not this track's**.
+All 17 errors are in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's.
+`origin/main` does not pass lint either.
+Audit 3 recorded this as A2 FAIL on the lint tier, and jd waived it on 2026-09-25; the waiver and its reasoning are in the tracker.
+
+### What this evidence does not establish
+
+Stated here because the counts above are the kind of thing a later reader quotes without the caveats.
+
+- **A green server suite is not proof that a surface is wired to a person.** M9 found three merge-introduced defects that compiled, passed lint and left the server suite green, one of which meant no blocked task's question card reached the phone at all. T1 is the only tier on this track that proves wiring.
+- **The supergroup upgrade, F05's subject, has no T1 row.** Its criterion asked for a harness case that upgrades a group mid-test; the e2e fake cannot upgrade a group, and the substitute is a T0 runtime test. Recorded as a deviation in the gap register.
+- **Two "checked at both widths" criteria, F03's and F06's, rest on evidence nobody can reproduce**, because no rig was committed for either. Gap register L-4.
+- **None of these fixes has live confirmation.** LT-4's re-run is V5, still unrun, and case 11 of the solo thread-grant check still reads PARTIAL against the pre-F02 behaviour.
+- No live Telegram credential, paid provider, remote write or push was used anywhere in the F track, and `team.enabled` and `team.handoverEnabled` both remain off by default.
+
 ## 7. Evidence still required
 
 At this implementation checkpoint, no Telegram bot has been connected, no peer
