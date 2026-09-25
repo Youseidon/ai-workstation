@@ -202,6 +202,15 @@ Needs jd.
 
 ### M-8. Upstream's run lifecycle contradicts Team's verified expectations
 
+**CLOSED 2026-09-25 by task M8, landed on main at `094542e`.**
+The server suite is **617 of 617**, run three times against one unchanged root, and all four workspaces typecheck.
+Every one of the ten remaining failures was classified as a stale fixture, a stale assertion or a real defect, with the reasoning in the tracker's log and in each commit message.
+Four merge-introduced product defects were fixed under jd's ruling of 2026-09-25: the Telegram card's flowchart position, the dropped `terminalStatusApplyFailure` reason, the deleted Task Control section on the Agents page, and `AWAITING_RESPONSE` carrying no precedence.
+**The Resume button was investigated to jd's instruction and is not broken**; the two end-to-end fixtures described a rail the app can no longer build, and the detail is in the tracker's log of 2026-09-25.
+What M-8 did **not** close is the end-to-end tier, which is now **M-9**.
+
+The history below is kept because the audits cite it.
+
 Found by the reconcile `a641b0c`, and the reason the server suite is **486 of 617** on the merged tree.
 
 This is not a merge resolution error, and it is worth being precise about that.
@@ -220,6 +229,34 @@ That is re-verification of the Team track against a changed platform, and doing 
 
 **jd's decision of 2026-09-22**: scope it as its own task with its own worker and branch, red-first, with evidence per case, rather than have the orchestrator make 128 semantic calls unreviewed.
 **V4 and V5 are blocked on it**, because an audit is worth what the tree it audits is worth.
+
+### M-9. The end-to-end tier has never been reconciled with upstream's agent prompt
+
+Found on 2026-09-25 by running the full T1 suite for the first time since the reconcile, as part of M-8's own done criteria.
+**20 passed, 57 failed, 50 did not run.**
+Nobody had measured this tier after the merge: the handover's state table reports the server suite, typecheck and lint, and says nothing about T1.
+
+Two causes account for nearly all of it, and one is already fixed.
+
+**Fixed inside M-8**: the merge had deleted the Task Control section from the Agents page, leaving `TelegramSetupPanel`, `TeamStatusPanel`, `TeamCreatePanel` and `TeamJoinPanel` imported and rendered nowhere.
+Nine T1 specs went green when it was restored.
+
+**Still open, and the substance of M-9**: upstream rewrote the saved-task execute prompt.
+The work-item context is now **inlined** in the prompt rather than fetched, and the Progress API is reached through a generated **shim** invoked as `"<shimPath>" done --verification ...` rather than through a `curl -H 'Authorization: Bearer ...' .../context` line the prompt carries.
+The T1 fake provider recognises a run by that `curl` line and by the `## Offline completion reporting` heading, so every run now falls through to its `custom` path, reads **0 characters of context**, and fails.
+Verified directly by logging the prompt the fake received: 3080 characters, beginning `# Execute saved work item`, with the context inlined and no `curl` anywhere.
+
+**Why this is its own task and not more of M-8.**
+It is a second reconciliation of comparable size against a different surface, and it is not the run lifecycle.
+The fake has to be taught the new shape, and the H2 scenarios have to be re-decided rather than re-pointed: "makes no HTTP call" and "posts DONE over HTTP to 4100 only" describe a `curl` the product no longer tells any agent to use, and the shim makes that call from a child process instead.
+That is a judgement about what those scenarios are for, which is the kind of call that belongs in a task with its own card.
+
+**jd's decision of 2026-09-25**: land M-8 on the server tier's evidence and register this separately, rather than bundle the two.
+
+**V4 is blocked on M-9**, for the reason V4 was blocked on M-8: an audit is worth what the tree it audits is worth, and check A2 requires the full T1 suite to pass.
+
+Known to be in scope, beyond the fake itself: `l3-b-views` `/status` counts, `h4-time-seams` S-H4-02, `h6-route-proxy` S-L1-17, `h6-stale-updates` S-H6-21 and `l3-c1-threads` S-L3-C1-10 all failed and have not been traced to either cause yet.
+The 50 that did not run are serial-dependent on a failure earlier in their file, so the true count is higher than 57.
 
 ## Low
 

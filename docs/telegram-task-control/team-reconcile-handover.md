@@ -2,6 +2,13 @@
 
 Written 2026-09-25, by the orchestrator, for whoever picks this up in a fresh session.
 
+> **Superseded in part on 2026-09-25: M-8 is done and landed on main at `094542e`.**
+> The server suite is 617 of 617 and gap M-8 is closed.
+> Sections 1 and 7 below describe the state before that and are kept because the audits cite them; the [tracker](team-burndown-tracker.md) is the current state of record.
+> Two things this file did not know: the merge had also deleted the Task Control section from the Agents page, and the T1 suite had never been run since the reconcile and is broadly red.
+> The second is now gap **M-9**, and **V4 is blocked on it**.
+> Section 5's corrections for the auditors still stand, with one addition recorded there.
+
 This file exists because the reconcile with `origin/main` turned out to be a much larger piece of work than the brief anticipated, and the knowledge it produced is not recoverable from the commits alone.
 Read this after [team-burndown-tracker.md](team-burndown-tracker.md) and [team-gap-register.md](team-gap-register.md), not instead of them.
 The tracker is still the state of record; this is the working knowledge behind its R1 row and gap M-8.
@@ -174,7 +181,9 @@ These contradict what the original V4 brief says, and were verified rather than 
 - **A2 and A3**: cite post-merge numbers, and they are not green yet.
 - **Lint**: 17 errors and 11 warnings, every error in upstream's own files. Attributed, not assumed: **only this side ever modified `web/eslint.config.mjs`**, and only to add harness ignore paths, and the lint tooling versions are identical on both sides. **`origin/main` does not pass web lint.**
 - **H07's close guard** has server-tier proof only and no T1 row, so it is a known end-to-end coverage gap rather than covered.
-- Of the 330 unpushed commits, only **114 are the Team track**; **216 are earlier local work**. The audit range starts at `dc3e9de`.
+- Of the 330 unpushed commits, only **114 are the Team track**; **216 are earlier local work**. The audit range starts at `dc3e9de`. Main is now at `094542e`, **351 ahead of `origin/main` and 0 behind**, after M-8's 17 commits and the documentation commits around them.
+- **Added 2026-09-25, and it corrects the lint line above.** Five of the 17 lint errors sat in `web/components/agents/AgentsView.tsx` as dead symbols - four unused panel imports, `CAPABILITY_BADGE` and an orphaned capability state - and they were consequences of the merge deleting that file's Task Control section, not upstream's own work. That section is restored, so **the lint count and its attribution must be re-measured before being quoted**, rather than repeated from this file.
+- **Added 2026-09-25**: check **A2** requires the full T1 suite to pass, and it does not. At the last full run it was 20 passed, 57 failed, 50 not run; the Agents page repair has since taken nine of those green, and the rest is gap **M-9**. The auditors should record A2 as failing on that tier with M-9 named, rather than treat it as unmeasured.
 
 ## 6. Standing constraints, unchanged
 
