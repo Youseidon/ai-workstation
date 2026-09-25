@@ -16,7 +16,7 @@ test("S-H2-01: detection runs the fake like the real binary and never reads the 
   expect(server.HOME).toBe(harness.homeDir);
 });
 
-test("S-H2-04: a done scenario fetches context, posts a remark and DONE over HTTP to 4100 only", async ({ harness }) => {
+test("S-H2-04: a done scenario reads the inlined context and reports through the launcher only", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { content: "Add a CHANGELOG line for release 7.", scenarios: [{ behavior: "done", remark: "Wrote the changelog line." }] });
   const session = await waitForRunEnd(task, runId);
   expect(session.state.toUpperCase()).toBe("DONE");
@@ -25,11 +25,26 @@ test("S-H2-04: a done scenario fetches context, posts a remark and DONE over HTT
   expect(history.remarks.filter((remark) => remark.kind === "PROGRESS" && remark.content === "Wrote the changelog line.")).toHaveLength(1);
   expect(history.events.filter((event) => event.newStatus === "DONE" && event.actorType === "AGENT")).toHaveLength(1);
   const log = harness.fakeProvider.log();
-  expect(log.find((entry) => entry.event === "start")?.path).toBe("live");
+  const start = log.find((entry) => entry.event === "start");
+  expect(start?.channel).toBe("shim");
+  // The launcher was minted for this run, so the channel cannot be something the
+  // fake assembled for itself out of a token it read somewhere.
+  expect(String(start?.shim)).toMatch(new RegExp(`agent-console-\\d+/${runId}/agent-step$`));
+  // The work item arrives inlined. Zero characters here is what gap M-9 looked
+  // like from the outside: a prompt the fake did not recognise at all.
   expect(log.find((entry) => entry.event === "context")?.chars).toBeGreaterThan(0);
-  const calls = log.filter((entry) => entry.event === "http");
-  expect(calls.map((entry) => `${entry.method} ${String(entry.path).replace(/runs\/[^/]+/, "runs/:id")}`)).toEqual(["GET /api/agent/runs/:id/context", "POST /api/agent/runs/:id/remarks", "POST /api/agent/runs/:id/status"]);
-  expect(new Set(calls.map((entry) => entry.host))).toEqual(new Set(["127.0.0.1:4100"]));
+  // The launcher was the fake's only channel. It makes the HTTP call from a child
+  // process, so what the fake can honestly claim is which commands it ran, not
+  // which sockets they opened - and it cannot claim anything after the last one,
+  // because the console ends the provider as soon as the status lands.
+  expect(log.filter((entry) => entry.event === "exec").map((entry) => entry.command)).toEqual(["remark", "done"]);
+  expect(log.filter((entry) => entry.event === "shim" && entry.command === "remark").map((entry) => entry.code)).toEqual([0]);
+  expect(log.filter((entry) => entry.event === "http")).toEqual([]);
+  // And the console on 4100 recorded exactly those two against this run, which is
+  // what makes the DONE above the launcher's work: a call this server has a
+  // record of is a call that reached this server.
+  const commands = harness.query<{ operation: string }>("SELECT operation FROM agent_command WHERE run_id = ? ORDER BY created_at, rowid", runId);
+  expect(commands.map((row) => row.operation)).toEqual(["remark", "status"]);
 });
 
 test("S-H2-05: a block-on-decision scenario leaves the prompt BLOCKED by the agent with exactly one run", async ({ harness }) => {
@@ -44,21 +59,23 @@ test("S-H2-05: a block-on-decision scenario leaves the prompt BLOCKED by the age
   expect(await state.sessionsFor(task)).toHaveLength(1);
 });
 
-test("S-H2-06: a failing agent ends ERROR and the prompt is BLOCKED by the system", async ({ harness }) => {
+test("S-H2-06: a failing agent ends ERROR and the item is FAILED by the system, never DONE", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "fail" }] });
   const session = await waitForRunEnd(task, runId);
   expect(session.state.toUpperCase()).toBe("ERROR");
-  expect((await state.prompt(task)).status).toBe("BLOCKED");
-  const system = (await state.history(task)).events.find((event) => event.newStatus === "BLOCKED");
+  // An observed crash is a fact, so it lands on FAILED rather than on BLOCKED,
+  // which is what the pipeline parks on and what a human is asked to answer.
+  expect((await state.prompt(task)).status).toBe("FAILED");
+  const system = (await state.history(task)).events.find((event) => event.newStatus === "FAILED");
   expect(system?.actorType).toBe("SYSTEM");
-  expect(system?.reason).toMatch(/without posting the required DONE or BLOCKED status/);
+  expect(system?.reason).toMatch(/The agent process failed/);
 });
 
 test("S-H2-10: a crash after spawn ends ERROR, releases the start intent and leaves no process", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "crash-after-spawn" }] });
   const session = await waitForRunEnd(task, runId);
   expect(session.state.toUpperCase()).toBe("ERROR");
-  expect((await state.prompt(task)).status).toBe("BLOCKED");
+  expect((await state.prompt(task)).status).toBe("FAILED");
   const pid = harness.fakeProvider.log().find((entry) => entry.event === "crash")?.pid as number;
   expect(isAlive(pid)).toBe(false);
   const errors = session.events.filter((event) => event.type === "error").map((event) => (event.payload as { message: string }).message);
@@ -89,7 +106,7 @@ test("S-H2-12: the fake checks what the agent actually received and fails when i
   const absent = await runSavedTask(harness, { content: "Nothing special here.", scenarios: [{ behavior: "consume-answer", expectInContext: "KESTREL-42" }] });
   const session = await waitForRunEnd(absent.task, absent.runId);
   expect(session.state.toUpperCase()).toBe("ERROR");
-  expect((await state.prompt(absent.task)).status).toBe("BLOCKED");
+  expect((await state.prompt(absent.task)).status).toBe("FAILED");
 });
 
 function readEnv(pid: number | null): Record<string, string> {

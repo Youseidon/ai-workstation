@@ -5,16 +5,24 @@ import { runSavedTask, waitForRunEnd } from "../../src/scenarios.ts";
 // Scenario IDs refer to docs/e2e-scenarios/h0-h4.md. Inline path: sandboxed provider, no Progress API.
 test.use({ harnessOptions: { fakeProvider: "inline" } });
 
-test("S-H2-07: done on the inline path embeds context, makes no HTTP call and applies the final status block", async ({ harness }) => {
+test("S-H2-07: done on the offline channel embeds context, is given no launcher and applies the final status block", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { content: "Rename the INSTALL section to Setup.", scenarios: [{ behavior: "consume-answer", expectInContext: "Rename the INSTALL section to Setup." }] });
   const session = await waitForRunEnd(task, runId);
   expect(session.state.toUpperCase()).toBe("DONE");
   expect((await state.prompt(task)).status).toBe("DONE");
   const log = harness.fakeProvider.log();
-  expect(log.find((entry) => entry.event === "start")?.path).toBe("inline");
+  const start = log.find((entry) => entry.event === "start");
+  expect(start?.channel).toBe("offline");
+  // This provider's sandbox has no route to the console, so it is given neither a
+  // launcher nor a token: nothing it could run would reach 4100, and the only
+  // thing that carries its outcome out is the text of its final message.
+  expect(start?.shim ?? null).toBeNull();
+  expect(log.filter((entry) => entry.event === "shim")).toEqual([]);
   expect(log.filter((entry) => entry.event === "http")).toEqual([]);
-  const done = harness.query<{ request_id: string }>("SELECT request_id FROM agent_command WHERE run_id = ? AND operation = 'status'", runId);
-  expect(done.map((row) => row.request_id)).toEqual(["offline-status-final"]);
+  // So the one status recorded for the run is the server's own, parsed from that
+  // message after the process exited.
+  const commands = harness.query<{ request_id: string; operation: string }>("SELECT request_id, operation FROM agent_command WHERE run_id = ?", runId);
+  expect(commands).toEqual([{ request_id: "offline-status-final", operation: "status" }]);
 });
 
 test("S-H2-08: blocked on the inline path records the reason and human action", async ({ harness }) => {
@@ -29,14 +37,23 @@ test("S-H2-08: blocked on the inline path records the reason and human action", 
 });
 
 test("S-H2-09: a crash, a malformed status block or no block never produce DONE", async ({ harness }) => {
-  for (const scenario of [{ behavior: "fail" as const }, { behavior: "done" as const, malformedStatus: true }, { behavior: "done" as const, skipStatus: true }]) {
+  // Three endings, and the item lands on what was actually observed: a process
+  // that failed is FAILED, a process that finished and said nothing is
+  // UNREPORTED. Neither is DONE, and neither is BLOCKED - nobody has a question
+  // to answer, so parking the station on a human would strand it.
+  const cases = [
+    { scenario: { behavior: "fail" as const }, runState: "ERROR", status: "FAILED", reason: /The agent process failed/ },
+    { scenario: { behavior: "done" as const, malformedStatus: true }, runState: "DONE", status: "UNREPORTED", reason: /ended done without posting a status/ },
+    { scenario: { behavior: "done" as const, skipStatus: true }, runState: "DONE", status: "UNREPORTED", reason: /ended done without posting a status/ },
+  ];
+  for (const { scenario, runState, status, reason } of cases) {
     const { task, runId } = await runSavedTask(harness, { scenarios: [scenario] });
     const session = await waitForRunEnd(task, runId);
-    expect(session.state.toUpperCase()).toBe(scenario.behavior === "fail" ? "ERROR" : "DONE");
-    expect((await state.prompt(task)).status).toBe("BLOCKED");
-    const event = (await state.history(task)).events.find((item) => item.newStatus === "BLOCKED");
+    expect(session.state.toUpperCase()).toBe(runState);
+    expect((await state.prompt(task)).status).toBe(status);
+    const event = (await state.history(task)).events.find((item) => item.newStatus === status);
     expect(event?.actorType).toBe("SYSTEM");
-    expect(event?.reason).toMatch(scenario.behavior === "fail" ? /ended error without posting/ : /ended done without posting/);
+    expect(event?.reason).toMatch(reason);
   }
 });
 
