@@ -45,6 +45,12 @@ Gap H-3 and G02 closed inside it.
 
 V2 completed 2026-09-22 by the orchestrator, since F00B's proof runs had already produced most of it:
 
+**Superseded 2026-09-26.** The V2 table below records what was measured on 2026-09-22, before the reconcile `a641b0c`, and **none of its figures describes main today**.
+The server bar is now **618**, not 417, and lint is **exit 1 with 17 errors and 2 warnings**, not exit 0 with 0 errors - which contradicted L-12 in this same file until this note was added.
+Current figures, each measured independently by two auditors, are in `implementation.md` sections 6e and 6f.
+The table is kept because audits 1 to 4 cite it.
+
+
 | V2 item | Result | Who ran it |
 | --- | --- | --- |
 | Full server suite | 417/417, three times against one unchanged root | orchestrator, independently |
@@ -129,6 +135,37 @@ Whether to take that as a task, and whether the fix is `awaitsResponse` at these
 
 Scope note for whoever takes it: criterion 1 is the whole point of the task. The fix itself is two lines. If the T1 case cannot be made to fail before the fix, **stop and say so** rather than fixing on the strength of the code reading - that would be the same mistake as trusting a structural check.
 
+### C4. H07's close guard is proven at the server tier only
+
+**Registered 2026-09-26 from audit 4, which ranked it the one failure with product risk behind it. Its own task, by jd's ruling of 2026-09-26.**
+
+H07 closed M-4's rule 4.5 by jd's ruling 7: `/close` is refused while a handover is live, so an owner cannot destroy a receiver's unreturned work.
+That is the **data-loss** shape, and it is the only one of the seven rulings that needed a task rather than a document.
+
+It has no end-to-end row. `grep -rn handover_live e2e/` is empty.
+The guard's entire proof is the server tier.
+
+This is the third time on this track that the same bet has been placed.
+M-9 found three merge-introduced defects that every tier but T1 reported as fine.
+C3 is a fourth, still open, found by reading rather than by any suite.
+**The tier that would catch a regression here is the one tier this guard has never run in.**
+
+The task: a T1 row that drives a live handover and asserts the close is refused, with the reason naming the handover, through the surface a person actually uses.
+
+### C5. The requester's web handover surface has no end-to-end proof it is wired
+
+**Registered 2026-09-26 from audit 4. Its own task, by jd's ruling of 2026-09-26.**
+
+The TM4 end-to-end spec proves the **Telegram** surface and only that surface.
+`e2e/tests/t1/tm4-handover.spec.ts` publishes over HTTP and then drives real taps, but it **never opens a browser**: `grep -nE "page\.|browser|goto|locator"` on the spec returns nothing.
+
+So `HandoverControl.tsx`, the control a requester uses to start a handover from the web app, has no end-to-end evidence that it is wired to the routes it calls.
+What it has is a props-rendered React test and the two-width rig, and the rig renders the component in isolation with a CSS shim rather than the real Next.js page.
+
+**This is precisely the claim gap C1 was about.** C1 was that the handover engine reached no user surface at all; H06 built the surface and closed it. What was never established is that the *web* half of that surface is connected, as opposed to present - and "present" and "wired" are different claims, which is the M-9 lesson in one line.
+
+The task: a T1 row that drives the requester's handover from the real page.
+
 ## High
 
 ### H-1. A fixture breaks on its second run, and burn-ins re-run by definition
@@ -195,7 +232,7 @@ Three further mismatches are consequences of jd's 2026-09-22 decision to reconci
 
 - **D2** is no longer "is the range linear". `git log --merges dc3e9de..main` returns **three** commits, not the one jd anticipated: the reconcile `a641b0c`, plus `b855ec2` and `fa92586`, which are Yousef's own pull-request merges and arrived inside his 29 commits. Record the honest reading: **no merge commit is a task landing**, every task still landed by fast-forward.
 - **D9** must account for **29 commits owned by no tracker row**. They are Yousef's, were never claimed by this track, and are out of range rather than unexplained. The check that still bites is that no commit *of ours* in the range lacks a row.
-- **A2 and A3** must cite the post-merge numbers, which are **not green**: server 486/617, four workspaces typecheck clean, web lint 17 errors and 11 warnings with every error in upstream's own files. This is why V4 is blocked on M-8.
+- **A2 and A3** must cite the post-merge numbers. ~~server 486/617 ... 17 errors and 11 warnings ... V4 is blocked on M-8~~ **All three superseded; corrected 2026-09-26 after audit 4 found this entry still carrying them.** M-8 is closed, the server bar is **618**, lint is **17 errors and 2 warnings**, and every tier A2 names is green on main except lint. The attribution of the errors to upstream stands unchanged.
 
 Also for the auditors: H07's close guard has **server-tier proof only and no T1 row**, so treat it as a known end-to-end coverage gap rather than as covered.
 
@@ -417,6 +454,8 @@ Until it is built, **F05's third criterion is unmet and recorded as unmet**, rat
 | L-10 | **`h6-route-proxy.spec.ts:21` still cuts its call log by timestamp** | Same `call.at >= cutAt` shape F00B repaired in `l3F1.ts`. Left alone deliberately: the card records this file as already repaired under T20A, and re-cutting another task's repair with no failing symptom is churn. Residual risk flagged, not acted on. |
 | L-11 | **F00B's `l3F1.ts` change is shared with T3 and was validated only on the T1 path** | `e2e/tests/t3/l3-f1-edits-live.spec.ts` imports the same helper and could not be run here, because T3 needs live Telegram credentials which are forbidden. The change is backend-agnostic (`telegramCalls()` returns an append-only array under both T1 and T3, so an index cut behaves identically), but it is untested on T3. |
 | L-12 | **main carries `origin/main`'s 17 lint errors** | The `web` workspace lints at **19 problems, 17 errors and 2 warnings**, exit 1, and every error is in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's. `origin/main` does not pass lint either, and the F-track files lint clean on their own (`npx eslint components/tasks/TeamThreadPanel.tsx components/agents/TeamStatusPanel.tsx components/tasks/WorkItemDetail.tsx lib/workspacesApi.ts` is exit 0, no output). This is what audit 3 recorded as A2 FAIL on the lint tier, and **jd waived it on 2026-09-25**; nothing in the Team track can close it. Registered here so that no later claim of a green lint tier can be made by omission. |
+| L-13 | **The `e2e` workspace's own test suite is in no tier any check names, and showed one failure nobody could name** | `npm run test --workspace e2e` is not in the root `npm test` and is not among the tiers A2 lists, so nothing routine runs it. Audit 4 saw it give `# pass 46 # fail 1` on a first invocation and 47/47 on seven consecutive re-runs, and could not recover the failing test's name because that run's output was filtered to summary lines. **Recorded as unverifiable rather than passed or failed**, which was the right call. These files are harness self-tests that start real servers, so a real failure here would be a failure of the instrument the whole track's evidence rests on. Registered 2026-09-26. |
+| L-14 | **Two record leftovers audit 4 found** | TM4's `LT-5` has no row in [human-verification.md](human-verification.md) at all - not even one recording that it is blocked on F10 - while `LT-3` and `LT-4` each got a deferral row. Separately, H02's migration is **52** after the reconcile renumbered it, but the table it rebuilds is still named `task_control_action_v29` (`server/src/workspaces.ts:1763`) and its error string still reads "Migration 29" (`:1797`). Both are cosmetic - the internal temp-table name is invisible to users and the migration runs correctly - but the second will read as a contradiction to the next person who greps for migration numbers. Registered 2026-09-26. |
 
 ## Closed while this register was open
 

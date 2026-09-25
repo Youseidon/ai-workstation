@@ -199,6 +199,40 @@ One is a re-verification shortfall in the audit rather than a defect in the work
 
 **What the waiver does not do**: it does not make F05's third criterion met, and it does not make the supergroup upgrade end-to-end proven. M-10 says so, and the source says so above the two T0 cases.
 
+## jd's waivers of audit 4, 2026-09-26
+
+Audit 4 over the H track **FAILed on the same five ids as audit 3** - D1, D9, A1, A2, A6 - for partly different reasons, with ten checks passing and no live product defect.
+jd was given all five with what would close each, and ruled on 2026-09-26 to mirror audit 3's routing.
+
+**D9, A6, and D1's two cells were fixed rather than waived**; those commits are above. The two below are waived.
+
+### A2, the lint tier. Waived, as for audit 3.
+
+`cd web && npx eslint .` is exit 1, 19 problems, 17 errors and 2 warnings.
+Audit 4 **re-derived the attribution per file from `git log` rather than accepting the correction it was given**: all seven files carrying errors are upstream's, and no H-track file produces an error.
+Nothing in the Team track can close it. Registered as **L-12**.
+
+### A1, the half that turns on missing cards. Waived.
+
+Five of the eight H tasks - H01, H02, H03, H04, H05 - have acceptance criteria stated in the brief independently of the tracker, and the auditor re-verified **every one as met on main**.
+
+**H01b, H06 and H07 have no card anywhere.** `grep` for them in the burn-down brief returns nothing, so their criteria exist only in the tracker row that is also their evidence, which is what A1 forbids. Their factual claims all reproduced when the auditor checked them.
+
+This is structural rather than sloppiness, and the waiver rests on the reason rather than on the outcome:
+
+- **H01b** folded four rulings jd made on 2026-09-21, after the brief was written.
+- **H06** was opened mid-flight for gap C1, when H04 and H05 each independently found that nothing connected the engine to a person and each correctly flagged it rather than building it. No card owned the surface, which is the process failure C1 already records.
+- **H07** exists because of jd's ruling 7 of 2026-09-22.
+
+A card written now would be written from the row it is meant to be independent of, which would satisfy the check while making the record worse. Recorded as the deviation it is.
+
+**Two things inside A1 are not covered by this waiver and are being acted on**, by jd's ruling of 2026-09-26:
+
+- **H07's close guard has server-tier proof only and no T1 row.** The auditor ranked it the one failure with product risk behind it. Its own task.
+- **The requester's web handover surface has no end-to-end proof it is wired to the routes it calls.** Its own task.
+
+Also recorded, and not a failure: H04's and H05's T1 criteria were **unmet at merge** - their rows were `test.fixme` - and are met on main only because H06 later built the surface. The dates in the rows do not show that on their own.
+
 ## Log
 
 - 2026-09-20: Tracker created. F01 started directly by the orchestrator per the split execution model. Scope is the TM-T1-4 assertion gap for `/help` and `/access`, then the `/help` fix (B12).
@@ -334,3 +368,9 @@ One is a re-verification shortfall in the audit rather than a defect in the work
 - 2026-09-26: **jd ruled on C3, on H07's row and on audit 4's timing.** **C3 gets its own task with its own worker, red at T1 first**: the T1 case that drives a blocked-without-handoff Team item is built and proven red before either site is touched, which is how M-9's defects were proven rather than argued, and it is the standing rule to reproduce end to end before fixing. **H07's row is left as it stands.** It records `one worker`, the same defect D1 failed F00B for, and it sits inside audit 4's range; correcting a known record defect before its own auditor reads it is sanitising the tree, and it would make audit 4's D1 result less informative about how the H track was actually run. It is disclosed in the waivers section instead. **Audit 4 launches now and is told about C3** - C3 is Team-wide rather than H-track, so holding the audit would buy nothing, and the auditor needs to know that a green tier here is consistent with a broken surface rather than reading its own greens as coverage.
 - 2026-09-26: **audit 4 launched** over the H track, H01 to H07, range `dc3e9de..a23d1dd`, in its own detached worktree `/home/junaid/aw-audit4` created with `git worktree add` by the orchestrator. It runs section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) unchanged, was given the corrections in section 5 of both closed handovers **with the four amendments** (A2 passes on the T1 tier at 127 of 127; lint is 17 errors and 2 warnings, not 11 warnings; the lint errors are not only under `components/activity/` and `components/pipeline/`, since 3 sit in `components/programs/ProgramDraftPanel.tsx`; the server bar is 618, not 617), and **owns the harness for its pass**. It writes `team-track-audit-4.md`, which the orchestrator commits. It was told audit 3's waivers cover the F track and **do not** cover its range.
 - 2026-09-26: **the C3 task waits for the harness rather than running beside audit 4.** Both need the full T1 tier and the harness is exclusive, so C3 starts when audit 4 returns. This is sequencing, not a change of priority: C3 is the higher-severity item of the two.
+- 2026-09-26: **audit 4 FAILed on D1, D9, A1, A2 and A6, the same five ids as audit 3 for partly different reasons**, with ten checks passing and no live product defect. It reproduced every tier on its own worktree: full T1 **127 of 127 in 23.0 minutes**, the server suite **618 of 618 three times** against one root with `AGENT_CONSOLE_DB` and `SETTINGS_FILE` pinned as well, the TM4 handover burn-in **9 of 9** with zero flaky, shared 91, web 94, four workspaces typecheck, and the two-width handover rig PASS at 390 and 1280. **All four corrections it was given reproduced exactly.** jd ruled on 2026-09-26 to mirror audit 3's routing: D9, A6 and D1's two cells fixed, A2 and A1's missing-card half waived in the section above.
+- 2026-09-26: **audit 4 failed two of this session's own commits and it was right both times.** D9 caught that `e6125c4`, the F05 id retirement, edits `server/test/telegramLiveRuntime.test.ts` and belonged to no row - task work hidden inside what looked like a documentation pass. It also caught that the exception written on 2026-09-25 was scoped to sixteen commits in the F window while D9 covers the whole range, where **67 of ours** belong to no row. Both were verified here before being accepted, by re-running the auditor's own check rather than taking the number: 70 unrowed at the time of checking, of which exactly **two** touch anything outside `docs/telegram-task-control/`, `e6125c4` and `5db1a21`. The exception is rewritten over the full range as a command that tests itself, `e6125c4` is owned by V4's row, and `5db1a21`'s stray `.gitignore` line is named in place rather than rewritten out of the history.
+- 2026-09-26: **the sharpest thing audit 4 found is not a numbered check, and it is the same shape as the invented scenario id.** `e2e/tests/t1/tm4-handover.spec.ts` told its reader that whether `/close` may happen mid-handover "is M-4's open question and is jd's to rule". `git blame` puts that in `04dca86`, H06, on 2026-09-21. **jd ruled it the next day**, H07 shipped the guard at `d300b05..1f01acd`, and nobody went back to the comment - so for five days the only end-to-end handover spec described a closed question as open. Corrected: what is actually missing there is the end-to-end row, not a ruling. A document that is wrong in the reader's favour is harder to catch than one that is silent.
+- 2026-09-26: **audit 4 found the C3 pattern independently, in its own range, and named the surfaces its greens do not cover.** `tm4-handover.spec.ts` publishes over HTTP and drives real taps but **never opens a browser** - `grep -nE "page\.|browser|goto|locator"` on the spec returns nothing - so `HandoverControl.tsx` has no end-to-end proof it is wired to the routes it calls, and its evidence is a props-rendered React test plus a rig that renders the component in isolation with a CSS shim. H07's close guard is server-tier only; `grep -rn handover_live e2e/` is empty. **Both are now their own tasks by jd's ruling of 2026-09-26.** It also checked explicitly for invented scenario ids in the H track and found none: every test-name prefix resolves to a documented id.
+- 2026-09-26: **two record corrections audit 4 forced, in the documents that answer "what is left".** The gap register's M-3 still carried `server 486/617`, `17 errors and 11 warnings` and "V4 is blocked on M-8", all three superseded and M-8 long closed; C2's V2 table still read `417/417` and `lint exit 0, 0 errors, 5 warnings`, the latter contradicting L-12 in the same file. Both now carry a superseded banner rather than being silently overwritten, because audits 1 to 4 cite them. And the tracker's own H-row table was **split into three tables** by blank lines, so H06 rendered as a headerless one-row table in the auditor's primary evidence. One-character class of defect, in the document the auditor is told to trust.
+- 2026-09-26: **one finding recorded as unverifiable rather than resolved, which was the right call.** The auditor saw `npm run test --workspace e2e` give `# pass 46 # fail 1` on its first invocation and 47/47 on seven consecutive re-runs, and could not recover the failing test's name because its first run was filtered to summary lines. It recorded it as unreproducible rather than passing or failing it by guess. Two things matter and neither is comfortable: that suite is in **no tier check A2 names** and is not in the root `npm test`, and its files are harness self-tests that start real servers. Left open here deliberately.
