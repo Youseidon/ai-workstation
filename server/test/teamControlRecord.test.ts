@@ -624,6 +624,13 @@ test("TM-T0-5-29: migration 29 adds exactly the seven handover actions and rebui
         const prompt = workspaces.createChild('prompt', suite.id, { title: 'Pending card ' + label, content: 'Answer once' });
         const runId = 'm29-source-run-' + label;
         workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: 'claude', model: null, tokenHash: 'm29-' + label, expiresAt: '2099-01-01T00:00:00.000Z', role: 'execute' });
+        // The end-of-run ladder records UNREPORTED, not BLOCKED, for a run that
+        // ends without posting a status, so the block is posted explicitly.
+        workspaces.updateAgentStatus(runId, {
+          requestId: 'blockreq-' + label + '-m29', expectedStatus: 'IN_PROGRESS', status: 'BLOCKED',
+          reason: 'The owner must answer before this can continue.',
+          verificationSummary: 'Answer the pending question.',
+        });
         workspaces.finishAgentRun(runId, 'done');
         const priorAnswer = workspaces.respondToBlockedPrompt(prompt.id, { content: 'Prior answer' });
         const handoff = workspaces.createHandoff({ id: 'm29-handoff-' + label, workspaceId: workspace.id, promptId: prompt.id, sourceRunId: runId, provider: 'claude', model: null });
