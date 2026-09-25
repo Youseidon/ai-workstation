@@ -420,7 +420,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
             }
           }
         }
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null });
+        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null, terminalStatusFailure: terminalStatusApplyFailure });
         runContexts.complete(activeContextRunId);
         // The launcher holds this run's token. The credential is collapsed to a
         // short TTL above, but a live-looking token sitting in tmp after its run

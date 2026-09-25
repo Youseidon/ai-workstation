@@ -2323,7 +2323,7 @@ const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;
  * ids so "why is this UNREPORTED" leads back to the run that ran out of budget
  * rather than to the four-minute turn that followed it.
  */
-function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,state:string,stopReason:string|null,toolCalls:number|null):void {
+function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,state:string,stopReason:string|null,toolCalls:number|null,terminalStatusFailure:string|null=null):void {
   const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]};
   const source=wrapupOf===null?null:db.prepare("SELECT stop_reason stopReason FROM agent_run WHERE id=?").get(wrapupOf) as {stopReason:string|null}|undefined??null;
   // `state` arrives as a loose string from the runner. Anything that is not a
@@ -2335,7 +2335,11 @@ function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,s
   const signal=endOfRunSignal(facts);
   if(signal===null)return;
   const decision=decide(signal);
-  const reason=endOfRunReason(facts);
+  // An agent that reported its final status in its answer, whose status could
+  // not be applied, did not "end without posting a status" — it posted one and
+  // the post was refused. Saying which is the difference between an operator
+  // who knows what to fix and one who reruns the work to find out.
+  const reason=terminalStatusFailure??endOfRunReason(facts);
   writeStatus({
     promptId,
     to:decision.to??"UNREPORTED",
@@ -5503,7 +5507,7 @@ export const workspaces = {
    * IN_PROGRESS for the wrap-up run to post against; the wrap-up's own end then
    * applies the transition, attributing the *source* run's stop reason.
    */
-  finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics,options?:{deferStatus?:boolean}):void { sqliteGuard(()=>db.transaction(()=>{
+  finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics,options?:{deferStatus?:boolean;terminalStatusFailure?:string|null}):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role,wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole;wrapupOf:string|null}|undefined;if(!run)return;
     const now=new Date().toISOString();
     db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,session_id=COALESCE(?,session_id) WHERE id=?")
@@ -5513,7 +5517,7 @@ export const workspaces = {
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     if(options?.deferStatus===true)return;
-    applyEndOfRunStatus(runId,run.prompt_id,run.wrapupOf,state,metrics?.stopReason??null,metrics?.toolCalls??null);
+    applyEndOfRunStatus(runId,run.prompt_id,run.wrapupOf,state,metrics?.stopReason??null,metrics?.toolCalls??null,options?.terminalStatusFailure??null);
   })()); },
   /**
    * Applies the transition a `deferStatus: true` finish held back, for the one

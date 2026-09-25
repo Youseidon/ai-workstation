@@ -198,12 +198,36 @@ test("offline status request id is valid even when the run id contains underscor
 });
 
 test("offline status apply failures are surfaced through prompt finalization", () => {
-  const runService = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
-  const workspaces = readFileSync(new URL("../src/workspaces.ts", import.meta.url), "utf8");
-  assert.match(runService, /offlineStatusApplyFailureReason/);
-  assert.match(runService, /finishAgentRun\(activeContextRunId, state, executionAnswer, terminalStatusApplyFailure\)/);
-  assert.match(workspaces, /terminalStatusFailure/);
-  assert.match(workspaces, /terminalStatusFailure\?\?`Agent process ended/);
+  // The wiring: the reason is computed where the apply fails and handed to the
+  // finish. It travels in the options bag rather than a positional slot, which
+  // is where the cost metrics now sit.
+  const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
+  assert.match(source, /offlineStatusApplyFailureReason/);
+  assert.match(source, /finishAgentRun\(activeContextRunId, state, executionAnswer, metrics, \{[^}]*terminalStatusFailure: terminalStatusApplyFailure/);
+
+  // The behaviour: a run that ended with a status it could not apply says so,
+  // rather than falling back to the generic "ended without posting a status".
+  const dir = mkdtempSync(join(tmpdir(), "run-svc-terminal-"));
+  const saved = workspaces.create({ name: `run-svc-terminal-${Date.now()}`, description: "", workDirectory: dir });
+  try {
+    const program = workspaces.createChild("program", saved.id, { name: "Program" }) as { id: number };
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as { id: number };
+    const prompt = workspaces.createChild("prompt", suite.id, { title: "Task", content: "Do it" }) as { id: number };
+    const runId = `run-svc-terminal-${saved.id}`;
+    workspaces.beginAgentRun({ runId, workspaceId: saved.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+    const failure = "The agent reported DONE, but applying it failed: the work item had already moved on.";
+    workspaces.finishAgentRun(runId, "done", "", undefined, { terminalStatusFailure: failure });
+
+    const outcome = workspaces.promptOutcome(prompt.id);
+    assert.equal(outcome.status, "UNREPORTED", "an unapplied status is still not a reported one");
+    const event = (workspaces.promptHistory(prompt.id).events as Array<{ newStatus: string; reason: string | null }>)
+      .find(entry => entry.newStatus === "UNREPORTED");
+    assert.equal(event?.reason, failure);
+    assert.doesNotMatch(event?.reason ?? "", /without posting a status/);
+  } finally {
+    workspaces.remove(saved.id);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("startConsult does not 409 when an execute owns the workspace", async () => {
