@@ -16,24 +16,28 @@ export interface FakeScenario {
   verificationSummary?: string;
   ignoreSigint?: boolean;
   skipStatus?: boolean;
-  /** Live path: the kind of the remark posted before the status (default DECISION_NEEDED when blocking). */
+  /** Shim channel: the kind of the remark posted before the status (default DECISION_NEEDED when blocking). */
   remarkKind?: "BLOCKER" | "DECISION_NEEDED" | "PROGRESS";
   malformedStatus?: boolean;
   text?: string;
-  /** Live path, blocking scenarios: the options reported with the BLOCKED status (L3 A2). */
+  /** Blocking scenarios: the options reported with the BLOCKED status (L3 A2). */
   options?: Array<{ label: string; advantages?: string[]; disadvantages?: string[] }>;
 }
 
 export interface FakeLogEntry {
   event: string;
   behavior?: string;
-  path?: "live" | "inline" | "custom";
-  method?: string;
-  path_?: string;
-  host?: string;
+  /** Which reporting channel the prompt gave this run (server/src/runService.ts, executeChannel). */
+  channel?: "shim" | "offline" | "custom";
+  /** The launcher the prompt named, on the shim channel. */
+  shim?: string | null;
+  /** `exec` entries: a launcher call the fake is about to make. `shim` entries: how it ended. */
+  command?: string;
+  args?: string[];
+  stderr?: string;
   status?: number | string;
-  code?: number;
-  signal?: string;
+  code?: number | null;
+  signal?: string | null;
   containsExpected?: boolean | null;
   [key: string]: unknown;
 }
@@ -63,6 +67,12 @@ export class FakeProvider {
     return { FAKE_PROVIDER_DIR: join(root, "fake-provider") };
   }
 
+  /**
+   * `live` leaves the console reachable, so the server gives the run the
+   * `agent-step` launcher; `inline` sandboxes the provider, so it has no route to
+   * the console and the server gives it the offline protocol instead. The names
+   * are the settings, not the channel: the fake logs the channel it was handed.
+   */
   static settings(path: "live" | "inline"): Record<string, unknown> {
     return {
       "claude.enabled": false,
@@ -72,8 +82,9 @@ export class FakeProvider {
       "grok.binary": FAKE_GROK_BIN,
       "grok.assumeAuthenticated": true,
       "hostAccess": false,
-      // Sandbox off lets the provider reach the local Progress API (live path);
-      // a workspace sandbox makes the server embed context instead (inline path).
+      // Sandbox off lets the provider reach the local Progress API, so the run is
+      // given the launcher; a workspace sandbox leaves it no route, so the run is
+      // given the offline protocol and reports in its final message.
       "grok.sandboxMode": path === "live" ? "off" : "workspace",
     };
   }

@@ -8,13 +8,19 @@
  *
  *   done | block-on-decision | fail | hang-until-stopped | crash-after-spawn | consume-answer
  *
- * Saved tasks reach it on one of two paths, chosen by the server:
- *   live   - the prompt carries a curl command for the Progress API; the fake
- *            fetches context and posts remarks and status over HTTP.
- *   inline - the prompt embeds the context and the offline completion
- *            protocol; the fake reports status in a final agent-status block.
+ * Saved tasks reach it on one of two channels, chosen by the server from this
+ * provider's reachability (server/src/runService.ts, executeChannel). The work
+ * item itself is inlined in the prompt on both; what differs is how the run
+ * reports back:
+ *   shim    - the prompt names an `agent-step` launcher. The fake runs it, the
+ *             way a real agent would, and the launcher makes the HTTP call.
+ *   offline - the sandbox has no route to the console, so the prompt carries the
+ *             offline protocol and the fake reports in a final agent-status
+ *             block with no HTTP call from anything.
  */
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const VERSION = "grok 1.0.5";
@@ -72,27 +78,39 @@ function nextScenario() {
   return scenario;
 }
 
-function livePath(prompt) {
-  const match = prompt.match(/curl -fsS -H 'Authorization: Bearer ([A-Za-z0-9_-]+)' (\S+\/context)\b/);
-  return match ? { token: match[1], contextUrl: match[2] } : null;
+/**
+ * The launcher the prompt names, or null when this run was not given one. The
+ * path is quoted on its own line under the contract heading, which is how the
+ * product writes it (server/src/agentContext.ts, progressApiMarkdown).
+ */
+function shimPath(prompt) {
+  const match = prompt.match(/## Recording your progress\n\n"([^"\n]+)"\n/);
+  return match ? match[1] : null;
 }
 
-async function http(method, url, token, body) {
-  const response = await fetch(url, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await response.text();
-  log({ event: "http", method, path: new URL(url).pathname, host: new URL(url).host, status: response.status });
-  if (!response.ok) throw new Error(`${method} ${new URL(url).pathname} -> ${response.status} ${text.slice(0, 200)}`);
-  return text;
-}
-
-function toolCall(id, name, input, output) {
-  emit({ type: "tool_call", toolCallId: id, toolName: name, status: "pending", rawInput: input });
-  emit({ type: "tool_call_update", toolCallId: id, status: null });
-  emit({ type: "tool_call_update", toolCallId: id, status: "completed", rawOutput: output });
+/**
+ * Runs the launcher the way an agent would: a child process the fake does not
+ * make the HTTP call for. Its exit code is the only thing an agent gets back, so
+ * a refusal is fatal here for the same reason it was when the call was a curl.
+ */
+function step(path, args) {
+  // Logged before the run, not only after: the console ends the provider as soon
+  // as a terminal status lands, so a fake that only logged results would have no
+  // record of the one call that mattered.
+  log({ event: "exec", command: args[0], args: args.slice(1) });
+  const result = spawnSync(path, args, { encoding: "utf8" });
+  const entry = {
+    event: "shim",
+    command: args[0],
+    args: args.slice(1),
+    code: result.status,
+    signal: result.signal ?? null,
+    stderr: (result.stderr ?? "").trim().slice(0, 400),
+  };
+  log(entry);
+  if (result.error) throw new Error(`could not run the launcher ${path}: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`${path} ${args[0]} exited ${result.status}: ${entry.stderr || "(no stderr)"}`);
+  return result.stdout ?? "";
 }
 
 function finish(text) {
@@ -112,15 +130,15 @@ async function run() {
   const { prompt, flags } = parseArgs(argv);
   if (prompt === null) fatal("fake grok expects -p <prompt>");
   const scenario = nextScenario();
-  const live = livePath(prompt);
-  const inline = prompt.includes("## Offline completion reporting");
-  const path = live ? "live" : inline ? "inline" : "custom";
+  const shim = shimPath(prompt);
+  const offline = prompt.includes("## Offline completion reporting");
+  const channel = shim ? "shim" : offline ? "offline" : "custom";
   // Names only, never values: proves which secrets an agent process could have read.
   const inheritedSecrets = Object.keys(process.env).filter((name) => /TOKEN|SECRET|API_KEY|PASSWORD/i.test(name));
-  log({ event: "start", behavior: scenario.behavior, path, cwd: flags["--cwd"], permissionMode: flags["--permission-mode"], sandbox: flags["--sandbox"], inheritedSecrets });
+  log({ event: "start", behavior: scenario.behavior, channel, shim, cwd: flags["--cwd"], permissionMode: flags["--permission-mode"], sandbox: flags["--sandbox"], inheritedSecrets });
 
   emit({ type: "system", subtype: "init", sessionId: `fake-${process.pid}` });
-  emit({ type: "thought", data: `Fake agent running scenario ${scenario.behavior} on the ${path} path.` });
+  emit({ type: "thought", data: `Fake agent running scenario ${scenario.behavior} on the ${channel} channel.` });
 
   if (scenario.behavior === "crash-after-spawn") {
     log({ event: "crash" });
@@ -141,13 +159,10 @@ async function run() {
     return;
   }
 
-  let context = "";
-  if (live) {
-    context = await http("GET", live.contextUrl, live.token);
-    toolCall("ctx", "web_fetch", { url: live.contextUrl }, context.slice(0, 200));
-  } else if (inline) {
-    context = prompt;
-  }
+  // The work item is inlined in the prompt on both channels, so there is nothing
+  // to fetch: a run that reads 0 characters here is a run whose prompt the fake
+  // did not recognise, which is what gap M-9 was.
+  const context = channel === "custom" ? "" : prompt;
   log({ event: "context", chars: context.length, containsExpected: scenario.expectInContext ? context.includes(scenario.expectInContext) : null });
 
   if (scenario.behavior === "fail") {
@@ -172,14 +187,28 @@ async function run() {
     if (scenario.options) status.options = scenario.options;
   }
 
-  if (live) {
-    const base = live.contextUrl.replace(/\/context$/, "");
+  if (shim) {
     const remarkKind = scenario.remarkKind ?? (status.status === "BLOCKED" ? "DECISION_NEEDED" : "PROGRESS");
     const remark = scenario.remark ?? (status.status === "BLOCKED" ? status.reason : "Fake agent made progress.");
-    await http("POST", `${base}/remarks`, live.token, { requestId: `fake-remark-${process.pid}`, kind: remarkKind, content: remark });
-    if (!scenario.skipStatus) await http("POST", `${base}/status`, live.token, status);
+    step(shim, ["remark", "--kind", remarkKind, "--text", remark]);
+    if (!scenario.skipStatus) {
+      if (status.status === "DONE") {
+        step(shim, ["done", "--verification", status.verificationSummary, "--reason", status.reason]);
+      } else {
+        // The options are written to a file the way the contract asks for them,
+        // and only when the scenario has any: an empty file would claim the agent
+        // weighed nothing rather than that it weighed nothing worth reporting.
+        const optionsFile = scenario.options ? join(mkdtempSync(join(tmpdir(), "fake-grok-options-")), "options.json") : null;
+        if (optionsFile) writeFileSync(optionsFile, JSON.stringify(scenario.options));
+        try {
+          step(shim, ["blocked", "--reason", status.reason, "--action", status.verificationSummary, ...(optionsFile ? ["--options-file", optionsFile] : [])]);
+        } finally {
+          if (optionsFile) rmSync(optionsFile, { recursive: true, force: true });
+        }
+      }
+    }
     finish(status.status === "DONE" ? "Done." : "Blocked; waiting for the owner.");
-  } else if (inline) {
+  } else if (offline) {
     const { requestId: _requestId, expectedStatus: _expected, ...report } = status;
     const block = scenario.malformedStatus ? statusBlock({ status: report.status }) : scenario.skipStatus ? "" : statusBlock(report);
     finish(`${status.status === "DONE" ? "Done." : "Blocked."}${block}`);
