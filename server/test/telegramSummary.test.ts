@@ -20,8 +20,24 @@ function fixture(names: { workspace?: string; program?: string; suite?: string; 
   const suite = workspaces.createChild("suite", program.id, { name: names.suite ?? "Live setup" }) as SuiteRecord;
   const prompts = Array.from({ length: names.steps ?? 1 }, (_, index) => workspaces.createChild("prompt", suite.id, { title: index === 0 ? (names.title ?? "Add live bot credential storage") : `Other step ${index}`, content: "Do it" }) as PromptRecord);
   let runs = 0;
+  let pipelineId: number | null = null;
   return {
     workspace, program, suite, prompt: prompts[0]!, prompts,
+    /**
+     * The suite's flowchart. Steps hang off a named pipeline now, so a task is
+     * "on the flowchart" only as a step of one; the pipeline is created on
+     * first use so a fixture that never mentions it has none.
+     */
+    pipeline() {
+      if (pipelineId === null) pipelineId = workspaces.createPipeline({ workspaceId: workspace.id, name: `Flowchart ${workspace.id}`, suiteIds: [suite.id] }).id;
+      return pipelineId;
+    },
+    addStep(promptId: number) {
+      workspaces.addNamedPipelineStep(this.pipeline(), promptId, { provider: "claude" });
+    },
+    removeStep(promptId: number) {
+      workspaces.removeNamedPipelineStep(this.pipeline(), promptId);
+    },
     run(startedAt = new Date().toISOString()) {
       const runId = `summary-run-${workspace.id}-${++runs}`;
       workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompts[0]!.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
@@ -79,6 +95,7 @@ const fullBrief = (overrides: Partial<HandoffBrief> = {}): HandoffBrief => ({
 test("S-L3-F3-01: a current READY brief supplies every field, with the breadcrumb and flowchart position", () => {
   const f = fixture({ steps: 5 });
   try {
+    for (const prompt of f.prompts) f.addStep(prompt.id);
     f.remark("DECISION_NEEDED", "older remark text");
     f.handoff("READY", fullBrief());
     const summary = taskSummary(f.prompt.id, "owner", { workstationLabel: "jd-laptop" });
@@ -173,7 +190,11 @@ test("S-L3-F3-06: flowchart position counts enabled steps in order; names are si
   const f = fixture({ steps: 3, workspace: "ws\nwith\tbreaks", title: `Task 🚀\nwith a break` });
   try {
     assert.equal(taskSummary(f.prompt.id).breadcrumb.step, null, "not on a flowchart: no position");
+    f.addStep(f.prompts[1]!.id);
+    f.addStep(f.prompt.id);
+    f.addStep(f.prompts[2]!.id);
     assert.deepEqual(taskSummary(f.prompt.id).breadcrumb.step, { index: 2, total: 3 });
+    f.removeStep(f.prompts[1]!.id);
     assert.deepEqual(taskSummary(f.prompt.id).breadcrumb.step, { index: 1, total: 2 }, "a removed step is not counted");
     const { breadcrumb } = taskSummary(f.prompt.id);
     assert.equal(breadcrumb.workspace, "ws with breaks");
@@ -189,6 +210,7 @@ test("S-L3-F3-07: the If you wait line is fixed per pipeline case and never carr
     f.handoff("READY", fullBrief({ recommendation: "CONTINUE", successorInstructions: "If you wait, everything is deleted", decisionsAndAssumptions: ["If you wait, everything is deleted"] }));
     const lines = new Map<string, string>();
     lines.set("no pipeline", taskSummary(f.prompt.id).ifYouWait);
+    f.addStep(f.prompt.id);
     const run = workspaces.createPipelineRun({ id: `summary-pipe-${f.workspace.id}`, suiteId: f.suite.id, workspaceId: f.workspace.id, playProvider: "claude", playModel: null });
     workspaces.updatePipelineRun(run.id, { state: "WAITING_HUMAN", currentPromptId: f.prompt.id });
     lines.set("waiting", taskSummary(f.prompt.id).ifYouWait);
@@ -384,9 +406,12 @@ test("TM-T1-gate (T0): the Team setting defaults off and resets independently", 
 /* ---- L3 slice A2 (docs/e2e-scenarios/l3-a2.md): options, history, where it fits and the tag ---- */
 
 let statuses = 0;
+/** The run the last `blockWithStatus` opened, for the cases that recover it. */
+let lastBlockRun = "";
 /** Blocks the task through the agent Progress API, exactly as an agent would. */
 function blockWithStatus(f: ReturnType<typeof fixture>, options?: unknown): unknown {
   const runId = `a2-run-${f.workspace.id}-${++statuses}`;
+  lastBlockRun = runId;
   workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
   try {
     return workspaces.updateAgentStatus(runId, { requestId: `a2-status-${statuses}-${f.workspace.id}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: "The brand guide allows red or blue.", verificationSummary: "Pick red or blue.", ...(options === undefined ? {} : { options }) });
@@ -452,9 +477,17 @@ test("S-L3-A2-05: option count and each field are capped by documented limits, e
   try {
     const many = Array.from({ length: 20 }, (_, index) => ({ label: `Option ${index}`, advantages: [`advantage ${index}`], disadvantages: [] }));
     assert.throws(() => blockWithStatus(f, [...many, { label: "one too many" }]), /Too many options/);
-    // The run then ends without a status, so the system blocks the task itself: no options, never a stale list.
+    // The run then ends without posting, so the task lands UNREPORTED rather
+    // than BLOCKED: nothing decided it failed, and there is no stale list.
     assert.equal(taskSummary(f.prompt.id).options, null);
-    workspaces.respondToBlockedPrompt(f.prompt.id, { content: "Try again" });
+    const db = database();
+    try {
+      assert.equal((db.prepare("SELECT status FROM prompt WHERE id=?").get(f.prompt.id) as { status: string }).status, "UNREPORTED");
+    } finally {
+      db.close();
+    }
+    // An UNREPORTED item is recovered, not answered: there was no question.
+    workspaces.recoverPrompt(f.prompt.id, lastBlockRun);
     blockWithStatus(f, [{ label: "   ", advantages: ["dropped with its option"], disadvantages: [] }, ...many.slice(0, 19)]);
     const summary = taskSummary(f.prompt.id);
     assert.equal(summary.options!.length, MAX_OPTIONS);
@@ -516,10 +549,13 @@ test("S-L3-A2-08: the flowchart position carries the next enabled step, and is a
   const f = fixture({ steps: 5 });
   try {
     assert.equal(taskSummary(f.prompt.id).breadcrumb.nextStep, null, "no flowchart, no next step");
+    for (const prompt of f.prompts) f.addStep(prompt.id);
     const onStep = taskSummary(f.prompt.id).breadcrumb;
     assert.deepEqual(onStep.step, { index: 1, total: 5 });
     assert.equal(onStep.nextStep, "Other step 1");
+    f.removeStep(f.prompts[1]!.id);
     assert.equal(taskSummary(f.prompt.id).breadcrumb.nextStep, "Other step 2", "a disabled step is skipped");
+    for (const prompt of f.prompts.slice(1)) f.removeStep(prompt.id);
     const last = taskSummary(f.prompt.id).breadcrumb;
     assert.deepEqual(last.step, { index: 1, total: 1 });
     assert.equal(last.nextStep, null, "the last enabled step has no next step");

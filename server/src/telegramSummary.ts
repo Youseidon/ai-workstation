@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import type { AgentStatusOption, HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptRemark, PromptStatusEvent } from "@agent-console/shared";
+import type { AgentStatusOption, HandoffBrief, HandoffRecommendation, OperationsPrompt, OperationsSuite, PromptPipelineRule, PromptRemark, PromptStatusEvent } from "@agent-console/shared";
 import { itemTag, isItemId } from "./teamItems.ts";
 import { workspaces } from "./workspaces.ts";
 
@@ -249,6 +249,37 @@ function locate(promptId: number): { suite: OperationsSuite; item: OperationsPro
   throw new Error(`prompt ${promptId} is not in its workspace's operations snapshot`);
 }
 
+interface FlowchartPosition {
+  /** The pipeline's enabled steps for this suite, in run order. */
+  steps: PromptPipelineRule[];
+  /** Where this task sits in them, zero-based. */
+  index: number;
+}
+
+/**
+ * Where the task sits on a flowchart, read from the named pipeline that is
+ * actually running it, and null when it is a step of none.
+ *
+ * Steps hang off named pipelines rather than the suite, so one task can be a
+ * step of several at once. Prefer the pipeline with a run in flight on this
+ * task's own stage, then any pipeline with a run in flight, then the most
+ * recently touched one that lists it. The card must never claim a position on
+ * a flowchart the task is not on, so membership is what decides, not the
+ * settings default every prompt carries.
+ */
+function flowchartPosition(suite: OperationsSuite, promptId: number): FlowchartPosition | null {
+  let best: { position: FlowchartPosition; rank: number } | null = null;
+  for (const pipeline of workspaces.listPipelines(suite.workspaceId)) {
+    if (!pipeline.stages.some((stage) => stage.suiteId === suite.id)) continue;
+    const steps = workspaces.enabledNamedPipelineSteps(pipeline.id, suite.id);
+    const index = steps.findIndex((step) => step.promptId === promptId);
+    if (index === -1) continue;
+    const rank = pipeline.active === null ? 0 : pipeline.active.currentSuiteId === suite.id ? 2 : 1;
+    if (best === null || rank > best.rank) best = { position: { steps, index }, rank };
+  }
+  return best?.position ?? null;
+}
+
 function latestExecuteStart(promptId: number): string | null {
   const runs = workspaces.promptHistory(promptId).runs as Array<{ role: string; startedAt: string }>;
   return runs.filter((run) => run.role === "execute").map((run) => run.startedAt).sort().at(-1) ?? null;
@@ -278,10 +309,9 @@ const list = (items: string[], max = 1500): string[] | null => {
 };
 
 /** Deterministic "If you wait" line from the pipeline rule and state, never from agent text (operator question 5). */
-function ifYouWait(suite: OperationsSuite, item: OperationsPrompt): string {
+function ifYouWait(suite: OperationsSuite, item: OperationsPrompt, onFlowchart: boolean): string {
   if (item.prompt.humanResponseHeld) return "Your saved answer is held; nothing resumes until you choose Resume.";
   const active = suite.pipeline?.active ?? null;
-  const onFlowchart = item.pipelineRule.enabled;
   if (!onFlowchart || active === null) {
     const latest = suite.pipeline?.latest ?? null;
     if (onFlowchart && latest?.state === "STOPPED" && latest.currentPromptId === item.prompt.id) return "The pipeline has stopped at this task; nothing resumes on its own. Other workspaces continue.";
@@ -295,8 +325,9 @@ function ifYouWait(suite: OperationsSuite, item: OperationsPrompt): string {
 export function taskSummary(promptId: number, audience: SummaryAudience = "owner", options: SummaryOptions = {}): TaskSummary {
   if (audience === "team" && !isItemId(options.itemId)) throw new Error("team task summaries require a valid Team item id");
   const { suite, item } = locate(promptId);
-  const enabled = suite.prompts.filter((entry) => entry.pipelineRule.enabled).sort((a, b) => a.pipelineRule.stepOrder - b.pipelineRule.stepOrder);
-  const index = enabled.findIndex((entry) => entry.prompt.id === promptId);
+  const flowchart = flowchartPosition(suite, promptId);
+  const nextStep = flowchart === null ? null : flowchart.steps[flowchart.index + 1] ?? null;
+  const nextTitle = nextStep === null ? null : suite.prompts.find((entry) => entry.prompt.id === nextStep.promptId)?.prompt.title ?? null;
   const label = lineText(options.workstationLabel ?? "", 64) || defaultWorkstationLabel();
   const key = item.prompt.externalKey ?? String(promptId);
   const blocking = workspaces.blockingStatus(promptId);
@@ -310,15 +341,15 @@ export function taskSummary(promptId: number, audience: SummaryAudience = "owner
       workspace: lineText(item.workspace.name, 120),
       program: lineText(suite.programName, 120),
       suite: lineText(suite.name, 120),
-      step: index === -1 ? null : { index: index + 1, total: enabled.length },
-      nextStep: index === -1 ? null : enabled[index + 1] ? lineText(enabled[index + 1]!.prompt.title, 120) : null,
+      step: flowchart === null ? null : { index: flowchart.index + 1, total: flowchart.steps.length },
+      nextStep: nextTitle === null ? null : lineText(nextTitle, 120),
     },
     title: lineText(item.prompt.title, 300),
     blockedAt: blocking?.createdAt ?? null,
     options: offered.options,
     optionsOmitted: offered.omitted,
     history: history(promptId),
-    ifYouWait: ifYouWait(suite, item),
+    ifYouWait: ifYouWait(suite, item, flowchart !== null),
   };
   const empty = { objective: null, completedWork: null, verification: null, blockers: null, decisions: null, importantFiles: null, recommendation: null };
 
