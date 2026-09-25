@@ -4,7 +4,7 @@ import { eventually, observeQuietPeriod, state } from "../drivers/state.ts";
 import type { HarnessEnvironment } from "../env/orchestrator.ts";
 import { webUrl } from "../env/orchestrator.ts";
 import { telegramStatus, waitForTelegramState } from "../telegramFlows.ts";
-import { waitForRunEnd } from "../scenarios.ts";
+import { pipelineOverSuite, waitForRunEnd } from "../scenarios.ts";
 import { activityRevision, blockTask, isCardFor, isTaskCard, executeRuns, humanResponses, inboxDrained, outboxFor, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus, waitForRuns } from "./l1Flows.ts";
 
 /*
@@ -356,12 +356,10 @@ export async function pipelineStep({ harness, phone }: L1Context): Promise<void>
   const { suite } = await state.post<{ suite: { id: number } }>(`/api/programs/${program.id}/suites`, { name: "Suite", overview: "" });
   const { prompt: first } = await state.post<{ prompt: { id: number } }>(`/api/suites/${suite.id}/prompts`, { title: name, content: "Step one." });
   const { prompt: second } = await state.post<{ prompt: { id: number } }>(`/api/suites/${suite.id}/prompts`, { title: `${name} two`, content: "Step two." });
-  await state.patch(`/api/suites/${suite.id}/pipeline`, { defaultProvider: "grok", defaultModel: null });
-  await state.post(`/api/suites/${suite.id}/pipeline/steps`, { promptId: first.id });
-  await state.post(`/api/suites/${suite.id}/pipeline/steps`, { promptId: second.id });
+  const pipeline = await pipelineOverSuite({ workspaceId: workspace.id, suiteId: suite.id, name: `pipeline-${titles}`, promptIds: [first.id, second.id] });
   harness.fakeProvider.queue({ behavior: "block-on-decision", reason: "Which environment?", humanAction: "Pick one." }, { behavior: "consume-answer", expectInContext: "Staging" }, { behavior: "done" });
   const before = await phone.cursor();
-  await state.post(`/api/suites/${suite.id}/play`, {});
+  await pipeline.play();
   const card = await questionCard(phone, name, before, 60_000);
   const taskOne = { workspaceId: workspace.id, promptId: first.id, workDirectory };
   const taskTwo = { workspaceId: workspace.id, promptId: second.id, workDirectory };

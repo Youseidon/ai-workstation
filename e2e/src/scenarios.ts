@@ -15,6 +15,29 @@ export async function runSavedTask(harness: HarnessEnvironment, args: { content?
   return { task, runId: started.runId };
 }
 
+/**
+ * Builds a named pipeline over one suite and returns a `play` you can call.
+ *
+ * Steps used to hang off the suite (`/api/suites/:id/pipeline/steps`, `/play`).
+ * They moved onto named pipelines, the old routes are gone, and a fixture that
+ * still used them got a 404 in setup - which reads as "the scenario is broken",
+ * not "the API moved". One helper so the next move has one place to land.
+ */
+export async function pipelineOverSuite(args: { workspaceId: number; suiteId: number; name: string; promptIds: number[]; provider?: string }) {
+  const { pipeline } = await state.post<{ pipeline: { id: number } }>("/api/pipelines", {
+    workspaceId: args.workspaceId,
+    name: args.name,
+    description: "",
+    suiteIds: [args.suiteId],
+  });
+  const flowchart = `?suiteId=${args.suiteId}`;
+  await state.patch(`/api/pipelines/${pipeline.id}/flowchart${flowchart}`, { defaultProvider: args.provider ?? "grok", defaultModel: null });
+  for (const promptId of args.promptIds) {
+    await state.post(`/api/pipelines/${pipeline.id}/flowchart/steps${flowchart}`, { promptId });
+  }
+  return { pipelineId: pipeline.id, play: () => state.post(`/api/pipelines/${pipeline.id}/play`, {}) };
+}
+
 export async function waitForRunEnd(task: SavedTask, runId: string, timeoutMs = 60_000) {
   const ended = await eventually(`run ${runId} to end`, async () => {
     const session = (await state.sessionsFor(task)).find((item) => item.id === runId);

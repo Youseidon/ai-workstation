@@ -3,7 +3,7 @@ import type { PhoneMessage } from "../drivers/phone.ts";
 import type { FakeScenario } from "../drivers/fakeProvider.ts";
 import { eventually, observeQuietPeriod, state, type SavedTask } from "../drivers/state.ts";
 import { openApp } from "../fixtures.ts";
-import { runSavedTask, waitForRunEnd } from "../scenarios.ts";
+import { pipelineOverSuite, runSavedTask, waitForRunEnd } from "../scenarios.ts";
 import { telegramStatus, waitForTelegramState } from "../telegramFlows.ts";
 import type { L1Context } from "./l1.ts";
 import { executeRuns, humanResponses, inboxDrained, isCardFor, outboxFor, questionCard, receipts, replyWithAnswer, tapAndReport, waitForPromptStatus } from "./l1Flows.ts";
@@ -216,11 +216,10 @@ export async function pipelineCard(ctx: L1Context): Promise<void> {
     const { prompt } = await state.post<{ prompt: { id: number } }>(`/api/suites/${suite.id}/prompts`, { title, content: `Step ${index + 1}.` });
     steps.push(prompt);
   }
-  await state.patch(`/api/suites/${suite.id}/pipeline`, { defaultProvider: "grok", defaultModel: null });
-  for (const step of steps) await state.post(`/api/suites/${suite.id}/pipeline/steps`, { promptId: step.id });
+  const pipeline = await pipelineOverSuite({ workspaceId: workspace.id, suiteId: suite.id, name: `pipeline-card-${sequence}`, promptIds: steps.map((step) => step.id) });
   harness.fakeProvider.queue({ behavior: "done" }, { behavior: "block-on-decision", reason: "Which environment?" }, { behavior: "consume-answer", expectInContext: "Staging" }, { behavior: "done" });
   const before = await phone.cursor();
-  await state.post(`/api/suites/${suite.id}/play`, {});
+  await pipeline.play();
   const card = await questionCard(phone, name, before, 90_000);
   expect(card.text.split("\n")[2]).toMatch(/ · pipeline step 2\/3$/);
   expect(card.text).toContain("If you wait: This task and its pipeline stay paused; other workspaces continue.");

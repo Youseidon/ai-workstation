@@ -53,7 +53,12 @@ export async function statusView(ctx: L1Context): Promise<void> {
   const snapshot = await state.get<OperationsSnapshot>("/api/operations");
   const states = snapshot.suites.flatMap((suite) => suite.prompts.map((item) => item.operationalState));
   const count = (value: string) => states.filter((item) => item === value).length;
-  expect(view.text).toContain(`Running ${count("WORKING")} · Blocked ${count("AWAITING_RESPONSE")} · Needs recovery ${count("RECOVERY_NEEDED")} · Failed ${count("FAILED")} · Ready ${count("READY")}`);
+  // "Blocked" on the card is every item waiting on a person, under either name
+  // the status model gives that state: a stored BLOCKED, or the AWAITING_RESPONSE
+  // overlay. Counting one of them here is what made this read 0 against a card
+  // that correctly said 1.
+  const blocked = count("AWAITING_RESPONSE") + count("BLOCKED");
+  expect(view.text).toContain(`Running ${count("WORKING")} · Blocked ${blocked} · Needs recovery ${count("RECOVERY_NEEDED")} · Failed ${count("FAILED")} · Ready ${count("READY")}`);
   expect(view.text).toMatch(/ · as of \d{2}:\d{2}/);
   expect(view.buttons).toEqual(expect.arrayContaining(["running", "blocked", "Pipelines", "Quota", "Refresh"]));
   expect(sideEffects(harness)).toEqual(before);
