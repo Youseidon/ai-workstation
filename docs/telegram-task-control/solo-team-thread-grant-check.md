@@ -248,7 +248,43 @@ rather than from the transcript.
 | 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Jj to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
 | 12 default-off regression | DEFERRED | 2026-09-20 | jd's decision: folded into the LT-4 re-run that F01 to F03 require, rather than run on its own. Baseline captured while Team was on: `/api/task-control/team` 200 with the roster, `/api/task-control/team/refresh` 405. With Team off both must answer 403 `team_disabled`, and the 405 becoming a 403 is the check that the gate sits in front of method routing ([workspaceApi.ts:63](../../server/src/workspaceApi.ts#L63)). |
 
-Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B19.
+### Re-run for V5, 2026-09-26
+
+September's rows above are the first pass and are left exactly as they stand, because
+audits 1 to 4 cite them.
+This table is the **re-run** the F01 to F03 rows and section 8's "LT-4's re-run rows are
+recorded" clause ask for.
+It was run against the live rig described in [team-v6-handover.md](team-v6-handover.md)
+section 2, with **live Telegram credentials**, authorised by jd on 2026-09-26.
+
+V5's scope is cases 2, 3, 11 and 12.
+Cases 4 to 9 are recorded here as out of that scope rather than left blank, so that no
+later reader mistakes a blank for an untried case.
+
+| Case | Result | Date | Note |
+| --- | --- | --- | --- |
+| 0a notifications and remote actions | PASS | 2026-09-26 | Both on via `PUT /api/settings`, persisted to `.agent-console/settings.json`. Precondition, not part of V5's scope. |
+| 0b task waiting on a question | PASS | 2026-09-26 | Run `run_2636609e` on `claude-sonnet-4-5`. Prompt 1 `WI_TC01` `BLOCKED`; card posted unprompted as outbox 3, `kind: personal_question`, both buttons, options parsed. |
+| 1 roster on both sides | PASS | 2026-09-26 | Two people, two bots, on both instances. `refs/aw/team` moved to `4255c668…`, confirmed by `git ls-remote` against the pilot remote itself, so the GitHub round trip is real. |
+| 2 open item thread | **PASS** | 2026-09-26 | `POST /api/task-control/team/items {"promptId":1}` on 4100 answered `201` with `{"item":{"itemId":"awi1_63460787e23fa7d635890376"}}`. Anchor posted as outbox 8, Telegram message **85**, `kind: view`, `anchor=1`; access message as outbox 9, Telegram message **87**, `kind: team_item_access`, text exactly `Item access / Jj: owner / Junaid: read only / #item_63460787e23fa7d635890376`. New `telegram_thread` 4, `subject_kind: item`, `ACTIVE`. `item_link` row with `role: requester`, `epoch: 1`, no grants. **The pin was verified against Telegram, not from the local `anchor` flag**: `getChat` reports `pinned_message.message_id = 85`, from `aiws_helper_bot`, carrying the item tag. |
+| 3 read-only views | **NOT RUN** | 2026-09-26 | Needs a second human account typing in the group; a bot token cannot. Rig prepared and handed to jd as a script. Anchor to reply to is message **85**. Instance B was confirmed **present and live** first, so that its silence will mean something: PID 117484 holds two established connections to `149.154.166.110:443`, which is `api.telegram.org`. |
+| 4 ungranted command refused | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 5 grant answer | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 6 teammate answers | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 7 grant resume and start the run | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 8 revoke beats an open card | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 9 expiry is not renewed | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
+| 10 cross-owner thread request | SKIPPED | 2026-09-26 | Still not a real scenario. See B15. |
+| 11 close the thread | **NOT RUN** | 2026-09-26 | Needs jd's phone, same reason as case 3. Rig prepared; the item has **no grants**, so the case reduces to `/close` from B being refused as owner-only and then `/close` from A closing thread 4. September's row recorded this PARTIAL under B17, and B17's symptom is what to watch for. |
+| 12 default-off regression | **PARTIAL, two of three halves** | 2026-09-26 | **API half PASS**: Team on, `/api/task-control/team` `200` and `/api/task-control/team/refresh` `405`; Team off, both `403 team_disabled` and `items` `403`. The `405` becoming a `403` is the assertion, because it shows the gate sits in front of method routing. **Browser half PASS**, driven with Playwright against the live web on 3100: with Team on, `Team status`, `Join team` and the create panel render on `/agents` and `Team thread` renders on the `WI_TC01` detail; with Team off **and the page reloaded**, all four are gone from both surfaces; turning Team back on restores all four. **Phone half NOT RUN**: needs jd to confirm the private chat is unchanged. One defect found and registered as **L-16**, not fixed: with Team off and **no** reload, every one of those panels stays on screen. |
+
+**Case 12's browser half passes the criterion as written**, which says the panels disappear
+and does not mention reloading.
+The stale-until-reload behaviour is recorded as L-16 rather than folded into this row,
+because the API gate does hold and the refusal a user sees names the real cause.
+
+Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B20.
+B20 was added by the V5 re-run and is a trap in the state printer below, not a product defect.
 B16 was merged into B11 on 2026-09-20 and is kept as a pointer.
 
 ## Resuming in a fresh session
@@ -257,8 +293,10 @@ Each case is self-contained once the state is known.
 Print the state instead of re-deriving it:
 
 ```bash
-node scripts/team-pilot-state.mjs                                          # instance A
-node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/console.sqlite
+# Always pass the path, for BOTH instances. See B20: with no argument this reads the
+# calling checkout's own database and prints a plausible, wholly fake team.
+node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot/.agent-console/console.sqlite    # A
+node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/console.sqlite  # B
 ```
 
 That gives the roster, both actors, the open item and its grants, every
