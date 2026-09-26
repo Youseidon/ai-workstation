@@ -494,6 +494,25 @@ It is banded Medium rather than Critical for exactly that reason: the band is "r
 Worth naming precisely, because it is the C1 and C5 claim shape one step further down the flow and each step has been a smaller claim than the last.
 C1 was "the engine reaches no surface". C5 was "the surface is present but unproven as wired". M-12 is **"the client method is present and has no caller"** - which is the cheapest of the three to find and the one most likely to read as covered, since a source-grep assertion in a test file does mention all three names.
 
+### M-13. Two personal-control surfaces use C3's mechanism and have never been reproduced
+
+**Registered 2026-09-26. jd's ruling the same day: prove first, then decide. A worker reproduces and reports; no product change, so invariant A5 stays intact and the decision to waive it stays jd's.**
+
+`operationalState` can return **either** spelling, which is what makes this testable rather than theoretical:
+`server/src/operationalState.ts:30` returns `AWAITING_RESPONSE` when a human question or a held response exists, and **line 42** returns `BLOCKED` for a stored `BLOCKED` prompt that reached neither. C3 established that an agent posting `BLOCKED` with options writes no handoff, so it falls through to line 42 - and that is the feature's primary path, not a corner.
+
+The hypothesis, stated precisely so the reproduction can falsify it:
+
+| Surface | Branches it has | Suspected behaviour |
+| --- | --- | --- |
+| `web/components/tasks/WorkItemDetail.tsx:245` | gates the "Needs your input" banner and its **Review and respond** button on `AWAITING_RESPONSE` alone | in the C3 state the banner does not render. **Partially mitigated**: line 407 has its own `BLOCKED` branch offering a "Your response" input, so the page is degraded rather than a dead end |
+| `web/components/tasks/WorkItemList.tsx:365` | `READY`, `WORKING`, `RECOVERY_NEEDED`, `BLOCKED` - and **no `AWAITING_RESPONSE` branch at all** | the mirror image: it serves the C3 state correctly and shows **no action button** in the state where a real handoff question is waiting |
+
+So the two are suspected broken in **complementary** states rather than both broken in the same one, and neither has been reproduced end to end.
+That distinction is the whole reason for proving before deciding: the register should not imply a defect it has only argued for, which is the standard C3 was eventually held to.
+
+The C3 harness already produces the exact state, so this is far cheaper than when it was first noticed.
+
 ## Low
 
 | Id | Gap | Note |
