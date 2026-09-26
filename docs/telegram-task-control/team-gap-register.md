@@ -178,6 +178,10 @@ Note first that this is a **deferred item coming due, not an oversight**. H07 ju
 
 ### C5. The requester's web handover surface has no end-to-end proof it is wired
 
+**CLOSED 2026-09-26 by C5, commits `12ddb8e..a109232`, merged by fast-forward.**
+The row is `C5 (T1)` in `e2e/tests/t1/c5-web-handover-control.spec.ts`, and it is proven load-bearing by mutation rather than by having passed.
+The orchestrator re-ran it on the rebased tree before it landed: `1 passed (1.1m)`, the test itself 3.7s.
+
 **Registered 2026-09-26 from audit 4. Its own task, by jd's ruling of 2026-09-26.**
 
 The TM4 end-to-end spec proves the **Telegram** surface and only that surface.
@@ -473,6 +477,22 @@ Audit 3 ranked it first of A1's five criteria for product risk, and the risk is 
 The brief sized that as large ("needs the fake to model a supergroup upgrade mid-test, which no scenario does yet").
 jd's ruling of 2026-09-25 was to register the deviation and retire the ids now, not to build it.
 Until it is built, **F05's third criterion is unmet and recorded as unmet**, rather than covered by a test that was named as though it were.
+
+### M-12. The requester's review and apply half has no web surface at all
+
+**Registered 2026-09-26, found by the C5 worker and verified here before recording.**
+
+`web/lib/workspacesApi.ts` defines `handoverReview` (line 102), `applyHandover` (line 103) and `requestHandoverChanges` (line 104).
+**No web component calls any of them.**
+Verified by grepping the whole `web/` tree for each name: every one appears exactly twice, once at its own definition and once in a URL-shape table at `web/components/tasks/handoverControl.test.tsx:150-152`, which asserts the client method points at the right route and never that anything calls it.
+
+So the requester can *start* a handover from the web app - that is what C5 just proved wired - and then cannot review, apply or request changes there.
+That half is driven from the phone, by `TM-T1-H3` in `tm4-handover.spec.ts`, so **the feature works and this is not a broken path**.
+
+It is banded Medium rather than Critical for exactly that reason: the band is "real, not blocking, and needs a decision rather than only work", and the decision is jd's - whether the web app is supposed to carry the review and apply half at all, or whether returning work is deliberately a phone action.
+
+Worth naming precisely, because it is the C1 and C5 claim shape one step further down the flow and each step has been a smaller claim than the last.
+C1 was "the engine reaches no surface". C5 was "the surface is present but unproven as wired". M-12 is **"the client method is present and has no caller"** - which is the cheapest of the three to find and the one most likely to read as covered, since a source-grep assertion in a test file does mention all three names.
 
 ## Low
 
