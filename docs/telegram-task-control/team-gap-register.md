@@ -575,6 +575,24 @@ Root cause, traced to one line pair rather than guessed. `respond()` in `web/com
 2. Whether the row's missing `AWAITING_RESPONSE` branch and the unreachable `HumanInputDialog` are one fix or two.
 3. Whether a green test that pins the canned-retry behaviour should stay green. It is a deliberate record, but a green row asserting a defect is the same thing that makes an invented scenario id dangerous - it reads as coverage to anyone who does not open the file.
 
+### M-14. A workstation that loses its database cannot rejoin a team it is already a member of
+
+**Registered 2026-09-26, found on the live rig during V5 rather than in any suite.**
+
+The V5 rebuild wiped both pilot databases and left the roster on the real remote untouched. Both instances are still *named* in that roster, because the identities are derived rather than stored locally: `workstationId` is `telegram-<botId>` and `personId` is the Telegram user id, and neither changed across the wipe. Verified against the September record: `telegram-8262291110` / `8973262519` for A and `telegram-8998251911` / `6525517234` for B.
+
+Yet neither instance can get back in.
+
+- **Create fails.** `POST /api/task-control/team/create/confirm` returns **409 `roster_conflict`**, "Team roster changed; review it before trying again." The compare-and-swap is working exactly as designed - a roster already exists at `refs/aw/team` - but the advice is unactionable, because a wiped workstation has **no surface on which to review** the remote roster.
+- **Refresh does not adopt.** `POST /api/task-control/team/refresh` returns `{"team":null}` and HTTP 200. It refreshes a team the workstation already holds locally; it is not a path to pick up one it is listed in.
+- **Join needs a member who can mint a code.** `join-code` is issued by an existing member's workstation, and here *both* members lost their local records, so there is nobody left to issue one.
+
+So the roster on the remote is reachable, correct and names you, and there is no supported way to act on that fact. The only routes forward are deleting `refs/aw/team` on the remote or pointing the team at a different repository, and the first is destructive of a record the audits may still want.
+
+**Not a defect of the designed flow**, which is create once and join by code, and is why this is Medium rather than higher: losing a workstation database is a recovery scenario the design never claimed to cover. What makes it worth a register line is that the failure is silent about the real remedy and the error message actively suggests something impossible.
+
+Worth pairing with the observation that the identities *are* stable and derived. That is what makes a rejoin path cheap to build if jd wants one: the roster already contains everything needed to recognise the returning workstation.
+
 ## Low
 
 | Id | Gap | Note |
