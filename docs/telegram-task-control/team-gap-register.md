@@ -513,6 +513,41 @@ That distinction is the whole reason for proving before deciding: the register s
 
 The C3 harness already produces the exact state, so this is far cheaper than when it was first noticed.
 
+---
+
+**REPRODUCED 2026-09-26.** `e2e/tests/t1/m13-personal-surfaces.spec.ts`, landed at `395fa16`, drives one item through both spellings and reads what a user can see and press. Five rows, green, re-run independently by the orchestrator at `5 passed (11.8s)`. The spec pins today's behaviour and its header says plainly that the green is a record and not an endorsement.
+
+The hypothesis was **half right, and the reproduction found a worse defect than either surface it was aimed at.**
+
+| Surface and state | What a user actually gets | Verdict |
+| --- | --- | --- |
+| Detail, C3 state (`BLOCKED`) | no "Needs your input" banner, but line 407's own `BLOCKED` branch renders a **"Your response"** box with **Respond and resume enabled** | **Degraded, not a dead end.** The owner can answer |
+| Detail, handoff state (`AWAITING_RESPONSE`) | banner present, **and line 407's response box is gone**, so the banner's button is the entire affordance | **Broken, see below** |
+| Row, C3 state (`BLOCKED`) | badge "Needs you", button **Respond** | **Fine** |
+| Row, handoff state (`AWAITING_RESPONSE`) | badge "Awaiting response", **no buttons at all** | **Broken exactly as predicted.** The row says a person is needed and offers nothing to press |
+
+**The defect nobody was looking for.** In the `AWAITING_RESPONSE` state the banner's **Review and respond** button opens no dialog, exposes no textarea, and **submits an answer on the owner's behalf**, then starts a run. Observed, not inferred:
+
+```
+dialog opened: false
+textareas on the page: 0
+answer stored on the owner's behalf: "Retry requested with no additional context. Inspect the
+existing working tree and prior evidence, then continue incomplete work without repeating
+resolved blockers."
+```
+
+Root cause, traced to one line pair rather than guessed. `respond()` in `web/components/tasks/TasksView.tsx` sends `response.trim() || "<canned retry text>"`. `response` is bound to the **"Your response"** textarea, and that textarea renders only inside line 407's `BLOCKED` branch. The banner is gated on `AWAITING_RESPONSE` at line 245. **The two gates are mutually exclusive**, so the button labelled "Review and respond" can never carry a typed answer and always falls through to the canned string.
+
+**And the dialog that would fix it already exists and is unreachable.** `HumanInputDialog` is imported and mounted at `TasksView.tsx:516`, gated on `inputItem !== null`. `setInputItem` is called in exactly two places: its own `useState` declaration at line 60, and `onClose`, which sets it back to `null`. **Nothing ever opens it.** That is the C1, C5 and M-12 claim shape again - present, mounted, and wired to nothing - this time on a personal-control surface.
+
+**Provenance, checked rather than assumed: this is probably not ours.** The line 245 banner gate was introduced by `ded5c20 feat: add shared human input and course correction panel`, whose commit-message convention is upstream's rather than this track's, and the last commit to touch the file is the reconcile `a641b0c`. So the canned-retry path most likely predates the Team work rather than being a fifth M-9 regression. Stated as probable: the introducing commit was identified, every intermediate state was not.
+
+**What is now jd's to decide**, which is what "prove first" was for:
+
+1. Whether to waive A5 and fix any of this, given it is a personal-control surface and probably upstream's defect rather than this track's.
+2. Whether the row's missing `AWAITING_RESPONSE` branch and the unreachable `HumanInputDialog` are one fix or two.
+3. Whether a green test that pins the canned-retry behaviour should stay green. It is a deliberate record, but a green row asserting a defect is the same thing that makes an invented scenario id dangerous - it reads as coverage to anyone who does not open the file.
+
 ## Low
 
 | Id | Gap | Note |
