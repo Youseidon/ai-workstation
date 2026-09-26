@@ -40,6 +40,14 @@ import { createTeamFixture, pairTeamMember, registerTeamWorkspace, teamApi } fro
  * that fabricates the offer locally instead of calling the route leaves this
  * page looking exactly as correct as it does now, and this row still goes red.
  *
+ * Proven load-bearing, not assumed. The publish call site in
+ * `HandoverControl.tsx` was cut from its route - `setOffer` fed a locally
+ * fabricated offer instead of `workspaceApi.publishHandover` - and this row
+ * went red in 7.9s on the named assertion below, with the shared record still
+ * PREPARING at epoch 0 while the page showed a perfectly formed offer. Restored,
+ * it is green again. That mutation is the exact shape of the defect this row
+ * exists to catch, and nothing else in the repository catches it.
+ *
  * Not asserted here, and recorded rather than implied:
  *
  * - Everything downstream of the offer: env B's own offer card, the accept, the
