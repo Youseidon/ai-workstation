@@ -142,7 +142,13 @@ Scope note for whoever takes it: criterion 1 is the whole point of the task. The
 
 ### C4. H07's close guard is proven at the server tier only
 
-**Registered 2026-09-26 from audit 4, which ranked it the one failure with product risk behind it. Its own task, by jd's ruling of 2026-09-26.**
+**CLOSED 2026-09-26 by task C4, commit `77ed7ef`, landed on main by fast-forward. Tests only; no product code changed and no behaviour difference found.**
+`grep -rn handover_live e2e/` is no longer empty, which is this entry's own marker for the gap.
+Four T1 rows drive one real two-workstation handover through all three live stages - an open offer, the receiver holding it after a real Accept tap, and returned work unapplied after a real Return tap - and assert the refusal on the tap path, the deliberate mint-then-refuse behaviour on the text path, and that `/close` still closes an item with no live handover.
+**Proven load-bearing by mutation, which is what makes it a proof rather than a number**: with the guard's four lines disabled, rows 1 to 3 go red and **the control row stays green**, so the close path still works and it is the refusal that broke. Row 1's red is the data loss itself, in the owner's own toast - `Expected pattern: /^Not applied:/`, `Received string: "Thread closed; grants ended."`. Both outputs are verbatim in the commit message.
+**Orchestrator verification on the merged tree, re-run rather than accepted**: full T1 **134 of 134 in 28.5 minutes**, 0 failed and 0 flaky, the four C4 rows confirmed green by name; the full server suite **618 of 618 three times** against one root with `AGENT_CONSOLE_DB` and `SETTINGS_FILE` pinned; four workspaces typecheck.
+
+The history below is kept because it is the reasoning that opened it.
 
 H07 closed M-4's rule 4.5 by jd's ruling 7: `/close` is refused while a handover is live, so an owner cannot destroy a receiver's unreturned work.
 That is the **data-loss** shape, and it is the only one of the seven rulings that needed a task rather than a document.
