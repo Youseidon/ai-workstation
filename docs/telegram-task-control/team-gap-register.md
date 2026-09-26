@@ -227,6 +227,33 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 **CLOSED 2026-09-22 by V3. See the closed section at the foot of this file.**
 
+### H-4. The Team pilot's database isolation is broken on main, and the guard's suggested fix makes it worse
+
+**Registered 2026-09-26, found while rebuilding the rig on main for V5. Worked around in the rig; `scripts/setup-team-pilot.mjs` is still stale.**
+
+The console database **moved out of the repository** during the 209 commits the rig was behind. `server/src/workspaces.ts:37-49`: the default is now `$XDG_STATE_HOME/agent-console/console.sqlite`, falling back to `~/.local/state/...`. That location is **per-user, not per-checkout**, and `AGENT_CONSOLE_DB` is the only thing that overrides it.
+
+The Team pilot's entire isolation model was the in-checkout `.agent-console` directory, and `pilotEnv()` in `scripts/setup-team-pilot.mjs` **still does not set `AGENT_CONSOLE_DB`** while its generated header tells the operator the file "belongs only to this isolated pilot checkout".
+
+So on main the documented setup path produces two instances that resolve to **one** database. The two-workstation separation the pilot exists to exercise would be a fiction, and every LT-4 observable that depends on instance B having its own state - "instance B stays silent", "instance B started nothing" - would be meaningless.
+
+**What stops it is a guard, and the guard's own advice is the trap.** `workspaces.ts:63-75` refuses to start a watch server on the default path at all, before opening the file, because migrations run on import. Observed here verbatim:
+
+```
+Refusing to run the watch server against the live database
+(/home/junaid/.local/state/agent-console/console.sqlite). Use `npm run serve` for a live
+pipeline, or `npm run dev:sandbox` to develop against a copy. Set
+AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.
+```
+
+**Taking that last suggestion is exactly the wrong move for this rig.** `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` silences the refusal without pinning anything, so both instances start and quietly share one database. The safe failure becomes the silent one, and the operator was told to do it by the error message.
+
+Precision, because the first reading here was too strong: `~/.local/state/agent-console/console.sqlite` **does not currently exist**. The guard refuses the default path whether or not a file is there, so no existing data was at risk - but the shared-database outcome is real as soon as two instances run without a pin.
+
+Worked around rather than fixed: each pilot `.env` now carries an `AGENT_CONSOLE_DB` pinned to its own checkout, with a comment saying why. Both instances verified on main with separate fresh databases, `workspaces 0` each, connected as `@aiws_helper_bot` and `@ai_test_pilot_1_bot`. **The product fix - `pilotEnv()` emitting `AGENT_CONSOLE_DB` - is not done and is jd's call**, since `setup-team-pilot.mjs` is outside this track's scope and a fresh operator following the README today would hit this.
+
+The roster mirror is **not** affected: `runtime.ts` still resolves it to `config.repoRoot/.agent-console/team/remote.git`, which stays per-checkout. Only the database moved.
+
 ## Medium
 
 ### M-1. The two-person runs with Yousef have never happened
