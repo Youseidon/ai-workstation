@@ -112,6 +112,11 @@ that is awaiting a response, once a roster exists.
 
 ## B3 - `npm run dev` in a pilot checkout serves the wrong port silently
 
+**Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+Rig only: no product code path is affected, and the pilot is always launched through
+`dev:team-pilot`, which sets the port correctly.
+
 Severity: medium, because the symptom names neither the port nor the cause.
 
 `dev:web` resolves the port with the shell expansion `${WEB_PORT:-3000}`, and
@@ -126,6 +131,11 @@ Suggested fix: read `WEB_PORT` from `.env` in the web dev script, or log the
 allowed origins and the expected web port at server startup.
 
 ## B4 - the pilot inherits provider credentials from the launching shell
+
+**Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+Rig only. Worked around throughout by launching with `env -u ANTHROPIC_API_KEY`, which is
+recorded in every handover, and the live rig runs that way now.
 
 Severity: medium; it defeats the isolation the pilot setup otherwise enforces.
 
@@ -377,6 +387,11 @@ Suggested fix: back off per thread after a failed anchor, and stop re-enqueuing
 while an undelivered anchor for that thread already exists.
 
 ## B10 - the pilot launcher's signal handlers do not stop the pilot
+
+**Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+Rig only, and it bites scripts rather than people: Ctrl+C in an attached terminal still
+works, because the terminal signals the whole process group.
 
 Severity: low for interactive use, moderate for anything scripted.
 
@@ -880,6 +895,11 @@ well as the allowance, so the two buttons are distinguishable by consequence and
 not only by wording.
 
 ## B19 - the pilot rig shares one working tree, so LT-5 cannot run on it
+
+**Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+Rig only, and it is the one of the four that actually blocks something: LT-5 cannot run
+until instance B has its own clone. Nothing in V5 touches Git, so V5 is unaffected.
 
 Severity: none for the product; a note about this rig only.
 
