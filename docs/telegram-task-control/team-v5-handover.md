@@ -1,5 +1,8 @@
 # V5 handover: the sprint to completion
 
+**CLOSED 2026-09-26. Its successor is [team-v6-handover.md](team-v6-handover.md), which is the current working knowledge.**
+C5 is closed, M-13 is reproduced, and V5 is four of seven cases done against live Telegram. This file's state table is superseded: T1 is now **140 of 140** and main is **404 ahead** at `698dcef`.
+
 Written 2026-09-26, by the orchestrator, for the session that finishes this track.
 This session routed **audit 3 and audit 4**, and closed gaps **C3** and **C4**.
 What is left is **C5**, then **V5**, then the completion report. Section 3 is the whole remaining path.

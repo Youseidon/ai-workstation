@@ -4,11 +4,12 @@ Created: 2026-09-20
 
 ## Start here
 
-**If you are resuming after audits 3 and 4, read [team-v5-handover.md](team-v5-handover.md) first.**
-It holds this session's working knowledge and **the whole remaining path to completion**: C5, then V5, then the completion report, plus the decisions still waiting on jd.
+**Read [team-v6-handover.md](team-v6-handover.md) first.** It is the current working knowledge and holds the whole remaining path: finishing V5's cases 2, 3 and 11, then the completion report.
+**Its section 2 matters before you touch anything: two pilot instances are running live against real Telegram.**
 
 **Everything below is closed history.** Each file carries a CLOSED banner and figures that later documents supersede, so take no number from any of them without checking it against the V5 handover first.
 
+- [team-v5-handover.md](team-v5-handover.md), after audits 3 and 4, and gaps C3 and C4. Its T1 bar of 134 and its `c6ff1ff` tip are superseded by 140 and `698dcef`.
 - [team-v4-handover.md](team-v4-handover.md), after M-9 and audit 3. The reasoning behind the three questions jd settled on 2026-09-25 and 2026-09-26. Its T1 bar of 127 and web bar of 94 are superseded by 134 and 95.
 - [team-m9-handover.md](team-m9-handover.md), after M-8. The working knowledge behind gap M-9 and the answer to "is the Team code merged".
 - [team-reconcile-handover.md](team-reconcile-handover.md), for the reconcile and M-8. Row R1, the migration renumbering, the run-lifecycle change, and the corrections V4's auditors were given.
