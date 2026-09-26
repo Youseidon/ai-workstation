@@ -1,5 +1,10 @@
 # V4 handover: the audits, and the three questions waiting on jd
 
+> **CLOSED 2026-09-26. Superseded by [team-v5-handover.md](team-v5-handover.md).**
+> jd answered all three questions in section 5 on 2026-09-25 and 2026-09-26; audit 4 has since run and FAILed, and both audits are routed.
+> Figures in this file describe the tree before gaps C3 and C4 were closed: the T1 bar is now **134**, not 127, and the web bar **95**, not 94.
+> Read the V5 handover for current state; use this one only for the reasoning behind the three questions.
+
 Written 2026-09-25, by the orchestrator, for whoever picks this up in a fresh session.
 This session closed gaps **M-9** and **M-5** and ran **audit 3**, which FAILed.
 It ends with three decisions jd deferred to the next session, listed in section 5.

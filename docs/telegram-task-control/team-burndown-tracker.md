@@ -4,20 +4,22 @@ Created: 2026-09-20
 
 ## Start here
 
-**If you are resuming after M-9 and audit 3, read [team-v4-handover.md](team-v4-handover.md) first.**
-It holds this session's working knowledge and **the three questions jd deferred to the next session**: how to route audit 3's five failures, whether to run audit 4 now, and what to do about F05's missing harness case.
+**If you are resuming after audits 3 and 4, read [team-v5-handover.md](team-v5-handover.md) first.**
+It holds this session's working knowledge and **the whole remaining path to completion**: C5, then V5, then the completion report, plus the decisions still waiting on jd.
 
-**If you are resuming after M-8, read [team-m9-handover.md](team-m9-handover.md) first.**
-It holds the working knowledge behind gap M-9, the state of every suite, and the answer to "is the Team code merged".
+**Everything below is closed history.** Each file carries a CLOSED banner and figures that later documents supersede, so take no number from any of them without checking it against the V5 handover first.
 
-[team-reconcile-handover.md](team-reconcile-handover.md) is the equivalent file for the reconcile and for M-8, which is closed.
-It holds the working knowledge behind row R1 and gap M-8, including the migration renumbering, the run-lifecycle change and the corrections V4's auditors must be given.
+- [team-v4-handover.md](team-v4-handover.md), after M-9 and audit 3. The reasoning behind the three questions jd settled on 2026-09-25 and 2026-09-26. Its T1 bar of 127 and web bar of 94 are superseded by 134 and 95.
+- [team-m9-handover.md](team-m9-handover.md), after M-8. The working knowledge behind gap M-9 and the answer to "is the Team code merged".
+- [team-reconcile-handover.md](team-reconcile-handover.md), for the reconcile and M-8. Row R1, the migration renumbering, the run-lifecycle change, and the corrections V4's auditors were given.
 
 Read this file, then **[team-gap-register.md](team-gap-register.md)**, which holds every open gap in four bands and is the answer to "what is left".
 Then [team-burndown-dev-brief.md](team-burndown-dev-brief.md) sections 2.1, 3, 6 and 7, then the open entries of [pilot-bug-log.md](pilot-bug-log.md).
 A fixed entry says so at the top of the entry, with the task and commits that closed it, so anything without that banner is still open.
 
-State as of 2026-09-25, after M-8 landed:
+State as of 2026-09-26, after audits 3 and 4 were routed and gaps C3 and C4 closed. **The block below was written on 2026-09-25 and its suite figures are superseded**: T1 is now **134 of 134**, the web suite **95 of 95**, and main is **389 ahead** at `c6ff1ff`. [team-v5-handover.md](team-v5-handover.md) section 1 is the current state table.
+
+Older state, as of 2026-09-25, after M-8 landed:
 
 - **M9 landed at `250e085`** in `/home/junaid/ai-workstation`, clean, **nothing pushed**. Documentation commits follow it, so main's tip is at or after that commit; the code evidence below was measured on that tree and no commit after it touches a file outside `docs/`.
   **M9 landed on 2026-09-25** by fast-forward, 8 commits, no merge commit, closing gaps **M-9 and M-5**.
