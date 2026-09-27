@@ -1,13 +1,46 @@
 #!/usr/bin/env node
 
-// Read-only snapshot of one pilot instance's Team state, for resuming a test
-// session without re-deriving everything. Usage:
-//   node scripts/team-pilot-state.mjs [path-to-.agent-console/console.sqlite]
+/*
+ * Read-only snapshot of one pilot instance's Team state, for resuming a test
+ * session without re-deriving everything. Usage:
+ *   node scripts/team-pilot-state.mjs <path-to-.agent-console/console.sqlite>
+ *
+ * The path is **required** (L-17). It used to default to the calling checkout's
+ * own `.agent-console/console.sqlite`, and run from the repo root - which is how
+ * the check document documented it - that resolved `main`'s leftover fixture
+ * database and printed `team-7`, `jd-laptop` and `yousef-desktop`: a complete,
+ * believable team, none of which exists, signed off with `!! 2 FAILED outbox
+ * rows` that invited an investigation into two fixture rows months old.
+ *
+ * Worse than a wrong port, which fails visibly. This succeeded plausibly, and
+ * the only thing in the whole output that gave it away was the header line
+ * echoing the path it had opened. So the path is now demanded rather than
+ * guessed, and the header stays as the first line.
+ */
 
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 
-const dbPath = resolve(process.argv[2] ?? ".agent-console/console.sqlite");
+const requested = process.argv[2];
+if (requested === undefined || requested.trim() === "") {
+  console.error(`Usage: node scripts/team-pilot-state.mjs <path-to-.agent-console/console.sqlite>
+
+The database path is required. This script used to default to the calling
+checkout's own database, and from the repo root that is a leftover fixture whose
+team, members and failures are all real-looking and all false (L-17).
+
+For the live pilot rig:
+  node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot/.agent-console/console.sqlite
+  node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/console.sqlite`);
+  process.exit(2);
+}
+
+const dbPath = resolve(requested);
+if (!existsSync(dbPath)) {
+  console.error(`No database at ${dbPath}\n\nCheck the path. Nothing is printed from a database that is not there, because an\nempty report reads exactly like a quiet team.`);
+  process.exit(2);
+}
 const db = new DatabaseSync(dbPath, { readOnly: true });
 const all = (sql, ...args) => db.prepare(sql).all(...args);
 const line = (label, value) => console.log(`${label.padEnd(18)} ${value}`);
