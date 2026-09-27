@@ -11,10 +11,12 @@ import { settings } from "../src/settings.ts";
 import { TaskControlService } from "../src/taskControl.ts";
 import {
   BareGitControlRecordRemote,
+  CONTROL_STATES,
   OFFER_DEADLINE_MS,
   applyControlTransition,
   createControlRecord,
   handoverBranch,
+  isLiveHandoverState,
   type ControlRecordRemote,
 } from "../src/teamControlRecord.ts";
 import { readPublishedOffer, type PublishedOffer } from "../src/teamHandoverCapture.ts";
@@ -937,19 +939,61 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       assert.equal(cancelRequest.branchKept, true, "and the branch is kept until the requester deletes it");
 
       const tooEarly = closeAfterHandover(cancelRequest.record, { itemId: f.itemId, commandId: "a-close-early" });
-      assert.equal(tooEarly.closed, false, "closing before the receiver has acknowledged is refused");
+      assert.equal(tooEarly.closed, false, "closing while the receiver's run is still live is refused");
       assert.equal(workspaces.itemLink(f.itemId)!.closedAt, null);
 
       const acknowledged = await acknowledgeExecutorStop(f.control, {
         itemId: f.itemId, actor: { personId: RECEIVER }, commandId: "b-local-ack", writingStopped: true, roster: f.env.roster,
       });
-      const closed = closeAfterHandover(acknowledged.record, { itemId: f.itemId, commandId: "a-close" });
-      assert.equal(closed.closed, true, "the item closes once the receiver's own workstation has stopped and acknowledged");
-      assert.equal(workspaces.itemLink(f.itemId)!.closedAt !== null, true);
+      /*
+       * REWRITTEN by P-C5, citing jd's ruling of 2026-09-27: ruling 7 wins, and a
+       * stopped-but-unreturned item is still held.
+       *
+       * This asserted the opposite - "the item closes once the receiver's own
+       * workstation has stopped and acknowledged", closed === true. That was
+       * `closeAfterHandover` keeping its own list of acknowledged states, four of
+       * which (OFFERED, WAITING_INPUT, PAUSED, RETURNED) are in
+       * LIVE_HANDOVER_STATES, so a close was permitted in four states where
+       * `/close` itself refuses. H07 tried to fix this once and reverted rather
+       * than weaken this assertion without a ruling; the ruling now exists.
+       *
+       * The deciding argument was the asymmetry: choosing the other way wrongly
+       * loses another person's work, choosing this way wrongly costs one explicit
+       * step - the requester ends the handover, then closes.
+       */
+      assert.equal(acknowledged.record.state, "PAUSED", "an acknowledged stop with no blocker pauses the handover");
+      assert.equal(isLiveHandoverState("PAUSED"), true, "and PAUSED is a live handover state");
+      const stillHeld = closeAfterHandover(acknowledged.record, { itemId: f.itemId, commandId: "a-close" });
+      assert.equal(stillHeld.closed, false, "so an acknowledged stop does not end the handover, and the close is refused");
+      assert.match(stillHeld.reason, /still live/, "and the reason says the handover is live rather than blaming the executor");
+      assert.equal(workspaces.itemLink(f.itemId)!.closedAt, null, "the item link stays open");
       assert.equal(
         execFileSync("git", ["--git-dir", f.bare, "rev-parse", "--verify", "-q", `refs/heads/${handoverBranch(f.itemId)}`], { encoding: "utf8" }).trim().length,
         40, "and the branch is still there",
       );
+
+      /*
+       * The other half of the ruling, asserted as a table rather than by driving
+       * nine more fixtures: the predicate is the whole gate. `closeAfterHandover`
+       * reads nothing from the record but its state, so overriding that state is a
+       * faithful way to ask the question for every one of them.
+       */
+      // Live states first, while the link is still open: each must refuse AND leave
+      // it open. Asking in CONTROL_STATES order instead would let an early non-live
+      // state close the link and make every later "leaves the link open" check a
+      // statement about a link that was already shut.
+      for (const state of CONTROL_STATES.filter(isLiveHandoverState)) {
+        const answer = closeAfterHandover({ ...acknowledged.record, state }, { itemId: f.itemId, commandId: `a-close-${state}` });
+        assert.equal(answer.closed, false, `a close is refused in ${state}, which is a live handover state`);
+        assert.equal(workspaces.itemLink(f.itemId)!.closedAt, null, `and ${state} leaves the link open`);
+      }
+      // Then the rest. The first of them actually closes the link, so the others
+      // answer "already closed" - still not a refusal, which is the point.
+      for (const state of CONTROL_STATES.filter(state => !isLiveHandoverState(state))) {
+        const answer = closeAfterHandover({ ...acknowledged.record, state }, { itemId: f.itemId, commandId: `a-close-${state}` });
+        assert.equal(answer.closed || /already closed/.test(answer.reason), true, `a close is allowed in ${state}, which is not a live handover state`);
+      }
+      assert.equal(workspaces.itemLink(f.itemId)!.closedAt !== null, true, "and the non-live states did close it");
     } finally { f.dispose(); }
   });
 
