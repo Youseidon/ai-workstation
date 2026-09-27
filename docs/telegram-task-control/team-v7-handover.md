@@ -52,8 +52,8 @@ So the answer is safe on the rig, and the remaining defect is a **dead button** 
 | vs `origin/main` | **428+ ahead, 0 behind.** `origin/main` is `4fd0e65`. **212 commits are on no remote ref at all** - the figure moves with every commit, so read it rather than quoting this cell: `git rev-list --count HEAD --not --remotes`, argument order as written |
 | Ever pushed | **One branch, once**: `origin/feature/team-telegram-pilot` at `5018409`, 2026-09-18, an ancestor of `dc3e9de`, still on GitHub. It holds **no** burndown work. The blanket phrase "nothing has ever been pushed" is **wrong** and should stop being written |
 | Worktrees / task branches | One worktree, the checkout itself. **Zero** `fix/*` or `tm/*` |
-| **Full T1** | **142 of 142**, 28.4 minutes, re-run on main 2026-09-27 as the **Phase 1 gate**, with the live rig stopped by port for its duration. 142 is 140 plus P-A0's two rows. Owed again when product code changes |
-| Server | **618 of 618**, 0 fail, re-run 2026-09-27 after P-A2 |
+| **Full T1** | **147 of 147**, 29.7 minutes, re-run on main 2026-09-27 as the **Phase 4 gate**, with the live rig stopped by port. 147 is accounted for exactly: the Phase 1 gate's 142 plus `M-10`, `M-12`, `L-16`, `M-15` and `M-11`. Owed again when product code changes |
+| Server | **625 of 625**, 0 fail, run twice 2026-09-27 after P-B3 |
 | Shared / Web | **91 of 91** / **95 of 95**, re-run 2026-09-27 after P-A3 |
 | Typecheck | exit 0 across shared, server, web, e2e |
 | Web lint | **19 problems, 17 errors**, exit 1. Upstream's files. **L-12, waived. Leave it** |

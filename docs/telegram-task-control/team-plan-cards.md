@@ -84,6 +84,10 @@ One note for whoever runs it next: the first 22 rows took about 45 minutes and t
 | **P-B3** | **DONE 2026-09-27**: adoption in `confirmTeamCreate`, conditional on holding nothing locally - which is what keeps B1's refusal intact. The stale-mirror cause was a silently discarded fetch result. Server 625 of 625 twice, after 621/4 red. No T1 row, and the register says why. A workstation that lost its database can rejoin (M-14). | Fix the rejoin path, and split `roster_conflict`, which covers at least two distinct causes - a genuine remote divergence, and a stale **local** mirror at `.agent-console/team/remote.git` - so the message names which one. Clearing the remote ref alone is not enough; the local mirror caches its own copy. | |
 | **P-C3** | **DONE 2026-09-27**: needed a new seam in the harness fake, which is why the case never existed - it dropped `parameters` from every error, so the failure could not be expressed. New `M-10 (T1)` row, proved load-bearing by disabling the repair. F05's supergroup upgrade gets a harness case (M-10). | A case that upgrades a group mid-test and shows the next anchor delivered to the new chat id with no manual repair, which is F05's criterion 3 and has never existed. Name it for the gap id. **Two invented ids were already retired here**, `TM-T1-8` and `TM-T1-9`; do not mint a third. | |
 
+**Phase 4 ends with a full T1 run on main**, the rig stopped for its duration.
+
+**RUN 2026-09-27: 147 of 147, 0 failures, 29.7 minutes.** 147 is the Phase 1 gate's 142 plus the five rows Phases 2 to 4 added - `M-15`, `M-11`, `L-16`, `M-12` and `M-10` - so the count is accounted for rather than merely larger. Every product change in those phases is proven to reach a user.
+
 ## Phase 5
 
 | Id | Task | Acceptance criteria | jd |
