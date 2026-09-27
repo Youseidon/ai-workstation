@@ -4242,8 +4242,22 @@ export const workspaces = {
     const row = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster WHERE team_id=?").get(requireText(teamId, "teamId", 120)) as Omit<TeamRosterCacheRow, "record"> & { record: string } | undefined;
     return row === undefined ? null : { ...row, record: JSON.parse(row.record) as unknown };
   },
+  /**
+   * Cached rosters, newest first - **and deterministically so** (M-6).
+   *
+   * `updated_at` is an ISO string written by whoever refreshed the roster, so two
+   * rows written in the same millisecond compared equal and SQLite was free to
+   * return them in either order. Nine callers depend on this order, and three of
+   * them take `[0]` outright, so a tie decided which team the workstation believed
+   * it was in. `team_id` breaks it: it is unique, it never changes, and it makes
+   * the answer a fact about the rows rather than about the query plan.
+   *
+   * jd ruled on 2026-09-27: **the product tiebreak only**. The six fixture files
+   * that leak rows into the shared root stay as untidiness rather than risk, which
+   * is what they become once this no longer depends on row order.
+   */
   teamRosters(): TeamRosterCacheRow[] {
-    const rows = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster ORDER BY updated_at DESC").all() as Array<Omit<TeamRosterCacheRow, "record"> & { record: string }>;
+    const rows = db.prepare("SELECT team_id teamId,group_chat_id groupChatId,remote_url remoteUrl,revision,record_json record,updated_at updatedAt FROM team_roster ORDER BY updated_at DESC, team_id ASC").all() as Array<Omit<TeamRosterCacheRow, "record"> & { record: string }>;
     return rows.map(row => ({ ...row, record: JSON.parse(row.record) as unknown }));
   },
   upsertTeamRoster(input: { teamId: string; groupChatId: string; remoteUrl: string; revision: string; record: unknown }): TeamRosterCacheRow {

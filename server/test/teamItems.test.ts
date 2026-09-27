@@ -402,3 +402,43 @@ test("M-15: closing an item link writes the thread row to CLOSED, and leaves ANC
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+/*
+ * M-6. `teamRosters()` is ordered `updated_at DESC`, and `updated_at` is an ISO
+ * string written by whoever refreshed the roster. Two rows written in the same
+ * millisecond compare equal, and SQLite is then free to return them in either
+ * order - which decided which team this workstation believed it was in, because
+ * three of the nine callers take `[0]` outright.
+ *
+ * The rows here are written deliberately in the same millisecond, which is what
+ * a fixture leak plus a fast refresh produces.
+ */
+test("M-6: rosters written in the same millisecond come back in one fixed order", () => {
+  const teamIds = ["awt1_m6zzzzzzzzzzzzzzzz02", "awt1_m6aaaaaaaaaaaaaaaa01", "awt1_m6mmmmmmmmmmmmmm03"];
+  for (const teamId of teamIds) {
+    workspaces.upsertTeamRoster({ teamId, groupChatId: `chat-${teamId}`, remoteUrl: "https://example.invalid/r", revision: "r1", record: { members: [] } });
+  }
+  /*
+   * The tie is forced on the row rather than through the product, because
+   * `upsertTeamRoster` stamps its own `updated_at` and two calls in one
+   * millisecond is exactly the race this cannot reproduce on demand. Written
+   * through the same database file the suite points the product at.
+   */
+  const file = process.env.AGENT_CONSOLE_DB;
+  assert.equal(typeof file, "string", "the suite pins AGENT_CONSOLE_DB");
+  const raw = new Database(file!);
+  try {
+    raw.prepare("UPDATE team_roster SET updated_at=? WHERE team_id IN (?,?,?)").run("2026-09-27T00:00:00.000Z", ...teamIds);
+  } finally {
+    raw.close();
+  }
+
+  const order = () => workspaces.teamRosters().filter(entry => teamIds.includes(entry.teamId)).map(entry => entry.teamId);
+  const first = order();
+  assert.deepEqual(first.length, 3, "all three tied rosters are cached");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.deepEqual(order(), first, "the same query returns the same order every time");
+  }
+  // And it is the tiebreak's order rather than an accident of the query plan.
+  assert.deepEqual(first, [...teamIds].sort(), "tied rows are ordered by team_id ascending");
+});

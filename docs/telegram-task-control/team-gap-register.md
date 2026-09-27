@@ -371,7 +371,7 @@ Phase V should add a `test:web-ui` covering every `*.test.tsx`.
 
 The assertions exist and nothing routine runs them, which is the brief's own section 7 trap one level up.
 
-### M-6. Fixtures leak rows into the shared root, and one product lookup depends on row order
+### M-6. Fixtures leak rows into the shared root, and one product lookup depended on row order. The lookup is fixed 2026-09-27 by the Phase 3 tiebreak; the leaks stay by jd's ruling
 
 Found by F00B's row-count leak profile, which snapshots `COUNT(*)` per table between every server test file against one accumulating root.
 None of these causes a failure today, proven by three per-file runs and three full-suite runs against one root, so none is a non-deterministic fixture **yet**.
@@ -842,6 +842,16 @@ The refusal reason changed with it. "The current executor has not acknowledged y
 Proof: `teamHandoverRun.test.ts` **34 of 34** with the fix, after **32 pass / 2 fail** without it on the same rewritten assertions - the failure being the contradiction itself, `true !== false` on "an acknowledged stop does not end the handover". Server **621 of 621**, typecheck exit 0 on four workspaces. Nothing regresses for a user: `closeAfterHandover` has no production caller.
 
 One thing the rewrite taught, worth carrying: a state table that mutates shared state must ask its questions in an order that keeps the state meaningful. Asking in `CONTROL_STATES` order let an early non-live state close the link, after which every "leaves the link open" check was a statement about a link already shut - and it failed on `OFFERED` with a timestamp where it expected null.
+
+### M-6's product half, the order-dependent lookup. Closed 2026-09-27.
+
+jd ruled: **product tiebreak only**. The six leaking fixture files stay as untidiness rather than risk, which is what they become once nothing depends on row order.
+
+The tiebreak went into `teamRosters()` rather than into the one lookup the register named, because the order has **nine** consumers in `server/src` and **three of them take `[0]` outright**. So a same-millisecond tie did not merely make one `find` ambiguous - it decided which team the workstation believed it was in. `ORDER BY updated_at DESC, team_id ASC`: `team_id` is unique and never changes, so the answer is now a fact about the rows rather than about the query plan.
+
+The register's line number was stale and is corrected: the lookup is `taskControl.ts:341`, not `:321`.
+
+Proof: a new test writes three rosters, forces the tie on the rows through the same database file the suite pins, and asserts the order is identical across five reads **and** equal to `team_id` ascending. **Proved load-bearing by removing the tiebreak**, which fails that test alone. Server **622 of 622**.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
