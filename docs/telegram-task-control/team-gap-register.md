@@ -615,6 +615,13 @@ The Telegram path does **not** share this defect: V5 case 12 confirmed the phone
 
 So the fix must cover **both** banner states, and the acceptance criteria must assert that the saved-answer path preserves the saved answer.
 
+**Status of this half, stated honestly: ARGUED AND OBSERVED IN STATE, NOT REPRODUCED.**
+What was done is a code read plus a database reading: the two banner conditions at `:245`, the textarea's gate at `:407`, `respond()`'s fallback at `:309`, the route at `workspaceApi.ts:807`, and prompt 1 on the live rig sitting at `TODO` with `human_response_hold` on response 4.
+**No test drives it.** `m13-personal-surfaces.spec.ts`'s five rows cover the C3 stored-`BLOCKED` state and the `AWAITING_RESPONSE` state only; **none of them reaches `TODO` with a `HUMAN_RESPONSE` remark**. Its helper's locator at `:75` already matches `/Needs your input|Answer saved/`, so it anticipates the second banner text, and nothing exercises it.
+
+**That is exactly the stage C3 was at when jd refused to accept it**, and this register's own C3 entry records that refusal as the right call. The reproduced half of M-13 above earned its claims with five green rows; this half has not, and must not be read as though it had.
+So **P-A3's worker reproduces this half before fixing it**, the same prove-first order jd ruled on 2026-09-26, and the register should be corrected if the reproduction falsifies any part of it - in particular whether the run that follows actually consumes the canned remark rather than the held response.
+
 **Provenance, checked rather than assumed: this is probably not ours.** The line 245 banner gate was introduced by `ded5c20 feat: add shared human input and course correction panel`, whose commit-message convention is upstream's rather than this track's, and the last commit to touch the file is the reconcile `a641b0c`. So the canned-retry path most likely predates the Team work rather than being a fifth M-9 regression. Stated as probable: the introducing commit was identified, every intermediate state was not.
 
 **What is now jd's to decide**, which is what "prove first" was for:
