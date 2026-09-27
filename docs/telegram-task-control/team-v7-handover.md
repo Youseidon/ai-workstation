@@ -3,6 +3,8 @@
 Written 2026-09-27, by the orchestrator, for the session that executes the plan.
 The previous session **finished V5**, wrote the **completion report**, and then turned the open items into a prioritised, carded plan with **jd's ruling on every decision**.
 
+**The session's first action is P-A0**: reproduce M-13's saved-answer half, which was written into the register from a code read rather than a test. jd ruled this on 2026-09-27. It changes no product code and hands P-A3 a red row instead of an argument.
+
 Read in this order:
 1. **[team-plan-cards.md](team-plan-cards.md)** - what you actually do. One card per task, and the rules every card inherits.
 2. **[team-forward-plan.md](team-forward-plan.md)** - priority bands, the six phases, and jd's thirteen decisions.
@@ -31,7 +33,9 @@ Two pilot instances are **running against real Telegram** under jd's authorisati
 
 **The rig's task state has moved, and P-A3 cares about it.** Prompt 1 `WI_TC01` is now **`TODO`** with a `human_response_hold` on response 4, whose content is jd's own `Integer cents is fine`, saved from Telegram during V5 case 12. The item thread `awi1_63460787e23fa7d635890376` is **closed** (`item_link.closed_at` set) though `telegram_thread` 4 still reads `ACTIVE`, and message **85** is still pinned.
 
-That state is exactly the one **M-13's widened half** is reachable from: the detail page is showing a **"Continue with saved answer"** button which, if pressed, replaces jd's answer with a canned string and starts a run. **Do not press it except as part of P-A3's reproduction.**
+That state is exactly the one **M-13's widened half** is reachable from: the detail page is showing a **"Continue with saved answer"** button which, on the register's reading, replaces jd's answer with a canned string and starts a run. **Do not press it on the rig.**
+
+**That reading is not proven**, which is why **P-A0** exists and runs first. It was established by reading `:245`, `:407`, `respond()` at `:309` and the route at `workspaceApi.ts:807`, plus the rig's own database - but **no test reaches this state**, so whether the run consumes the canned remark or the held response is still an assertion rather than an observation. P-A0's row settles it, in the harness, which builds its own environments and does not need the rig's state.
 
 ## 2. State of the repository
 

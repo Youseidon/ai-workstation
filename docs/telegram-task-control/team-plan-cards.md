@@ -19,6 +19,25 @@ Two in the register were stale and are corrected below: `taskControl.ts:321` is 
 - **No push to `ai-workstation`** until P-A1. The roster push to the pilot repo is authorised.
 - Commit messages imperative, **no co-author line of any kind**.
 
+## Phase 0 - the session's first action
+
+**This is jd's decision of 2026-09-27**, taken when it emerged that M-13's widened half had been written into the register on the strength of a code read.
+It runs **before** P-A3 and before anything else.
+
+| Id | Task | Acceptance criteria | jd |
+| --- | --- | --- | --- |
+| **P-A0** | Reproduce M-13's saved-answer half, and change no product code. | Add a row to [m13-personal-surfaces.spec.ts](../../e2e/tests/t1/m13-personal-surfaces.spec.ts) that reaches the state no existing row reaches: prompt `TODO` **with** a `HUMAN_RESPONSE` remark, which is the second condition of the banner at [WorkItemDetail.tsx:245](../../web/components/tasks/WorkItemDetail.tsx#L245). The five existing rows cover the C3 stored-`BLOCKED` state and `AWAITING_RESPONSE` only. The helper's locator at `:75` already matches `/Needs your input\|Answer saved/`, so it anticipates this banner text and nothing exercises it - **reuse that helper rather than writing a second one**. Assert what a user sees and gets: the banner reads **Answer saved**, the button reads **Continue with saved answer**, the `:407` textarea is **absent** (`TODO` is neither `BLOCKED` nor `recoverable`), and then **press it** and record what happens to the stored answer. **The load-bearing question is the one the register currently asserts from reading `submit()` and has not proven: does the run consume the canned remark, or the held response?** If the held answer survives, this half is far less severe than recorded and the register is corrected accordingly. Name the row for the gap id, `M-13 (T1)`, with an `annotation` block, matching the five rows already there. **No product change**, exactly as jd's prove-first ruling of 2026-09-26 required for the first half. The row's header note must say the green is a record of a defect and not an endorsement, as the file's existing header does. | **Ruled 2026-09-27**: reproduce it before fixing it. The claim was argued from a code read, which is the stage C3 was at when jd refused to accept it |
+
+### Running it, given the live rig
+
+The harness **builds its own environments**, so this row does **not** need the rig's prompt-1 state - that state was corroborating evidence that the case is reachable in ordinary use, not the fixture.
+But the harness is **exclusive and contends with the rig on ports**, so the rig must be stopped for the run.
+
+1. **Stop both instances by port, not by name.** `ss -ltnp` on 3100, 4100, 3200, 4200 gives the PIDs. **`pgrep -f` matches its own shell** - it has already caused a `pkill` to kill its own script mid-run here. B10 means the launcher's signal handlers do not reach the children, so signal the `concurrently` supervisors directly.
+2. Run **only this file**, not the full suite: the existing five rows take about 12 seconds.
+3. **Restart both instances** with `env -u ANTHROPIC_API_KEY npm run dev:team-pilot` from each checkout (B4), and confirm all four ports and both `/api/task-control/team` answering `200`.
+4. The databases are pinned per checkout, so the rig's state survives the stop. **Verify that rather than assuming it**: prompt 1 should still be `TODO` with `human_response_hold` on response 4.
+
 ## Phase 1
 
 | Id | Task | Acceptance criteria | jd |

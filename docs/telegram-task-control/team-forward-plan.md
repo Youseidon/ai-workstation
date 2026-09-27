@@ -31,6 +31,7 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 | New id | Old id | What it is | Why this band | Next action |
 | --- | --- | --- | --- | --- |
 | **P-A1** | jd's rulings of 2026-09-22 and **2026-09-27** | **199 commits exist on this machine and nowhere else.** `origin/main` is `4fd0e65` and is **415 behind**. No commit of this track is on any remote | Losing one disk loses the entire F, H, V and C tracks, M-13, and every record | **DECIDED 2026-09-27 by jd: the push happens LAST, after every other item on this list is complete.** So it is scheduled, not open. The exposure is accepted deliberately in the meantime, and it grows with each task until then |
+| **P-A0** | **M-13**, the widened half | **Reproduce the saved-answer banner path.** No product change | It was written into the register from a code read and a database reading, with **no test reaching `TODO` with a `HUMAN_RESPONSE` remark**. That is the stage C3 was at when jd refused to accept it | **The session's first action.** Add the row, watch it fail, and settle whether the run consumes the canned remark or the held response |
 | **P-A2** | **H-4** | Pilot database isolation is broken on main, **and the guard's own advice `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` is what silently breaks it** | A safety mechanism that recommends the thing that defeats it. Worked around in the rig, so the product defect is live and unproven against | Product fix, own task. Reproduce first on a clean checkout |
 | **P-A3** | **M-13** | **Review and respond submits a canned answer on the owner's behalf and starts a run on it.** The banner and the response box are gated on mutually exclusive states, and `HumanInputDialog` is mounted with nothing opening it | It writes an answer no human typed, onto a personal-control surface, then spends provider budget acting on it | Fix. The dead `HumanInputDialog` is probably the intended path already built |
 | **P-B1** | **M-12** | The requester's review-and-apply half has **no caller in `web/`** at all | The handover feature is half-built. Same shape as C1, C5 and P-A3: present, mounted, wired to nothing | Build the surface, or scope handover down explicitly |
@@ -89,6 +90,14 @@ Recorded here because a plan that omits them reads as though the orchestrator ch
 Standing model, unchanged: **every task gets its own worker, its own branch and its own worktree, and lands on main by fast-forward.** Commit messages imperative, no co-author line. Nothing is pushed until P-A1.
 
 **Two scheduling constraints bind the whole plan.** The T1 harness is **exclusive** and contends with the live rig, so a T1 run and rig work can never overlap. And T1 is the only proof that merged code reaches a user, so every phase that changes product code ends with a T1 run rather than beginning with one.
+
+### Phase 0 - prove the claim before acting on it
+
+| Order | Task | Why here |
+| --- | --- | --- |
+| 0 | **P-A0**, reproduce M-13's saved-answer half | jd's decision of 2026-09-27. The orchestrator widened M-13 from a code read and recorded it in the same voice as the half that had earned five green rows. It runs first, changes no product code, and hands P-A3 a red row instead of an argument |
+
+The rig must be **stopped** for it, because the harness contends on ports - but the harness builds its own environments, so the row does not depend on the rig's state.
 
 ### Phase 1 - stop the bleeding, then make handover testable
 
