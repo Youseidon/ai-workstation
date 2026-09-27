@@ -793,7 +793,7 @@ They are complements, not alternatives: 1 stops the loss, 2 stops the class. **1
 
 Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix jd chooses.
 
-### M-16. Task state does not read the handover control record, and that is the root of C3, M-13, M-15 and M-17
+### M-16. The owner's surfaces cannot see a live handover, which is the root of C3, M-13, M-15 and M-17. **Re-scoped 2026-09-28: alignment, not an overhaul**
 
 **Registered 2026-09-27 on jd's design observation, which re-derived a model the code already half has.**
 
@@ -815,6 +815,16 @@ Each was fixed or registered individually. **None of them is a coincidence**: th
 **Why this is its own task rather than part of any of them.** `operationalState` is read by every surface, and the reconcile moving it is precisely what caused C3, so changing it carries a risk already realised once on this track. It needs designing, not appending.
 
 **jd's ruling, 2026-09-27**: settle M-7 now against `isLiveHandoverState`, and raise this as a separate, properly sized task rather than doing it inside a bug fix.
+
+**jd's ruling, 2026-09-28, after two questions that both found over-reach in the orchestrator's design: do the alignment, drop the overhaul.**
+
+The first design added a display status to a closed set 26 files read, a catalog entry with its own precedence and rollup semantics, a schema column with a migration to cache the control state, and a change to `operationalState`. Two facts checked on 2026-09-28 dismantled the reason for all of it: the `/api/operations` **route is already async** even though the snapshot builder is not, and the cache existed for a cost that is not real - only a link carrying a `control_head` needs a read, the read is of the **local** bare clone, and the live rig has **zero** such links. **The cache was designed before the uncached cost was measured.**
+
+What replaces it: **one DTO field** carrying the live handover, filled in that async route by reusing `liveHandoverHolding` - the function **P-A5 already built and proved** - plus three small reads of it in `web/`.
+
+**The 30 hand-keyed comparisons are left alone, deliberately, and the reason matters**: every one of them is correct. The item really is `BLOCKED`. It is also handed over, and that second fact simply had nowhere to live. Auditing them was work the overhaul created for itself.
+
+**Re-banded from "the riskiest task on the plan" to a small fix**, which is what it became once P-A5 took the work-loss out of it.
 
 ## Low
 
