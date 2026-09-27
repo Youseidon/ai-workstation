@@ -552,7 +552,7 @@ It is banded Medium rather than Critical for exactly that reason: the band is "r
 Worth naming precisely, because it is the C1 and C5 claim shape one step further down the flow and each step has been a smaller claim than the last.
 C1 was "the engine reaches no surface". C5 was "the surface is present but unproven as wired". M-12 is **"the client method is present and has no caller"** - which is the cheapest of the three to find and the one most likely to read as covered, since a source-grep assertion in a test file does mention all three names.
 
-### M-13. Two personal-control surfaces use C3's mechanism and have never been reproduced
+### M-13. Two personal-control surfaces use C3's mechanism. Both halves are now reproduced
 
 **Registered 2026-09-26. jd's ruling the same day: prove first, then decide. A worker reproduces and reports; no product change, so invariant A5 stays intact and the decision to waive it stays jd's.**
 
@@ -605,22 +605,48 @@ The banner at `WorkItemDetail.tsx:245` fires in **two** states, not one:
 1. `operationalState === "AWAITING_RESPONSE"` - button reads **Review and respond**
 2. `prompt.status === "TODO"` **and** a `HUMAN_RESPONSE` remark exists - button reads **Continue with saved answer**
 
-Both call the same `onRespond`, which is `respond()` at [TasksView.tsx:302](../../web/components/tasks/TasksView.tsx#L302). The "Your response" textarea it reads renders only inside the `BLOCKED || recoverable` branch at `WorkItemDetail.tsx:407`, and **neither banner state is `BLOCKED`**. So in **both** states `response` is empty, the canned string is sent, and `console_.startRun` fires immediately afterwards.
+Both call the same `onRespond`, which is `respond()` at [TasksView.tsx:302](../../web/components/tasks/TasksView.tsx#L302). The "Your response" textarea it reads renders only inside the `BLOCKED || recoverable` branch at `WorkItemDetail.tsx:407`, and **neither banner state is `BLOCKED`**. So in **both** states `response` is empty and the canned string is what `respond()` sends.
 
-**So the button labelled "Continue with saved answer" does not continue with the saved answer.** It discards it. `workspaceApi.respond` posts to `/api/prompts/:id/human-response`, which is `workspaces.respondToBlockedPrompt` at [workspaceApi.ts:807](../../server/src/workspaceApi.ts#L807) - it takes no `expectedRevision`, writes a **new** `HUMAN_RESPONSE` remark containing the canned text, and that becomes the latest response the run then acts on.
+~~So in both states the canned string is sent and `console_.startRun` fires immediately afterwards.~~ **Corrected by P-A0** - true of state 1, false of state 2. See the reproduction below.
 
-**This state is reachable by ordinary use, and the rig is sitting in it.** Verified 2026-09-27: prompt 1 is `TODO` with `human_response_hold` on response 4, whose content is jd's own `Integer cents is fine`, saved from Telegram during V5 case 12's phone half. Anyone opening that item in the web app is one click from replacing that answer with the canned string and starting a run on it.
+~~**So the button labelled "Continue with saved answer" does not continue with the saved answer.** It discards it. `workspaceApi.respond` posts to `/api/prompts/:id/human-response`, which is `workspaces.respondToBlockedPrompt` - it takes no `expectedRevision`, writes a **new** `HUMAN_RESPONSE` remark containing the canned text, and that becomes the latest response the run then acts on.~~
+
+**This state is reachable by ordinary use** - that part P-A0 confirmed, and more strongly than the entry claimed: **every** item that was ever answered carries the banner. But ~~the rig is sitting in it, and anyone opening that item in the web app is one click from replacing that answer with the canned string and starting a run on it~~ is **wrong on both counts**.
+
+**P-A0 falsified those claims on 2026-09-27.** They were written from a code read that stopped at the route and did not follow it into the handler, plus an inference about what the rig's page was displaying that was never checked against `operationalState`. Struck through rather than deleted, because the correction is the point of the entry.
 
 The Telegram path does **not** share this defect: V5 case 12 confirmed the phone's save is a real callback carrying real content.
 
-So the fix must cover **both** banner states, and the acceptance criteria must assert that the saved-answer path preserves the saved answer.
+#### REPRODUCED 2026-09-27 by P-A0, and the reproduction falsified the severity
 
-**Status of this half, stated honestly: ARGUED AND OBSERVED IN STATE, NOT REPRODUCED.**
-What was done is a code read plus a database reading: the two banner conditions at `:245`, the textarea's gate at `:407`, `respond()`'s fallback at `:309`, the route at `workspaceApi.ts:807`, and prompt 1 on the live rig sitting at `TODO` with `human_response_hold` on response 4.
-**No test drives it.** `m13-personal-surfaces.spec.ts`'s five rows cover the C3 stored-`BLOCKED` state and the `AWAITING_RESPONSE` state only; **none of them reaches `TODO` with a `HUMAN_RESPONSE` remark**. Its helper's locator at `:75` already matches `/Needs your input|Answer saved/`, so it anticipates the second banner text, and nothing exercises it.
+Two rows were added to `e2e/tests/t1/m13-personal-surfaces.spec.ts`, reaching `TODO` with a `HUMAN_RESPONSE` remark in both of its spellings. No product code changed. Green twice, 7 of 7, in 19.4s and 37.8s, with the live rig stopped by port for the runs.
 
-**That is exactly the stage C3 was at when jd refused to accept it**, and this register's own C3 entry records that refusal as the right call. The reproduced half of M-13 above earned its claims with five green rows; this half has not, and must not be read as though it had.
-So **P-A3's worker reproduces this half before fixing it**, the same prove-first order jd ruled on 2026-09-26, and the register should be corrected if the reproduction falsifies any part of it - in particular whether the run that follows actually consumes the canned remark rather than the held response.
+**What the press actually does, in both spellings:**
+
+```
+notification: ✗ | That did not work | Prompt no longer needs human input
+dialog opened: false
+stored status after: TODO
+HUMAN_RESPONSE remarks after: ["Store invoice totals as integer cents"]
+runs before / after: 1 / 1
+```
+
+**The answer is not replaced, and no run is started.** `respondToBlockedPrompt` at [workspaces.ts:5914](../../server/src/workspaces.ts#L5914) refuses any prompt that is **neither** stored `BLOCKED` **nor** carrying a `pendingHumanQuestion`, and an answered `TODO` item is neither - `pendingHumanQuestion` at [workspaces.ts:4087](../../server/src/workspaces.ts#L4087) returns `null` unless there is a `READY` handoff asking for a person, and then only until a `HUMAN_RESPONSE` remark lands at or after that handoff's completion. An item that simply stopped for a decision and was answered has no handoff at all, so it fails at the first test. So the POST returns **409 `prompt_not_blocked`**, `act()`'s catch turns it into a toast, and `console_.startRun` on the line after the `await` is never reached. The canned string at `:309` is sent and rejected; it is never stored.
+
+**So the load-bearing question has an answer: the run consumes neither, because there is no run.** No answer is overwritten, no provider budget is spent, and nothing on the record changes.
+
+**And the rig was never in the state the entry described.** A `human_response_hold` makes `prompt.humanResponseHeld` true, which [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes to `AWAITING_RESPONSE`. So the rig's prompt 1 - `TODO` with the hold on response 4, jd's own `Integer cents is fine` - takes the banner's **first** branch and reads **"Needs your input" / "Review and respond"**. The "Continue with saved answer" label appears only where **no** answer is held. The two labels are the wrong way round relative to the product's own model of a saved answer.
+
+**What is left of this half, and it is real but much smaller: a dead button on a personal-control surface.**
+
+- The banner fires on **every** answered `TODO` item, including one that is plainly `READY` with nothing pending - an item that was ever blocked and answered carries it forever.
+- Its only affordance cannot work. Pressing it can produce exactly one outcome: `That did not work - Prompt no longer needs human input`.
+- The owner is offered no other way through from that page: the `:407` box is absent, and `HumanInputDialog`, which does handle `savedResponseId`, is still opened by nothing.
+- Severity: **the surface lies and offers nothing that works**, not "it destroys the owner's answer". P-B band behaviour on a P-A page.
+
+**The first half is untouched by this.** Row 3 is still green: in `AWAITING_RESPONSE` with a live handoff question, `pendingHumanQuestion` is non-null, the guard passes, and the canned remark **is** stored and **is** acted on. That is the severe defect, and it is the one P-A3 must stop.
+
+**What this cost, recorded because it is the same lesson twice.** The entry read the route at `workspaceApi.ts:807` and stopped there. One more hop - into the handler it calls - would have shown the guard. The rig reading was real and was reported accurately; the inference drawn from it about what the page was displaying was not checked against `operationalState`.
 
 **Provenance, checked rather than assumed: this is probably not ours.** The line 245 banner gate was introduced by `ded5c20 feat: add shared human input and course correction panel`, whose commit-message convention is upstream's rather than this track's, and the last commit to touch the file is the reconcile `a641b0c`. So the canned-retry path most likely predates the Team work rather than being a fifth M-9 regression. Stated as probable: the introducing commit was identified, every intermediate state was not.
 
