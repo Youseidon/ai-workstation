@@ -730,7 +730,7 @@ The pinned anchor staying is **M-11**'s accepted trade, with jd's waiver, and is
 Reading a closed thread's history is arguably correct behaviour, in which case the fix is one line of output saying so, not a refusal.
 What is not defensible is a teammate being shown a live-looking, actionable item whose commands will all be refused, with no way to tell from the view which state they are in.
 
-### M-17. While a teammate holds a handed-over item, the owner's own surfaces still offer to answer, run and complete it - and they work
+### M-17. While a teammate held a handed-over item, the owner's own surfaces offered to answer, run and complete it - and they worked. Guarded 2026-09-28 by P-A5
 
 **Registered 2026-09-28, reproduced before it was written, after jd asked whether P-B5 was really needed. It is, and the honest answer is that this is worse than M-16 records.**
 
@@ -767,12 +767,29 @@ env B execute runs:                1
 
 **One path to this was made easier by P-A3, and that is recorded rather than buried.** P-A3 added "Retry with existing context" to the `BLOCKED` branch, enabled whenever the item can start. "Respond and resume" needs an answer typed; that button needs **one click and no typing**, so on a handed-over item it is a one-click competing run. P-A3 did not create the hazard - every one of these buttons was already live - but it did add the cheapest route to it, and it could not have known, because nothing on that surface can see a handover.
 
-**Two fixes, and they are different sizes.** This is the choice put to jd:
+**FIXED 2026-09-28 by P-A5**, the narrow half, which jd chose. `assertNoLiveHandover` refuses answering, marking complete, recovering, the dialog's own save-and-resume and the person-initiated run start, naming the item, its state and either who holds it or that the offer is still open.
+
+Four decisions in it, each checked rather than assumed:
+
+- **Its own module.** `teamHandoverSurface` imports `startExecute` from `runService`, so a guard there called from `runService` would be a cycle.
+- **Only the requester's item link counts.** A receiver that accepts creates a link on its *own* prompt with role `executor` and sets `control_head` on it, so a guard over every link would refuse the receiver's own run and break handover outright. Confirmed against `teamHandoverRun.ts:466`.
+- **Not inside `startExecute`.** That is also how the machinery starts the receiver's run and the continuation after an apply, and `APPLYING` is itself a live state - a guard there would refuse the steps that *end* a handover. The cut is person-initiated entry points.
+- **The same live set as the `/close` guard**, `OFFERED` included. Two guards over one predicate disagreeing about `OFFERED` would be worse than either.
+
+It reads the **local** bare control clone, so it costs no request and cannot fail on an unreachable remote. **The staleness that comes with that is in the safe direction, and the row records why**: the requester publishes the offer itself, so its local record reaches `OFFERED` - already live - synchronously and only advances from there. It can be stale in the direction of *still looking live*, which refuses harmlessly, never in the direction of looking settled while a teammate holds the item.
+
+Proof: `M-17 (T1)` red first at `Expected: 409, Received: 201` on the answer that used to be accepted, green after, with its load-bearing assertions being the ones a refusal cannot fake - the owner's execute-run count and the prompt's status. It drives the **routes**, not the page, because the guard must hold for every caller. And **every handover row stayed green** - `tm4-handover` 3 of 3, `c4-close-guard` 4 of 4, `m12-web-handover-review` 1 of 1 - which is what proves the guard did not block the machinery beside it. Shared 91/91, server 625/625, web 95/95, typecheck exit 0.
+
+**M-16 / P-B5 is still owed**, and this is why the two were never alternatives:
+
+**The two fixes, and they are different sizes.** This was the choice put to jd:
 
 1. **A narrow guard**, refusing a local start, respond, retry and complete while `isLiveHandoverState` holds for this item's link, with the refusal naming the executor. Small, server-side, testable at T1, and it closes the work-loss path without touching `operationalState`.
 2. **P-B5 / M-16 in full**, which makes the state readable so every surface stops offering what it cannot support, rather than each one being individually refused.
 
 They are complements, not alternatives: 1 stops the loss, 2 stops the class. **1 does not need 2 and is much cheaper.**
+
+**jd chose 1, done 2026-09-28.** What 2 still buys, stated so it is not lost: the owner's surfaces continue to *say* "Needs you", to sit on the attention list, and to *offer* buttons that are now refused. The work-loss is closed; the lying is not. Every one of those buttons is now a dead button of exactly the shape M-13 was, and `M-16` is what removes them rather than refusing them one at a time.
 
 Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix jd chooses.
 
