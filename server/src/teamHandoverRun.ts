@@ -11,6 +11,7 @@ import {
   type ControlRecord,
   type ControlRecordRemote,
   type ControlTransitionInput,
+  isLiveHandoverState,
 } from "./teamControlRecord.ts";
 import { readPublishedOffer, type PublishedOffer } from "./teamHandoverCapture.ts";
 import { itemSubject, WorkspaceError, workspaces } from "./workspaces.ts";
@@ -961,17 +962,25 @@ export async function recordLocalCompletionCancelRequest(
   return { record: outcome.record, cancelRequested: true, itemClosed: false, branchKept: true };
 }
 
-/** States in which the current executor has stopped and acknowledged, so nothing is still writing. */
-const ACKNOWLEDGED: readonly ControlRecord["state"][] = ["LOCAL", "PREPARING", "OFFERED", "WAITING_INPUT", "PAUSED", "RETURNED", "COMPLETED", "CANCELLED", "WITHDRAWN"];
-
 /**
- * Closing the item thread after a handover. The item is **not closed until the
- * receiver's own workstation has stopped and acknowledged**, so a close before
- * that is refused rather than closing over a live run.
+ * Closing the item thread after a handover. **Ruling 7 decides this**, and this
+ * function used to contradict it (M-7).
+ *
+ * It had its own list of "acknowledged" states, and four of them - `OFFERED`,
+ * `WAITING_INPUT`, `PAUSED` and `RETURNED` - are in `LIVE_HANDOVER_STATES`. So a
+ * close was permitted in four states where `/close` itself is refused, on the
+ * theory that a stopped executor is a finished one. jd ruled on 2026-09-27 that
+ * **a stopped-but-unreturned item is still held**, and that `isLiveHandoverState`
+ * is authoritative. The deciding argument was the asymmetry: choosing the other
+ * way wrongly loses another person's work, choosing this way wrongly costs one
+ * explicit step.
+ *
+ * So the question is no longer "has the executor stopped" but "is the handover
+ * over", and there is exactly one predicate for that, shared with `/close`.
  */
 export function closeAfterHandover(record: ControlRecord, input: { itemId: string; commandId: string }): { closed: boolean; reason: string } {
-  if (!ACKNOWLEDGED.includes(record.state)) {
-    return { closed: false, reason: `The current executor has not acknowledged yet; the item is ${record.state}.` };
+  if (isLiveHandoverState(record.state)) {
+    return { closed: false, reason: `The handover is still live; the item is ${record.state}. End the handover first.` };
   }
   workspaces.revokeItemGrants({ itemId: input.itemId, commandId: input.commandId });
   const closed = workspaces.closeItemLink({ itemId: input.itemId, commandId: input.commandId });
