@@ -598,6 +598,23 @@ Root cause, traced to one line pair rather than guessed. `respond()` in `web/com
 
 **And the dialog that would fix it already exists and is unreachable.** `HumanInputDialog` is imported and mounted at `TasksView.tsx:516`, gated on `inputItem !== null`. `setInputItem` is called in exactly two places: its own `useState` declaration at line 60, and `onClose`, which sets it back to `null`. **Nothing ever opens it.** That is the C1, C5 and M-12 claim shape again - present, mounted, and wired to nothing - this time on a personal-control surface.
 
+**WIDENED 2026-09-27 while carding the fix, and this half is sharper than the one that was reproduced.**
+
+The banner at `WorkItemDetail.tsx:245` fires in **two** states, not one:
+
+1. `operationalState === "AWAITING_RESPONSE"` - button reads **Review and respond**
+2. `prompt.status === "TODO"` **and** a `HUMAN_RESPONSE` remark exists - button reads **Continue with saved answer**
+
+Both call the same `onRespond`, which is `respond()` at [TasksView.tsx:302](../../web/components/tasks/TasksView.tsx#L302). The "Your response" textarea it reads renders only inside the `BLOCKED || recoverable` branch at `WorkItemDetail.tsx:407`, and **neither banner state is `BLOCKED`**. So in **both** states `response` is empty, the canned string is sent, and `console_.startRun` fires immediately afterwards.
+
+**So the button labelled "Continue with saved answer" does not continue with the saved answer.** It discards it. `workspaceApi.respond` posts to `/api/prompts/:id/human-response`, which is `workspaces.respondToBlockedPrompt` at [workspaceApi.ts:807](../../server/src/workspaceApi.ts#L807) - it takes no `expectedRevision`, writes a **new** `HUMAN_RESPONSE` remark containing the canned text, and that becomes the latest response the run then acts on.
+
+**This state is reachable by ordinary use, and the rig is sitting in it.** Verified 2026-09-27: prompt 1 is `TODO` with `human_response_hold` on response 4, whose content is jd's own `Integer cents is fine`, saved from Telegram during V5 case 12's phone half. Anyone opening that item in the web app is one click from replacing that answer with the canned string and starting a run on it.
+
+The Telegram path does **not** share this defect: V5 case 12 confirmed the phone's save is a real callback carrying real content.
+
+So the fix must cover **both** banner states, and the acceptance criteria must assert that the saved-answer path preserves the saved answer.
+
 **Provenance, checked rather than assumed: this is probably not ours.** The line 245 banner gate was introduced by `ded5c20 feat: add shared human input and course correction panel`, whose commit-message convention is upstream's rather than this track's, and the last commit to touch the file is the reconcile `a641b0c`. So the canned-retry path most likely predates the Team work rather than being a fifth M-9 regression. Stated as probable: the introducing commit was identified, every intermediate state was not.
 
 **What is now jd's to decide**, which is what "prove first" was for:
