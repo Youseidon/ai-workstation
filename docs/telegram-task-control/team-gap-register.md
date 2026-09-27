@@ -566,7 +566,7 @@ The brief sized that as large ("needs the fake to model a supergroup upgrade mid
 jd's ruling of 2026-09-25 was to register the deviation and retire the ids now, not to build it.
 Until it is built, **F05's third criterion is unmet and recorded as unmet**, rather than covered by a test that was named as though it were.
 
-### M-12. The requester's review and apply half has no web surface at all
+### M-12. The requester's review and apply half had no web surface at all. Built 2026-09-27 by P-B1
 
 **Registered 2026-09-26, found by the C5 worker and verified here before recording.**
 
@@ -864,6 +864,22 @@ The tiebreak went into `teamRosters()` rather than into the one lookup the regis
 The register's line number was stale and is corrected: the lookup is `taskControl.ts:341`, not `:321`.
 
 Proof: a new test writes three rosters, forces the tie on the rows through the same database file the suite pins, and asserts the order is identical across five reads **and** equal to `team_id` ascending. **Proved load-bearing by removing the tiebreak**, which fails that test alone. Server **622 of 622**.
+
+### M-12, the requester's returned half. Built 2026-09-27 by P-B1. **Two of its three functions are end-to-end proven; the third is not, and that is stated rather than implied.**
+
+jd ruled to build it, against the recommendation to declare review-and-apply a deliberate phone action.
+
+`HandoverReturnView` renders from props alone and `HandoverControl` calls the routes. Three decisions worth keeping:
+
+- **Acceptance is stated, never derived.** The checkbox starts unticked and Apply is disabled until it is ticked, because the server refuses to infer acceptance from the result's own label - a DONE statement with no evidence is not acceptance - so the surface must not infer it either.
+- **A 409 is a notice, not an error.** "Nothing has been returned yet" is answered by the server with the state the item is actually in, and that is shown as information. F03's rule: a control says why it cannot act.
+- **The panel stays mounted once it has an outcome.** That is not the same condition as being able to act, and the difference was a real defect: gating on `handoverAvailability` alone meant a successful apply finished the work item, which made availability refuse, which unmounted the section **including the line confirming the apply**. The requester tapped Apply and the panel vanished. The T1 row caught it on its first run.
+
+**Proof, C5's pattern.** `m12-web-handover-review.spec.ts` drives a real crossing to `RETURNED` - env B accepts and returns through its own Telegram cards - then the three real taps in a real browser on env A's page. Its assertions are effects the **server** wrote: the shared control record leaving `RETURNED` in the bare repository neither the browser nor the component can reach, the work item finishing, and its evidence naming the same result commit the page showed the requester. **Proved load-bearing by cutting the apply call site from its route**: the page still reported "Applied" and the row went red on `timed out waiting for the shared record to leave RETURNED`. Shared 91/91, server 622/622, web 95/95, typecheck exit 0.
+
+**`requestHandoverChanges` is wired and not end-to-end proven.** Driving it needs a *second* crossing, because the fresh offer it publishes has to be accepted, run and returned again. It is covered at the server tier in `teamResultApply.test.ts` and its web call site is rendered from props in `handoverControl.test.tsx`. **So M-12 is not fully closed**: two of three functions have the wiring proof, the third has the same shape of evidence that made M-12 read as covered in the first place, which is exactly why it is named here.
+
+**Three things the row cost, each recorded in it so they are not re-made.** A web apply mints no Telegram receipt, so asserting one fails at 0 and that is correct behaviour. The returned package's verification entry is a run reference rather than the summary text handed to the fake. And `evidenceMissing` is therefore false on this crossing, so the evidence warning is asserted absent rather than present.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
