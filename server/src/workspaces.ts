@@ -1773,7 +1773,7 @@ db.transaction(() => {
     try {
       db.transaction(() => {
         db.exec(`
-          CREATE TABLE task_control_action_v29 (
+          CREATE TABLE task_control_action_v52 (
             ref TEXT PRIMARY KEY,
             action TEXT NOT NULL CHECK(action IN ('save_human_response','answer_and_resume','resume_saved','grant','revoke','close_thread','publish_offer','accept_offer','decline_offer','withdraw_offer','return_work','apply_result','request_changes')),
             prompt_id INTEGER NOT NULL REFERENCES prompt(id) ON DELETE CASCADE,
@@ -1793,12 +1793,12 @@ db.transaction(() => {
             payload_json TEXT,
             CHECK((subject_kind='task' AND item_id IS NULL) OR (subject_kind='item' AND item_id IS NOT NULL))
           );
-          INSERT INTO task_control_action_v29
+          INSERT INTO task_control_action_v52
             (ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json)
           SELECT ref,action,prompt_id,actor_id,chat_id,topic_id,bot_id,message_id,expected_revision,provider,model,expires_at,created_at,applied_command_id,subject_kind,item_id,payload_json
           FROM task_control_action;
           DROP TABLE task_control_action;
-          ALTER TABLE task_control_action_v29 RENAME TO task_control_action;
+          ALTER TABLE task_control_action_v52 RENAME TO task_control_action;
           CREATE INDEX task_control_action_prompt_idx ON task_control_action(prompt_id, created_at);
         `);
         db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(52,?)").run(new Date().toISOString());
@@ -1807,7 +1807,7 @@ db.transaction(() => {
       db.pragma("foreign_keys = ON");
     }
     const violations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
-    if (violations.length > 0) throw new Error(`Migration 29 left ${violations.length} foreign-key violation(s)`);
+    if (violations.length > 0) throw new Error(`Migration 52 left ${violations.length} foreign-key violation(s)`);
   }
 }
 
