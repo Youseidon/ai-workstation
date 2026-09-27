@@ -97,12 +97,26 @@ so tell me when you are ready and I will switch it off and back on around you.
 If you would rather do it yourself: instance A's web app at
 **http://localhost:3100/agents**, the Team section, `team.enabled`.
 
-With Team **off**, in your **private** chat with `@aiws_helper_bot`, check that
-personal task control is untouched:
+**Correction, made before part C ran.** This script first said to check that the
+existing question card's buttons still work. **They cannot**: both actions on card
+message 33 expired at `2026-09-26T13:20:29Z`, ten minutes after it was posted, and
+that is B6's accepted trade rather than a Team-off symptom. Tapping them would be
+refused as `action_expired` whether Team were on or off, so it tests nothing here.
 
-- the question card for `WI_TC01` that is already in that chat still has both its
-  buttons, and tapping one still works
-- `/status` in the private chat still answers normally
+With Team **off**, in your **private** chat with `@aiws_helper_bot`:
+
+1. `/status` - should answer normally
+2. `/blocked` - should still list `WI_TC01`
+3. **Reply to the question card, message 33, with any answer text**, for example
+   `Integer cents`. This is the live personal-control path: the handler calls
+   `postQuestion` with your text, which mints a **fresh card with live buttons**
+   carrying your draft. It does **not** save or resume anything by itself, so it is
+   safe to do and changes no task state.
+
+Then stop, and let the orchestrator diff the new card against the Team-on baseline
+it captured from card 33 before the toggle. Do **not** tap the fresh card's buttons
+unless you decide to: `Save answer` records an answer, and `Answer and resume`
+starts a real agent run on a real provider.
 
 The point of the case is that turning Team off takes away Team and **nothing
 else**. The API half of this already passed and the browser half passed today;
