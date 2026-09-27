@@ -91,6 +91,21 @@ for (const key of [
   "TASK_CONTROL_WORKSTATION_LABEL",
   "TEAM_ENABLED",
   "TELEGRAM_BOT_TOKEN",
+  /*
+   * B4. Each of these is an `envVar` default for a provider credential setting
+   * (server/src/settings.ts), so a key exported by the launching shell did not
+   * arrive as an inherited environment variable - it arrived as the *setting's
+   * default*, became the app-level key, and was passed explicitly to the SDK,
+   * overriding a working CLI login. Observed as `billing_error` from a console
+   * key with no credit while the same machine's Claude Code login worked. The
+   * standing workaround was to launch with `env -u ANTHROPIC_API_KEY`; scrubbing
+   * them here is what makes the workaround unnecessary, and it matches what this
+   * list already does for the pilot's own configuration.
+   */
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "XAI_API_KEY",
+  "COPILOT_GITHUB_TOKEN",
 ]) delete childEnv[key];
 childEnv.WEB_PORT = values.WEB_PORT;
 
@@ -100,6 +115,20 @@ const child = spawn("npm", ["run", "dev"], {
   // web port needed by package.json; never fan the bot token into the process tree.
   env: childEnv,
   stdio: "inherit",
+  /*
+   * B10. Its own process group, so a signal can be delivered to the whole tree.
+   * Signalling the npm child alone did nothing: npm does not pass signals to its
+   * own child, so the `concurrently` supervisor and both dev servers kept
+   * running, all four listeners stayed up, and this launcher's `exit` handler
+   * never fired. Ctrl+C worked only because the terminal signals the entire
+   * foreground group rather than the launcher alone - so the failure only bit
+   * scripts and agents, which is when a wedged instance is hardest to notice.
+   *
+   * A detached child is no longer in this process's foreground group, so Ctrl+C
+   * no longer reaches it by accident either. Both paths now go through the
+   * handler below, which is the point: one way to stop it, and it works.
+   */
+  detached: true,
 });
 
 const agentsUrl = `http://localhost:${values.WEB_PORT}/agents`;
@@ -114,9 +143,23 @@ void waitForWeb(agentsUrl, child).then(async () => {
   }
 }).catch((error) => console.error(error instanceof Error ? error.message : String(error)));
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => child.kill(signal));
+/** Stops the whole tree, not just the `npm` process that ignores signals. */
+function stopChild(signal) {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, signal); // Negative pid: the child's process group.
+  } catch {
+    child.kill(signal); // The group is already gone; nothing left to stop.
+  }
 }
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => stopChild(signal));
+}
+
+// A detached child outlives this process, so an unexpected exit must not leave
+// four listeners behind either.
+process.on("exit", () => stopChild("SIGTERM"));
 
 child.once("exit", (code, signal) => {
   if (signal !== null) process.kill(process.pid, signal);

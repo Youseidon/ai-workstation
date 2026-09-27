@@ -13,7 +13,7 @@
     "dev": "concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:team-pilot": "node scripts/run-team-pilot.mjs",
     "dev:server": "npm run dev --workspace server",
-    "dev:web": "npm run dev --workspace web -- --port ${WEB_PORT:-3000}",
+    "dev:web": "node scripts/dev-web.mjs",
     "dev:sandbox": "node scripts/dev-sandbox.mjs",
     "free-ports": "node scripts/free-ports.mjs",
     "serve": "npm run build && npm run free-ports && concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:serve:server\" \"npm:serve:web\"",
