@@ -21,6 +21,7 @@ Two pilot instances are **running against real Telegram** under jd's authorisati
 | | Instance A (owner) | Instance B (teammate) |
 | --- | --- | --- |
 | Checkout | `/home/junaid/ai-workstation-team-pilot` | `/home/junaid/ai-workstation-team-pilot-b` |
+| Team workspace | `/home/junaid/ai-workstation-team-workspace` | `/home/junaid/ai-workstation-team-workspace-b` - **its own clone since 2026-09-27, P-A4** |
 | Ports | web 3100, api 4100 | web 3200, api 4200 |
 | Bot | `@aiws_helper_bot` (`8262291110`) | `@ai_test_pilot_1_bot` (`8998251911`) |
 | Person | `Jj` / `8973262519` | `Junaid` / `6525517234` |
@@ -28,7 +29,8 @@ Two pilot instances are **running against real Telegram** under jd's authorisati
 - Team `awt1_h0XDkrOF02ItMy73`, supergroup `-1004359741812` (`AI_WS`), roster ref `refs/aw/team` = **`4255c668…`**, confirmed against GitHub itself.
 - Databases **pinned per checkout** by `AGENT_CONSOLE_DB` in each `.env`. Without that pin they share one database - that is **H-4 / P-A2**, and the guard's own advice is what breaks it.
 - Both bots are **verified administrators with Pin messages**, checked through both tokens. `@ai_test_pilot_1_bot` lacks `can_manage_topics`, which is harmless: topics are unavailable to these bots at all (C0), nothing calls `createForumTopic`, and the group is not a forum.
-- Start either instance with `env -u ANTHROPIC_API_KEY npm run dev:team-pilot` (B4).
+- Start either instance with `npm run dev:team-pilot`. **B4 is fixed as of 2026-09-27**: the launcher scrubs the provider credential variables, so the old `env -u ANTHROPIC_API_KEY` prefix is no longer needed. It is harmless if you keep typing it.
+- Stop either instance by signalling its **launcher** (`run-team-pilot.mjs`). **B10 is fixed**: the child is detached and the handler signals its process group, so the launcher now takes the whole tree down - verified at four listeners to zero in under four seconds. Signalling the `concurrently` supervisors still works and is what the old instructions said.
 - Print rig state with the path **given explicitly**: `node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot/.agent-console/console.sqlite`. With no path it reads `main`'s fixture and prints a **fake team** - that is **L-17 / P-D1**.
 
 **The rig's task state has moved, and P-A3 cares about it.** Prompt 1 `WI_TC01` is now **`TODO`** with a `human_response_hold` on response 4, whose content is jd's own `Integer cents is fine`, saved from Telegram during V5 case 12. The item thread `awi1_63460787e23fa7d635890376` is **closed** (`item_link.closed_at` set) though `telegram_thread` 4 still reads `ACTIVE`, and message **85** is still pinned.
@@ -92,7 +94,7 @@ Thirteen, one at a time, each put with its evidence first. The full table is sec
 No push and no remote write to `ai-workstation` **until P-A1**, which jd is asked about first. The roster push to the pilot repo is authorised.
 No paid provider. **Live Telegram credentials are authorised** as of 2026-09-26, and every task record must say a live credential **was** used where it was.
 Never two harness runs at once, and **the live rig contends with the T1 harness**.
-`team.enabled` on in the rig, off by default in the repo. `team.handoverEnabled` **on in the rig** from P-A4, off by default in the repo.
+`team.enabled` on in the rig, off by default in the repo. `team.handoverEnabled` is **on in both rig instances as of 2026-09-27**, written to each checkout's `.agent-console/settings.json` and read back from both, off by default in the repo.
 Every task gets its own worker, branch and worktree, and lands by **fast-forward**. Commit messages imperative, **no co-author line**.
 
 **Stop and ask jd**: before any push, on any audit FAIL, before changing a personal-control surface **A5** covers beyond what P-A3 already authorises, and before anything destructive to the live rig or the pilot remote.

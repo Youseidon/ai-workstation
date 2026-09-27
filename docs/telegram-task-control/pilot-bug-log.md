@@ -110,7 +110,7 @@ read-only views, and no slice ever assigns an owner-side control in the web UI.
 Suggested fix: an "Open Team thread" action on the work-item detail for a task
 that is awaiting a response, once a roster exists.
 
-## B3 - `npm run dev` in a pilot checkout serves the wrong port silently
+## B3 - `npm run dev` in a pilot checkout served the wrong port silently. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
 It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
@@ -130,7 +130,22 @@ origin ([index.ts:31-39](../../server/src/index.ts#L31-L39)).
 Suggested fix: read `WEB_PORT` from `.env` in the web dev script, or log the
 allowed origins and the expected web port at server startup.
 
-## B4 - the pilot inherits provider credentials from the launching shell
+**FIXED 2026-09-27 by P-A4**, the first way. `dev:web` is now
+`node scripts/dev-web.mjs`, which resolves the port where `.env` can be read and
+prints the source of the value, because the failure it replaces was silent.
+An explicit `WEB_PORT` still wins, which is how `dev:team-pilot` passes the
+pilot's port. Verified in all three cases:
+
+```
+.env WEB_PORT=39999, nothing in the shell -> port 39999, from WEB_PORT in .env
+shell WEB_PORT=31234                      -> port 31234, from the environment
+no .env                                   -> port 3000, from the default
+```
+
+and on the live rig, both instances: `dev:web: serving the web app on port 3100
+/ 3200, from WEB_PORT in the environment`.
+
+## B4 - the pilot inherited provider credentials from the launching shell. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
 It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
@@ -160,6 +175,24 @@ Suggested fix: add the provider credential variables to the list
 `run-team-pilot.mjs` already scrubs from the child environment
 ([run-team-pilot.mjs:73-93](../../scripts/run-team-pilot.mjs#L73-L93)), or show
 in settings that a key came from the environment rather than from this pilot.
+
+**FIXED 2026-09-27 by P-A4**, the first way. `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `XAI_API_KEY` and `COPILOT_GITHUB_TOKEN` join the scrub list.
+The settings default at `settings.ts:156-163` is **deliberately unchanged**,
+because people outside the pilot rely on it; what changes is that the pilot's
+child process never receives the variable, so the default has nothing to read.
+
+Proved on one machine, in one shell, with the same fake key, with and without
+the launcher in between:
+
+```
+no launcher:      claude.apiKey = "sk-ant-B4-PROBE-not-a-real-key"
+dev:team-pilot:   claude.apiKey = "", isSet=False, and the variable appears
+                  0 times in the server process's own /proc/<pid>/environ
+```
+
+**The `env -u ANTHROPIC_API_KEY` workaround is retired.** Every document that
+prescribed it has been updated; it is harmless if anyone keeps typing it.
 
 ## B5 - the Team roster stores a person's Telegram name as the workstation label
 
@@ -386,7 +419,7 @@ bound and no back-off.
 Suggested fix: back off per thread after a failed anchor, and stop re-enqueuing
 while an undelivered anchor for that thread already exists.
 
-## B10 - the pilot launcher's signal handlers do not stop the pilot
+## B10 - the pilot launcher's signal handlers did not stop the pilot. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
 It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
@@ -416,6 +449,22 @@ instance is hardest to notice.
 
 Suggested fix: spawn the child with `detached: true` and signal its process
 group, or spawn the supervisor directly instead of going through `npm`.
+
+**FIXED 2026-09-27 by P-A4**, the first way. The child is spawned detached, in
+its own process group, and the handler signals the group with a negative pid.
+A detached child is no longer in the launcher's foreground group, so Ctrl+C now
+goes through the same handler rather than reaching the tree by accident - one
+way to stop it, and it works. An `exit` handler catches an unexpected launcher
+death too, so a detached child cannot outlive it with four listeners up.
+
+Verified on the live rig by signalling the two **launchers** only, never the
+supervisors, which is the exact case that used to leave everything running:
+
+```
+t+2s listeners up: 4
+t+4s listeners up: 0
+no launcher and no concurrently supervisor survived
+```
 
 ## B11 - an open item's anchor is rewritten on a timer, forever
 
@@ -908,7 +957,7 @@ Suggested fix: extend that footer, or the button label, to name the outcome as
 well as the allowance, so the two buttons are distinguishable by consequence and
 not only by wording.
 
-## B19 - the pilot rig shares one working tree, so LT-5 cannot run on it
+## B19 - the pilot rig shared one working tree, so LT-5 could not run on it. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
 It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
@@ -932,6 +981,39 @@ whatever one instance writes the other already sees without fetching.
 No TM3 case is affected, since none of them touches Git.
 
 Consequence to remember: give instance B its own clone before attempting LT-5.
+
+**FIXED 2026-09-27 by P-A4.** Built as a **real second clone**, not a copy,
+because jd confirmed a second machine is intended though unscheduled, so this
+doubles as LT-5 preparation. `/home/junaid/ai-workstation-team-workspace-b` is
+an independent `git clone` of the same remote the first tree has, and instance
+B's workspace 1 was repointed at it through the product's own
+`PATCH /api/workspaces/1` rather than by editing the database:
+
+```
+4100: Team pilot workspace -> /home/junaid/ai-workstation-team-workspace
+4200: pilot-project        -> /home/junaid/ai-workstation-team-workspace-b
+```
+
+Proved observable, which is the whole point of the change - a commit written in
+A's tree was invisible to B until B fetched:
+
+```
+A head: 867071f          (a commit A made)
+B head: c40274a          before any fetch
+        file ABSENT in B
+        B does not have A's commit object
+after a fetch:
+        B now HAS A's commit 867071f, and only after the fetch
+```
+
+So a handover's Git exchange is now observable on this rig: what one side
+writes, the other has to fetch. Before this, whatever A wrote B already saw.
+
+One limit, recorded rather than hidden: the exchange was completed by fetching
+**from A's checkout**, not through the GitHub remote, because pushing a probe
+branch to the pilot workspace repository was not authorised for this step. The
+remote path is what the product itself uses for a handover, and it is exercised
+by the handover runs in phase 4 rather than by this probe.
 
 
 ## This log is closed at B19
