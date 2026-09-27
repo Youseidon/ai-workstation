@@ -5,6 +5,8 @@ The previous session **finished V5**, wrote the **completion report**, and then 
 
 **The session's first action was P-A0**: reproduce M-13's saved-answer half, which was written into the register from a code read rather than a test. jd ruled this on 2026-09-27. It changed no product code, and it **falsified the register's severity claim** - see section 1 and the register's M-13 entry.
 
+**One thing is waiting on jd**: V5 case 11's re-run with real grants, the closing item of Phase 2. See [case11-rerun-script.md](case11-rerun-script.md).
+
 Read in this order:
 1. **[team-plan-cards.md](team-plan-cards.md)** - what you actually do. One card per task, and the rules every card inherits.
 2. **[team-forward-plan.md](team-forward-plan.md)** - priority bands, the six phases, and jd's thirteen decisions.

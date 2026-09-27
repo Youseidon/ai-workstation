@@ -62,6 +62,8 @@ One note for whoever runs it next: the first 22 rows took about 45 minutes and t
 
 **Phase 2 ends by re-running V5 case 11 with real grants**, which the 2026-09-27 run could not exercise because no grants ever existed on that item. Only that converts case 11 from PARTIAL.
 
+**BLOCKED ON jd, 2026-09-27.** A grant needs a real user to type `/grant` in the group and a real user to tap the card, and a bot token can do neither - there is no HTTP route that creates a grant, checked rather than assumed. The script is [case11-rerun-script.md](case11-rerun-script.md), and it now has **more** to check than the last run rather than less: P-B2 and P-C1 landed today, so the closed thread should say it is closed, its row should read `CLOSED`, and the anchor should be a final card and unpinned. All three are first-time phone checks of code proven only in the harness.
+
 ## Phase 3 - small fixes, one commit each
 
 | Id | Task | Acceptance criteria | jd |
