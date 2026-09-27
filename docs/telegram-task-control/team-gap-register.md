@@ -375,7 +375,15 @@ H07 reverted the attempt entirely rather than weaken that assertion, which was t
 **Why it is not nothing**: the moment anyone wires it to a caller, ruling 7 is bypassed and the data-loss path H07 just closed reopens through a second door.
 
 The real question is which reading is right, and it is a design question rather than a bug: does an acknowledged stop end the handover (H04), or is a stopped-but-unreturned item still held (ruling 7)? There is work on the branch in both readings.
-Needs jd.
+
+**RULED 2026-09-27 by jd: ruling 7 wins. A stopped-but-unreturned item is still held.**
+`isLiveHandoverState` is authoritative, and `closeAfterHandover` is ignoring the predicate that already encodes the rule - all four states it permits (`OFFERED`, `WAITING_INPUT`, `PAUSED`, `RETURNED`) are in `LIVE_HANDOVER_STATES`.
+
+The work: apply `isLiveHandoverState` to `closeAfterHandover`, and **rewrite** `teamHandoverRun.test.ts:955` to assert that an acknowledged stop does **not** end the handover.
+That is a deliberate change to a passing assertion, so it gets its own commit citing this ruling rather than being folded into the fix.
+The deciding argument jd accepted was the asymmetry: if ruling 7 is right and H04 is chosen someone loses work, whereas if H04 is right and ruling 7 is chosen someone takes one extra explicit step.
+
+The wider model question this exposed is **M-16**.
 
 ### M-8. Upstream's run lifecycle contradicts Team's verified expectations
 
@@ -639,6 +647,27 @@ The pinned anchor staying is **M-11**'s accepted trade, with jd's waiver, and is
 **What this needs is a decision, like M-11.**
 Reading a closed thread's history is arguably correct behaviour, in which case the fix is one line of output saying so, not a refusal.
 What is not defensible is a teammate being shown a live-looking, actionable item whose commands will all be refused, with no way to tell from the view which state they are in.
+
+### M-16. Task state does not read the handover control record, and that is the root of C3, M-13 and M-15
+
+**Registered 2026-09-27 on jd's design observation, which re-derived a model the code already half has.**
+
+`server/src/teamControlRecord.ts` already makes a handover a **first-class, decoupled record**: fourteen `CONTROL_STATES` from `LOCAL` through `COMPLETED`, a transition table checking from-state, event, authorized actors and condition before anything is written, stored outside the prompt in a git control record that `item_link.control_head` points at, versioned by `epoch`.
+`LIVE_HANDOVER_STATES` and `isLiveHandoverState()` already express "this handover is outstanding", and the region jd described as one "pending return" flag is already three states: `RETURNED`, `APPLYING` and `COMPLETED`.
+
+**What is missing is the other direction.** `operationalState` knows nothing about control states, so there is no task-level "awaiting return handover", and every surface therefore infers whether a person is waiting from **prompt status**, by hand.
+
+That absence is the common cause behind three separate entries in this register:
+
+- **C3** - two Team surfaces compared `operationalState` to `AWAITING_RESPONSE` by hand and broke when the reconcile moved what it returns.
+- **M-13** - the work-item row has no `AWAITING_RESPONSE` branch at all, and the detail page's banner and response box are gated on mutually exclusive states.
+- **M-15** - a closed thread reads as open, because `closedAt` is consulted on the granted-command path and not on the view path.
+
+Each was fixed or registered individually. **None of them is a coincidence**: they are what happens when several surfaces each re-derive a state that no single record owns.
+
+**Why this is its own task rather than part of any of them.** `operationalState` is read by every surface, and the reconcile moving it is precisely what caused C3, so changing it carries a risk already realised once on this track. It needs designing, not appending.
+
+**jd's ruling, 2026-09-27**: settle M-7 now against `isLiveHandoverState`, and raise this as a separate, properly sized task rather than doing it inside a bug fix.
 
 ## Low
 
