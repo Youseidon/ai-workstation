@@ -233,7 +233,7 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 **Consequence nobody drew until 2026-09-27**: this closure is what made the standing constraint `team.handoverEnabled stays false` obsolete, and it was not lifted. It kept being copied into handovers for five days, and jd had to ask why handover was off to surface it. **Closing a gate is not the same as opening the thing it gated** - a closure should name the constraint it releases.
 
-### H-4. The Team pilot's database isolation is broken on main, and the guard's suggested fix makes it worse
+### H-4. The Team pilot's database isolation was broken on main, and the guard's suggested fix made it worse. Fixed 2026-09-27 by P-A2
 
 **Registered 2026-09-26, found while rebuilding the rig on main for V5. Worked around in the rig; `scripts/setup-team-pilot.mjs` is still stale.**
 
@@ -256,7 +256,37 @@ AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.
 
 Precision, because the first reading here was too strong: `~/.local/state/agent-console/console.sqlite` **does not currently exist**. The guard refuses the default path whether or not a file is there, so no existing data was at risk - but the shared-database outcome is real as soon as two instances run without a pin.
 
-Worked around rather than fixed: each pilot `.env` now carries an `AGENT_CONSOLE_DB` pinned to its own checkout, with a comment saying why. Both instances verified on main with separate fresh databases, `workspaces 0` each, connected as `@aiws_helper_bot` and `@ai_test_pilot_1_bot`. **The product fix - `pilotEnv()` emitting `AGENT_CONSOLE_DB` - is not done and is jd's call**, since `setup-team-pilot.mjs` is outside this track's scope and a fresh operator following the README today would hit this.
+Worked around rather than fixed at the time: each pilot `.env` carries an `AGENT_CONSOLE_DB` pinned to its own checkout, with a comment saying why. Both instances verified on main with separate fresh databases, `workspaces 0` each, connected as `@aiws_helper_bot` and `@ai_test_pilot_1_bot`.
+
+**FIXED 2026-09-27 by P-A2**, on jd's ruling that both halves are in scope. `pilotEnv()` takes the checkout root and emits `AGENT_CONSOLE_DB` pinned to it, and the guard now recommends pinning rather than the escape hatch.
+
+Reproduced before fixing, on two fresh checkouts set up the documented way, with `XDG_STATE_HOME` pointed at a temp directory so the shared path was disposable and the live database was never opened:
+
+```
+checkout        /tmp/pa2-checkout-A-JLghYQ
+AGENT_CONSOLE_DB  (absent)
+resolves to       /tmp/pa2-xdg-QDlE40/agent-console/console.sqlite
+checkout        /tmp/pa2-checkout-B-hnLmu1
+AGENT_CONSOLE_DB  (absent)
+resolves to       /tmp/pa2-xdg-QDlE40/agent-console/console.sqlite
+distinct database paths: 1 of 2
+FAIL: both checkouts share one database
+```
+
+Re-run after the fix: **2 of 2 distinct paths, each at `workspaces 0`, PASS**. A permanent test, "two pilot checkouts are pinned to two databases of their own", holds it at 4 of 4, and was **proved load-bearing by removing the emitted line** - that fails that test alone, `not ok 3`, 3 pass 1 fail. Server 618 of 618, server typecheck exit 0. The live rig's hand-written pins were not touched.
+
+The guard's message now names the pin first and the escape hatch last, with what it costs, so the operator is no longer told to do the destructive thing:
+
+```
+Refusing to run the watch server against the live database (...). Point this process at its own
+database instead: set AGENT_CONSOLE_DB to a path of its own, for example
+AGENT_CONSOLE_DB=$PWD/.agent-console/console.sqlite - that is per-checkout, while the default
+above is per-user and is shared by every checkout on this machine. Or use `npm run serve` ... or
+`npm run dev:sandbox` ... AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 still overrides this refusal, but it
+leaves you on the shared database.
+```
+
+That text was triggered for real and read back from the log, not quoted from the source.
 
 The roster mirror is **not** affected: `runtime.ts` still resolves it to `config.repoRoot/.agent-console/team/remote.git`, which stays per-checkout. Only the database moved.
 
