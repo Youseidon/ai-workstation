@@ -1143,6 +1143,9 @@ export class TelegramLiveRuntime {
         capabilities: workspaces.itemGrants(link.itemId, { activeOnly: true, personId: member.personId }).map(grant => grant.capability),
       })),
       askingPersonId,
+      // M-15. The one place the fact enters the views, read from the same column
+      // the granted-command path tests.
+      threadClosed: link.closedAt !== null,
       now: new Date(this.now()),
     };
   }

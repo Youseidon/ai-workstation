@@ -339,3 +339,66 @@ test("TM-T1-6 registry: one item anchor is edited in place and ANCHOR_GONE accep
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+/*
+ * M-15, the record half. `closeItemLink` writes the thread row to CLOSED as well
+ * as the link, and this asserts the write rather than a rendering of it.
+ *
+ * It exists because the rendering test alone was not enough. Migration 54 widens
+ * the thread-state CHECK, and it was first placed beside migration 53 - earlier
+ * in `workspaces.ts` but numbered higher - where migration 48's rebuild of
+ * `telegram_thread` silently put the old three-value CHECK back. The server tier
+ * was green throughout and a T1 row caught it, with
+ * `CHECK constraint failed: state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE')`.
+ * So the write now has a test at the tier that runs in seconds.
+ */
+test("M-15: closing an item link writes the thread row to CLOSED, and leaves ANCHOR_GONE alone", () => {
+  const directory = mkdtempSync(join(tmpdir(), "m15-close-thread-"));
+  const workspace = workspaces.create({ name: directory, workDirectory: directory });
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const prompt = workspaces.createChild("prompt", suite.id, { title: "Closed thread", content: "Decide it" }) as PromptRecord;
+    const link = workspaces.createItemLink({ promptId: prompt.id, role: "requester", epoch: 1 });
+    const thread = workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(link.itemId) });
+    assert.equal(thread.state, "ACTIVE", "a fresh item thread starts ACTIVE");
+
+    assert.equal(workspaces.closeItemLink({ itemId: link.itemId, commandId: "close-m15" }), true);
+    assert.equal(
+      workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(link.itemId) }).state,
+      "CLOSED",
+      "the close says so on the thread row too",
+    );
+    // It stays routable, which is the whole reason the views say it rather than
+    // the row being consulted: telegramItemThreadForMessage filters ANCHOR_GONE.
+    assert.notEqual(
+      workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(link.itemId) }).state,
+      "ANCHOR_GONE",
+      "and does not make the thread unreachable",
+    );
+
+    // A second item whose anchor was deleted in Telegram keeps ANCHOR_GONE: that
+    // records a fact about the message, which closing the item does not change.
+    const gone = workspaces.createItemLink({ promptId: prompt.id, role: "executor", epoch: 1 });
+    const goneThread = workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(gone.itemId) });
+    const outboxId = workspaces.enqueueTelegramOutbox({
+      botId: "telegram-m15", chatId: "team-chat", payload: { kind: "view", text: "anchor", entities: [], buttons: [] },
+      subject: itemSubject(gone.itemId), anchor: { pin: true },
+    });
+    assert.equal(typeof outboxId, "number");
+    workspaces.markTelegramThreadAnchorGone(outboxId as number);
+    assert.equal(
+      workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(gone.itemId) }).state,
+      "ANCHOR_GONE",
+    );
+    assert.equal(goneThread.id > 0, true);
+    assert.equal(workspaces.closeItemLink({ itemId: gone.itemId, commandId: "close-m15-gone" }), true);
+    assert.equal(
+      workspaces.telegramThreadFor({ botId: "telegram-m15", chatId: "team-chat", subject: itemSubject(gone.itemId) }).state,
+      "ANCHOR_GONE",
+      "ANCHOR_GONE is not overwritten by a close",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

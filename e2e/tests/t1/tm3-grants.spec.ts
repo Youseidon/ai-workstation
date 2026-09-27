@@ -260,3 +260,89 @@ test("TM-T1-5: revoke and expiry reject open cards and teammate removal ends aut
     await team.dispose();
   }
 });
+
+
+/*
+ * M-15. The test above proves a closed thread refuses every *granted* command.
+ * This one is about the four commands that need no grant, which took the other
+ * branch of `handleTeamItemMessage` and were never tested at all: they answered a
+ * closed thread exactly as they answer a live one, so a teammate could not tell a
+ * dead thread from a live one. jd ruled on 2026-09-27: answer, say it is closed,
+ * and write the thread row to CLOSED too.
+ */
+test("M-15 (T1): a closed item thread answers every read-only command and says it is closed", {
+  annotation: { type: "covers", description: "M-15" },
+}, async () => {
+  const team = await startTeamHarness({ envA: { fakeProvider: "live" } });
+  try {
+    await joinFixture(team);
+    const item = await blockedItem(team, "m15-closed");
+
+    /*
+     * Matched on the reply-to rather than on a text prefix, so one helper covers
+     * all four commands. `/task` renders the anchor card, which begins with a
+     * breadcrumb and not with the item title, so prefix matching silently never
+     * finds it - a first run of this row spent its whole wait proving that.
+     */
+    /*
+     * Each command is matched by its own output as well as by the reply-to, not by
+     * the reply-to alone: a run of this row matched a `/task` card as the answer to
+     * `/status` and reported a missing closed notice on a message that had one. A
+     * matcher that cannot tell the four views apart cannot assert about them.
+     */
+    const COMMANDS = [
+      ["/task", "Task: "],
+      ["/status", "Item status"],
+      ["/access", "Item access"],
+      ["/help", "Item commands"],
+    ] as const;
+    const reply = async (command: string, own: string) => {
+      const sent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, command, { replyToMessageId: item.anchor.message_id });
+      return eventually(`${command} reply`, async () => item.group().find(message =>
+        message.message_id > sent.message_id && message.from.id === team.envA.bot.id
+        && message.reply_to_message?.message_id === item.anchor.message_id
+        && message.text.includes(own)));
+    };
+    // The marker: `/task`'s goes in the anchor card's footer hint, the other three
+    // carry the sentence as a line of their own.
+    const marker = (command: string) => command === "/task" ? "Thread closed" : "This item thread is closed.";
+
+    // Before the close: the same four commands answer without the notice, so the
+    // assertion below is about the close and not about the text always being there.
+    for (const [command, own] of COMMANDS) {
+      const before = await reply(command, own);
+      expect(before.text, `${command} answers before the close`).toContain(item.tag);
+      expect(before.text, `${command} does not claim a live thread is closed`).not.toContain(marker(command));
+    }
+
+    const closeSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/close", { replyToMessageId: item.anchor.message_id });
+    const closeCard = await eventually("close card", async () => item.group().find(message =>
+      message.message_id > closeSent.message_id && message.from.id === team.envA.bot.id
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Close thread")));
+    expect(await tap(team, closeCard, "Close thread")).toContain("closed");
+    await eventually("the link recorded closed", async () =>
+      team.envA.app.query<{ n: number }>("SELECT COUNT(*) n FROM item_link WHERE item_id=? AND closed_at IS NOT NULL", item.itemId)[0]!.n === 1);
+
+    /*
+     * Each command still answers - jd's ruling is that reading closed history is
+     * defensible - and each answer now says the thread is closed. `/task` renders
+     * the anchor card, whose marker is in the footer hint; the other three carry
+     * the sentence as a line.
+     */
+    for (const [command, own] of COMMANDS) {
+      const after = await reply(command, own);
+      expect(after.text, `${command} still answers on a closed thread`).toContain(item.tag);
+      expect(after.text, `${command} says the thread is closed`).toContain(marker(command));
+    }
+
+    // The record half of jd's ruling. Nothing routes on this column - every reader
+    // filters ANCHOR_GONE or keys on PIN_PENDING - so it is asserted directly
+    // rather than through a behaviour it does not drive.
+    await eventually("the thread row says CLOSED", async () =>
+      team.envA.app.query<{ state: string }>(
+        "SELECT state FROM telegram_thread WHERE subject_kind='item' AND subject_id=?", item.itemId,
+      )[0]?.state === "CLOSED");
+  } finally {
+    await team.dispose();
+  }
+});

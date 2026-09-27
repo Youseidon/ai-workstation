@@ -31,7 +31,7 @@ const summary: TaskSummary = {
 const OWNER = "owner-person";
 const TEAMMATE = "teammate-person";
 
-function state(capabilities: TeamItemViewState["memberAccess"], askingPersonId: string): TeamItemViewState {
+function state(capabilities: TeamItemViewState["memberAccess"], askingPersonId: string, threadClosed = false): TeamItemViewState {
   return {
     promptStatus: "BLOCKED",
     operationalState: "AWAITING_RESPONSE",
@@ -40,6 +40,7 @@ function state(capabilities: TeamItemViewState["memberAccess"], askingPersonId: 
     memberLabels: ["Jj", "Junaid"],
     memberAccess: capabilities,
     askingPersonId,
+    threadClosed,
     now: new Date("2026-09-20T03:00:00.000Z"),
   };
 }
@@ -160,4 +161,37 @@ test("B13: the completed summary changes nothing but the completed state's own f
   );
   assert.deepEqual(completed.history.runs.map(run => run.state), ["FINISHED", "DONE"], "only a run that has not ended is restated");
   assert.equal(blocked.blockers?.length, 1, "the caller's summary is not mutated");
+});
+
+/*
+ * M-15. All four views answered a closed item thread exactly as they answer a
+ * live one, because `closedAt` was consulted on the granted-command path and on
+ * no view path at all. jd ruled on 2026-09-27: answer, say it is closed, and
+ * close the thread row too.
+ *
+ * These assert the saying-so. The row write is in `closeItemLink`, and the
+ * end-to-end proof is the `M-15 (T1)` row.
+ */
+const CLOSED_LINE = "This item thread is closed.";
+
+test("M-15: every item view says so when the thread is closed, and none of them says it when it is open", () => {
+  for (const command of ["task", "status", "access", "help"] as const) {
+    const open = renderTeamItemView(command, summary, state(access([]), TEAMMATE, false)).text;
+    const closed = renderTeamItemView(command, summary, state(access([]), TEAMMATE, true)).text;
+    // `/task` renders the anchor card, whose closed marker lives in the footer
+    // hint; the other three carry the sentence as a line of their own.
+    const marker = command === "task" ? "Thread closed" : CLOSED_LINE;
+    assert.ok(!open.includes(marker), `/${command} does not claim a live thread is closed`);
+    assert.ok(closed.includes(marker), `/${command} says the thread is closed`);
+  }
+});
+
+test("M-15: a closed thread still answers, because reading closed history is allowed", () => {
+  const closed = state(access(["context", "answer"]), TEAMMATE, true);
+  // The point of jd's ruling: the answer is not withheld, it is labelled.
+  assert.ok(renderTeamItemView("status", summary, closed).text.includes("Execution:"), "/status still reports execution");
+  assert.ok(renderTeamItemView("access", summary, closed).text.includes("Junaid"), "/access still lists members");
+  const help = renderTeamItemView("help", summary, closed).text;
+  for (const command of ["/task", "/status", "/access", "/help"]) assert.ok(help.includes(command), `/help still lists ${command}`);
+  assert.ok(renderTeamItemAnchor(summary, closed).text.includes("WI_TC03"), "/task still renders the card");
 });

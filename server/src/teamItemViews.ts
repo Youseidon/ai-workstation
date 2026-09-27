@@ -24,8 +24,23 @@ export interface TeamItemViewState {
   memberAccess?: Array<{ personId: string; label: string; capabilities: ItemGrantCapability[]; owner: boolean }>;
   /** Who asked, so `/help` can list what that member may actually run (TM-T1-4). */
   askingPersonId?: string | null;
+  /**
+   * Whether the item thread is closed (M-15). **Required, not optional**: a
+   * closed thread answered `/task`, `/status`, `/access` and `/help` as though it
+   * were open, because `closedAt` was consulted on the granted-command path and
+   * on no view path at all. An optional flag would let the next view forget the
+   * same way, and forgetting is the defect.
+   */
+  threadClosed: boolean;
   now: Date;
 }
+
+/**
+ * One sentence, in every view, so a teammate can tell a dead thread from a live
+ * one whichever command they reach for. It matches the text the granted-command
+ * path already answers with, so the two paths do not say it two ways.
+ */
+const CLOSED_THREAD_LINE = "This item thread is closed.";
 
 export type TeamItemGrantedCommand =
   | { command: "context" | "resume" | "close" }
@@ -131,7 +146,11 @@ export function renderTeamItemAnchor(summary: TaskSummary, state: TeamItemViewSt
   const card = formatCard(completed ? completedSummary(summary) : summary, {
     // The breadcrumb above already names the workstation, from the summary; the
     // owner of an item is a person, so the footer names the person (B5).
-    hint: `${completed ? "Completed" : `State: ${stateLabel(state.operationalState)}`} · Owner: ${lineText(state.ownerPerson, 64)}`,
+    // A closed thread says so here as well (M-15): `/task` renders through this,
+    // and a card that reads exactly like a live item's is what let a teammate
+    // keep talking to a dead thread.
+    hint: `${completed ? "Completed" : `State: ${stateLabel(state.operationalState)}`} · Owner: ${lineText(state.ownerPerson, 64)}`
+      + (state.threadClosed ? " · Thread closed" : ""),
     now: state.now,
   });
   return { kind: "view", text: card.text, entities: card.entities, buttons: [] };
@@ -173,6 +192,7 @@ export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummar
     const awaitingDecision = awaitsResponse(state.operationalState);
     return simpleView([
       `Item status · ${lineText(state.ownerWorkstation, 64)}`,
+      ...(state.threadClosed ? [CLOSED_THREAD_LINE] : []),
       `Execution: ${stateLabel(state.promptStatus)}`,
       `Decision: ${awaitingDecision ? "waiting for the owner" : "none waiting"}`,
       "Receipt: no Team action is pending",
@@ -186,7 +206,7 @@ export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummar
       : state.memberLabels.length === 0
       ? ["Team members: read only"]
       : state.memberLabels.map((label) => `${lineText(label, 64)}: read only`);
-    return simpleView(["Item access", ...members, "No open offer.", summary.tag]);
+    return simpleView(["Item access", ...(state.threadClosed ? [CLOSED_THREAD_LINE] : []), ...members, "No open offer.", summary.tag]);
   }
   // `/help` answers for the member who asked: the read-only commands, plus the
   // ones their current grants unlock, plus the owner's own set when they are the
@@ -199,7 +219,10 @@ export function renderTeamItemView(command: TeamItemCommand, summary: TaskSummar
     : asking.owner
     ? [...HELP_BY_CAPABILITY.map(entry => entry.line), ...HELP_OWNER_ONLY]
     : HELP_BY_CAPABILITY.filter(entry => asking.capabilities.includes(entry.capability)).map(entry => entry.line);
-  return simpleView(["Item commands", ...HELP_READ_ONLY, ...granted, summary.tag]);
+  // A closed thread still lists the commands, because reading closed history is
+  // defensible and jd ruled the view answers; it just stops implying the granted
+  // ones will do anything.
+  return simpleView(["Item commands", ...(state.threadClosed ? [CLOSED_THREAD_LINE] : []), ...HELP_READ_ONLY, ...granted, summary.tag]);
 }
 
 export function renderTeamItemContext(summary: TaskSummary): RenderedView {

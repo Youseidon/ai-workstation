@@ -1811,6 +1811,64 @@ db.transaction(() => {
   }
 }
 
+/*
+ * M-15. `CLOSED` joins the thread states, so a closed item thread can say so on
+ * its own row instead of only on `item_link.closed_at`.
+ *
+ * Two things fix its position here, and both were found the hard way.
+ *
+ * The CHECK constraint is why this needs a migration at all: writing `'CLOSED'`
+ * without widening it fails inside the close transaction, which turns a record
+ * tidy-up into a broken `/close`.
+ *
+ * And it must run **after** migration 48, which rebuilds `telegram_thread` with
+ * the old three-value CHECK. Placed with 53 - earlier in this file but numbered
+ * higher - it was applied and then silently undone by 48's rebuild, and the
+ * result was the live failure `Not applied: CHECK constraint failed: state IN
+ * ('ACTIVE','PIN_PENDING','ANCHOR_GONE')`. **Migration order in this file is
+ * source order, not number order.** The T1 row is what caught it; the server
+ * tier had not exercised the write.
+ *
+ * Rebuilt rather than altered, because SQLite cannot alter a CHECK. Foreign keys
+ * stay off for the swap for the reason migration 48 turns them off:
+ * `telegram_outbox.thread_id` points here, and dropping the old parent with them
+ * on clears those references.
+ */
+{
+  const applied = db.prepare("SELECT 1 FROM schema_migration WHERE version=54").get();
+  if (!applied) {
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.exec(`
+        CREATE TABLE telegram_thread_v54 (
+          id INTEGER PRIMARY KEY,
+          bot_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          subject_kind TEXT NOT NULL CHECK(subject_kind IN ('task','workstation','item')),
+          subject_id TEXT NOT NULL,
+          topic_id TEXT,
+          status_message_id INTEGER REFERENCES telegram_outbox(id) ON DELETE SET NULL,
+          state TEXT NOT NULL CHECK(state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE','CLOSED')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO telegram_thread_v54
+          (id,bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at)
+        SELECT id,bot_id,chat_id,subject_kind,subject_id,topic_id,status_message_id,state,created_at,updated_at
+        FROM telegram_thread;
+        DROP TABLE telegram_thread;
+        ALTER TABLE telegram_thread_v54 RENAME TO telegram_thread;
+        CREATE UNIQUE INDEX telegram_thread_subject_uq ON telegram_thread(bot_id, chat_id, subject_kind, subject_id);
+      `);
+      db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(54,?)").run(new Date().toISOString());
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+    const violations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+    if (violations.length > 0) throw new Error(`Migration 54 left ${violations.length} foreign-key violation(s)`);
+  }
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1955,7 +2013,12 @@ export interface TelegramThreadRow {
   topicId: string | null;
   /** The outbox row carrying this subject's anchor message, or null when it has none. */
   statusMessageId: number | null;
-  state: "ACTIVE" | "PIN_PENDING" | "ANCHOR_GONE";
+  /**
+   * `CLOSED` was added by migration 54 for M-15. **Nothing routes on it**: every
+   * reader either filters `<>'ANCHOR_GONE'` or keys on `'PIN_PENDING'`, which is
+   * why closing the row fixes nothing by itself and the view change is the fix.
+   */
+  state: "ACTIVE" | "PIN_PENDING" | "ANCHOR_GONE" | "CLOSED";
 }
 
 const THREAD_COLUMNS = "SELECT id,bot_id botId,chat_id chatId,subject_kind subjectKind,subject_id subjectId,topic_id topicId,status_message_id statusMessageId,state FROM telegram_thread";
@@ -4235,12 +4298,35 @@ export const workspaces = {
    * already closed, so the caller can tell a first close from a repeat and
    * refresh the group only once.
    */
+  /**
+   * Closes an item link, and says so on the thread row as well (M-15).
+   *
+   * The second write is **record correctness, not routing**, and every reader of
+   * `telegram_thread.state` was audited before it was added. There are five, and
+   * none of them compares `ACTIVE` to `CLOSED`:
+   *
+   * - `telegramItemThreadForMessage` (`:4515`) filters `t.state<>'ANCHOR_GONE'`,
+   *   so a reply into a closed thread still routes and still gets an answer -
+   *   which is what jd's ruling asks for.
+   * - the outbox delivery join (`:4657`) also filters only `<>'ANCHOR_GONE'`.
+   * - the anchor-replacement test (`:4602`) reads `=== "ANCHOR_GONE"` alone.
+   * - the pin sweep (`:4581`) and its release (`:4586`) key on `'PIN_PENDING'`.
+   *
+   * That last pair is the only behavioural consequence, and it is deliberate: a
+   * thread closed while its pin was still pending leaves the sweep, because
+   * pinning the anchor of a thread nobody may write to buys nothing. It is stated
+   * here rather than discovered later.
+   */
   closeItemLink(input: { itemId: string; commandId: string }): boolean { return sqliteGuard(() => db.transaction(() => {
     const row = db.prepare("SELECT closed_at closedAt FROM item_link WHERE item_id=?").get(input.itemId) as { closedAt: string | null } | undefined;
     if (row === undefined) throw new WorkspaceError(404, "not_found", "Team item not found");
     if (row.closedAt !== null) return false;
     db.prepare("UPDATE item_link SET closed_at=?,closed_command_id=? WHERE item_id=?")
       .run(new Date().toISOString(), requireText(input.commandId, "commandId", 160), input.itemId);
+    // ANCHOR_GONE is not overwritten: it records that the anchor was deleted in
+    // Telegram, which stays true and which three readers depend on.
+    db.prepare("UPDATE telegram_thread SET state='CLOSED',updated_at=? WHERE subject_kind='item' AND subject_id=? AND state<>'ANCHOR_GONE'")
+      .run(new Date().toISOString(), input.itemId);
     return true;
   })()); },
   createItemLink(input: { itemId?: string; promptId: number; role: ItemLinkRole; epoch: number; controlHead?: string | null }): ItemLinkRow { return sqliteGuard(() => db.transaction(() => {
