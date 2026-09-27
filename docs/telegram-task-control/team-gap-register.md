@@ -539,7 +539,7 @@ Either a task owns the unpin and settles what a closed-but-blocked thread should
 Note that **M-15** is the sharper half of the same area: the pinned anchor is at least visibly stale, whereas a closed item's view commands actively present it as live.
 jd waived audit 3's A1 on 2026-09-25 with this recorded; the waiver is in the tracker.
 
-### M-10. F05's supergroup upgrade has no harness case, and had two invented scenario ids
+### M-10. F05's supergroup upgrade had no harness case, and had two invented scenario ids. Closed 2026-09-27 by P-C3
 
 **Registered 2026-09-25 on jd's ruling, closing the F05 half of audit 3's A1.**
 
@@ -880,6 +880,22 @@ jd ruled to build it, against the recommendation to declare review-and-apply a d
 **`requestHandoverChanges` is wired and not end-to-end proven.** Driving it needs a *second* crossing, because the fresh offer it publishes has to be accepted, run and returned again. It is covered at the server tier in `teamResultApply.test.ts` and its web call site is rendered from props in `handoverControl.test.tsx`. **So M-12 is not fully closed**: two of three functions have the wiring proof, the third has the same shape of evidence that made M-12 read as covered in the first place, which is exactly why it is named here.
 
 **Three things the row cost, each recorded in it so they are not re-made.** A web apply mints no Telegram receipt, so asserting one fails at 0 and that is correct behaviour. The returned package's verification entry is a run reference rather than the summary text handed to the fake. And `evidenceMissing` is therefore false on this crossing, so the evidence warning is asserted absent rather than present.
+
+### M-10, F05's criterion 3. Closed 2026-09-27 by P-C3.
+
+**The reason it never existed was the harness, not the product.** B8's repair is driven by the Bot API answering 400 with `parameters.migrate_to_chat_id`, and `e2e/src/fakes/telegramServer.ts` dropped `parameters` from every error envelope it sent. The failure could not be expressed at T1 at all, so criterion 3 was unmeetable rather than merely unmet - worth stating, because the entry previously read as though someone had just not written the case.
+
+`FakeTelegramServer.upgradeChatToSupergroup` adds it. The upgrade is held as **chat state, not a scripted failure**, because the refusal is permanent: an old chat id never works again, and a case that only failed the next call would let the product look repaired when it had run out of injected failures. `groupChatType` lets the team group start as a basic `group`, defaulting to supergroup so no existing row changes; no product code reads that type.
+
+Named **`M-10 (T1)`** for its gap id, after grepping the whole tree: `TM-T1-8` and `TM-T1-9` now appear only in the records of their own retirement, so no third id was minted.
+
+Asserted: the anchor lands on the new chat id, the dead id receives nothing, every local copy of the chat id moves, the cached roster names the new group, and **exactly one anchor exists** - so the repair does not re-enqueue. **Proved load-bearing by disabling the repair**, which fails it with `timed out waiting for the next anchor delivered to the new chat id`.
+
+Not asserted, recorded rather than implied: the roster republish to the shared repository, which `migrateTeamChat` deliberately treats as a delay rather than a failed repair, and which the server tier owns; and any second upgrade.
+
+**One correction the row cost.** An "Item access" message also carries the item tag and replies to the anchor, so filtering on the tag alone counts two messages for one item - a first version reported a duplicate anchor against a product behaving correctly. An anchor is a tagged bot message that replies to nothing, which is how every other Team row identifies one.
+
+Tiers: shared 91/91, server 622/622, web 95/95, harness self-tests **47/47**, typecheck exit 0.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
