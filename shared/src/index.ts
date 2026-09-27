@@ -1374,6 +1374,23 @@ export interface OperationsPrompt {
   suiteKey: string|null;
   operationalState: PromptOperationalState;
   attention: boolean;
+  /**
+   * The live handover holding this item, or null. M-16: the surfaces used to
+   * infer this from prompt status, which they cannot do, so they said "Needs
+   * you" about work a teammate was running - and offered buttons that P-A5 now
+   * refuses.
+   *
+   * `state` is a control state from `LIVE_HANDOVER_STATES`, not a display
+   * status: `operationalState` still says BLOCKED, which is true. The item is
+   * blocked *and* handed over, and this is where the second fact lives.
+   *
+   * `executor` is the person id the control record carries, and is null while an
+   * offer is open that nobody has accepted yet.
+   *
+   * Filled by the `/api/operations` route, not by the snapshot builder, which is
+   * synchronous; the builder sets it null.
+   */
+  heldByTeammate: { itemId: string; state: string; executor: string | null } | null;
   latestIntervention: string|null;
   /** Dynamically created when an agent posts BLOCKED with a required human action. */
   humanIntervention: HumanInterventionStep | null;

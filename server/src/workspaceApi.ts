@@ -4,11 +4,11 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
-import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDraftPreview, type AgentRequest, type ProviderId } from "@agent-console/shared";
+import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDraftPreview, type AgentRequest, type OperationsPrompt, type OperationsSnapshot, type ProviderId } from "@agent-console/shared";
 import { startConsult, startExecute, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
-import { assertNoLiveHandover } from "./teamHandoverHold.ts";
+import { assertNoLiveHandover, liveHandoverHolding } from "./teamHandoverHold.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 import { taskControl, withLiveTokenState } from "./taskControl.ts";
 import { TEAM_DISABLED_CODE, TEAM_DISABLED_MESSAGE, telegramRuntime } from "./integrations/telegram/runtime.ts";
@@ -24,6 +24,50 @@ const MAX_PROPOSAL_BODY_BYTES = 512 * 1024;
  * larger than any other request this API takes.
  */
 const MAX_DRAFT_BODY_BYTES = 4 * 1024 * 1024;
+
+/*
+ * M-16. Attaches the live handover holding each prompt, and takes a held prompt
+ * off the owner's attention list.
+ *
+ * Here rather than in `workspaces.operations()` because that builder is
+ * synchronous and reading a control record is git I/O, and here rather than in
+ * `operationalState` because the item genuinely is BLOCKED - being handed over
+ * is a second fact about it, not a different status. The reconcile that moved
+ * `operationalState` is what caused C3, so nothing in this task touches it.
+ *
+ * `liveHandoverHolding` is P-A5's, unchanged: it considers only the
+ * **requester's** item link, reads the **local** bare control clone rather than
+ * the network remote, and returns null without reading anything unless that link
+ * already carries a `control_head`. A guard over every link would refuse the
+ * receiver's own run, which is why the executor link must stay null here too.
+ *
+ * Sub-steps are walked as well as station roots: an item link is keyed by prompt
+ * id and nothing stops a sub-step carrying one.
+ *
+ * `attentionCount` is decremented rather than left alone. It is built from the
+ * same `attention` flags this clears (`allPrompts.filter(item=>item.attention)`),
+ * so leaving it would make the board's "Needs you 1" chip disagree with the
+ * empty list behind it - which is the same complaint M-16 exists to fix, moved
+ * one element to the left.
+ */
+async function withHandoverHolds(snapshot: OperationsSnapshot): Promise<OperationsSnapshot> {
+  for (const suite of snapshot.suites) {
+    let cleared = 0;
+    const walk = async (prompts: OperationsPrompt[]): Promise<void> => {
+      for (const entry of prompts) {
+        entry.heldByTeammate = await liveHandoverHolding(entry.prompt.id);
+        if (entry.heldByTeammate !== null && entry.attention) {
+          entry.attention = false;
+          cleared += 1;
+        }
+        await walk(entry.children);
+      }
+    };
+    await walk(suite.prompts);
+    suite.attentionCount -= cleared;
+  }
+  return snapshot;
+}
 
 const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
   already_complete: "station_already_complete",
@@ -212,7 +256,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     }
     if(url.pathname==="/api/operations"){
       if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}
+      else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,await withHandoverHolds(workspaces.operations(workspaceId)));}
       return true;
     }
     if(url.pathname==="/api/task-control/capability"){
