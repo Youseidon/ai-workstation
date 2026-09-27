@@ -704,7 +704,7 @@ So the roster on the remote is reachable, correct and names you, and there is no
 
 Worth pairing with the observation that the identities *are* stable and derived. That is what makes a rejoin path cheap to build if jd wants one: the roster already contains everything needed to recognise the returning workstation.
 
-### M-15. A closed item thread answers its view commands as though it were open, and says nothing about being closed
+### M-15. A closed item thread answered its view commands as though it were open. Fixed 2026-09-27 by P-B2
 
 **Found 2026-09-27 by V5 case 11, the second reproduction of B17. It is the reason that case is PARTIAL twice.**
 
@@ -794,6 +794,28 @@ Proof: `m13-personal-surfaces.spec.ts` at **7 of 7**, after **4 failed / 3 passe
 **Left deliberately, as `L-18`**: the banner's over-broad condition and its inverted labels. Both are changes beyond what jd's ruling names, and `M-16` is the structural answer to them.
 
 **Noted while fixing**: `PipelineBoard.tsx:1456` already disabled its submit on an empty box. The correct pattern was one file away the whole time.
+
+### M-15, the closed item thread. Closed 2026-09-27 by P-B2.
+
+jd's ruling: answer the view, say it is closed, and write the thread row to `CLOSED` too. All three landed.
+
+`TeamItemViewState.threadClosed` is **required, not optional**, because an optional flag is how the next view forgets the same way. Two construction sites, so it cost nothing and the compiler caught the test fixture.
+
+Every reader of `telegram_thread.state` was audited before the row write, and the audit is in the comment above it. Five readers, none comparing `ACTIVE` to `CLOSED`. The single behavioural consequence is deliberate and stated: a thread closed while its pin was still pending leaves the pin sweep.
+
+**The interesting part is migration 54.** The CHECK constraint forbade `'CLOSED'`, so the write needed a migration - and the migration's *position* was the defect. Placed beside migration 53, earlier in `workspaces.ts` but numbered higher, it was applied and then silently undone by migration 48's rebuild of the table with the old three-value CHECK. `/close` then failed outright:
+
+```
+Not applied: CHECK constraint failed: state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE')
+```
+
+**Migration order in that file is source order, not number order.** Worth carrying forward: the server tier stayed green through this, because the only server test covered rendering, and the T1 row is what caught it. The write now has a server test of its own, proved to reproduce the same failure when the migration is skipped.
+
+Proof: server **621 of 621**, typecheck exit 0 on four workspaces, `tm3-grants.spec.ts` **4 of 4** including the new `M-15 (T1)` row, which drives all four commands before and after a real `/close` and reads the thread row back.
+
+**And the row's own matcher took two corrections, both silent failures.** Prefix matching never finds `/task`, whose card begins with a breadcrumb rather than the title. Matching on reply-to alone matched a `/task` card as the answer to `/status`, and reported a missing closed notice on a message that had one. A matcher that cannot tell four views apart cannot assert about them.
+
+**Case 11 is not converted by this alone** - it still needs the re-run with real grants that Phase 2 ends with.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
