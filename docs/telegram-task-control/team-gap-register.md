@@ -510,7 +510,7 @@ That is a judgement about what those scenarios are for, which is the kind of cal
 Known to be in scope, beyond the fake itself: `l3-b-views` `/status` counts, `h4-time-seams` S-H4-02, `h6-route-proxy` S-L1-17, `h6-stale-updates` S-H6-21 and `l3-c1-threads` S-L3-C1-10 all failed and have not been traced to either cause yet.
 The 50 that did not run are serial-dependent on a failure earlier in their file, so the true count is higher than 57.
 
-### M-11. A thread closed on a still-blocked task keeps its pinned anchor forever
+### M-11. A thread closed on a still-blocked task kept its pinned anchor forever. Fixed 2026-09-27 by P-C1
 
 **Registered 2026-09-25, closing the F02 half of audit 3's A1. Found by audit 3, whose finding 1 is that this file - the answer to "what is left" - had no row for it.**
 
@@ -816,6 +816,18 @@ Proof: server **621 of 621**, typecheck exit 0 on four workspaces, `tm3-grants.s
 **And the row's own matcher took two corrections, both silent failures.** Prefix matching never finds `/task`, whose card begins with a breadcrumb rather than the title. Matching on reply-to alone matched a `/task` card as the answer to `/status`, and reported a missing closed notice on a message that had one. A matcher that cannot tell four views apart cannot assert about them.
 
 **Case 11 is not converted by this alone** - it still needs the re-run with real grants that Phase 2 ends with.
+
+### M-11, the closed item's pinned anchor. Closed 2026-09-27 by P-C1.
+
+Retired and unpinned on close, after P-B2, exactly as jd ruled. The F02 criterion that was deliberately skipped is now met.
+
+Neither existing pass could reach it: `syncTeamItem` returns for a closed link, and `finishCompletedTeamItems` only ever reaches a `DONE` or `SKIPPED` prompt. So a closed-but-blocked item needed a pass of its own, `retireClosedTeamItemAnchors`.
+
+**The sequencing was the substance, and it changed the implementation.** The obvious move - retire the way completion does, with `markTelegramThreadAnchorGone` - clears `status_message_id` and writes `ANCHOR_GONE`, and `telegramItemThreadForMessage` resolves neither. A bare reply into the thread would then route nowhere and get **silence**, which is precisely the answer M-15 had just been fixed to stop. So the thread stays `CLOSED` and routable and only the pin goes, and the T1 row asserts a `/status` reply into the unpinned thread still answers and still says the thread is closed.
+
+The unpin's once-only claim is `telegram_outbox.anchor`, mirroring the pin's own `PIN_PENDING` marker. Its one other reader counts send failures to decide whether to offer a *new* anchor, a question a closed item never asks because `syncTeamItem` returns first.
+
+Proof: `tm3-grants.spec.ts` **5 of 5** with the new `M-11 (T1)` row, **proved load-bearing by disabling the pass** - it then fails with `timed out waiting for the anchor edited into its final closed card`. Server **621 of 621**, typecheck exit 0 on four workspaces. The row also pins the non-loop: the unpin happens exactly once and the retired card is not edited again, against the measured baseline of an anchor that churned once an hour for eleven hours while open.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
