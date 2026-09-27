@@ -47,6 +47,9 @@ function operationsPrompt(item: PromptOption = prompt()): OperationsPrompt {
   return {
     prompt: item,
     humanIntervention: null,
+    // M-16's new field. Null throughout: this file's subject is recovery, and no
+    // row in it involves a handover.
+    heldByTeammate: null,
     latestAudit: null,
     continuation: null,
     children: [],

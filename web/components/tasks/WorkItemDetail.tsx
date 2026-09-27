@@ -10,6 +10,7 @@ import { TeamThreadPanel } from "@/components/tasks/TeamThreadPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { heldByTeammateReason } from "@/components/tasks/handoverHold";
 import { sessionEndReason } from "@/lib/sessionEndReason";
 import { applyEvent, type LogItem } from "@/lib/log";
 import { DefinitionOfDonePanel } from "@/components/pipeline/DefinitionOfDonePanel";
@@ -427,18 +428,42 @@ export function WorkItemDetail({
                   placeholder="What the agent needs to know to continue…"
                   onChange={(event) => onResponseChange(event.target.value)}
                 />
+                {/*
+                  M-16. All three actions below are refused by the server with a
+                  409 while a teammate holds this item (P-A5), so they are
+                  disabled here and the refusal's own sentence is the reason -
+                  naming the item, its control state and who has to release it.
+                  Offering them was the live work-loss path M-17 recorded: before
+                  P-A5 they did not merely fail, they ran, and the owner completed
+                  a task the receiver was still working on.
+                */}
+                {item.heldByTeammate !== null && (
+                  <p data-testid="work-item-held" className="mt-3 break-words text-xs leading-5 text-info">
+                    {heldByTeammateReason(item.heldByTeammate)}
+                  </p>
+                )}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {item.operationalState === "BLOCKED" && (
                     <>
                       {/* Disabled while the box is empty: a blank box used to be
                           submitted as the canned retry text, which put an answer
                           on the record that nobody wrote. */}
-                      <Button variant="success" disabled={!canStart || busy || response.trim() === ""} onClick={onRespond}>
+                      <Button
+                        variant="success"
+                        disabled={!canStart || busy || response.trim() === "" || item.heldByTeammate !== null}
+                        title={item.heldByTeammate === null ? undefined : heldByTeammateReason(item.heldByTeammate)}
+                        onClick={onRespond}
+                      >
                         Respond and resume
                       </Button>
                       {/* The affordance the blank box used to carry silently,
                           kept because the hint documented it, now labelled. */}
-                      <Button variant="secondary" disabled={!canStart || busy} onClick={onRetryWithExistingContext}>
+                      <Button
+                        variant="secondary"
+                        disabled={!canStart || busy || item.heldByTeammate !== null}
+                        title={item.heldByTeammate === null ? undefined : heldByTeammateReason(item.heldByTeammate)}
+                        onClick={onRetryWithExistingContext}
+                      >
                         Retry with existing context
                       </Button>
                     </>
@@ -451,12 +476,14 @@ export function WorkItemDetail({
                   */}
                   <Button
                     variant="secondary"
-                    disabled={busy || response.trim() === ""}
+                    disabled={busy || response.trim() === "" || item.heldByTeammate !== null}
                     onClick={onComplete}
                     title={
-                      response.trim() === ""
-                        ? "Paste the evidence that this work is finished before marking it complete"
-                        : "Record this as DONE without running the agent again. Your override is always honoured, including over an unmet definition of done — and is recorded as such."
+                      item.heldByTeammate !== null
+                        ? heldByTeammateReason(item.heldByTeammate)
+                        : response.trim() === ""
+                          ? "Paste the evidence that this work is finished before marking it complete"
+                          : "Record this as DONE without running the agent again. Your override is always honoured, including over an unmet definition of done — and is recorded as such."
                     }
                   >
                     Mark complete

@@ -6,6 +6,7 @@ import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { heldByTeammateBadge } from "@/components/tasks/handoverHold";
 import {
   ancestorIdsForPrompt,
   countStations,
@@ -259,7 +260,17 @@ function TreeRows({
                 </span>
               )}
               <span className="truncate text-[13px] text-fg">{entry.prompt.title}</span>
-              <Badge tone={TONE[entry.operationalState]}>{LABEL[entry.operationalState]}</Badge>
+              {/*
+                M-16. `operationalState` is still BLOCKED and still true, so the
+                badge is replaced rather than the state changed: while a teammate
+                holds the item, "Needs you" is the one thing this row must not
+                say, because it is the receiver the item needs.
+              */}
+              {entry.heldByTeammate === null ? (
+                <Badge tone={TONE[entry.operationalState]}>{LABEL[entry.operationalState]}</Badge>
+              ) : (
+                <Badge tone="info">{heldByTeammateBadge(entry.heldByTeammate)}</Badge>
+              )}
               {hasChildren && (
                 <span className="text-[10px] text-fg-dim">
                   {childDone}/{entry.children.length} sub-steps
@@ -369,6 +380,13 @@ function RowAction({
    * shared predicate is the same one the server and TeamThreadPanel ask, and
    * hand-keying one of its two states is what C3 was.
    */
+  /*
+   * M-16. Nothing is offered on an item a teammate is holding. P-A5 refuses the
+   * answer with a 409, so a Respond here is a button whose only outcome is an
+   * error toast - which is the dead-button shape rule F03 forbids and M-13 was.
+   * The badge above already says who has it, so this row still says something.
+   */
+  if (entry.heldByTeammate !== null) return null;
   if (awaitsResponse(entry.operationalState)) {
     return (
       <Button size="sm" variant="secondary" disabled={busy} onClick={onRespond}>

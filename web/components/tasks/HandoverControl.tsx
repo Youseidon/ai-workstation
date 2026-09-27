@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { OperationsPrompt, ProviderId } from "@agent-console/shared";
 import { PROVIDER_IDS } from "@agent-console/shared";
 import { Button } from "@/components/ui/Button";
+import { heldByTeammateReason, type HeldByTeammate } from "@/components/tasks/handoverHold";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { workspaceApi, type HandoverOffer, type HandoverPreview, type HandoverReview } from "@/lib/workspacesApi";
 
@@ -42,6 +43,7 @@ function bytes(value: number): string {
 /** Rendered from props alone, so both states can be rendered in a test (F03, F06). */
 export function HandoverControlView({
   availability,
+  held,
   preview,
   offer,
   preparing,
@@ -55,6 +57,15 @@ export function HandoverControlView({
   onPublish,
 }: {
   availability: HandoverAvailability;
+  /**
+   * M-16. The live handover already on this item, or null.
+   *
+   * Deliberately **not** folded into `handoverAvailability`: that predicate also
+   * gates whether `HandoverReturnView` is mounted at all, and a live handover is
+   * exactly when the requester needs "Check for returned work". Refusing it there
+   * would take the review panel away for the whole handover.
+   */
+  held: HeldByTeammate | null;
   preview: HandoverPreview | null;
   offer: HandoverOffer | null;
   preparing: boolean;
@@ -72,6 +83,14 @@ export function HandoverControlView({
   // ordinary Publish tap, so proceeding is always deliberate.
   const needsCredentialConfirmation = (preview?.flagged.length ?? 0) > 0;
   const publishable = preview !== null && offer === null && (!needsCredentialConfirmation || credentialConfirmed);
+  /*
+   * A second handover over a live one is refused server-side, so it is not
+   * offered here either - rule F03. The reason shown is the refusal's own, and it
+   * replaces the availability reason only when there is none, because "no Team"
+   * is the more fundamental answer to "why can I not do this".
+   */
+  const preparable = availability.enabled && held === null;
+  const refusal = !availability.enabled ? availability.reason : held === null ? null : heldByTeammateReason(held);
   return (
     <div className="mt-3 rounded-panel border border-line bg-surface-2 p-4" aria-label="Hand over to the team">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -89,7 +108,7 @@ export function HandoverControlView({
               aria-label="Handover agent"
               className="rounded border border-line bg-surface-0 px-2 py-1 text-xs text-fg"
               value={provider}
-              disabled={!availability.enabled || offer !== null}
+              disabled={!preparable || offer !== null}
               onChange={event => onProvider(event.target.value as ProviderId)}
             >
               {PROVIDER_IDS.map(one => <option key={one} value={one}>{one}</option>)}
@@ -98,9 +117,10 @@ export function HandoverControlView({
           <Button
             size="sm"
             variant="ghost"
-            disabled={!availability.enabled || offer !== null}
+            disabled={!preparable || offer !== null}
             loading={preparing}
             onClick={onPrepare}
+            title={refusal ?? undefined}
           >
             Prepare handover
           </Button>
@@ -110,9 +130,9 @@ export function HandoverControlView({
         </div>
       </div>
 
-      {!availability.enabled && (
-        <p data-testid="handover-reason" className="mt-2 text-xs leading-5 text-fg-dim">
-          {availability.reason}
+      {refusal !== null && (
+        <p data-testid="handover-reason" className="mt-2 break-words text-xs leading-5 text-fg-dim">
+          {refusal}
         </p>
       )}
 
@@ -445,6 +465,7 @@ export function HandoverControl({ team, item }: { team: TeamStatus; item: Operat
     <>
     <HandoverControlView
       availability={availability}
+      held={item.heldByTeammate}
       preview={preview}
       offer={offer}
       preparing={preparing}

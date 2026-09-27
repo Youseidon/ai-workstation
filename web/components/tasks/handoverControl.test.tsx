@@ -51,6 +51,9 @@ function preview(flagged: Array<{ path: string; shapes: string[] }>): HandoverPr
 function view(overrides: Partial<Parameters<typeof HandoverControlView>[0]> = {}): string {
   const base: Parameters<typeof HandoverControlView>[0] = {
     availability: { enabled: true } as HandoverAvailability,
+    // M-16 added this prop. Null is this file's subject: every row here is about
+    // an item with no live handover, so no assertion below changes meaning.
+    held: null,
     preview: null,
     offer: null,
     preparing: false,
