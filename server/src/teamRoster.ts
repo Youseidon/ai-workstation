@@ -195,7 +195,18 @@ export async function publishRoster(remote: TeamRosterRemote, expectedRevision: 
     workspaces.upsertTeamRoster({ teamId: current.roster.teamId, groupChatId: current.roster.groupChatId, remoteUrl: current.roster.remoteUrl, revision: current.revision, record: current.roster });
     return current;
   }
-  throw new WorkspaceError(409, "roster_conflict", "Team roster changed; review it before trying again.");
+  /*
+   * M-14: this one code covered two causes and named neither. The stale-mirror
+   * cause is now repaired in `RemoteGitTeamRosterRemote.read` or reported as
+   * `roster_mirror_unreachable`, so what is left here is the genuine one - another
+   * member published while this workstation was holding an older revision - and
+   * the message says that and what clears it, rather than telling a workstation to
+   * "review" a roster it may have no surface for.
+   */
+  const held = expectedRevision ?? "none";
+  const now = current?.revision ?? "none";
+  throw new WorkspaceError(409, "roster_conflict",
+    `Another member published the team roster while this workstation held an older one (held ${held.slice(0, 12)}, remote now ${now.slice(0, 12)}). Refresh team to take the current roster, then try again.`);
 }
 
 /** Applies a credential-free, single-use join code to the current roster. */
@@ -248,8 +259,40 @@ export class RemoteGitTeamRosterRemote implements TeamRosterRemote {
     } else git(bareDirectory, ["remote", "set-url", "origin", remoteUrl]);
   }
 
+  /**
+   * Reads the roster the **remote** holds, not the one this mirror happens to have.
+   *
+   * M-14's second cause lived here. The fetch was `refs/aw/team:refs/aw/team`,
+   * unforced, and its result was discarded - so a mirror whose ref had diverged
+   * from the remote could not fast-forward, the failure was silent, and the read
+   * returned the **stale local copy**. Every compare-and-swap after that was made
+   * against a fiction, and it failed as `roster_conflict` - "Team roster changed;
+   * review it before trying again" - on a workstation whose roster had not changed
+   * and which could not review anything. That is why clearing `refs/aw/team` on
+   * the remote is not enough on its own: the mirror caches its own copy.
+   *
+   * The remote is authoritative for this ref, so a diverged mirror is repaired
+   * rather than reported: the refspec is forced. What is still reported, and now
+   * with its own code, is a fetch that fails for any other reason - no network, no
+   * access, a wrong URL - because that is not a conflict and must not be described
+   * as one.
+   */
   async read(): Promise<{ roster: TeamRoster; revision: string } | null> {
-    spawnSync("git", ["--git-dir", this.bareDirectory, "fetch", "-q", "origin", `${TEAM_REF}:${TEAM_REF}`], { encoding: "utf8" });
+    const fetched = spawnSync(
+      "git",
+      ["--git-dir", this.bareDirectory, "fetch", "-q", "origin", `+${TEAM_REF}:${TEAM_REF}`],
+      { encoding: "utf8" },
+    );
+    if (fetched.status !== 0) {
+      const detail = (fetched.stderr || fetched.stdout || "").trim();
+      // An empty remote has no ref to fetch, which is not a failure: it is a
+      // repository with no team in it yet, and `read` answers null for that below.
+      const missingRef = /couldn't find remote ref|no such ref|not our ref/i.test(detail);
+      if (!missingRef) {
+        throw new WorkspaceError(502, "roster_mirror_unreachable",
+          `Could not read the team roster from ${this.remoteUrl}. The local mirror at ${this.bareDirectory} was left unchanged, so nothing was decided from a stale copy. ${detail}`.trim());
+      }
+    }
     return new BareGitTeamRosterRemote(this.bareDirectory).read();
   }
 

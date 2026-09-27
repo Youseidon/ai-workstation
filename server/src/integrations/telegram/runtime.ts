@@ -291,9 +291,75 @@ export class TelegramLiveRuntime {
     if (actor === null || actor.enabled !== 1) throw new WorkspaceError(403, "team_creator_not_paired", "Create a team from the Telegram account paired to this workstation.");
     const bot = this.bot;
     if (bot === null) throw new WorkspaceError(409, "telegram_not_running", "The live Telegram transport is not connected.");
+    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
+
+    /*
+     * M-14: a workstation that lost its database rejoins here.
+     *
+     * The identities are derived rather than stored - `workstationId` is this
+     * session's bot id and `personId` is the Telegram user id - so a roster on the
+     * remote already contains everything needed to recognise a returning
+     * workstation. Before the wipe it was in that roster; after it, it still is.
+     *
+     * What used to happen: the publish below was a compare-and-swap against `null`,
+     * the remote already held a roster, and the only answer was 409
+     * `roster_conflict` - "review it before trying again" - on a workstation with no
+     * surface on which to review anything. Refresh did not adopt, because it
+     * refreshes a team already held locally, and nobody could mint a join code
+     * because both members had lost their records. The roster was reachable,
+     * correct, and named you, and there was no supported way to act on that.
+     *
+     * So: if the repository already holds a roster that names this workstation, it
+     * is adopted rather than refused. Nothing on the remote is written - this only
+     * rebuilds the local cache and the group actor from a record that already
+     * describes this machine - which is why it is safe to do without a second
+     * confirmation. A roster that does **not** name this workstation is still
+     * refused, and now says so plainly instead of blaming a conflict.
+     */
+    const existing = await remote.read();
+    if (existing !== null) {
+      /*
+       * Adoption is a **recovery** path, so it only applies when there is something
+       * to recover from. A workstation that still holds this team locally and
+       * creates again has simply lost its join code - that is B1, its remedy is
+       * "Reissue join code", and adopting there would silently turn a mistake into
+       * a no-op. Both cases are the same call with the same inputs; the only thing
+       * that separates them is whether the local record survived.
+       */
+      const heldLocally = workspaces.teamRosters().some(entry => entry.teamId === existing.roster.teamId);
+      const mine = existing.roster.members.find(member => member.workstationId === session.botId);
+      if (heldLocally) {
+        throw new WorkspaceError(409, "team_already_held",
+          `This workstation is already in team ${existing.roster.teamId}. Use Refresh team to take the current roster, or Reissue join code if the code was lost; creating again would publish a second team into the same repository.`);
+      }
+      if (mine === undefined) {
+        throw new WorkspaceError(409, "team_already_exists",
+          `${pending.remoteUrl} already holds a team this workstation is not a member of. Ask a member for a join code instead of creating a second team in the same repository.`);
+      }
+      workspaces.upsertTeamRoster({
+        teamId: existing.roster.teamId,
+        groupChatId: existing.roster.groupChatId,
+        remoteUrl: existing.roster.remoteUrl,
+        revision: existing.revision,
+        record: existing.roster,
+      });
+      workspaces.upsertTeamGroupActor({
+        id: `telegram-team-${existing.roster.teamId}-${actor.transport_user_id}`,
+        transport: "telegram",
+        transportUserId: actor.transport_user_id,
+        chatId: existing.roster.groupChatId,
+        label: actor.label,
+      });
+      this.enqueueText(session, existing.roster.groupChatId, null, "This workstation rejoined the team from the roster in the repository.");
+      this.teamCreate = null;
+      return {
+        teamId: existing.roster.teamId,
+        joinCode: encodeJoinCode({ teamId: existing.roster.teamId, groupChatId: existing.roster.groupChatId, remoteUrl: existing.roster.remoteUrl }),
+      };
+    }
+
     const teamId = `awt1_${randomBytes(12).toString("base64url")}`;
     const roster = newTeamRoster({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl, members: [{ personId: actor.transport_user_id, telegramUserId: actor.transport_user_id, botId: session.botId, botUsername: bot.username ?? "unknown", workstationId: session.botId, workstationLabel: this.workstationLabel(), personLabel: actor.label }] });
-    const remote = new RemoteGitTeamRosterRemote(joinPath(config.repoRoot, ".agent-console", "team", "remote.git"), pending.remoteUrl);
     await publishRoster(remote, null, roster, `create_${randomBytes(12).toString("base64url")}`);
     workspaces.upsertTeamGroupActor({ id: `telegram-team-${teamId}-${actor.transport_user_id}`, transport: "telegram", transportUserId: actor.transport_user_id, chatId: pending.observed.chatId, label: actor.label });
     const joinCode = encodeJoinCode({ teamId, groupChatId: pending.observed.chatId, remoteUrl: pending.remoteUrl });
