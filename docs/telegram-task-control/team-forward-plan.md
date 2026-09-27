@@ -43,8 +43,8 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 | **P-C3** | **M-10** | F05's supergroup upgrade has no harness case | A closed high-severity bug with no end-to-end proof | Write the case. Name it for the gap id |
 | **P-C4** | **M-6** | Fixtures leak rows into the shared root, and one product lookup depends on row order | A latent flake source and a real ordering dependency in product code | Fix the lookup; isolate the fixtures |
 | **P-C5** | **M-7** | `closeAfterHandover` contradicts ruling 7 and nothing owns the reconciliation | An unruled contradiction between code and a written ruling | Rule it, then make the code agree |
-| **P-C6** | **F10**, carrying **B3, B4, B10, B19** | The rig task: wrong port silently, credentials inherited from the shell, launcher cannot be stopped by script, one shared working tree | Rig only, no product code, but it gates P-C7 | Do it when P-C7 is wanted, not before |
-| **P-C7** | **LT-5** | The two-clone two-person run has never happened | Blocked on B19 inside P-C6: instance B needs its own clone | After P-C6 |
+| **P-A4** | **F10**, carrying **B3, B4, B10, B19**, plus lifting the handover flag | The rig task, **promoted to critical on 2026-09-27**. B19's shared working tree means the two instances see each other's files without fetching, so **handover's Git exchange is unobservable on this rig** | jd wants every Team feature including handover tested on the rig. Handover **is** a Git exchange - snapshot commit, `aw/handover/<item>`, control record, return, apply by merge - so without B19 you can drive every tap and prove nothing | Give instance B its **own clone**; fix B3, B4 and B10 while in that script; turn `team.handoverEnabled` **on** in both instances. Rig only, no product code |
+| **P-C7** | **LT-5** | The two-**machine** two-person handover smoke with Yousef, 10 minutes | **Deferred by jd 2026-09-27** to "a much later time". Once P-A4 lands, the rig proves the Git exchange between two clones on one machine; LT-5 is the only proof across two real machines | Needs a Yousef date. Optional in the brief, and it stays optional |
 | **P-D1** | **L-17** | `team-pilot-state.mjs` defaults to the calling checkout's database and prints a plausible, wholly fake team | Rig only, and the documented command block is already corrected | One line: require the path |
 | **P-D2** | **L-14** | LT-5 has no row in `human-verification.md`; migration **52** still rebuilds a temp table named `task_control_action_v29` with a "Migration 29" error string | Cosmetic, but the second half will read as a contradiction to the next person who greps migration numbers | Tidy |
 | **P-D3** | **L-15** | A stray `0x01` byte in `server/test/telegramViews.test.ts` | Hygiene. Verified **not** a grep-visibility trap, unlike the real NUL that was | Tidy |
@@ -76,4 +76,8 @@ It stays banded **P-A** rather than being demoted, because the exposure is real 
 
 **P-B4 before the next audit**, because an unmeasured instrument undermines whatever the audit concludes.
 
-**P-C6 and P-C7 only when LT-5 is actually wanted.**
+**P-A4 early, because it unblocks testing rather than being tidy-up.** jd's instruction of 2026-09-27 is that every Team feature, handover included, is tested on the rig. That needs instance B's own clone, so F10 is promoted out of the medium band.
+
+**P-C7 (LT-5) stays deferred**, by jd, to a much later time. It needs a person, not code.
+
+**A standing constraint was lifted on 2026-09-27**: `team.handoverEnabled stays false` existed for gate **G02**, which **closed on 2026-09-22** with both tiers at three repeats. The sentence outlived its reason by five days and was copied into every handover in between. It took jd asking "why is handover switched off" to surface it. Recorded, because it is the same shape as the "nothing has ever been pushed" claim corrected the same day: **a closure should name the constraint it releases.**

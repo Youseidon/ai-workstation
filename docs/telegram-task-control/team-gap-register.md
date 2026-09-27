@@ -231,6 +231,8 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 **CLOSED 2026-09-22 by V3. See the closed section at the foot of this file.**
 
+**Consequence nobody drew until 2026-09-27**: this closure is what made the standing constraint `team.handoverEnabled stays false` obsolete, and it was not lifted. It kept being copied into handovers for five days, and jd had to ask why handover was off to surface it. **Closing a gate is not the same as opening the thing it gated** - a closure should name the constraint it releases.
+
 ### H-4. The Team pilot's database isolation is broken on main, and the guard's suggested fix makes it worse
 
 **Registered 2026-09-26, found while rebuilding the rig on main for V5. Worked around in the rig; `scripts/setup-team-pilot.mjs` is still stale.**

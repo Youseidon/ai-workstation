@@ -119,7 +119,12 @@ The report owes jd: commits per task, counts per tier, burn-in results, the G01 
 No push and no remote write **to `ai-workstation`**; nothing has ever been pushed. The roster push to the pilot repo is authorized and is a different repository.
 No paid provider. **Live Telegram credentials are authorized** as of 2026-09-26.
 Never two harness runs at once, and the live rig contends with the T1 harness.
-`team.handoverEnabled` stays false; `team.enabled` is **on** in the rig by necessity and off by default in the repo.
+**`team.handoverEnabled` no longer "stays false". Lifted by jd on 2026-09-27.**
+The constraint existed for **G02**, the authorization gate, which required evidence that isolation held before a teammate could run a work item under their own login and quota - and **H-3** required that evidence at three repeats rather than one.
+**G02 and H-3 closed on 2026-09-22**, both tiers at three repeats, with `TM-T1-H1:225-227` additionally asserting that no credential reaches the transcript across all six burn-in repeats.
+So the sentence outlived its reason by five days and was copied forward into every handover written since. **That is the same failure as the "nothing has ever been pushed" claim**: a constraint that stopped applying and kept being repeated.
+The two residual risks jd accepted on 2026-09-20 are unchanged and are **not** blockers: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment. In the rig both members are jd on one machine, so the second is empty there.
+`team.enabled` is **on** in the rig by necessity and off by default in the repo; the repo default for `handoverEnabled` also stays `false` and only the rig turns it on.
 Commit messages imperative, **no co-author line of any kind**.
 Every task gets its own worker, branch and worktree, and lands by fast-forward.
 
