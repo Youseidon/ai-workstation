@@ -37,7 +37,11 @@ It was in no card at all, which is the process failure worth naming: the H track
 
 ### C2. Nothing has been run against the full test suite
 
-**Status: part-advanced. V1, V2 and V3 are done. V4 and V5 are outstanding.**
+**CLOSED 2026-09-27. V1 through V5 are all done.** V4 closed 2026-09-25 and 2026-09-26 with both audits run, both FAILed and both routed by jd; V5 closed 2026-09-27 with six cases PASS, one PARTIAL and one SKIPPED.
+
+The bars as they stand, each re-run by the orchestrator on 2026-09-26 except T1: server **618 of 618** in 133s, shared **91 of 91**, web **95 of 95**, four typechecks exit 0, web lint **19 problems exit 1** and red by waiver (L-12). Full T1 is **140 of 140** in 26.4 minutes, **not re-run for the close** because the harness is exclusive and the live rig would have had to be stopped for it.
+
+**Two things this closure does not cover, and they are named rather than absorbed**: the `e2e` workspace's own self-tests are still in no tier and unmeasured (**L-13**), and the lint tier is red rather than green. Neither is a suite this gap ever claimed; both are registered separately so that "the full test suite has been run" cannot be read as "everything is green".
 
 V3, the burn-ins, completed 2026-09-22: `tm3-grants.spec.ts` at `9 passed (7.0m)` and `tm4-handover.spec.ts` at `9 passed (8.8m)`, each scenario three times, zero flaky and zero retries.
 The orchestrator re-ran the handover burn-in itself at `9 passed (10.0m)`.
@@ -267,6 +271,14 @@ Outstanding since before this session; needs Yousef's time, not code.
 **CLOSED 2026-09-22 by the reconcile `a641b0c`.** main is now 331 ahead of `origin/main` and **0 behind**.
 The divergence is gone; what it left behind is **M-8**.
 Still nothing pushed, and `git branch -r --contains HEAD` is still empty, so the no-remote-write constraint is untouched - jd's "keep it local" ruling of 2026-09-22 covered pushing, and reconciling locally does not reverse it.
+
+**Precision correction, 2026-09-27.** `git branch -r --contains HEAD` is still empty and none of this track's work is on any remote - verified by checking six of its merge commits (`04dca86`, `581aafd`, `1f01acd`, `a109232`, `395fa16`, and `dc3e9de`'s descendants), every one on no remote ref. **199 commits in `HEAD` are reachable from no remote ref at all**, and `origin/main` is still `4fd0e65`, **415 behind**.
+
+But the blanket sentence "nothing has ever been pushed", repeated in several handovers, is **not literally true** and should stop being written. `git reflog` records exactly one push ever: `origin/feature/team-telegram-pilot` to `5018409`, dated **2026-09-18**, which **predates this track** - `5018409` is an ancestor of `dc3e9de`, the pilot merge that begins it, and that branch still exists on GitHub. It contains no burndown work.
+
+A second remote-tracking ref, `refs/remotes/pilot/feature-team-telegram-pilot` at `dc3e9de`, looks like a second remote and is not one: `git remote -v` lists only `origin`, and that ref's reflog shows it came from a **fetch out of the local rig directory** `/home/junaid/ai-workstation-team-pilot`. Nothing left the machine through it.
+
+**Why this is recorded rather than shrugged at**: the standing constraint is a push constraint, so a blanket claim about pushing is load-bearing, and a false one invites either a wrong assumption that the work is safe on a remote or a wrong assumption that no branch of this repository is public. Both are wrong.
 
 The history below is kept because the audits cite it.
 
