@@ -19,6 +19,7 @@ import type {
   RunSource,
   RunState,
   ServerMessage,
+  SettingsSnapshot,
   TokenUsage,
   WorkspaceRecord,
 } from "@agent-console/shared";
@@ -58,6 +59,13 @@ interface ConsoleState {
   consultIds: string[];
   /** Advances whenever durable operations/prompt data should be re-read. */
   operationsRevision: number;
+  /**
+   * The settings as of the last `settings_updated`, or null if none has arrived
+   * (L-16). `useSettings` prefers this over the copy it fetched on mount, so a
+   * change made anywhere - another tab, the API, a script - reaches every surface
+   * gated on a setting without a reload.
+   */
+  settings: SettingsSnapshot | null;
 }
 
 type Action =
@@ -75,6 +83,7 @@ const initialState: ConsoleState = {
   lastConsult: null,
   consultIds: [],
   operationsRevision: 0,
+  settings: null,
 };
 
 function rememberConsultId(ids: string[], runId: string): string[] {
@@ -199,9 +208,11 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           return { ...state, providers: message.providers };
 
         case "settings_updated":
-          // Another tab (or this one) changed provider settings: re-detected
-          // providers without a reload.
-          return { ...state, providers: message.providers };
+          // Another tab, the API or a script changed settings. Both halves are
+          // applied: the re-detected providers, and the settings snapshot every
+          // gated surface reads (L-16). Applying only `providers` is what left
+          // the Team panels on screen after Team was turned off.
+          return { ...state, providers: message.providers, settings: message.settings };
 
         case "operations_changed":
           return { ...state, operationsRevision: state.operationsRevision + 1 };

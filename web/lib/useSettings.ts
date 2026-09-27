@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { SettingValue, SettingsSnapshot } from "@agent-console/shared";
+import { useAgentConsole } from "./agentConsole";
 
 interface Outcome {
   ok: boolean;
@@ -83,6 +84,22 @@ export function useSettings(serverUrl: string) {
       cancelled = true;
     };
   }, [serverUrl, apply]);
+
+  /*
+   * L-16. Without this the snapshot was read once on mount and after this page's
+   * own save, so a change made anywhere else - another tab, the API, a script -
+   * never arrived. Turning Team off by `PUT /api/settings` left `Team status`,
+   * `Join team` and the create panel on screen until the page was reloaded, and
+   * the Team thread panel's button still looked enabled. The API gate held, so
+   * the stale button could not act; it could only mislead.
+   *
+   * The broadcast carries the whole snapshot, so this applies it rather than
+   * re-fetching: one message, no round trip, and every gated surface re-renders.
+   */
+  const broadcast = useAgentConsole().settings;
+  useEffect(() => {
+    if (broadcast !== null) setSnapshot(broadcast);
+  }, [broadcast]);
 
   const reload = useCallback(async () => {
     apply(await getSnapshot(serverUrl));

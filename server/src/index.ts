@@ -102,12 +102,19 @@ function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<
 /**
  * Settings changes alter what the providers are and where they run, so every
  * open tab is told to re-read both.
+ *
+ * This said "both" while carrying only `providers`, which is L-16: a tab learned
+ * that provider detection had re-run and nothing else, so every surface gated on
+ * a setting kept rendering from the snapshot it fetched on mount. Turning Team
+ * off left `Team status`, `Join team` and the create panel on screen until
+ * someone reloaded. The comment is now true rather than edited.
  */
 async function broadcastSettingsChange(): Promise<void> {
   const providers = await detectProviders(true);
   const message: ServerMessage = {
     kind: "settings_updated",
     providers,
+    settings: snapshot(),
   };
   const payload = JSON.stringify(message);
   for (const client of wss.clients) {

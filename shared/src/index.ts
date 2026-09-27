@@ -1953,6 +1953,17 @@ export interface ServerPongMessage {
 export interface ServerSettingsUpdatedMessage {
   kind: "settings_updated";
   providers: ProviderInfo[];
+  /**
+   * The whole settings snapshot, not just the providers (L-16).
+   *
+   * Carrying only `providers` meant a tab learned that provider detection had
+   * re-run and nothing else, so every surface gated on a setting - the Team
+   * panels on `team.enabled` above all - kept rendering from the snapshot it
+   * fetched on mount until someone reloaded the page. The same shape
+   * `GET /api/settings` returns, so it exposes nothing new: sensitive values are
+   * already redacted there.
+   */
+  settings: SettingsSnapshot;
 }
 
 /**
