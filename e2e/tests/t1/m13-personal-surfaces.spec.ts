@@ -211,23 +211,11 @@ test.beforeAll(async ({ harness, browser }) => {
     /* ---- what the banner's one button does when there is no box to type in ---- */
     // Pressed last, because it moves the item on. The run it starts needs a
     // scenario, or the fake would fail the run and hide what was submitted.
-    const runsBeforeTap = (await state.history(task)).runs.length;
-    harness.fakeProvider.queue({ behavior: "done" });
-    const detail = page.locator("aside").filter({ hasText: "Overview" }).last();
-    await detail.getByRole("button", { name: "Review and respond", exact: true }).click();
-    const answer = await eventually("a stored answer from the tap", async () =>
-      (await state.history(task)).remarks.find(entry => entry.kind === "HUMAN_RESPONSE"), 60_000);
-    bannerTap = {
-      dialog: (await page.getByRole("dialog").count()) > 0,
-      textareas: await page.locator("textarea").count(),
-      response: answer.content,
-    };
-
     /*
      * The fake pops one scenario per run from a single shared queue file, so a
      * run that is still starting when the next item writes its own scenario
      * takes that scenario instead - and the next item's run then finds the queue
-     * empty and fails. That is what a first attempt at the rows below hit, and
+     * empty and fails. That is what a first attempt at the state-3 rows hit, and
      * it is why every tap that may start a run is followed by this.
      */
     const settle = async (item: SavedTask, minRuns: number): Promise<void> => {
@@ -236,7 +224,38 @@ test.beforeAll(async ({ harness, browser }) => {
         return runs.length >= minRuns && runs.every(run => !["STARTING", "RUNNING"].includes(run.state.toUpperCase()));
       }, 120_000);
     };
-    await settle(task, runsBeforeTap + 1);
+    /** Waits out a run that may or may not have been started, then settles it. */
+    const settleIfStarted = async (item: SavedTask, runsBefore: number): Promise<void> => {
+      // `console_.startRun` is a socket send, not an awaited call, so a run row
+      // can land after the press has otherwise finished.
+      await observeQuietPeriod(5_000, "a run started by the press");
+      const after = (await state.history(item)).runs.length;
+      if (after > runsBefore) await settle(item, after);
+    };
+
+    const runsBeforeTap = (await state.history(task)).runs.length;
+    harness.fakeProvider.queue({ behavior: "done" });
+    const detail = page.locator("aside").filter({ hasText: "Overview" }).last();
+    await detail.getByRole("button", { name: "Review and respond", exact: true }).click();
+    /*
+     * Waits for whichever of the two things this press can do and records both,
+     * so the row states which one happened rather than timing out on the one it
+     * expected. Before P-A3 the press stored an answer; after it, the press opens
+     * the dialog and stores nothing, and a wait for a stored answer would hang
+     * for its whole timeout and report "the press did not work".
+     */
+    await eventually("the Review and respond press to do something visible", async () => {
+      if ((await page.getByRole("dialog").count()) > 0) return "dialog";
+      const stored = (await state.history(task)).remarks.find(entry => entry.kind === "HUMAN_RESPONSE");
+      return stored === undefined ? undefined : "stored";
+    }, 60_000);
+    bannerTap = {
+      dialog: (await page.getByRole("dialog").count()) > 0,
+      textareas: await page.locator("textarea").count(),
+      response: (await state.history(task)).remarks.find(entry => entry.kind === "HUMAN_RESPONSE")?.content ?? null,
+    };
+
+    await settleIfStarted(task, runsBeforeTap);
 
     /* ---- state 3: the owner's answer is already on the record ---- */
     /*
@@ -302,15 +321,10 @@ test.beforeAll(async ({ harness, browser }) => {
       const dialogTextareas = dialog ? await dialogLocator.locator("textarea").count() : 0;
       const dialogButtons = dialog ? (await dialogLocator.getByRole("button").allInnerTexts()).map(text => text.trim()) : [];
       const notification = (await region.count()) === 0 ? "" : (await region.innerText()).trim();
-      // `console_.startRun` is a socket send, not an awaited call, so a run row
-      // can land after the toast. "No run was started" is an assertion here, so
-      // one is given a window to appear before the absence is believed.
-      await observeQuietPeriod(5_000, "a run started by the press");
-      let history = await state.history(item);
-      if (history.runs.length > before) {
-        await settle(item, history.runs.length);
-        history = await state.history(item);
-      }
+      // "No run was started" is an assertion in these rows, so a run is given a
+      // window to appear before the absence is believed.
+      await settleIfStarted(item, before);
+      const history = await state.history(item);
       return {
         notification: notification.replaceAll("\n", " | "),
         dialog,
