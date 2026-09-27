@@ -94,7 +94,23 @@ export async function editCardsKeepReplyMapping(ctx: L1Context): Promise<void> {
   const { harness, phone } = ctx;
   const name = label("Pick the edited colour");
   const { task, card } = await blockTask(harness, phone, { title: name, later: [{ behavior: "consume-answer", expectInContext: "Green" }] });
-  const questionRow = outboxFor(harness, task).find((row) => row.payload_json.includes("personal_question") && row.sent_message_id !== null)!;
+  /*
+   * Waited for, not read once.
+   *
+   * A card visible on the phone and an outbox row carrying its `sent_message_id`
+   * are two different moments: the adapter writes that id back after the send
+   * returns. This was `outboxFor(...).find(...)!`, an unsynchronised read whose
+   * non-null assertion turned "not yet" into `TypeError: Cannot read properties of
+   * undefined (reading 'payload_json')` rather than into a wait.
+   *
+   * It passed for months and then failed deterministically when P-A5 added one
+   * `await` before `startExecute`, which shifted the interleaving by a single
+   * event-loop turn. Bisected: 16 of 16 green at the commit before P-A5, and green
+   * again with that one guard disabled. So the race was always here and the timing
+   * change only decided it. This asserts the same thing, synchronised.
+   */
+  const questionRow = await eventually("the question card's outbox row to carry its sent message id", async () =>
+    outboxFor(harness, task).find((row) => row.payload_json.includes("personal_question") && row.sent_message_id !== null));
   // Cards render from the task summary (slice A), so an edit changes the summary it carries.
   const payload = JSON.parse(questionRow.payload_json) as { summary: { ifYouWait: string } };
   const withWait = (suffix: string) => ({ ...payload, summary: { ...payload.summary, ifYouWait: `${payload.summary.ifYouWait} ${suffix}` } });
@@ -104,7 +120,10 @@ export async function editCardsKeepReplyMapping(ctx: L1Context): Promise<void> {
   expect(receipts(harness, task)).toEqual([]);
 
   const answerCard = await replyWithAnswer(phone, editedCard, "Green");
-  const answerRow = outboxFor(harness, task).filter((row) => row.payload_json.includes("save_human_response") && row.sent_message_id !== null).at(-1)!;
+  // Same unsynchronised read, same reason, fixed the same way before it costs
+  // someone else a bisect.
+  const answerRow = await eventually("the answer card's outbox row to carry its sent message id", async () =>
+    outboxFor(harness, task).filter((row) => row.payload_json.includes("save_human_response") && row.sent_message_id !== null).at(-1));
   const decoy = await replyWithAnswer(phone, editedCard, "Green");
   await queueEdit(answerRow.id, text("This answer card was replaced."));
   const stripped = await eventually("the answer card to lose its buttons", async () => (await phone.messages()).find((item) => item.id === answerCard.id && item.text === "This answer card was replaced."));

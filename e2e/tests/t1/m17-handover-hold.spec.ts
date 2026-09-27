@@ -187,10 +187,23 @@ test("M-17 (T1): while a teammate holds the item, the owner cannot answer, run o
 
   const runs = () => team.envA.app.query<{ n: number }>(
     "SELECT COUNT(*) n FROM agent_run WHERE prompt_id=? AND role='execute'", task.promptId)[0]!.n;
+  const receiverRuns = () => team.envB.app.query<{ n: number }>(
+    "SELECT COUNT(*) n FROM agent_run WHERE role='execute'")[0]!.n;
   const status = () => team.envA.app.query<{ status: string }>(
     "SELECT status FROM prompt WHERE id=?", task.promptId)[0]?.status;
   const runsBefore = runs();
   const statusBefore = status();
+  /*
+   * A baseline rather than an expected value.
+   *
+   * This first asserted the receiver had exactly one execute run, which passed
+   * twice in isolation and then failed in the full suite with `Received: 0` - the
+   * receiver's run starts asynchronously after the accept, and under full-suite
+   * load it had not started yet. The claim this row makes is about the **owner**
+   * not acting; whether the receiver has started by this instant is not its
+   * subject, and asserting it was asserting the harness's timing.
+   */
+  const receiverRunsBefore = receiverRuns();
   expect(statusBefore, "the owner's prompt is still the blocked one it was handed over from").toBe("BLOCKED");
 
   /* ------------------------- the three owner-side actions ------------------------ */
@@ -245,7 +258,6 @@ test("M-17 (T1): while a teammate holds the item, the owner cannot answer, run o
   expect(runs(), "no second run was started on the owner's workstation").toBe(runsBefore);
   expect(status(), "and the owner's prompt was not completed out from under the receiver").toBe(statusBefore);
   expect(sharedRecord(itemId).executor, "the shared record still names the receiver").toBe(held.executor);
-  // The receiver is unaffected: its own run is exactly the one it started.
-  expect(team.envB.app.query<{ n: number }>("SELECT COUNT(*) n FROM agent_run WHERE role='execute'")[0]!.n,
-    "the receiver's own run is untouched").toBe(1);
+  // The receiver is unaffected: whatever it had, it still has.
+  expect(receiverRuns(), "the owner's refused actions did not disturb the receiver's runs").toBe(receiverRunsBefore);
 });
