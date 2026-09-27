@@ -593,6 +593,32 @@ So the roster on the remote is reachable, correct and names you, and there is no
 
 Worth pairing with the observation that the identities *are* stable and derived. That is what makes a rejoin path cheap to build if jd wants one: the roster already contains everything needed to recognise the returning workstation.
 
+### M-15. A closed item thread answers its view commands as though it were open, and says nothing about being closed
+
+**Found 2026-09-27 by V5 case 11, the second reproduction of B17. It is the reason that case is PARTIAL twice.**
+
+One minute after `/close` succeeded, `/task` from the teammate returned the **entire** item: the blocked-on text, both options with pros and cons, `State: blocked · Owner: Jj`, and `History: first run, no previous answers`.
+Nothing in that output says the thread is closed.
+
+**The cause is a missing check on one path, and it is not the one September blamed.**
+`handleTeamItemMessage` ([runtime.ts:1404](../../server/src/integrations/telegram/runtime.ts#L1404)) splits on the route:
+a granted command goes to `handleTeamGrantedCommand`, which **does** test `link.closedAt !== null` and answers `This item thread is closed.` ([runtime.ts:1350](../../server/src/integrations/telegram/runtime.ts#L1350));
+a view command falls through to the bottom of the same function and renders `renderTeamItemView` with **no `closedAt` test at all**.
+So `closedAt` gates actions and not reads.
+
+**This corrects the causal story in B17's September row**, which recorded "the thread did not close: `telegram_thread` stayed `ACTIVE` ... and `/task` from B still returned the whole item" as one symptom.
+They are two independent facts, and the `ACTIVE` row is **not** what keeps the views answering.
+`telegramItemThreadForMessage` ([workspaces.ts:4501](../../server/src/workspaces.ts#L4501)) filters on `t.state <> 'ANCHOR_GONE'` only.
+It does not compare against `ACTIVE` or `CLOSED`, so **setting the thread row to `CLOSED` would change nothing about this symptom**.
+Closing the row is cosmetic; the missing view-path check is the defect.
+
+**What is genuinely fine, and was checked rather than assumed**: `item_link.closed_at` is set, `/close` from the teammate is refused as owner-only, the access message is edited in place rather than reposted, and the anchor churn stops because `syncTeamItem` returns early on a closed link ([runtime.ts:1274](../../server/src/integrations/telegram/runtime.ts#L1274)).
+The pinned anchor staying is **M-11**'s accepted trade, with jd's waiver, and is not this entry.
+
+**What this needs is a decision, like M-11.**
+Reading a closed thread's history is arguably correct behaviour, in which case the fix is one line of output saying so, not a refusal.
+What is not defensible is a teammate being shown a live-looking, actionable item whose commands will all be refused, with no way to tell from the view which state they are in.
+
 ## Low
 
 | Id | Gap | Note |

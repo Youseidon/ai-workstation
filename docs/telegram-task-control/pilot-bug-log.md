@@ -736,6 +736,20 @@ number was already cited elsewhere. See B11.
 
 ## B17 - `/close` ends the grants but does not close the thread
 
+**Reproduced a second time 2026-09-27**, by V5 case 11 against the live rig, and the
+second look found that this entry's own causal story was wrong.
+
+The two facts this entry recorded together are independent. `item_link.closed_at`
+now gets set, which is F02's fix and is real. What still fails is that a **view**
+command on a closed item answers as though it were open: `/task` from the teammate
+one minute after the close returned the entire item with nothing saying it is closed.
+
+`closedAt` gates granted commands and not reads, and
+`telegramItemThreadForMessage` filters on `state <> 'ANCHOR_GONE'` only, so the
+`telegram_thread` row staying `ACTIVE` is **not** what keeps the views answering and
+closing that row would fix nothing. Registered as **M-15** in
+[team-gap-register.md](team-gap-register.md), which carries the detail.
+
 **Fixed 2026-09-20 by F02, commits `32ce63c` and `cfb9d55`, apart from the pin.**
 Migration 27 gives `item_link` a `closed_at` and a `closed_command_id`, added in
 place because the table carries no CHECK constraint. `close_thread` now writes
