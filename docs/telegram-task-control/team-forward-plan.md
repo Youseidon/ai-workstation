@@ -37,6 +37,7 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 | **P-B1** | **M-12** | The requester's review-and-apply half has **no caller in `web/`** at all | The handover feature is half-built. Same shape as C1, C5 and P-A3: present, mounted, wired to nothing | Build the surface, or scope handover down explicitly |
 | **P-B2** | **M-15** | A closed item thread answers `/task`, `/status`, `/access` and `/help` as though it were open, and says nothing about being closed | It is why check case 11 is PARTIAL on two separate runs, and a teammate cannot tell a dead thread from a live one | **Decision**: reading closed history is defensible, so this may be one output line rather than a refusal |
 | **P-B3** | **M-14** | A workstation that loses its database cannot rejoin a team it is already listed in, and `roster_conflict` covers two distinct causes, one remote and one a stale local mirror | An unrecoverable state reachable by ordinary mishap, behind an error message that names the wrong cause | Fix the rejoin path and split the error |
+| **P-A5** | **M-17** | **While a teammate holds a handed-over item, the owner can answer it, start a competing local run and mark it DONE - and it works.** Reproduced 2026-09-28: two workstations ran one item at once, the owner's run completed the task, the receiver was still working, nothing warned anyone | **Critical.** A live work-loss path on a trust boundary. `isLiveHandoverState` has one consumer in the whole product, the `/close` guard | **Narrow guard first**, refusing start, respond, retry and complete while the handover is live, naming the executor. It closes the loss without touching `operationalState`, and does not wait on P-B5 |
 | **P-B5** | **M-16** | **Task state does not read the handover control record.** The 14-state control record already exists and is authoritative; `operationalState` knows nothing about it, so every surface infers person-waiting state from prompt status by hand | This is the **common cause** of C3, M-13 and M-15. Fixing the class beats fixing members one at a time | **Design task, properly sized.** jd's ruling of 2026-09-27: raise it separately rather than inside a bug fix, because `operationalState` is read by every surface and the reconcile moving it is what caused C3 |
 | **P-B4** | **L-13** | The `e2e` workspace's own self-tests are in **no tier**, and gave one unexplained failure on a first run **twice, to two independent observers**, both of whom lost the test's name | **This is the instrument the entire track's evidence rests on**, and its failure rate is unmeasured. It is banded above its nuisance value for that reason alone | Put it in a tier, capture full output on first runs, and name the failing test |
 | **P-C1** | **M-11** | A closed-but-blocked item keeps its pinned anchor forever | Measured rather than argued: the anchor churned hourly for **11 consecutive hours**, and stopped dead at the close, so there is no runaway loop. Only the stale pin remains | **Decision**, already waived once. Either own the unpin or let the trade stand |
@@ -151,6 +152,12 @@ Phase 2 ends by re-running **V5 case 11 with real grants**, which the last run c
 | Order | Task |
 | --- | --- |
 | 16 | **P-B5**, M-16: task state reads the handover control record. Designed first, then built. This is the one that stops C3, M-13 and M-15 having successors |
+
+**Added 2026-09-28, ahead of P-B5**, after jd asked whether P-B5 was really needed and the answer was reproduced rather than argued:
+
+| Order | Task | Why here |
+| --- | --- | --- |
+| 15a | **P-A5**, M-17's narrow guard | It is the live half of M-16 and it does not need M-16's model change. A teammate's work can be destroyed today, in one click, with no warning. Refuse start, respond, retry and complete while `isLiveHandoverState` holds, and name the executor. **Before** P-B5, because P-B5 is the class and this is the loss |
 
 ### Phase 6 - the push
 

@@ -730,7 +730,53 @@ The pinned anchor staying is **M-11**'s accepted trade, with jd's waiver, and is
 Reading a closed thread's history is arguably correct behaviour, in which case the fix is one line of output saying so, not a refusal.
 What is not defensible is a teammate being shown a live-looking, actionable item whose commands will all be refused, with no way to tell from the view which state they are in.
 
-### M-16. Task state does not read the handover control record, and that is the root of C3, M-13 and M-15
+### M-17. While a teammate holds a handed-over item, the owner's own surfaces still offer to answer, run and complete it - and they work
+
+**Registered 2026-09-28, reproduced before it was written, after jd asked whether P-B5 was really needed. It is, and the honest answer is that this is worse than M-16 records.**
+
+**High.** It is a live work-loss path on a trust boundary, not a labelling problem.
+
+Observed on two booted workstations, with env B genuinely holding the item - shared control record `STARTING`, then `RUNNING`, executor `5550202`, epoch 1 - and the item never returned:
+
+```
+stored prompt status:  BLOCKED
+operationalState:      BLOCKED
+attention flag:        true
+row badge:             Needs you
+row buttons:           ["Respond"]
+detail buttons:        [... "Open Team thread", "Prepare handover", "Publish offer",
+                        "Check for returned work", "Respond and resume",
+                        "Retry with existing context", "Mark complete"]
+```
+
+So the owner is told the item **needs them**, it is on their **attention list**, and they are offered Respond, a second handover, and Mark complete on work another person is doing.
+
+**Then the decisive part: the buttons are not merely offered. They act.** Pressing "Respond and resume" with an answer typed:
+
+```
+env A execute runs before / after: 1 / 2
+notification:                     (none)
+stored status after:               DONE
+shared record after:               state=RUNNING executor=5550202
+env B execute runs:                1
+```
+
+**Two workstations ran one item at the same time, the owner's run marked the task `DONE`, the receiver is still working, and nothing warned anybody.** Env B will return work for a task already completed by a different run.
+
+**The cause is exactly M-16's.** `isLiveHandoverState` has precisely **one** consumer outside the handover module itself - the `/close` guard at `taskControl.ts:361`, plus `closeAfterHandover` since P-C5. Nothing else in the product asks whether a handover is live, because `operationalState` cannot answer it.
+
+**One path to this was made easier by P-A3, and that is recorded rather than buried.** P-A3 added "Retry with existing context" to the `BLOCKED` branch, enabled whenever the item can start. "Respond and resume" needs an answer typed; that button needs **one click and no typing**, so on a handed-over item it is a one-click competing run. P-A3 did not create the hazard - every one of these buttons was already live - but it did add the cheapest route to it, and it could not have known, because nothing on that surface can see a handover.
+
+**Two fixes, and they are different sizes.** This is the choice put to jd:
+
+1. **A narrow guard**, refusing a local start, respond, retry and complete while `isLiveHandoverState` holds for this item's link, with the refusal naming the executor. Small, server-side, testable at T1, and it closes the work-loss path without touching `operationalState`.
+2. **P-B5 / M-16 in full**, which makes the state readable so every surface stops offering what it cannot support, rather than each one being individually refused.
+
+They are complements, not alternatives: 1 stops the loss, 2 stops the class. **1 does not need 2 and is much cheaper.**
+
+Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix jd chooses.
+
+### M-16. Task state does not read the handover control record, and that is the root of C3, M-13, M-15 and M-17
 
 **Registered 2026-09-27 on jd's design observation, which re-derived a model the code already half has.**
 
@@ -746,6 +792,8 @@ That absence is the common cause behind three separate entries in this register:
 - **M-15** - a closed thread reads as open, because `closedAt` is consulted on the granted-command path and not on the view path.
 
 Each was fixed or registered individually. **None of them is a coincidence**: they are what happens when several surfaces each re-derive a state that no single record owns.
+
+**A fourth, found 2026-09-28 and registered as `M-17`, is the one that changes this entry's severity.** While a teammate holds a handed-over item, the owner's surfaces offer Respond, a second handover and Mark complete - and those buttons **work**: two workstations ran one item at once and the owner's run marked the task `DONE` while the receiver was still working. So this is not only "several surfaces label a state by hand"; it is that **nothing outside the `/close` guard can ask whether a handover is live at all**. `isLiveHandoverState` has one consumer in the whole product.
 
 **Why this is its own task rather than part of any of them.** `operationalState` is read by every surface, and the reconcile moving it is precisely what caused C3, so changing it carries a risk already realised once on this track. It needs designing, not appending.
 
