@@ -959,10 +959,27 @@ test("B1 (T0): a created team whose join code was lost issues a fresh one, and t
     const second = h.runtime.startTeamCreate(remote);
     h.stub.send(operator, { id: -1003, type: "supergroup" }, `/team ${second.code}`);
     await waitFor(() => h.runtime.teamCreateStatus()?.observed === true, "second team group observation");
+    /*
+     * CHANGED by P-B3, same card clause as the message assertion below: the one
+     * `roster_conflict` code covered several situations and named none of them.
+     *
+     * This asserted `roster_conflict` here. The refusal is unchanged and still
+     * required - B1's point is that creating again is not the remedy, reissuing the
+     * code is - but the reason is no longer a conflict. This workstation already
+     * holds this team, which is a different fact from "the roster moved under you",
+     * and M-14's whole complaint was that one code stood for both. `team_already_held`
+     * says it, and its message names Refresh team and Reissue join code.
+     *
+     * The distinction is load-bearing rather than cosmetic: the case where the
+     * workstation does **not** hold the team locally is M-14's recovery, and it now
+     * adopts instead of refusing. Same call, same inputs; only the local record
+     * differs.
+     */
     await assert.rejects(
       h.runtime.confirmTeamCreate(),
-      (error: unknown) => error instanceof WorkspaceError && error.status === 409 && error.code === "roster_conflict",
-      "creating the team again is refused, because refs/aw/team already holds this team",
+      (error: unknown) => error instanceof WorkspaceError && error.status === 409 && error.code === "team_already_held"
+        && /Reissue join code/.test(error.message),
+      "creating the team again is refused, because this workstation already holds that team",
     );
     h.runtime.cancelTeamCreate();
 
@@ -1021,7 +1038,20 @@ test("B1 (T0): a reissue over a roster that moved is refused as roster_conflict,
       (error: unknown) => error instanceof WorkspaceError
         && error.status === 409
         && error.code === "roster_conflict"
-        && error.message === "Team roster changed; review it before trying again.",
+        /*
+         * CHANGED by P-B3, which the card authorises: "split `roster_conflict`,
+         * which covers at least two distinct causes - a genuine remote divergence,
+         * and a stale **local** mirror - so the message names which one".
+         *
+         * This asserted the old message verbatim, `"Team roster changed; review it
+         * before trying again."`. That sentence was the defect M-14 recorded: it
+         * was the only thing a wiped workstation was told, it named neither cause,
+         * and it advised reviewing a roster that workstation had no surface for.
+         * This case is the genuine divergence, so the message must now name that
+         * and name what clears it.
+         */
+        && /Another member published the team roster/.test(error.message)
+        && /Refresh team/.test(error.message),
       "a reissue does not overwrite a roster it has not seen",
     );
     const held = (await bare.read())!;
