@@ -116,7 +116,7 @@ test("S-L3-B-16: navigation data round-trips and crafted data decodes to nothing
     const data = encodeNav(request);
     assert.deepEqual(decodeNav(data), request, data);
   }
-  for (const crafted of ["nv_", "nv_zz", "nv_k-1", "nv_kabc", "nv_t", "nvs", "NV_s", `nv_${"s".repeat(70)}`, "nv_s", "nv_k1.k2", "tc_AAAAAAAAAAAAAAAAAAAAAAAA", "nv_f0.bad key"]) {
+  for (const crafted of ["nv_", "nv_zz", "nv_k-1", "nv_kabc", "nv_t", "nvs", "NV_s", `nv_${"s".repeat(70)}`, "nv_s\u0001", "nv_k1.k2", "tc_AAAAAAAAAAAAAAAAAAAAAAAA", "nv_f0.bad key"]) {
     assert.equal(decodeNav(crafted), null, JSON.stringify(crafted));
   }
   assert.equal(encodeNav({ view: "find", ref: "bad key!", page: 0 }), "nv_s", "untransportable keys fall back to status");
