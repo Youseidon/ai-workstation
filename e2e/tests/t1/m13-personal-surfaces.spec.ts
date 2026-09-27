@@ -7,12 +7,25 @@ import { runSavedTask } from "../../src/scenarios.ts";
  * M-13. What the two personal-control surfaces actually render in the two
  * states `operationalState` can report for "this item is waiting on a person".
  *
- * THIS SPEC CHARACTERISES CURRENT BEHAVIOUR. It is green because it asserts
- * what the product does today, not what it should do. The behaviour it pins is
- * under jd's review (invariant A5 keeps `web/` unchanged until that ruling), so
- * a green here is not an endorsement of any of it: the cases below record a row
- * that offers the owner nothing to press while an item waits on them, and a
- * detail page that answers a question on the owner's behalf without asking.
+ * THIS SPEC ASSERTED CURRENT BEHAVIOUR UNTIL P-A3. From 2026-09-26 to
+ * 2026-09-27 it was green because it recorded what the product did rather than
+ * what it should do, while invariant A5 kept `web/` unchanged pending jd's
+ * ruling. **jd ruled on 2026-09-27: full fix, and the personal-control surfaces
+ * A5 covers may be changed.** So the rows below no longer characterise; they
+ * assert the fixed behaviour, and a green here is now an endorsement.
+ *
+ * What changed, and what each row therefore now asserts:
+ *
+ *  - The banner no longer submits anything. Both of its states open the already
+ *    mounted `HumanInputDialog`, which is the surface built for this and was
+ *    reachable from nothing. Rows 3, 6 and 7 assert a dialog rather than a
+ *    stored answer.
+ *  - `respond()` can no longer send an answer nobody typed. An empty box
+ *    disables "Respond and resume", and retrying on the existing context is its
+ *    own button that says so.
+ *  - The work-item row branches on `awaitsResponse`, the shared predicate whose
+ *    absence is what C3 was, so a waiting handoff offers "Respond" like a
+ *    stored `BLOCKED` item does. Row 5 asserts that button.
  *
  * The two states, both reachable on one item without touching the database:
  *
@@ -69,6 +82,8 @@ interface SurfaceView {
 interface BannerPress {
   notification: string;
   dialog: boolean;
+  dialogTextareas: number;
+  dialogButtons: string[];
   status: string;
   reportedState: string;
   humanResponses: string[];
@@ -269,15 +284,24 @@ test.beforeAll(async ({ harness, browser }) => {
       harness.fakeProvider.queue({ behavior: "done" });
       const detail = page.locator("aside").filter({ hasText: "Overview" }).last();
       await detail.getByRole("button", { name: label, exact: true }).click();
-      // Every branch of `respond()` ends in a toast: "Response sent" on the way
-      // through, "That did not work" with the server's own message otherwise.
-      const notification = await eventually(`a notification from pressing "${label}"`, async () => {
-        const region = page.getByRole("region", { name: "Notifications" });
-        if ((await region.count()) === 0) return undefined;
-        const text = (await region.innerText()).trim();
-        return text === "" ? undefined : text;
+      /*
+       * Waits for whichever of the two things a press can do, and records both,
+       * so the row states which one happened rather than timing out on the one
+       * it expected. Before P-A3 the press submitted and every branch of
+       * `respond()` ended in a toast; after it, the press opens the modal and
+       * raises nothing.
+       */
+      const region = page.getByRole("region", { name: "Notifications" });
+      const dialogLocator = page.getByRole("dialog");
+      await eventually(`the press of "${label}" to do something visible`, async () => {
+        if ((await dialogLocator.count()) > 0) return "dialog";
+        if ((await region.count()) > 0 && (await region.innerText()).trim() !== "") return "notification";
+        return undefined;
       }, 60_000);
-      const dialog = (await page.getByRole("dialog").count()) > 0;
+      const dialog = (await dialogLocator.count()) > 0;
+      const dialogTextareas = dialog ? await dialogLocator.locator("textarea").count() : 0;
+      const dialogButtons = dialog ? (await dialogLocator.getByRole("button").allInnerTexts()).map(text => text.trim()) : [];
+      const notification = (await region.count()) === 0 ? "" : (await region.innerText()).trim();
       // `console_.startRun` is a socket send, not an awaited call, so a run row
       // can land after the toast. "No run was started" is an assertion here, so
       // one is given a window to appear before the absence is believed.
@@ -290,6 +314,8 @@ test.beforeAll(async ({ harness, browser }) => {
       return {
         notification: notification.replaceAll("\n", " | "),
         dialog,
+        dialogTextareas,
+        dialogButtons,
         status: (await state.prompt(item)).status,
         reportedState: (await reportedState(item.promptId)) ?? "unknown",
         humanResponses: history.remarks.filter(entry => entry.kind === "HUMAN_RESPONSE").map(entry => entry.content),
@@ -336,15 +362,22 @@ test("M-13 (T1): with a real handoff question the detail page shows the banner a
   expect(awaitingState.respondAndResume).toBe("absent");
 });
 
-test("M-13 (T1): the banner's Review and respond submits a canned retry, because the page never asks the owner for an answer", {
+test("M-13 (T1): the banner's Review and respond opens the dialog and stores nothing on the owner's behalf", {
   annotation: { type: "covers", description: "M-13" },
 }, async () => {
   console.log(`\n===== M-13 the Review and respond tap (AWAITING_RESPONSE) =====\n` +
     `dialog opened: ${bannerTap.dialog}\ntextareas on the page: ${bannerTap.textareas}\n` +
     `answer stored on the owner's behalf: ${JSON.stringify(bannerTap.response)}\n===== end tap =====\n`);
-  // One click, no review step and nothing typed, yet an answer is on the record.
-  expect(bannerTap.dialog).toBe(false);
-  expect(bannerTap.response).toContain("Retry requested with no additional context");
+  /*
+   * Inverted by P-A3 on jd's ruling of 2026-09-27. Until then this row asserted
+   * `dialog: false` and a stored remark containing "Retry requested with no
+   * additional context" - one click, no review step, nothing typed, and an
+   * answer on the record. The press now opens `HumanInputDialog` with a box in
+   * it, and nothing reaches the record until the owner sends something.
+   */
+  expect(bannerTap.dialog, "the banner opens the dialog built for this").toBe(true);
+  expect(bannerTap.textareas, "and the dialog has a box to answer in").toBeGreaterThan(0);
+  expect(bannerTap.response, "nothing is stored by the press itself").toBeNull();
 });
 
 test("M-13 (T1): in the C3 state the work-item row offers Respond", {
@@ -355,19 +388,25 @@ test("M-13 (T1): in the C3 state the work-item row offers Respond", {
   expect(blockedState.rowButtons).toContain("Respond");
 });
 
-test("M-13 (T1): with a real handoff question the work-item row offers no action at all", {
+test("M-13 (T1): with a real handoff question the work-item row offers Respond, like the stored BLOCKED state", {
   annotation: { type: "covers", description: "M-13" },
 }, async () => {
   report("row / handoff state (AWAITING_RESPONSE)", awaitingState);
   expect(awaitingState.rowBadges).toContain("Awaiting response");
-  // WorkItemList.tsx:365 has no AWAITING_RESPONSE branch, so RowAction returns
-  // null: the row says the item needs a person and offers nothing to press.
-  expect(awaitingState.rowButtons).toEqual([]);
+  /*
+   * Inverted by P-A3 on jd's ruling of 2026-09-27. Until then this row asserted
+   * `rowButtons` was empty: `RowAction` branched on the single spelling
+   * `BLOCKED`, so a row could say the item needed a person and offer nothing to
+   * press. It now branches on `awaitsResponse`, which is the shared predicate
+   * that covers both spellings - the one whose absence C3 was.
+   */
+  expect(awaitingState.rowButtons).toContain("Respond");
 });
 
 function reportPress(label: string, press: BannerPress): void {
   console.log(`\n===== M-13 ${label} =====\n` +
-    `notification: ${press.notification}\ndialog opened: ${press.dialog}\n` +
+    `notification: ${press.notification}\ndialog opened: ${press.dialog} (textareas in it: ${press.dialogTextareas})\n` +
+    `dialog buttons: ${JSON.stringify(press.dialogButtons)}\n` +
     `stored status after: ${press.status}\noperationalState after: ${press.reportedState}\n` +
     `HUMAN_RESPONSE remarks after: ${JSON.stringify(press.humanResponses)}\n` +
     `runs before / after: ${press.runsBefore} / ${press.runsAfter}\n===== end ${label} =====\n`);
@@ -381,7 +420,7 @@ function reportPress(label: string, press: BannerPress): void {
  * standing as the five rows above.
  */
 
-test("M-13 (T1): the saved-answer banner offers a button that the server refuses, so the owner's answer survives it", {
+test("M-13 (T1): the saved-answer banner opens the dialog that can resume with the owner's answer", {
   annotation: { type: "covers", description: "M-13" },
 }, async () => {
   report("detail / saved-answer state (TODO with a HUMAN_RESPONSE remark)", savedAnswerState);
@@ -398,15 +437,24 @@ test("M-13 (T1): the saved-answer banner offers a button that the server refuses
   expect(savedAnswerState.responseBox, "the :407 box is absent, so there is again nothing to type into").toBe(false);
   expect(savedAnswerState.respondAndResume).toBe("absent");
 
-  // What the press actually does. `respondToBlockedPrompt` (server/src/workspaces.ts:5914)
-  // refuses any prompt that is neither BLOCKED nor carrying a pending question,
-  // and an answered TODO item is neither - so the canned string at
-  // TasksView.tsx:309 is never written and `startRun` is never reached.
-  expect(savedAnswerPress.notification).toContain("That did not work");
-  expect(savedAnswerPress.notification).toContain("no longer needs human input");
-  expect(savedAnswerPress.humanResponses, "the owner's own answer is the only answer on the record").toEqual([SAVED_ANSWER]);
-  expect(savedAnswerPress.runsAfter, "no run is started, so no provider budget is spent on it").toBe(savedAnswerPress.runsBefore);
+  /*
+   * Inverted by P-A3 on jd's ruling of 2026-09-27. Until then this row asserted
+   * the press was refused by the server: `respondToBlockedPrompt`
+   * (server/src/workspaces.ts:5914) takes only a stored `BLOCKED` prompt or one
+   * with a live pending question, and an answered `TODO` item is neither, so the
+   * POST returned 409 and the only possible outcome was the toast
+   * "That did not work - Prompt no longer needs human input". The button was
+   * dead. It now opens `HumanInputDialog`, which offers "Resume with saved
+   * answer" and resumes through `/respond-and-continue` with the owner's own
+   * `responseId` - the route that accepts an answered `TODO` item.
+   */
+  expect(savedAnswerPress.dialog, "the dead button now opens the dialog built for this state").toBe(true);
+  expect(savedAnswerPress.notification, "and raises no error, because nothing is refused any more").toBe("");
+  expect(savedAnswerPress.humanResponses, "the owner's own answer is still the only answer on the record").toEqual([SAVED_ANSWER]);
+  expect(savedAnswerPress.runsAfter, "opening the dialog starts no run by itself").toBe(savedAnswerPress.runsBefore);
   expect(savedAnswerPress.status).toBe("TODO");
+  // The dialog is the affordance, so it has to offer the resume this state needs.
+  expect(savedAnswerPress.dialogButtons.join(" | "), "the dialog offers the resume, not a blank answer box").toContain("Resume with saved answer");
 });
 
 test("M-13 (T1): a held answer reports AWAITING_RESPONSE, so the saved-answer label never appears on the state that has one", {
@@ -425,9 +473,14 @@ test("M-13 (T1): a held answer reports AWAITING_RESPONSE, so the saved-answer la
   expect(heldAnswerState.detailButtons.join(" | ")).toContain("Review and respond");
   expect(heldAnswerState.detailButtons.join(" | ")).not.toContain("Continue with saved answer");
 
-  // The same refusal, for the same reason: the hold does not make the prompt
-  // BLOCKED and does not create a pending question.
-  expect(heldAnswerPress.notification).toContain("no longer needs human input");
+  /*
+   * Inverted by P-A3 on the same ruling. Until then the press was refused here
+   * too, for the same reason: a hold makes the prompt neither `BLOCKED` nor the
+   * carrier of a pending question. It now opens the dialog, and the held answer
+   * is still the only answer on the record.
+   */
+  expect(heldAnswerPress.dialog).toBe(true);
+  expect(heldAnswerPress.notification).toBe("");
   expect(heldAnswerPress.humanResponses, "the held answer survives the press").toEqual([HELD_ANSWER]);
   expect(heldAnswerPress.runsAfter).toBe(heldAnswerPress.runsBefore);
 });
