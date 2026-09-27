@@ -1,5 +1,7 @@
 # V6 handover: finishing V5 and the completion report
 
+> **CLOSED 2026-09-27. Superseded by [team-v7-handover.md](team-v7-handover.md).** V5 is finished and the completion report is written. Take no number from this file.
+
 Written 2026-09-26, by the orchestrator, for the session that finishes this track.
 This session closed **C5**, the last build task, reproduced **M-13**, and took **V5** from blocked to four of seven cases done against live Telegram.
 Read this first, then [team-burndown-tracker.md](team-burndown-tracker.md) and [team-gap-register.md](team-gap-register.md).

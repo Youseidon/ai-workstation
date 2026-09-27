@@ -4,9 +4,11 @@ Created: 2026-09-20
 
 ## Start here
 
+**Read [team-v7-handover.md](team-v7-handover.md) first**, then [team-plan-cards.md](team-plan-cards.md), which is what the next session executes. **The rig is LIVE against real Telegram** and V7's section 1 is the rig table.
+
 **The completion report is [team-completion-report.md](team-completion-report.md)**, written 2026-09-26. It reports the track against section 8 of the dev brief and states plainly which two clauses are **not** met. Read it for the result; read the handover below for the remaining path.
 
-**Read [team-v6-handover.md](team-v6-handover.md) first.** It is the current working knowledge and holds the whole remaining path: finishing V5's cases 2, 3 and 11, then the completion report.
+[team-v6-handover.md](team-v6-handover.md) is **CLOSED**, superseded by V7. It is the current working knowledge and holds the whole remaining path: finishing V5's cases 2, 3 and 11, then the completion report.
 **Its section 2 matters before you touch anything: two pilot instances are running live against real Telegram.**
 
 **Everything below is closed history.** Each file carries a CLOSED banner and figures that later documents supersede, so take no number from any of them without checking it against the V5 handover first.
