@@ -52,9 +52,15 @@ What should happen, and what I will check afterwards:
   process holds two open long-poll connections to `api.telegram.org` right now
 - nothing is recorded as a receipt and no state changes
 
-One known wrinkle, already logged, so do not treat it as a new failure: **B12**
-says `/help` does not reflect granted capabilities. With no grants on this item
-its list may read as though commands are available that are not.
+**Correction, made after part A ran.** This script first warned that `/help` might
+not reflect granted capabilities, citing B12. That warning was wrong: **B12 was
+fixed by F01**, and `/help` is capability-derived - it answers for the asking
+member, read-only commands plus whatever their grants unlock. A teammate holding
+no grants correctly sees exactly the four view commands, which is what happened.
+Nothing to watch for here.
+
+**Part A is done and PASSED**, 2026-09-27, 01:15Z to 01:20Z. Details are in the
+re-run table in [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md).
 
 ## Part B - case 11, close the thread
 
