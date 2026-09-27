@@ -57,7 +57,7 @@ So the answer is safe on the rig, and the remaining defect is a **dead button** 
 | Shared / Web | **91 of 91** / **95 of 95**, re-run 2026-09-27 after P-A3 |
 | Typecheck | exit 0 across shared, server, web, e2e |
 | Web lint | **19 problems, 17 errors**, exit 1. Upstream's files. **L-12, waived. Leave it** |
-| `e2e` self-tests | **Unmeasured. L-13 / P-B4** |
+| `e2e` self-tests | **47 of 47**, measured 2026-09-27 by P-B4. Its own tier: **`npm run test:harness`**, about 4.5 minutes. Not in root `npm test` - it builds the web app, which would roughly triple that tier's time; jd's call |
 | Audits 3 and 4 | Both **FAIL**, both routed by jd's written waivers |
 
 ## 3. What the previous session finished

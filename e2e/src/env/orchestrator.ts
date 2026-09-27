@@ -121,6 +121,12 @@ export class HarnessEnvironment {
   readonly serverUrl: string;
   readonly webUrl: string;
   readonly webDistDir: string;
+  /**
+   * Whether `start()` reached the web build. `dispose()` asserts the build
+   * directory exists, which is a postcondition of a run that started - and a
+   * `start()` refused at the port check never gets there (L-13).
+   */
+  private buildAttempted = false;
   readonly server: ManagedProcess;
   readonly web: ManagedProcess;
   readonly fakeProvider: FakeProvider;
@@ -205,6 +211,9 @@ export class HarnessEnvironment {
       if (await isPortOpen(port)) throw new Error(`harness port ${port} is already in use; stop whatever is listening there (the harness never uses 4000/3000 instead)`);
     }
     ensureWebBuild(this.serverUrl, join(this.logsDir, "web-build.log"), this.webDistDir);
+    // Recorded so `dispose` only checks postconditions of a run that began. See
+    // the comment on the check itself (L-13).
+    this.buildAttempted = true;
     if (this.options.telegram?.backend === "fake") await this.startFakeTelegram();
     if (this.options.telegram?.backend === "real") await this.startRealTelegram();
     await this.startServer();
@@ -381,7 +390,24 @@ export class HarnessEnvironment {
     const operatorPorts = await this.operatorPortsBefore;
     if (operatorPorts.api && !(await isPortOpen(4000))) problems.push("the operator's server on 4000 stopped answering during the run");
     if (operatorPorts.web && !(await isPortOpen(3000))) problems.push("the operator's web app on 3000 stopped answering during the run");
-    if (existsSync(join(repoRoot, "web", this.webDistDir)) === false) problems.push("harness web build directory missing");
+    /*
+     * L-13. This used to fire whenever the directory was absent, including after a
+     * `start()` that never reached the build - and `start()` refuses a busy port
+     * *before* building. So `S-H1-14`, whose whole subject is a refused start on a
+     * busy port, failed its own teardown.
+     *
+     * It looked like a flake and was recorded twice as one, by two independent
+     * observers, because it is **deterministic on a clean checkout and invisible
+     * afterwards**: `web/.next-e2e` is created by the first harness that does
+     * start and then persists in the working tree, so every later run finds it and
+     * passes. One failure on a first invocation, then 47 of 47 for ever.
+     *
+     * The check is worth keeping - a run whose build vanished has not proven
+     * anything - so it is gated on the run having got that far rather than removed.
+     */
+    if (this.buildAttempted && existsSync(join(repoRoot, "web", this.webDistDir)) === false) {
+      problems.push("harness web build directory missing");
+    }
 
     if (problems.length > 0) {
       throw new Error(`harness end-of-run checks failed (root kept at ${this.root}):\n${problems.join("\n")}`);
