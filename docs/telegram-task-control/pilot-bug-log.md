@@ -934,39 +934,18 @@ No TM3 case is affected, since none of them touches Git.
 Consequence to remember: give instance B its own clone before attempting LT-5.
 
 
-## B20 - the state printer defaults to the wrong database and says so nowhere
+## This log is closed at B19
 
-Severity: none for the product; a note about this rig only, but a trap that
-wastes a session rather than merely annoying it.
+B1 to B19 are the solo pilot's defect list, which the F track burned down.
+**Do not add B20 or higher here.** The design documents
+([handover-rules.md](handover-rules.md), [protocol.md](protocol.md),
+[user-flows.md](user-flows.md)) carry their **own** B series that runs past B28 -
+`B20` there is "ownership transfer needs confirmed release", cited by ruling 4 and
+by `teamControlRecord.ts`. The two series already overlap for B1 to B19, and
+extending this one makes a live citation ambiguous.
 
-`scripts/team-pilot-state.mjs` takes the database path as an optional argument
-and falls back to the calling checkout's own `.agent-console/console.sqlite`.
-[solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documents it
-as `node scripts/team-pilot-state.mjs` for instance A, with the path given only
-for instance B, and that is how it reads to anyone resuming.
-Run that way from `/home/junaid/ai-workstation`, it reads `main`'s own leftover
-fixture database and prints a team:
-
-```
-team               team-7
-group chat         group-7
-remote             local
-member             jd-laptop · @owner_bot · user 101
-member             yousef-desktop · @yousef_bot · user 202
-```
-
-None of that exists. It is a harness fixture left in the product checkout, and
-the output carries no marker separating it from a real reading. It even ends with
-`!! 2 FAILED outbox rows - check B8/B9 in the bug log.`, which invites the reader
-to go and investigate two failures that are months old and belong to a fixture.
-
-This is worse than B3, the wrong port, which this rig already records. A wrong
-port fails visibly. This succeeds, plausibly, and every number it prints is
-false.
-
-Consequence to remember: always pass the database path explicitly, for both
-instances, and check the header line the printer echoes before believing a word
-below it.
+New findings go in [team-gap-register.md](team-gap-register.md), which is the live
+document. The state-printer trap that was briefly filed here as B20 is **L-17**.
 
 
 ## Unconfirmed

@@ -10,7 +10,7 @@ Every gap's detail stays in [team-gap-register.md](team-gap-register.md) and [pi
 jd asked for `A1`, `B1`, `C1`, `D1` by criticality.
 **Bare letters could not be used**, because every one of them is already taken in this track:
 `A1` to `A7` and `D1` to `D9` are the audit check ids that audits 3 and 4 report against,
-`B1` to `B20` are the bug log entries,
+`B1` to `B19` are the bug log entries, and the design documents carry a second, overlapping B series that runs past B28,
 and `C1` to `C5` are the critical gaps the C track closed.
 Reusing them would silently break existing cross-references and would repeat the invented-id mistake that already cost this track two retired ids, `TM-T1-8` and `TM-T1-9`.
 
@@ -44,7 +44,7 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 | **P-C5** | **M-7** | `closeAfterHandover` contradicts ruling 7 and nothing owns the reconciliation | An unruled contradiction between code and a written ruling | Rule it, then make the code agree |
 | **P-C6** | **F10**, carrying **B3, B4, B10, B19** | The rig task: wrong port silently, credentials inherited from the shell, launcher cannot be stopped by script, one shared working tree | Rig only, no product code, but it gates P-C7 | Do it when P-C7 is wanted, not before |
 | **P-C7** | **LT-5** | The two-clone two-person run has never happened | Blocked on B19 inside P-C6: instance B needs its own clone | After P-C6 |
-| **P-D1** | **B20** | `team-pilot-state.mjs` defaults to the calling checkout's database and prints a plausible, wholly fake team | Rig only, and the documented command block is already corrected | One line: require the path |
+| **P-D1** | **L-17** | `team-pilot-state.mjs` defaults to the calling checkout's database and prints a plausible, wholly fake team | Rig only, and the documented command block is already corrected | One line: require the path |
 | **P-D2** | **L-14** | LT-5 has no row in `human-verification.md`; migration **52** still rebuilds a temp table named `task_control_action_v29` with a "Migration 29" error string | Cosmetic, but the second half will read as a contradiction to the next person who greps migration numbers | Tidy |
 | **P-D3** | **L-15** | A stray `0x01` byte in `server/test/telegramViews.test.ts` | Hygiene. Verified **not** a grep-visibility trap, unlike the real NUL that was | Tidy |
 | **P-D4** | **L-12** | Web lint: 19 problems, 17 errors, every one in upstream's files. `origin/main` does not pass either | **Waived by jd 2026-09-25.** Nothing in this track can close it | None. Never claim a green lint tier |

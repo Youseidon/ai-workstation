@@ -284,8 +284,8 @@ and does not mention reloading.
 The stale-until-reload behaviour is recorded as L-16 rather than folded into this row,
 because the API gate does hold and the refusal a user sees names the real cause.
 
-Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B20.
-B20 was added by the V5 re-run and is a trap in the state printer below, not a product defect.
+Findings so far are in [pilot-bug-log.md](pilot-bug-log.md), B1 to B19, which is **closed at B19**.
+The V5 re-run's own finding, a trap in the state printer below, is **L-17** in [team-gap-register.md](team-gap-register.md).
 B16 was merged into B11 on 2026-09-20 and is kept as a pointer.
 
 ## Resuming in a fresh session
@@ -294,7 +294,7 @@ Each case is self-contained once the state is known.
 Print the state instead of re-deriving it:
 
 ```bash
-# Always pass the path, for BOTH instances. See B20: with no argument this reads the
+# Always pass the path, for BOTH instances. See L-17: with no argument this reads the
 # calling checkout's own database and prints a plausible, wholly fake team.
 node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot/.agent-console/console.sqlite    # A
 node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot-b/.agent-console/console.sqlite  # B

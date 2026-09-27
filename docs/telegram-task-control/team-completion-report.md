@@ -196,7 +196,7 @@ Two more, both found today:
   only `providers`, so the snapshot holding `team.enabled` is never re-read.
   The server comment claiming every tab re-reads "both" overstates what the message carries.
   Low, because the API gate holds and the refusal a user sees names the real cause.
-- **B20.** `scripts/team-pilot-state.mjs` defaults to the calling checkout's own database.
+- **L-17.** `scripts/team-pilot-state.mjs` defaults to the calling checkout's own database.
   Run the way the check document documented it, it reads `main`'s leftover fixture and prints `team-7`
   with two members who do not exist, with no marker that it is a fixture.
   Worse than a wrong port, because it succeeds plausibly.
