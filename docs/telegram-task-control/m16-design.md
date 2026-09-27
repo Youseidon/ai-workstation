@@ -1,130 +1,89 @@
-# M-16 design: task state reads the handover control record
+# M-16 design: align the owner's surfaces with the handover the backend already knows about
 
-Written 2026-09-27 for jd, by the orchestrator, as P-B5's design half.
-**Nothing here is built.** jd's ruling of 2026-09-27 was that this is its own designed task, not an append to a bug fix, and that the design is reviewed before any code.
+Written 2026-09-27, **rewritten 2026-09-28** for jd, by the orchestrator.
+**Nothing here is built.**
 
-## 1. What is actually missing
+## 0. Why this was rewritten, and what it replaces
 
-`teamControlRecord.ts` already holds the model: fourteen `CONTROL_STATES`, a transition table that checks from-state, event, authorised actor and condition before writing, stored outside the prompt in a git record that `item_link.control_head` points at, versioned by `epoch`.
-`LIVE_HANDOVER_STATES` and `isLiveHandoverState()` already express "this handover is outstanding".
+The first version of this design added a member to the status model: a new `AWAITING_RETURN` display status, a catalog entry with its own precedence and rollup semantics, a schema column on `item_link` with a migration to cache the control state, and a change to `operationalState` - a function 26 files read - followed by an audit of 30 hand-keyed comparisons.
 
-What is missing is the other direction: **`operationalState` knows nothing about any of it.**
-So there is no task-level answer to "is this item with someone else right now", and every surface that needs one infers it from prompt status by hand.
+**jd asked two questions, one after the other, and both found real over-reach.**
 
-Measured rather than asserted, on `main` at `a8d644b`:
+1. *"Is P-B5 really needed?"* - answered by reproducing it, which found **M-17**: the owner could answer, run and complete an item a teammate was actively holding, and those actions **worked**. That was a live work-loss path, and **P-A5 closed it on 2026-09-28** with a narrow server guard.
+2. *"Is it a design overhaul or just aligning UI state to backend state?"* - it was an overhaul, and alignment does the job.
 
-| Thing | Count |
-| --- | --- |
-| Files reading `operationalState` | **26** |
-| Hand-keyed `operationalState === …` / `!== …` comparisons | **30**, across **13** files |
-| Worst single file | `WorkItemDetail.tsx`, **12** |
+**Two facts checked on 2026-09-28 dismantled the reason for the overhaul.**
 
-That is the common cause behind C3, M-13 and M-15, and all three are now fixed individually. This task is about the cause.
+- `workspaces.operations()` is synchronous, but the `/api/operations` route that calls it is **async**. So the fact can be attached above the sync builder, where awaiting is free.
+- The cost the cache existed for is not real. Only an item link carrying a `control_head` needs a read at all, and the read is of the **local** bare control clone - no network. On the live rig: `item_link rows: [{"role":"requester","hasHead":0,"n":1}]`. **Zero reads.** Normally none, occasionally one.
 
-## 2. The constraint that decides the design
+So the cache was designed before the uncached cost was measured. **The migration, the new status, the catalog entry and the `operationalState` change are all dropped.**
 
-`operationalState(prompt, hasHumanQuestion)` is **synchronous and pure**, and it is called **once per prompt** inside the operations-snapshot builder, which loops every workspace, program and suite.
+## 1. What is actually wrong, after P-A5
 
-The control record is a **git** record. Reading it is async and does process-level I/O.
-
-So the one thing this design may not do is read the control record inside `operationalState`. A snapshot over N prompts would do N git reads. Three options were considered:
-
-| Option | Verdict |
-| --- | --- |
-| Read the record in `operationalState` | **No.** Synchronous callers, per-prompt loop, git I/O |
-| Make `operationalState` async | **No.** It is read by 26 files and by the snapshot builder's inner loop; this is the change that caused C3, amplified |
-| **Mirror the state locally, pass it in as an overlay** | **Yes.** Follows a precedent the code already has |
-
-The precedent matters: `PromptOption.humanResponseHeld` is already a local fact threaded into `operationalState` for exactly this purpose, and `hasHumanQuestion` is already a second parameter computed once per prompt by the caller. This design extends a pattern rather than inventing one.
-
-## 3. The design
-
-### 3.1 A local mirror of the control state
-
-`item_link` already mirrors two fields of the shared record: `control_head` and `epoch`. Add a third, `control_state`, maintained in exactly the same places and by the same writes.
-
-- Nullable `TEXT`, with a `CHECK` over the fourteen `CONTROL_STATES`. **Null means "no handover has ever started on this item"**, which is distinct from `LOCAL`.
-- Written wherever `control_head` is written today - `updateItemControlHead` is the single choke point - so it cannot drift independently of the head it belongs to.
-- It is a **cache, and the design says so out loud.** The shared record stays authoritative; nothing decides a transition from this column. It answers one question for display, and any write path keeps reading the record.
-
-**This needs a migration**, and P-B2 taught this track a specific lesson about those: migration order in `workspaces.ts` is **source order, not number order**, so it goes after every block that rebuilds `item_link`. That is checked before it is written, not after it fails.
-
-### 3.2 One new display status
-
-`AWAITING_RETURN` joins `STEP_DISPLAY_STATUSES`, with jd's own words as its label: **"Awaiting return handover"**.
-
-It reports that the item is **held by someone else** - the control state is in `LIVE_HANDOVER_STATES` and the executor is not this workstation.
-
-Catalog entry, following `AWAITING_RESPONSE`'s shape:
-
-| Field | Value | Why |
-| --- | --- | --- |
-| `storable` | `false` | A live overlay, derived every read, never written to `prompt.status` |
-| `satisfiesDependency` | `false` | Work that is out with someone else is not a satisfied prerequisite |
-| `blocksParent` | `true` | A parent with a handed-over child must say so |
-| `needsAttention` | **`false`** | **The one judgement call. See 3.4** |
-| `precedence` | `25` | Below `AWAITING_RESPONSE`'s 30: an item waiting on *this* owner outranks one that is out with someone else, because only the first is actionable here |
-
-### 3.3 Precedence inside `operationalState`
-
-Inserted as one branch, immediately **after** `WORKING` and **before** the person-waiting overlay:
+P-A5 closed the loss. What remains is that the owner's surfaces **say the wrong thing** about an item a teammate is holding. Observed on 2026-09-28, with the shared record `RUNNING` and the executor another person:
 
 ```
-1. WORKING            - a live local process outranks everything. Unchanged.
-2. AWAITING_RETURN    - NEW: the item is out with another workstation.
-3. AWAITING_RESPONSE  - a person here has been asked something. Unchanged.
-4. …everything else, unchanged.
+row badge:      Needs you
+attention flag: true
+row buttons:    ["Respond"]
+detail buttons: … "Respond and resume", "Retry with existing context", "Mark complete"
 ```
 
-`WORKING` stays first deliberately: if a local process is running, that is what the operator needs to see, and a stale mirror must never hide a live run.
+Three complaints, and that is the whole list:
 
-### 3.4 `needsAttention: false`, and why that is the arguable part
+1. It claims the item **needs the owner**. It does not; it needs the receiver.
+2. It sits on the owner's **attention list** for the whole handover.
+3. It offers buttons that P-A5 now **refuses** - which makes them dead buttons of exactly the shape M-13 was.
 
-An item out with a teammate needs **no attention from this owner** - that is the point of handing it over - so counting it in the attention list would put permanent noise there for the duration of every handover.
+## 2. The design
 
-The cost: an item whose receiver has gone quiet is invisible on this workstation's attention list. There is no timeout in this design, and **it is not the place for one**: `RETURNED` already raises the review card, and a receiver who never returns is a person problem, not a status problem.
+One fact, carried to the surfaces that need it. No new state, no schema change, nothing in `operationalState`.
 
-**If jd wants the opposite**, it is one field, and the design would rather be told than guess.
+### 2.1 One new DTO field
 
-### 3.5 `awaitsResponse` is NOT extended
+`OperationsPrompt` gains:
 
-`awaitsResponse()` is the shared predicate that C3 exists because of, and it now gates the "Respond" affordances P-A3 added to the work-item row.
+```ts
+/**
+ * The live handover holding this item, or null. M-16: the surfaces used to infer
+ * this from prompt status, which they cannot do, so they said "Needs you" about
+ * work a teammate was running.
+ */
+heldByTeammate: { itemId: string; state: string; executor: string | null } | null;
+```
 
-`AWAITING_RETURN` must **not** join it. A handed-over item offers this owner nothing to respond to; the executor holds it, and only the executor releases it (B20, ruling 4). Adding it would put a live Respond button on an item this workstation may not act on - the exact shape of defect M-13 was.
+Filled in the **`/api/operations` route**, which is already async, by reusing **`liveHandoverHolding`** from `server/src/teamHandoverHold.ts` - the function P-A5 already built, proved and shipped. The route:
 
-A separate predicate, `isAwaitingReturn(state)`, is added for the surfaces that want to ask.
+1. takes the sync snapshot as today;
+2. collects the prompt ids whose requester item link carries a `control_head` - one indexed query;
+3. reads the local control record for each - normally none;
+4. sets the field, and forces `attention` to `false` on those prompts.
 
-## 4. What changes at the call sites
+**Nothing else changes server-side.** `operationalState` still returns `BLOCKED`, which is true: the item *is* blocked, and it is also handed over. Those are two facts, and the second now has somewhere to live.
 
-The 30 hand-keyed comparisons are the risk, and the plan is to **enumerate and decide every one before changing any**, recording the decision per site. Three outcomes only:
+### 2.2 Three small reads of it, in `web/`
 
-1. **Unchanged** - the comparison is about something else entirely (`DONE`, `WORKING`, `READY`).
-2. **Widened to a predicate** - it is asking "is a person waiting", and should ask `awaitsResponse` rather than name a state. This is C3's own remedy applied to the rest of the file.
-3. **Newly handles `AWAITING_RETURN`** - it renders an action that a handed-over item must not offer, or a label it must change.
+- **`WorkItemList`** - the row badge reads `Held by <executor>` instead of `Needs you`, and `RowAction` returns null rather than `Respond`, because `awaitsResponse` is true and the action is refused.
+- **`WorkItemDetail`** - the `:407` branch's buttons are disabled with the reason, and a line says who holds it. P-A5's refusal message is the wording to reuse rather than invent.
+- **`TeamThreadPanel`/`HandoverControl`** - "Prepare handover" already refuses a second handover server-side; it is disabled here with the reason, for the same "do not offer what will be refused" rule F03 established.
 
-Category 3 is the one that can regress a surface, and it is where the T1 rows go.
+### 2.3 What is deliberately *not* done
 
-**A new display status is a widening, and widenings are where this breaks.** Any `switch` over the status set, any label map, any catalog lookup that assumes a closed set, will silently render nothing for a state it has never seen. The audit above is how they get found rather than discovered.
+- **No new display status.** `STEP_DISPLAY_STATUSES` is a closed set that 26 files read, and adding to it means every switch, label map and catalog lookup must handle it or silently render nothing. That is the widening risk, and it buys nothing the DTO field does not.
+- **No schema column and no migration.** Measured, not assumed: see 0.
+- **No change to `operationalState`.** The reconcile moving that function is what caused C3.
+- **No audit of the 30 hand-keyed comparisons.** They are all still correct: the item really is `BLOCKED`. Nothing about them was the defect.
+- **No timeout or escalation** for a receiver who goes quiet. `RETURNED` already raises the review card; a receiver who never returns is a person problem.
 
-## 5. Proof plan
+## 3. Proof plan
 
-Every claim gets evidence at the tier that can hold it.
+- **Server:** the route sets `heldByTeammate` and clears `attention` while the record is live for the requester's link, and sets null when it is the executor's link, when the state is terminal, and when no handover exists. The `executor` link case is the one that matters - P-A5 found that a guard over every link would break the receiver's own run.
+- **Web:** the three surfaces render from the field, from props alone, as F03 and F06 require.
+- **T1:** one row, built from `m17-handover-hold.spec.ts`'s crossing, asserting that while a teammate holds the item the owner's row says `Held by` and **offers no Respond**, and that it goes back afterwards. That row is the only thing that proves the surfaces are wired rather than merely present, which is the failure mode this track has hit three times.
 
-- **Shared:** the catalog entry and both predicates, including that `awaitsResponse` is unchanged and that `isAwaitingReturn` is true for exactly `LIVE_HANDOVER_STATES`.
-- **Server:** `operationalState` returns `AWAITING_RETURN` when the mirror says a live handover with another executor, and does **not** when the executor is this workstation, when the state is terminal, or when a local process is running. Plus the migration's placement: a boot-twice check, as `teamItems.test.ts` already does for `telegram_thread`.
-- **T1:** the rows that matter, because a green server suite has been consistent with a broken user surface three times on this track. At least: an item handed over reads "Awaiting return handover" on the work-item row and the detail page, and **offers no Respond affordance**; and when it returns, the state goes back.
-- **Mutation:** the mirror is made stale on purpose, and the row must still not claim a live run is a handover. That is the failure mode a cache introduces, so it gets its own proof.
+## 4. The one question left for jd
 
-## 6. What this design deliberately does not do
+The other three questions in the first version existed only because of the new status, and are retired with it.
 
-- **It does not remove `hasHumanQuestion`.** Folding it into the same overlay is tempting and is a second change; C3 came from moving this function.
-- **It does not touch the Telegram views' own state text** beyond making the new state renderable. M-15's fix already made the closed case honest.
-- **It does not add a timeout, an escalation, or a nudge** for a receiver who goes quiet. See 3.4.
-- **It does not unify the 30 comparison sites into one helper.** Category 2 above widens the ones that are asking the wrong question; a full rewrite of every surface's status logic is a different, larger task and would bury this one's evidence.
-
-## 7. Questions for jd, before any code
-
-1. **`needsAttention: false`** for `AWAITING_RETURN` - agreed, or should a handed-over item stay on the attention list? (3.4)
-2. **The label.** "Awaiting return handover" is jd's own phrase; the row badge will read **"Awaiting return"** for width. Acceptable?
-3. **Scope of the call-site audit.** The plan touches the comparison sites that are *wrong* (category 2) as well as those that *must* change (category 3). Category 2 is the C3 remedy applied more widely and is the more valuable half - but it widens the diff. Take both, or category 3 only?
-4. **Precedence 25, below `AWAITING_RESPONSE`.** An item that is both out with a teammate and has an unanswered question here reports `AWAITING_RESPONSE`. Agreed?
+**The label.** `Held by <executor>` on the row, where `<executor>` is the person id the control record carries. It is the only name available - the record stores person ids, not display labels - so the badge may read `Held by 6525517234` rather than `Held by Junaid`. Resolving it to a roster label is possible but is a second lookup on a surface that has no roster today. **Acceptable, or worth the lookup?**
