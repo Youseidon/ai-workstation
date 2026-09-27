@@ -107,6 +107,14 @@ export class FakeTelegramServer {
   private readonly callbackAnswers: CallbackAnswer[] = [];
   private readonly openCallbacks = new Map<string, { botId: number; createdAt: number }>();
   private readonly failures: ScriptedFailure[] = [];
+  /**
+   * Chats Telegram has upgraded to a supergroup, old id to new (B8, F05's
+   * criterion 3). Held here rather than scripted as a one-off failure because the
+   * refusal is **permanent**: once a group is upgraded the old id never works
+   * again, and a case that only fails the next call would let the product look
+   * recovered when it had merely run out of injected failures.
+   */
+  private readonly upgraded = new Map<number, number>();
   private readonly topics = new Map<string, { name: string; closed: boolean; deleted: boolean }>();
   private readonly pinnedMessages = new Map<number, number>();
   private readonly members = new Map<number, Map<number, ChatMember>>();
@@ -196,6 +204,32 @@ export class FakeTelegramServer {
   /** Answer the next `count` calls of `method` (or "*") with a Telegram error envelope. */
   failNext(method: string, errorCode: number, options: { count?: number; description?: string; retryAfter?: number } = {}): void {
     this.failures.push({ method, errorCode, description: options.description ?? ERROR_DESCRIPTIONS[errorCode] ?? "Error", ...(options.retryAfter === undefined ? {} : { retryAfter: options.retryAfter }), remaining: options.count ?? 1 });
+  }
+
+  /**
+   * Telegram upgrades a basic group to a supergroup mid-test (B8).
+   *
+   * From here on every call naming the old chat id is refused with the real Bot
+   * API's envelope - 400, the upgrade description, and
+   * `parameters.migrate_to_chat_id` carrying the new id - and calls naming the new
+   * id work. That parameter is the only thing that tells the product where the
+   * group went, and this fake used to drop `parameters` from every error, which is
+   * why F05's criterion 3 had no harness case: the harness could not express the
+   * failure.
+   *
+   * The new chat is registered with the old one's title and members, because
+   * Telegram carries both across and a case that had to re-add the bots would be
+   * testing the test.
+   */
+  upgradeChatToSupergroup(fromChatId: number, toChatId: number): FakeChat {
+    const from = this.chats.get(fromChatId);
+    if (from === undefined) throw new Error(`unknown chat ${fromChatId}`);
+    const to: FakeChat = { ...from, id: toChatId, type: "supergroup" };
+    this.registerChat(to);
+    const members = this.members.get(fromChatId);
+    if (members !== undefined) this.members.set(toChatId, new Map(members));
+    this.upgraded.set(fromChatId, toChatId);
+    return to;
   }
 
   /** "refuse" drops new connections; "hang" accepts requests and never answers; null restores service. */
@@ -295,6 +329,22 @@ export class FakeTelegramServer {
     this.calls.push({ method, body, at: Date.now(), botId: bot?.id ?? null });
     if (!match) return send(res, 404, { ok: false, error_code: 404, description: "Not Found" });
     if (!bot) return send(res, 401, { ok: false, error_code: 401, description: "Unauthorized" });
+
+    /*
+     * The upgrade refusal comes before scripted failures and before dispatch: it
+     * is a property of the chat from now on, not a turn in a queue. `chat_id` is
+     * what every affected method names.
+     */
+    const named = Number(body.chat_id);
+    const migrateToChatId = Number.isFinite(named) ? this.upgraded.get(named) : undefined;
+    if (migrateToChatId !== undefined) {
+      return send(res, 400, {
+        ok: false,
+        error_code: 400,
+        description: "Bad Request: group chat was upgraded to a supergroup chat",
+        parameters: { migrate_to_chat_id: migrateToChatId },
+      });
+    }
 
     const scripted = this.failures.find((failure) => failure.remaining > 0 && (failure.method === method || failure.method === "*"));
     if (scripted) {

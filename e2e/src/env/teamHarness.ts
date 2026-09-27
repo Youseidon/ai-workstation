@@ -12,6 +12,17 @@ export interface TeamHarnessOptions {
   envB?: Omit<EnvironmentOptions, "portOffset" | "telegram">;
   portOffsetA?: number;
   portOffsetB?: number;
+  /**
+   * The team group's Telegram type. Defaults to `supergroup`, which is what every
+   * existing row has, so nothing changes for them.
+   *
+   * `group` exists for F05's criterion 3 (M-10): a case that upgrades a **basic
+   * group** mid-test needs the group to start as one. No product code reads this
+   * type - the repair turns entirely on the chat id changing and the Bot API
+   * naming the new one in `parameters.migrate_to_chat_id` - so this makes the case
+   * faithful to what Telegram does rather than changing what is being tested.
+   */
+  groupChatType?: "group" | "supergroup";
 }
 
 export interface TeamHarnessMember {
@@ -106,7 +117,7 @@ export async function startTeamHarness(options: TeamHarnessOptions = {}): Promis
   const userB: FakeUser = { id: 5_550_202, firstName: "Team B", username: "team_b" };
   const privateChatA: FakeChat & { type: "private" } = { id: userA.id, type: "private" };
   const privateChatB: FakeChat & { type: "private" } = { id: userB.id, type: "private" };
-  const groupChat: FakeChat = { id: -100_555_000_333, type: "supergroup", title: "Harness team" };
+  const groupChat: FakeChat = { id: -100_555_000_333, type: options.groupChatType ?? "supergroup", title: "Harness team" };
   fakeTelegram.registerChat(groupChat);
   fakeTelegram.addChatMember(groupChat, userA);
   fakeTelegram.addChatMember(groupChat, userB);
