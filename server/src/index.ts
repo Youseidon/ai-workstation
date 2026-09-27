@@ -9,6 +9,7 @@ import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOper
 import { config } from "./config.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
+import { assertNoLiveHandover } from "./teamHandoverHold.ts";
 import { createLogger } from "./lib/logger.ts";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
 import { runRoleStartError } from "./runner.ts";
@@ -489,6 +490,17 @@ wss.on("connection", (ws: WebSocket) => {
     question?: string,
   ): Promise<void> => {
     try {
+      /*
+       * M-17. The person-initiated start, which is what "Run work item" and the
+       * UI's own run button reach.
+       *
+       * Guarded here rather than inside `startExecute`, deliberately: that function
+       * is also how the handover's own machinery starts the receiver's run and the
+       * continuation after an apply, and `APPLYING` is itself a live handover
+       * state - so a guard there would refuse the very steps that end a handover.
+       * The cut is person-initiated entry points, not the shared internal.
+       */
+      if (promptId !== undefined) await assertNoLiveHandover(promptId, "Starting a run on this work item");
       await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question });
     } catch (error) {
       mapStartError(error, "Unable to resolve workspace");

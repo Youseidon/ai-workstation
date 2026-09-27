@@ -8,6 +8,7 @@ import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDra
 import { startConsult, startExecute, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 import { respondAndContinue, saveHumanResponse } from "./humanInput.ts";
+import { assertNoLiveHandover } from "./teamHandoverHold.ts";
 import { scheduleHandoff } from "./handoffCoordinator.ts";
 import { taskControl, withLiveTokenState } from "./taskControl.ts";
 import { TEAM_DISABLED_CODE, TEAM_DISABLED_MESSAGE, telegramRuntime } from "./integrations/telegram/runtime.ts";
@@ -516,6 +517,9 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       else {
         const promptId=id(completeMatch[1]!);
+        // M-17: this needs no run at all - it writes DONE directly - so it could
+        // complete work a teammate was still doing.
+        await assertNoLiveHandover(promptId,"Marking this work item complete");
         const input=await body(req);
         const written=workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
         await pipelineScheduler.onPromptCompleted(promptId);
@@ -804,12 +808,16 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/human-response$/);
     if(match&&method==="POST"){
       const promptId=id(match[1]!);
+      // M-17: answering starts a local run through the scheduler below, so a
+      // teammate holding this item would have had a second run started against
+      // the work they were doing.
+      await assertNoLiveHandover(promptId,"Answering this work item");
       const remark=workspaces.respondToBlockedPrompt(promptId,await body(req));
       await pipelineScheduler.onPromptResponded(promptId);
       json(res,201,{remark});return true;
     }
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
-    if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
+    if(match&&method==="POST"){const promptId=id(match[1]!);await assertNoLiveHandover(promptId,"Recovering this work item");const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/classify-start-unknown$/);
     if(match&&method==="POST"){json(res,200,workspaces.classifyStartUnknown(id(match[1]!),await body(req)));return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/handoff$/);

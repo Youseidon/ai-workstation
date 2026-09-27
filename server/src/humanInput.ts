@@ -1,4 +1,5 @@
 import type { PromptRemark, ProviderId } from "@agent-console/shared";
+import { assertNoLiveHandover } from "./teamHandoverHold.ts";
 import { isProviderId } from "@agent-console/shared";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { startExecute } from "./runService.ts";
@@ -36,6 +37,12 @@ async function serialize(promptId: number, input: Record<string, unknown>, resum
 }
 
 async function submit(promptId: number, input: Record<string, unknown>, resume: boolean, source: HumanResponseSource): Promise<HumanResponseResult> {
+  /*
+   * M-17. The dialog's own path, which `respondAndContinue` and
+   * `saveHumanResponse` both reach, and which the Telegram side calls too. Guarded
+   * here as well as at the route so no caller can forget it.
+   */
+  await assertNoLiveHandover(promptId, resume ? "Answering and resuming this work item" : "Saving an answer on this work item");
   if (resume && !isProviderId(input.provider)) throw new WorkspaceError(422, "provider_required", "Choose an agent to continue.");
   if (input.model !== undefined && input.model !== null && typeof input.model !== "string") throw new WorkspaceError(422, "validation_error", "Model must be a string.");
   workspaces.assertHumanInputRevision(promptId, input.expectedRevision);
