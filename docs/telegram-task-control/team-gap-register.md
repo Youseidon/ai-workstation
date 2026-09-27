@@ -686,7 +686,7 @@ runs before / after: 1 / 1
 2. Whether the row's missing `AWAITING_RESPONSE` branch and the unreachable `HumanInputDialog` are one fix or two.
 3. Whether a green test that pins the canned-retry behaviour should stay green. It is a deliberate record, but a green row asserting a defect is the same thing that makes an invented scenario id dangerous - it reads as coverage to anyone who does not open the file.
 
-### M-14. A workstation that loses its database cannot rejoin a team it is already a member of
+### M-14. A workstation that lost its database could not rejoin a team it is already a member of. Fixed 2026-09-27 by P-B3
 
 **Registered 2026-09-26, found on the live rig during V5 rather than in any suite.**
 
@@ -896,6 +896,22 @@ Not asserted, recorded rather than implied: the roster republish to the shared r
 **One correction the row cost.** An "Item access" message also carries the item tag and replies to the anchor, so filtering on the tag alone counts two messages for one item - a first version reported a duplicate anchor against a product behaving correctly. An anchor is a tagged bot message that replies to nothing, which is how every other Team row identifies one.
 
 Tiers: shared 91/91, server 622/622, web 95/95, harness self-tests **47/47**, typecheck exit 0.
+
+### M-14, the rejoin path and the overloaded conflict. Closed 2026-09-27 by P-B3.
+
+The entry's own closing observation is what made the fix cheap: the identities are **derived rather than stored**, so the roster on the remote already contained everything needed to recognise a returning workstation.
+
+`confirmTeamCreate` adopts a roster that already names this workstation, rebuilding the local cache and the group actor. **Nothing on the remote is written**, which is why it needs no second confirmation.
+
+**Adoption is conditional on holding nothing locally, and that condition is the design rather than a guard.** A workstation that still holds the team and creates again has lost its join code - that is `B1`, and its remedy is Reissue join code. Adopting there would turn a mistake into a silent no-op. Both are the same call with the same inputs; **only the local record differs**. That case is refused as `team_already_held`, naming Refresh team and Reissue join code. A roster that does not name this workstation is refused as `team_already_exists`, pointing at a join code rather than a second team in one repository.
+
+**The split, and where the second cause actually lived.** `RemoteGitTeamRosterRemote.read` fetched `refs/aw/team:refs/aw/team` unforced and **discarded the result**. A mirror whose ref had diverged could not fast-forward, the failure was silent, and the read answered with the stale local copy - so every compare-and-swap after that was made against a fiction and failed as `roster_conflict` on a workstation whose roster had not changed. That is why clearing `refs/aw/team` on the remote was never enough on its own. The remote is authoritative for that ref, so a diverged mirror is now **repaired** with a forced refspec; a fetch failing for any other reason is `roster_mirror_unreachable`, which is not a conflict and no longer described as one. `roster_conflict` now means the genuine divergence and names what moved, what this workstation held, and that Refresh team clears it.
+
+**Two existing assertions changed, in their own commit citing the card**: the verbatim old message, and B1's `roster_conflict` code where the truer answer is `team_already_held`. B1's refusal itself is unchanged.
+
+Proof: server **625 of 625, twice**, after **621 pass / 4 fail** on unchanged product code with the assertions already updated. Typecheck exit 0 on four workspaces. Three new roster tests cover the split, including one that forces the mirror's ref off the remote's history - the exact condition that made the unforced fetch fail silently.
+
+**Recorded honestly: no T1 row.** This is a recovery path whose trigger is a wiped database, and reproducing it at T1 means destroying and rebuilding a harness workstation's database mid-run. The server tier covers the roster mechanics and the runtime adoption; the live rig's own rebuild is what found it in the first place, and would be what confirms it.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
