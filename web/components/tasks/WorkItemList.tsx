@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import type { OperationsPrompt, OperationsSuite } from "@agent-console/shared";
+import { awaitsResponse, type OperationsPrompt, type OperationsSuite } from "@agent-console/shared";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -362,7 +362,14 @@ function RowAction({
       </Button>
     );
   }
-  if (entry.operationalState === "BLOCKED") {
+  /*
+   * Both spellings of "this item is waiting on a person" offer the same way in.
+   * This branched on the single spelling `BLOCKED`, so an AWAITING_RESPONSE row
+   * said the item needed a person and offered nothing to press (M-13). The
+   * shared predicate is the same one the server and TeamThreadPanel ask, and
+   * hand-keying one of its two states is what C3 was.
+   */
+  if (awaitsResponse(entry.operationalState)) {
     return (
       <Button size="sm" variant="secondary" disabled={busy} onClick={onRespond}>
         Respond

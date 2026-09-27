@@ -94,6 +94,8 @@ export function WorkItemDetail({
   onClassifyStartUnknown,
   onAudit,
   onRespond,
+  onRetryWithExistingContext,
+  onOpenHumanInput,
   onResponseChange,
   onComplete,
   onVerifyItem,
@@ -121,6 +123,8 @@ export function WorkItemDetail({
   onClassifyStartUnknown(classification: StartUnknownClassification, expectedStartIntentId: string): void;
   onAudit(): void;
   onRespond(): void;
+  onRetryWithExistingContext(): void;
+  onOpenHumanInput(): void;
   onResponseChange(value: string): void;
   onComplete(): void;
   onVerifyItem(): void;
@@ -246,7 +250,12 @@ export function WorkItemDetail({
               <div className="rounded-panel border border-warning/40 bg-warning/5 p-4">
                 <h3 className="mb-2 text-sm font-semibold text-warning">{item.operationalState === "AWAITING_RESPONSE" ? "Needs your input" : "Answer saved"}</h3>
                 <p className="mb-3 text-xs leading-5 text-fg-muted">Review the latest question, answer it, or change the instructions before continuing.</p>
-                <Button variant="success" onClick={onRespond}>{item.operationalState === "AWAITING_RESPONSE" ? "Review and respond" : "Continue with saved answer"}</Button>
+                {/* Opens `HumanInputDialog`, which is the surface built for both
+                    of these states and which nothing opened before P-A3. It
+                    used to call `onRespond`, and since neither banner state
+                    renders the box at :407 that submitted an answer nobody had
+                    typed - M-13. */}
+                <Button variant="success" onClick={onOpenHumanInput}>{item.operationalState === "AWAITING_RESPONSE" ? "Review and respond" : "Continue with saved answer"}</Button>
               </div>
             )}
             {item.latestHandoff !== null && (
@@ -412,7 +421,7 @@ export function WorkItemDetail({
                   value={response}
                   hint={
                     item.operationalState === "BLOCKED"
-                      ? "Answer the blocker, or leave blank to retry with the existing context. Configure secrets outside this box."
+                      ? "Answer the blocker, then respond and resume. To continue on what the agent already has, use Retry with existing context. Configure secrets outside this box."
                       : "Paste the agent's own summary here if the work is already finished, then mark it complete."
                   }
                   placeholder="What the agent needs to know to continue…"
@@ -420,9 +429,19 @@ export function WorkItemDetail({
                 />
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {item.operationalState === "BLOCKED" && (
-                    <Button variant="success" disabled={!canStart || busy} onClick={onRespond}>
-                      Respond and resume
-                    </Button>
+                    <>
+                      {/* Disabled while the box is empty: a blank box used to be
+                          submitted as the canned retry text, which put an answer
+                          on the record that nobody wrote. */}
+                      <Button variant="success" disabled={!canStart || busy || response.trim() === ""} onClick={onRespond}>
+                        Respond and resume
+                      </Button>
+                      {/* The affordance the blank box used to carry silently,
+                          kept because the hint documented it, now labelled. */}
+                      <Button variant="secondary" disabled={!canStart || busy} onClick={onRetryWithExistingContext}>
+                        Retry with existing context
+                      </Button>
+                    </>
                   )}
                   {/*
                     For work that is finished but whose status never landed —

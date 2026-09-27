@@ -179,6 +179,8 @@ test("Tasks detail blocks START_UNKNOWN recovery while preserving visible guidan
       onRecover={() => {}}
       onClassifyStartUnknown={() => {}}
       onRespond={() => {}}
+      onRetryWithExistingContext={() => {}}
+      onOpenHumanInput={() => {}}
       onResponseChange={() => {}}
       onAudit={() => {}}
       onComplete={() => {}}

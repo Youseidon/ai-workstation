@@ -30,6 +30,15 @@ import { workspaceApi } from "@/lib/workspacesApi";
 
 type Pane = "suites" | "list" | "detail";
 
+/*
+ * The retry text an owner gets when they ask to continue on what the agent
+ * already has. It was `respond()`'s fallback for an empty box until P-A3, so any
+ * caller without a box submitted it as though the owner had written it. Only the
+ * button labelled "Retry with existing context" sends it now.
+ */
+const RETRY_WITH_EXISTING_CONTEXT =
+  "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.";
+
 const DETAIL_HEIGHT_KEY = "agent-console.tasks-detail-height";
 const DETAIL_COLLAPSED_KEY = "agent-console.tasks-detail-collapsed";
 const DETAIL_HEIGHT_DEFAULT = 320;
@@ -299,15 +308,10 @@ export function TasksView() {
       setResponse("");
     }, "Marked complete");
 
-  const respond = () =>
+  const sendResponse = (content: string) =>
     void act(async () => {
       if (listItem === null) return;
-      await workspaceApi.respond(
-        SERVER_URL,
-        listItem.prompt.id,
-        response.trim() ||
-          "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.",
-      );
+      await workspaceApi.respond(SERVER_URL, listItem.prompt.id, content);
       setResponse("");
       if (
         !console_.startRun(
@@ -320,6 +324,28 @@ export function TasksView() {
         throw new Error("Response saved, but the agent connection was unavailable. Run it from Chat.");
       }
     }, "Response sent");
+
+  /*
+   * An answer nobody typed is never submitted (M-13, jd's ruling of
+   * 2026-09-27). This used to fall back to RETRY_WITH_EXISTING_CONTEXT for an
+   * empty box, which is how the banner - a surface with no box in it at all -
+   * submitted that text on the owner's behalf and started a run on it. The
+   * button that calls this is disabled while the box is empty; the guard is here
+   * as well because a handler must not depend on its caller's gate.
+   */
+  const respond = () => {
+    const content = response.trim();
+    if (content === "") return;
+    sendResponse(content);
+  };
+
+  /** The same retry, from a button that says what it does rather than a blank box. */
+  const retryWithExistingContext = () => sendResponse(RETRY_WITH_EXISTING_CONTEXT);
+
+  /** Opens the surface built for answering, which until P-A3 nothing opened. */
+  const openHumanInput = () => {
+    if (listItem !== null) setInputItem(listItem);
+  };
 
   const recoverAndResume = (target: OperationsPrompt | null = listItem) =>
     void act(async () => {
@@ -504,6 +530,8 @@ export function TasksView() {
     },
     onAudit: () => auditCompletion(),
     onRespond: respond,
+    onRetryWithExistingContext: retryWithExistingContext,
+    onOpenHumanInput: openHumanInput,
     onComplete: () => markComplete(),
 
     onVerifyItem: () => void verifyWorkItem(),
