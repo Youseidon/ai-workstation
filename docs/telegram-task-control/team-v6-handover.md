@@ -57,7 +57,7 @@ rather than a tautology. Proof that does not use `pgrep`: `ss -ltnp` shows four 
 (`4100` pid 117123, `4200` pid 117484, `3100` pid 117135, `3200` pid 117504), and `ss -tnp` shows pid
 117484 holding **two established connections to `149.154.166.110:443`**, which is `api.telegram.org`.
 
-## 3. V5: four of seven cases done
+## 3. V5 is complete: six PASS, one PARTIAL, one SKIPPED
 
 | Case | Result | Evidence |
 | --- | --- | --- |
@@ -66,8 +66,8 @@ rather than a tautology. Proof that does not use `pgrep`: `ss -ltnp` shows four 
 | 1 roster on both sides | **PASS** | two people two bots on both instances; `refs/aw/team` moved `aa92159…` → `2475e47…`, so the GitHub round trip is real |
 | 12 default-off regression | **PASS on the API half** | Team on: `200` / `405`. Team off: both `403 team_disabled`, `items` `403`. **The `405`→`403` is the assertion**: the gate sits in front of method routing. Personal control unaffected. **Browser half now PASS too**, 2026-09-26, driven with Playwright on 3100: `Team status`, `Join team` and the create panel on `/agents`, and `Team thread` on the `WI_TC01` detail, are all present with Team on, all gone with Team off **after a reload**, and all restored when it goes back on. **Still owed: the phone half only** - the private chat behaving unchanged. One defect found, registered **L-16**, not fixed: with no reload every panel stays, and the `Open Team thread` button stays enabled, though clicking it `403`s with a message that names the real cause |
 | **2 open the item thread** | **PASS 2026-09-26** | `201`, item `awi1_63460787e23fa7d635890376`. Anchor = Telegram message **85** (outbox 8), access message = **87** (outbox 9) reading `Item access / Jj: owner / Junaid: read only`. `telegram_thread` 4 `ACTIVE`, `item_link` `role: requester` `epoch: 1`, no grants. **Pin verified through `getChat`**, not from the local flag |
-| **3 read-only views** | **NOT RUN** | **jd's phone.** From account B in the group, `/task` `/status` `/access` `/help`, each as a reply to the anchor |
-| **11 close the thread** | **NOT RUN** | **jd's phone.** `/close` from B must be refused as owner-only; then `/close` from A |
+| **3 read-only views** | **PASS 2026-09-27** | Run by jd from account B. All five sends were genuine replies to anchor 85, each answered exactly once by `@aiws_helper_bot`, and **instance B received every group update and emitted nothing into the group**. No receipts, no grants, no state change. `/help` proved capability-derived, which retires the B12 warning |
+| **11 close the thread** | **PARTIAL, B17 reproduces. M-15** | `/close` from B refused as owner-only; `/close` from A set `item_link.closed_at`. But `/task` from B a minute later returned the whole item. **The cause is not the `ACTIVE` thread row**: `closedAt` gates granted commands and not reads, and the thread lookup filters on `ANCHOR_GONE` only, so closing the row would fix nothing. No grants ever existed, so the grant-ending criterion was **not exercised** |
 
 Case 10 stays SKIPPED (B15). Cases 4 to 9 are **not** in V5's scope - V5 is cases 2, 3, 11 and 12 only.
 

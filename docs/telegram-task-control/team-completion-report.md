@@ -140,8 +140,8 @@ September's first pass, cases 0a to 12, was run by jd personally against the rea
 [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md)'s Progress table.
 The re-run that clause 4 asks for is in that document's **Re-run for V5** table and is described below.
 
-**V5, 2026-09-26, against the live rig with live Telegram credentials authorized by jd that day.**
-Five of seven cases are done.
+**V5, 2026-09-26 and 2026-09-27, against the live rig with live Telegram credentials authorized by jd.**
+**V5 is complete**: six cases PASS, one PARTIAL with its cause newly understood, one SKIPPED.
 
 | Case | Outcome |
 | --- | --- |
@@ -149,19 +149,26 @@ Five of seven cases are done.
 | 0b task waiting on a question | **PASS.** Card posted unprompted, `kind: personal_question`, both buttons, options parsed |
 | 1 roster on both sides | **PASS.** `refs/aw/team` at `4255c668…`, confirmed by `git ls-remote` against GitHub itself, so the round trip is real |
 | 2 open the item thread | **PASS.** `201`, item `awi1_63460787e23fa7d635890376`, anchor message 85, access message 87 reading exactly as specified. **The pin was verified through `getChat`**, not from the local `anchor` column |
-| 12 default-off regression | **PARTIAL, two halves of three.** API half PASS, browser half PASS, phone half not run |
-| 3 read-only views | **NOT RUN.** Needs a second human account typing in the group |
-| 11 close the thread | **NOT RUN.** Same reason |
+| 12 default-off regression | **PASS, all three halves.** The phone half ran the full personal write-and-apply round trip with Team off, and the tap was verified genuine |
+| 3 read-only views | **PASS.** Five replies to the anchor, each answered once by the owner's bot; instance B received every update and stayed silent |
+| 11 close the thread | **PARTIAL.** B17 reproduces, and the second look corrected B17's own cause. Registered **M-15** |
 | 10 cross-owner thread request | **SKIPPED**, B15, still not a real scenario |
 
-**Cases 3 and 11 are the honest edge of this track's verification.**
-A bot token cannot type as a user, so no agent can run them, and that is a property of Telegram rather
-than a gap in the work.
-The rig is prepared and standing, and jd has an exact script at
-[v5-phone-script.md](v5-phone-script.md).
+**Cases 3, 11 and 12's phone half were run by jd personally on 2026-09-27**, from the script at
+[v5-phone-script.md](v5-phone-script.md), because a bot token cannot type as a user.
 Before handing it over, instance B was confirmed **live and long-polling**, so that case 3's "instance B
 stays silent" is an assertion rather than a tautology: its process holds two established connections to
 `api.telegram.org`.
+That mattered: B received all five group updates and chose to emit nothing.
+
+**Case 11 is the one PARTIAL, and the re-run was worth running for the cause rather than the verdict.**
+B17 reproduced, but the second look showed B17's own explanation was wrong.
+`closedAt` gates granted commands and not view commands, and the thread lookup filters on
+`ANCHOR_GONE` only, so the `telegram_thread` row staying `ACTIVE` is **not** what keeps the views
+answering and closing it would fix nothing.
+That is registered as **M-15**, and the correction is written into B17.
+The re-run also could **not** exercise the grant-ending criterion, because no grants ever existed on the
+item, and the row says so rather than implying a pass.
 
 **Case 12's browser half**, new today, was driven with Playwright against the live web app.
 With Team on, `Team status`, `Join team` and the create panel render on `/agents` and `Team thread`
@@ -194,6 +201,10 @@ Two more, both found today:
   with two members who do not exist, with no marker that it is a fixture.
   Worse than a wrong port, because it succeeds plausibly.
   The check document's command block has been corrected to pass the path for both instances.
+- **M-15**, and with it a correction to **B17**, whose recorded cause was wrong.
+  Found by running case 11 rather than by re-reading it, and the distinction between "the thread row says
+  `ACTIVE`" and "the view path never checks `closedAt`" only appears when you ask which one the code
+  actually reads. It reads neither for routing: the lookup filters on `ANCHOR_GONE` alone.
 
 ## 8. Both audit results
 
@@ -250,10 +261,9 @@ passes by agreement.
 Nothing is in flight.
 No worktree, no task branch, `git status` clean, nothing ever pushed.
 
-**Needs jd personally, and only jd:**
-
-- **V5 cases 3 and 11**, and **case 12's phone half**.
-  Script at [v5-phone-script.md](v5-phone-script.md), rig standing and prepared.
+**Nothing needs jd personally any more.**
+V5's three phone cases were run on 2026-09-27 and are recorded.
+**Every clause of section 8 that can be met is now met**, and the one that cannot is clause 1.
 
 **Open gaps, none blocking, in jd's own priority order from 2026-09-26:**
 
@@ -267,6 +277,10 @@ No worktree, no task branch, `git status` clean, nothing ever pushed.
 - **M-12**, the requester's review-and-apply half has no web surface at all.
 - **M-14**, a workstation that loses its database cannot rejoin a team it is already listed in, and
   `roster_conflict` covers at least two distinct states, one remote and one a stale local mirror.
+- **M-15**, new on 2026-09-27: a closed item thread answers its view commands as though it were open and
+  says nothing about being closed. This is what keeps check case 11 at PARTIAL across two runs.
+  Like M-11 it needs a decision rather than obviously a fix: reading a closed thread's history may be
+  correct, in which case the fix is one line of output.
 - **M-6, M-7, M-10, M-11**, and **L-13**, **L-16**.
 - **F10**, the rig task, carrying B3, B4, B10 and B19. Needed before **LT-5** and nothing else.
 - **LT-5** itself, blocked on F10 and on B19 specifically: instance B needs its own clone.
