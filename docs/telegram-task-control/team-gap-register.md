@@ -474,8 +474,17 @@ What nothing recorded is the consequence, which audit 3 verified in the code and
 So the pinned anchor stays in the group indefinitely, showing a state the task left behind.
 Meanwhile `e47becc`'s commit message and the tracker both say "B1 to B19 are now all closed, deferred or pointed elsewhere", which is the sentence a later reader would trust.
 
+**Both halves were measured against the live rig on 2026-09-27, not just read.**
+The anchor on item `awi1_63460787e23fa7d635890376` was edited **once an hour, on the hour, for eleven consecutive hours** while the item was open, outbox 10 to 20, every one `SENT`.
+`/close` landed at `01:23:09Z`, and the next hourly slot, `01:52:50Z`, produced **no edit at all**; the only outbox rows after the close were replies to jd's own commands.
+So the first half of this entry is **confirmed**: `syncTeamItem` does return early on a closed link and the churn stops.
+The second half is confirmed too: message 85 is **still pinned**, and `getChat` still returns it.
+
+That is the trade working exactly as recorded - no unbounded edit loop, and a stale pinned anchor that outlives the thread.
+
 **What this needs is a decision, not obviously a fix.**
 Either a task owns the unpin and settles what a closed-but-blocked thread should look like, or this entry stands as the accepted trade with the bug log's reason.
+Note that **M-15** is the sharper half of the same area: the pinned anchor is at least visibly stale, whereas a closed item's view commands actively present it as live.
 jd waived audit 3's A1 on 2026-09-25 with this recorded; the waiver is in the tracker.
 
 ### M-10. F05's supergroup upgrade has no harness case, and had two invented scenario ids
