@@ -16,7 +16,7 @@ Two in the register were stale and are corrected below: `taskControl.ts:321` is 
 - **Do not weaken an assertion to make a suite green.** If an existing assertion must change, that change is its **own commit** citing the ruling that authorises it.
 - **Live Telegram credentials are authorised** as of 2026-09-26. Every task record must say a live credential **was** used where it was.
 - **The T1 harness is exclusive and contends with the live rig.** Never run both. Never two harness runs at once.
-- **No push to `ai-workstation`** until P-A1. The roster push to the pilot repo is authorised.
+- **No push to `ai-workstation`** until P-A1. The roster push to the pilot repo is authorised, and as of 2026-09-27 so is **pushing a branch to the pilot workspace repository where a handover proof needs the exchange to go through the shared remote** - that is the path the product itself uses, and a checkout-to-checkout fetch does not exercise it.
 - Commit messages imperative, **no co-author line of any kind**.
 
 ## Phase 0 - the session's first action
@@ -88,7 +88,7 @@ One note for whoever runs it next: the first 22 rows took about 45 minutes and t
 
 | Id | Task | Acceptance criteria | jd |
 | --- | --- | --- | --- |
-| **P-B5** | Task state reads the handover control record (M-16). | **Design first, then build**, and the design is reviewed before any code. `teamControlRecord.ts` already holds a first-class 14-state machine with a guarded transition table, stored outside the prompt in a git record that `item_link.control_head` points at and versioned by `epoch`, plus `LIVE_HANDOVER_STATES` and `isLiveHandoverState()`. What is missing is the other direction: `operationalState` never reads it, so every surface infers person-waiting state from **prompt status** by hand. That is the single common cause of **C3**, **M-13** and **M-15**. Add the task-level state jd described as "awaiting return handover". **This is the riskiest task on the plan**: `operationalState` is read by every surface, and the reconcile moving it is exactly what caused C3. Expect to touch T1 broadly. | **Ruled 2026-09-27**: its own designed task, not folded into a bug fix |
+| **P-B5** | Task state reads the handover control record (M-16). **Also carries L-18** by jd's ruling of 2026-09-27: the banner's over-broad condition at `WorkItemDetail.tsx:245`, its two inverted labels, and `HumanInputDialog`'s hardcoded modal title. All three are the same cause this task exists to remove, so they are fixed here rather than twice. | **Design first, then build**, and the design is reviewed before any code. `teamControlRecord.ts` already holds a first-class 14-state machine with a guarded transition table, stored outside the prompt in a git record that `item_link.control_head` points at and versioned by `epoch`, plus `LIVE_HANDOVER_STATES` and `isLiveHandoverState()`. What is missing is the other direction: `operationalState` never reads it, so every surface infers person-waiting state from **prompt status** by hand. That is the single common cause of **C3**, **M-13** and **M-15**. Add the task-level state jd described as "awaiting return handover". **This is the riskiest task on the plan**: `operationalState` is read by every surface, and the reconcile moving it is exactly what caused C3. Expect to touch T1 broadly. | **Ruled 2026-09-27**: its own designed task, not folded into a bug fix |
 
 ## Phase 6
 

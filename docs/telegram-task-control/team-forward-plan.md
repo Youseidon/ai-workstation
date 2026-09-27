@@ -83,6 +83,14 @@ Recorded here because a plan that omits them reads as though the orchestrator ch
 | **L-2** | **Yousef confirmed** as G04's named fallback owner. Closes L-2 |
 | **M-6** | **Product tiebreak only.** Make `taskControl.ts:321` deterministic; leave the six leaking fixtures as untidiness rather than risk |
 
+Three further decisions, taken **2026-09-27** once Phases 0 to 3 had landed:
+
+| Item | Decision |
+| --- | --- |
+| **L-13's tier** | **Keep `npm run test:harness` as its own named tier**, out of root `npm test`. The harness self-tests build the web app, so folding them in roughly triples that tier's runtime, and a tier people stop running is worse than a named one they run on purpose. The orchestrator proposed this and jd confirmed it |
+| **L-18** | **Fold into P-B5.** The banner's over-broad condition and its two inverted labels stay registered and unfixed for now, because `M-16` is the structural answer to all three instances - each is a surface inferring person-waiting state from prompt status by hand - and fixing them separately would be done twice |
+| **Pilot workspace pushes** | **Authorised for handover proofs.** A branch may be pushed to the pilot *workspace* repository where a handover proof needs the exchange to travel through the shared remote, which is the path the product itself uses. This is the disposable pilot workspace repo only; **`ai-workstation` is still untouched until P-A1** |
+
 **One standing constraint was lifted**: `team.handoverEnabled stays false`. It existed for gate **G02**, which closed 2026-09-22, and it had been copied forward for five days. jd asking "why is handover switched off" is what surfaced it.
 
 ## Execution plan
