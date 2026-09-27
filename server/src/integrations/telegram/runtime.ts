@@ -835,6 +835,7 @@ export class TelegramLiveRuntime {
         }
         await this.sendDue(session);
         await this.finishCompletedTeamItems(session);
+        await this.retireClosedTeamItemAnchors(session);
         await this.pinControlPanels(session);
       } catch (error) {
         this.log.warn(this.safe(`delivery cycle failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -1336,6 +1337,53 @@ export class TelegramLiveRuntime {
       if (anchor === null || anchor.messageId === null || anchor.pendingEdit || JSON.stringify(anchor.deliveredPayload) !== JSON.stringify(payload)) continue;
       // Mark first: like pinning, a refused unpin is attempted once and never loops.
       workspaces.markTelegramThreadAnchorGone(anchor.outboxId);
+      try {
+        await session.api.unpinChatMessage(roster.groupChatId, anchor.messageId);
+      } catch (error) {
+        this.log.warn(this.safe(`unpinChatMessage failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
+  }
+
+  /**
+   * A closed item's anchor becomes a final card and loses its pin (M-11).
+   *
+   * Measured rather than argued: the pilot's anchor churned once an hour for
+   * eleven consecutive hours while the item was open and stopped dead at the
+   * close, so there was never a runaway loop here - only a pinned message that
+   * outlived its item forever. This completes the F02 acceptance criterion that
+   * was deliberately skipped, and **it is safe only now**: the reason for keeping
+   * the pin was routability, and P-B2 is what made a closed thread say so, so the
+   * pin buys nothing.
+   *
+   * Two early returns are why this is not self-correcting and needs its own pass:
+   * `syncTeamItem` returns for a closed link, and `finishCompletedTeamItems` only
+   * ever reaches a DONE or SKIPPED prompt, which a closed-but-blocked item is not.
+   */
+  private async retireClosedTeamItemAnchors(session: Session): Promise<void> {
+    if (!this.settings().teamEnabled) return;
+    let roster: TeamRoster;
+    try { roster = this.teamRosterFor(session); } catch { return; }
+    for (const link of workspaces.itemLinks()) {
+      if (link.closedAt === null) continue;
+      const thread = workspaces.telegramThreadFor({ botId: session.botId, chatId: roster.groupChatId, subject: itemSubject(link.itemId) });
+      if (thread.statusMessageId === null || thread.state === "ANCHOR_GONE") continue;
+      const anchor = workspaces.telegramThreadAnchorDelivery(thread.id);
+      if (anchor === null || anchor.messageId === null || anchor.pendingEdit) continue;
+      /*
+       * The final card first, through the same material comparison the open
+       * anchor uses (B11), so the edit is enqueued once and the age alone never
+       * triggers another. A closed item's payload differs from a live one's by
+       * the closed marker M-15 added, which is what makes this settle.
+       */
+      const { payload } = this.teamItemPayload(session, roster, link);
+      if (teamItemAnchorMaterial(anchor.desiredPayload) !== teamItemAnchorMaterial(payload)) {
+        workspaces.enqueueTelegramEdit({ botId: session.botId, targetOutboxId: anchor.outboxId, payload });
+        continue; // Unpin on a later pass, once the group can see the final card.
+      }
+      if (JSON.stringify(anchor.deliveredPayload) !== JSON.stringify(payload)) continue;
+      // Claim first, like the pin: a refused unpin is attempted once, never looped.
+      if (!workspaces.claimClosedItemAnchorUnpin(anchor.outboxId)) continue;
       try {
         await session.api.unpinChatMessage(roster.groupChatId, anchor.messageId);
       } catch (error) {

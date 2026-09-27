@@ -4630,6 +4630,31 @@ export const workspaces = {
     db.prepare("UPDATE telegram_thread SET status_message_id=?,state=?,updated_at=? WHERE id=?")
       .run(outboxId, options.pin === true ? "PIN_PENDING" : "ACTIVE", new Date().toISOString(), threadId);
   },
+  /**
+   * Claims the one unpin a closed item's anchor is owed (M-11), returning true to
+   * exactly one caller.
+   *
+   * The pin has a marker of its own - `PIN_PENDING`, cleared once the pin has been
+   * attempted - and the unpin needs the same, or a refused unpin is retried on
+   * every pass of the deliver loop. This uses `telegram_outbox.anchor`, the flag
+   * that says this row is the anchor Telegram should pin, because clearing it says
+   * exactly what happened: it is no longer pinned.
+   *
+   * **Not `markTelegramThreadAnchorGone`, deliberately.** That clears
+   * `status_message_id` and writes `ANCHOR_GONE`, and `telegramItemThreadForMessage`
+   * resolves neither - so a bare reply into the thread would route nowhere and get
+   * silence, which is exactly the answer M-15 was fixed to stop. The thread stays
+   * `CLOSED` and routable; only the pin goes.
+   *
+   * Safe on this column because the one other reader, `telegramThreadAnchorSend`,
+   * counts send failures to decide whether to offer a *new* anchor - and
+   * `syncTeamItem` returns before that for a closed link, so a closed item never
+   * asks the question.
+   */
+  claimClosedItemAnchorUnpin(outboxId: number): boolean {
+    return db.prepare("UPDATE telegram_outbox SET anchor=0,updated_at=? WHERE id=? AND anchor=1")
+      .run(new Date().toISOString(), outboxId).changes === 1;
+  },
   /** The operator deleted an anchor (its edit or its send failed for good): the next message registers a new one. */
   markTelegramThreadAnchorGone(outboxId: number): number {
     return db.prepare("UPDATE telegram_thread SET status_message_id=NULL,state='ANCHOR_GONE',updated_at=? WHERE status_message_id=?")

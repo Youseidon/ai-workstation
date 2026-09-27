@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { startTeamHarness, type TeamHarness, type TeamHarnessMember } from "../../src/env/teamHarness.ts";
-import { eventually } from "../../src/drivers/state.ts";
+import { eventually, observeQuietPeriod } from "../../src/drivers/state.ts";
 import { createTeamFixture, pairTeamMember, registerTeamWorkspace, remoteRoster, replaceRemoteRoster, teamApi } from "../../src/teamFlows.ts";
 import type { StoredMessage } from "../../src/fakes/telegramServer.ts";
 
@@ -342,6 +342,72 @@ test("M-15 (T1): a closed item thread answers every read-only command and says i
       team.envA.app.query<{ state: string }>(
         "SELECT state FROM telegram_thread WHERE subject_kind='item' AND subject_id=?", item.itemId,
       )[0]?.state === "CLOSED");
+  } finally {
+    await team.dispose();
+  }
+});
+
+/*
+ * M-11. A closed-but-blocked item kept its pinned anchor forever. Completion
+ * retires and unpins its anchor; a close did neither, because `syncTeamItem`
+ * returns for a closed link and `finishCompletedTeamItems` only ever reaches a
+ * DONE or SKIPPED prompt.
+ *
+ * jd ruled on 2026-09-27: retire and unpin, **after P-B2**. The sequencing is the
+ * substance - the pin was kept for routability, and a closed thread that says so
+ * is what makes the pin unnecessary. So this row also asserts the thread is still
+ * reachable afterwards, because retiring it the way completion does would have
+ * made a reply route nowhere.
+ */
+test("M-11 (T1): closing an item retires its anchor into a final card and unpins it, and the thread stays reachable", {
+  annotation: { type: "covers", description: "M-11" },
+}, async () => {
+  const team = await startTeamHarness({ envA: { fakeProvider: "live" } });
+  try {
+    await joinFixture(team);
+    const item = await blockedItem(team, "m11-unpin");
+    const calls = (method: string) => team.fakeTelegram.calls.filter(call => call.method === method && call.botId === team.envA.bot.id);
+
+    await eventually("the anchor to be pinned once", async () =>
+      calls("pinChatMessage").length === 1 && team.fakeTelegram.pinnedMessageId(team.groupChat.id) === item.anchor.message_id);
+    expect(calls("unpinChatMessage"), "an open item's anchor is not unpinned").toHaveLength(0);
+    const editsBeforeClose = item.anchor.history.length;
+
+    const closeSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/close", { replyToMessageId: item.anchor.message_id });
+    const closeCard = await eventually("close card", async () => item.group().find(message =>
+      message.message_id > closeSent.message_id && message.from.id === team.envA.bot.id
+      && message.reply_markup?.inline_keyboard.flat().some(entry => entry.text === "Close thread")));
+    expect(await tap(team, closeCard, "Close thread")).toContain("closed");
+
+    // The final card: the same pinned message, edited in place, now saying it is
+    // closed. Not a new message - the group keeps one anchor per item.
+    await eventually("the anchor edited into its final closed card", async () =>
+      item.anchor.history.length > editsBeforeClose && item.anchor.text.includes("Thread closed"));
+    await eventually("the anchor unpinned exactly once", async () => calls("unpinChatMessage").length === 1);
+    expect(team.fakeTelegram.pinnedMessageId(team.groupChat.id), "nothing is left pinned for this item").not.toBe(item.anchor.message_id);
+
+    // Attempted once, never looped: the measured baseline this replaces was an
+    // anchor that churned once an hour for eleven hours while open.
+    await observeQuietPeriod(3_000, "a second unpin or a further anchor edit");
+    expect(calls("unpinChatMessage"), "the unpin is attempted once and never retried").toHaveLength(1);
+    const settledEdits = item.anchor.history.length;
+    await observeQuietPeriod(3_000, "the retired anchor being edited again");
+    expect(item.anchor.history.length, "and the retired card is not edited again").toBe(settledEdits);
+
+    /*
+     * The half that makes this safe rather than merely tidy. Retiring the way
+     * completion does writes ANCHOR_GONE and clears the thread's pointer, and
+     * `telegramItemThreadForMessage` resolves neither - so a bare reply would get
+     * silence instead of M-15's answer. The thread is CLOSED, not ANCHOR_GONE.
+     */
+    expect(team.envA.app.query<{ state: string }>(
+      "SELECT state FROM telegram_thread WHERE subject_kind='item' AND subject_id=?", item.itemId,
+    )[0]?.state).toBe("CLOSED");
+    const statusSent = team.fakeTelegram.userSendsMessage(team.envA.bot, team.envA.user, team.groupChat, "/status", { replyToMessageId: item.anchor.message_id });
+    const statusReply = await eventually("a reply into the unpinned thread still answers", async () => item.group().find(message =>
+      message.message_id > statusSent.message_id && message.from.id === team.envA.bot.id
+      && message.reply_to_message?.message_id === item.anchor.message_id && message.text.includes("Item status")));
+    expect(statusReply.text, "and still says the thread is closed").toContain("This item thread is closed.");
   } finally {
     await team.dispose();
   }
