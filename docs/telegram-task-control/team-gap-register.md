@@ -770,4 +770,154 @@ Each was fixed or registered individually. **None of them is a coincidence**: th
 | L-13 | **The `e2e` workspace's own test suite is in no tier any check names, and showed one failure nobody could name** | `npm run test --workspace e2e` is not in the root `npm test` and is not among the tiers A2 lists, so nothing routine runs it. Audit 4 saw it give `# pass 46 # fail 1` on a first invocation and 47/47 on seven consecutive re-runs, and could not recover the failing test's name because that run's output was filtered to summary lines. **Recorded as unverifiable rather than passed or failed**, which was the right call. These files are harness self-tests that start real servers, so a real failure here would be a failure of the instrument the whole track's evidence rests on. Registered 2026-09-26. **Seen a second time the same day, by the C3 worker, independently and on a different tree**: one failure on a first invocation, then 47/47 on three consecutive re-runs, and it also lost the failing test's name. **Two independent sightings is no longer a one-off.** Neither observer could name the test, and both lost it the same way - a first run filtered to summary lines - which is itself the lesson: capture full output on a first run of an unfamiliar suite. The C3 worker's guess was a port left in `TIME_WAIT` by a T1 run that finished about two minutes earlier, since these selftests boot harness environments on fixed ports; it offered that as a guess and did not claim it, and it is not confirmed. **What makes this worth a task rather than a note**: it is intermittent, it is in the instrument rather than the product, and nothing routine runs it, so its failure rate is unmeasured. |
 | L-14 | **Two record leftovers audit 4 found** | TM4's `LT-5` has no row in [human-verification.md](human-verification.md) at all - not even one recording that it is blocked on F10 - while `LT-3` and `LT-4` each got a deferral row. Separately, H02's migration is **52** after the reconcile renumbered it, but the table it rebuilds is still named `task_control_action_v29` (`server/src/workspaces.ts:1763`) and its error string still reads "Migration 29" (`:1797`). Both are cosmetic - the internal temp-table name is invisible to users and the migration runs correctly - but the second will read as a contradiction to the next person who greps for migration numbers. Registered 2026-09-26. |
 | L-15 | **A stray control byte in `server/test/telegramViews.test.ts`** | Line 119 holds a raw `0x01`, so `file` reports the source as `data`. **It is hygiene, not a visibility trap, and the difference was checked rather than assumed**: `grep -rn` returns that file's hits normally, including lines past the byte, because GNU grep's binary detection keys on NUL and this byte is not one. `views.ts` had an actual NUL and was genuinely invisible, which is the case this was mistaken for. Node runs the file and its tests are inside the 618. Registered 2026-09-26. |
-| L-16 | **Turning Team off left every Team panel on screen until the page was reloaded. Fixed 2026-09-27 by P-C2** | Found 2026-09-26 by V5 case 12's browser half, driven with Playwright against the live rig on 3100. With `team.enabled` set to `false` by `PUT /api/settings` and **no reload**, `/agents` keeps `Team status`, `Join team` and the create panel, and the `WI_TC01` detail keeps its `Team thread` panel with the `Open Team thread` button still **enabled**. After a reload all four are gone from both surfaces, which is what case 12 asks for, so the case passes as written. **The cause is precise and was read rather than guessed**: the server does broadcast the change - `broadcastSettingsChange` ([server/src/index.ts:106](../../server/src/index.ts#L106)) - but the `settings_updated` message carries **only `providers`**, and the web reducer applies only `providers` ([web/lib/agentConsole.tsx:201](../../web/lib/agentConsole.tsx#L201)), whose own comment says "re-detected providers without a reload". The settings snapshot that holds `team.enabled`, and that gates the Agents Team section at [AgentsView.tsx:351](../../web/components/agents/AgentsView.tsx#L351), is never re-read. The server's comment at `index.ts:102` claiming "every open tab is told to re-read both" **overstates what the message carries**. Kept low, and **not fixed, deliberately**: the API gate holds, so the stale button cannot act - clicking it was driven and returns `403` with `Enable Team in Agents settings before using Team features.`, which names the real cause - and V5 is a verification phase, so jd's prove-first instruction of 2026-09-26 applies. Registered 2026-09-26. **FIXED 2026-09-27 by P-C2**: `settings_updated` now carries the whole settings snapshot, the web reducer applies it, and `useSettings` prefers it over the copy it fetched on mount - so the server comment claiming every tab re-reads "both" is true rather than edited. Proved by `L-16 (T1)`, which turns Team off **by the API from outside the page**, exactly as the defect was found, and asserts the panels go and come back with no reload anywhere in the test. Red first on unchanged code, `Expected: 0, Received: 1`. Web 95 of 95, server 622 of 622, shared 91 of 91, typecheck exit 0 on four workspaces. One thing the row had to get right: `Team status` returns null until a team exists, so asserting it in a harness with no team would have asserted the absence of a team rather than the state of the gate. |
+| L-16 | **Turning Team off left every Team panel on screen until the page was reloaded. Fixed 2026-09-27 by P-C2** | Found 2026-09-26 by V5 case 12's browser half, driven with Playwright against the live rig on 3100. With `team.enabled` set to `false` by `PUT /api/settings` and **no reload**, `/agents` keeps `Team status`, `Join team` and the create panel, and the `WI_TC01` detail keeps its `Team thread` panel with the `Open Team thread` button still **enabled**. After a reload all four are gone from both surfaces, which is what case 12 asks for, so the case passes as written. **The cause is precise and was read rather than guessed**: the server does broadcast the change - `broadcastSettingsChange` ([server/src/index.ts:106](../../server/src/index.ts#L106)) - but the `settings_updated` message carries **only `providers`**, and the web reducer applies only `providers` ([web/lib/agentConsole.tsx:201](../../web/lib/agentConsole.tsx#L201)), whose own comment says "re-detected providers without a reload". The settings snapshot that holds `team.enabled`, and that gates the Agents Team section at [AgentsView.tsx:351](../../web/components/agents/AgentsView.tsx#L351), is never re-read. The server's comment at `index.ts:102` claiming "every open tab is told to re-read both" **overstates what the message carries**. Kept low, and **not fixed, deliberately**: the API gate holds, so the stale button cannot act - clicking it was driven and returns `403` with `Enable Team in Agents settings before using Team features.`, which names the real cause - and V5 is a verification phase, so jd's prove-first instruction of 2026-09-26 applies. Registered 2026-09-26. **FIXED 2026-09-27 by P-C2**: `settings_updated` now carries the whole settings snapshot, the web reducer applies it, and `useSettings` prefers it over the copy it fetched on mount - so the server comment claiming every tab re-reads "both" is true rather than edited. Proved by `L-16 (T1)`, which turns Team off **by the API from outside the page**, exactly as the defect was found, and asserts the panels go and come back with **no reload anywhere in the test**. Red first on unchanged code, `Expected: 0, Received: 1`. Web 95 of 95, server 622 of 622, shared 91 of 91, typecheck exit 0 on four workspaces. One thing the row had to get right: `Team status` returns null until a team exists, so asserting it in a harness with no team would have asserted the absence of a team rather than the state of the gate. |
+| L-17 | **The state printer defaults to the wrong database and prints a plausible, wholly fake team** | `scripts/team-pilot-state.mjs` takes the database path as an optional argument and falls back to the calling checkout's own `.agent-console/console.sqlite`. Run the way [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documented it, from the repo root, it reads `main`'s leftover fixture database and prints `team-7`, `group-7`, `jd-laptop` and `yousef-desktop` - a complete, believable team, none of which exists - and signs off with `!! 2 FAILED outbox rows`, inviting an investigation into two fixture rows months old. **Worse than L-1's wrong port, which fails visibly; this succeeds plausibly**, and the only thing in the output that gives it away is the header line echoing the path it opened. The documented command block now passes the path for both instances. Registered 2026-09-26. **Renumbered from a bug-log `B20` on 2026-09-27**: that id was already taken by the design documents' own B series, where B20 is "ownership transfer needs confirmed release", cited by ruling 4 and by `teamControlRecord.ts`. The mistake is recorded rather than quietly corrected, because it was made one message after warning jd about this exact hazard, and because the two overlapping B series are a standing trap rather than a one-off slip. |
+| L-18 | **The saved-answer banner's condition is too broad and its two labels are the wrong way round** | Found by P-A0's reproduction on 2026-09-27 and **deliberately left** by P-A3, because changing either is a change to a personal-control surface `A5` covers beyond what jd's P-A3 ruling names. Two parts. **The condition**: the banner at [WorkItemDetail.tsx:245](../../web/components/tasks/WorkItemDetail.tsx#L245) fires on `prompt.status === "TODO"` plus *any* `HUMAN_RESPONSE` remark, so every item that was ever blocked and answered carries it forever - including one reported plainly `READY` with nothing pending, which is what P-A0's row observes. **The labels**: `human_response_hold` is the product's own record of a saved answer, and [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes a held answer to `AWAITING_RESPONSE`, so the state that *has* a saved answer reads "Needs your input" and the state that has none reads "Answer saved". `HumanInputDialog`'s own `Modal` title is a third instance: it is hardcoded to "Needs your input" while the panel inside reads "Your answer is recorded". Not severe after P-A3 - every one of these labels now opens a dialog that describes the state correctly and offers the right action - so this is wording and a gate, not a broken path. **`M-16` is the real answer to all three**: each is a surface inferring person-waiting state from prompt status by hand. Registered 2026-09-27. |
+
+## Closed while this register was open
+
+### M-13, both personal-control surfaces. Closed 2026-09-27 by P-A0 and P-A3.
+
+Reproduced first, on jd's ruling, and the reproduction is what made the fix small and the entry honest. P-A0 added two rows and falsified the widened half's severity; P-A3 fixed both halves.
+
+One line was the whole defect: `respond()` sent `response.trim() || "<canned retry text>"`, and `response` is bound to the box that renders only in the `BLOCKED` branch at `:407`. Every caller without a box submitted that text as though the owner had written it. That is why the banner and the blank box were the same bug from two sides - and the red run is what showed the second side, which had not been predicted.
+
+What landed:
+
+- The canned text is reachable from one button that says what it does, "Retry with existing context". The capability is kept rather than removed, because the hint at `:421` documented blank-means-retry.
+- `respond()` refuses an empty response, and "Respond and resume" is disabled until something is typed. The handler guards as well as the button.
+- Both banner states open `HumanInputDialog`, which was mounted and opened by nothing. It already handled both: it offers "Resume with saved answer" through `/respond-and-continue` with the owner's own `responseId`, the route that accepts an answered `TODO` item.
+- `RowAction` branches on the shared `awaitsResponse` predicate rather than the single spelling `BLOCKED`. Hand-keying one of that predicate's two states is what C3 was.
+
+Proof: `m13-personal-surfaces.spec.ts` at **7 of 7**, after **4 failed / 3 passed** and then **5 failed / 2 passed** on the same rows against unchanged product code. Web **95 of 95**, web typecheck exit 0. Assertion changes were two commits of their own, each citing jd's ruling of 2026-09-27. The live rig was stopped by port for every harness run, and no live credential was used.
+
+**Left deliberately, as `L-18`**: the banner's over-broad condition and its inverted labels. Both are changes beyond what jd's ruling names, and `M-16` is the structural answer to them.
+
+**Noted while fixing**: `PipelineBoard.tsx:1456` already disabled its submit on an empty box. The correct pattern was one file away the whole time.
+
+### M-15, the closed item thread. Closed 2026-09-27 by P-B2.
+
+jd's ruling: answer the view, say it is closed, and write the thread row to `CLOSED` too. All three landed.
+
+`TeamItemViewState.threadClosed` is **required, not optional**, because an optional flag is how the next view forgets the same way. Two construction sites, so it cost nothing and the compiler caught the test fixture.
+
+Every reader of `telegram_thread.state` was audited before the row write, and the audit is in the comment above it. Five readers, none comparing `ACTIVE` to `CLOSED`. The single behavioural consequence is deliberate and stated: a thread closed while its pin was still pending leaves the pin sweep.
+
+**The interesting part is migration 54.** The CHECK constraint forbade `'CLOSED'`, so the write needed a migration - and the migration's *position* was the defect. Placed beside migration 53, earlier in `workspaces.ts` but numbered higher, it was applied and then silently undone by migration 48's rebuild of the table with the old three-value CHECK. `/close` then failed outright:
+
+```
+Not applied: CHECK constraint failed: state IN ('ACTIVE','PIN_PENDING','ANCHOR_GONE')
+```
+
+**Migration order in that file is source order, not number order.** Worth carrying forward: the server tier stayed green through this, because the only server test covered rendering, and the T1 row is what caught it. The write now has a server test of its own, proved to reproduce the same failure when the migration is skipped.
+
+Proof: server **621 of 621**, typecheck exit 0 on four workspaces, `tm3-grants.spec.ts` **4 of 4** including the new `M-15 (T1)` row, which drives all four commands before and after a real `/close` and reads the thread row back.
+
+**And the row's own matcher took two corrections, both silent failures.** Prefix matching never finds `/task`, whose card begins with a breadcrumb rather than the title. Matching on reply-to alone matched a `/task` card as the answer to `/status`, and reported a missing closed notice on a message that had one. A matcher that cannot tell four views apart cannot assert about them.
+
+**Case 11 is not converted by this alone** - it still needs the re-run with real grants that Phase 2 ends with.
+
+### M-11, the closed item's pinned anchor. Closed 2026-09-27 by P-C1.
+
+Retired and unpinned on close, after P-B2, exactly as jd ruled. The F02 criterion that was deliberately skipped is now met.
+
+Neither existing pass could reach it: `syncTeamItem` returns for a closed link, and `finishCompletedTeamItems` only ever reaches a `DONE` or `SKIPPED` prompt. So a closed-but-blocked item needed a pass of its own, `retireClosedTeamItemAnchors`.
+
+**The sequencing was the substance, and it changed the implementation.** The obvious move - retire the way completion does, with `markTelegramThreadAnchorGone` - clears `status_message_id` and writes `ANCHOR_GONE`, and `telegramItemThreadForMessage` resolves neither. A bare reply into the thread would then route nowhere and get **silence**, which is precisely the answer M-15 had just been fixed to stop. So the thread stays `CLOSED` and routable and only the pin goes, and the T1 row asserts a `/status` reply into the unpinned thread still answers and still says the thread is closed.
+
+The unpin's once-only claim is `telegram_outbox.anchor`, mirroring the pin's own `PIN_PENDING` marker. Its one other reader counts send failures to decide whether to offer a *new* anchor, a question a closed item never asks because `syncTeamItem` returns first.
+
+Proof: `tm3-grants.spec.ts` **5 of 5** with the new `M-11 (T1)` row, **proved load-bearing by disabling the pass** - it then fails with `timed out waiting for the anchor edited into its final closed card`. Server **621 of 621**, typecheck exit 0 on four workspaces. The row also pins the non-loop: the unpin happens exactly once and the retired card is not edited again, against the measured baseline of an anchor that churned once an hour for eleven hours while open.
+
+### M-7, the unruled contradiction. Closed 2026-09-27 by P-C5.
+
+**jd ruled: ruling 7 wins.** A stopped-but-unreturned item is still held, and `isLiveHandoverState` is authoritative. The deciding argument was the asymmetry - choosing H04 wrongly loses another person's work, choosing ruling 7 wrongly costs one explicit step.
+
+`closeAfterHandover` kept its own `ACKNOWLEDGED` list, four of whose members - `OFFERED`, `WAITING_INPUT`, `PAUSED`, `RETURNED` - are in `LIVE_HANDOVER_STATES`. It now asks the one predicate `/close` asks, so the question is "is the handover over" rather than "has the executor stopped".
+
+The refusal reason changed with it. "The current executor has not acknowledged yet" blames a person who may have acknowledged perfectly well; it now says the handover is still live and names the state, so the owner's next step is to end the handover rather than to chase someone.
+
+**H07 tried this once and reverted** rather than weaken the `:955` assertion without a ruling. That was the right call, and the assertion change is its own commit citing the ruling that now exists.
+
+Proof: `teamHandoverRun.test.ts` **34 of 34** with the fix, after **32 pass / 2 fail** without it on the same rewritten assertions - the failure being the contradiction itself, `true !== false` on "an acknowledged stop does not end the handover". Server **621 of 621**, typecheck exit 0 on four workspaces. Nothing regresses for a user: `closeAfterHandover` has no production caller.
+
+One thing the rewrite taught, worth carrying: a state table that mutates shared state must ask its questions in an order that keeps the state meaningful. Asking in `CONTROL_STATES` order let an early non-live state close the link, after which every "leaves the link open" check was a statement about a link already shut - and it failed on `OFFERED` with a timestamp where it expected null.
+
+### M-6's product half, the order-dependent lookup. Closed 2026-09-27.
+
+jd ruled: **product tiebreak only**. The six leaking fixture files stay as untidiness rather than risk, which is what they become once nothing depends on row order.
+
+The tiebreak went into `teamRosters()` rather than into the one lookup the register named, because the order has **nine** consumers in `server/src` and **three of them take `[0]` outright**. So a same-millisecond tie did not merely make one `find` ambiguous - it decided which team the workstation believed it was in. `ORDER BY updated_at DESC, team_id ASC`: `team_id` is unique and never changes, so the answer is now a fact about the rows rather than about the query plan.
+
+The register's line number was stale and is corrected: the lookup is `taskControl.ts:341`, not `:321`.
+
+Proof: a new test writes three rosters, forces the tie on the rows through the same database file the suite pins, and asserts the order is identical across five reads **and** equal to `team_id` ascending. **Proved load-bearing by removing the tiebreak**, which fails that test alone. Server **622 of 622**.
+
+### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
+
+The engine now reaches a person. Six HTTP routes, a third runtime loop reading the shared ref namespace every 5 seconds so a receiver discovers an offer without being told to look, `registerHandoverTapHandler` finally called from `startSession`, the three handover cards rendered for Telegram, and a requester control on the work-item detail.
+
+**The card named three missing joins and there were five.** Driving a real tap end to end found two more that no reading had caught: `formatTelegramMessage` had no case for any handover card, so every one would have failed delivery as an unsupported payload kind and no tap was ever possible; and the session's `TaskControlService` config never carried `handoverEnabled`, so the gate would have refused every tap even with the setting on. Both were inside C1's own sentence and neither was visible until something tried to use it.
+
+**Two real defects were found by running the tests**, which is exactly why the task existed.
+
+1. **An engine defect in H04**, fixed in its own commit `8062cb2`. `discoverHandoverOffer` deduped per bot and item with no regard to the epoch. Request changes opens a new epoch, so a bot that had ever posted a card for an item would never post another, and **every handover round after the first was undiscoverable by anyone**. It could not have passed at any tier. Dedupe is now per epoch, and a new epoch ends the spent round's undecided buttons while leaving a decided one alone, because a decided button is answered from its receipt rather than re-applied.
+2. **A wiring defect**, fixed in `04dca86`. `runtime.handleCallbackResult` did not resolve the group actor for a handover action, so every handover tap was answered with a toast alone and nothing was written into the item's thread. D01's "the completion report is visible at once" could not have held.
+
+### H-2, the three unrun rows. Closed 2026-09-21 by H06.
+
+TM-T1-H1 27.5s, TM-T1-H2 1.7m, TM-T1-H3 43.6s. The orchestrator re-ran them rather than accepting the report: `3 passed (2.9m)`.
+
+One fixture was corrected rather than one assertion weakened: TM-T1-H1's env A had to move off `main` before capture, because `main` is a protected product branch and this product never merges one automatically. The protected-branch refusal was already asserted at the server tier, so nothing lost coverage.
+
+### L-4, the unreproducible two-width checks. Narrowed 2026-09-21 by H06, not closed.
+
+H06 committed its two-width rig as `scripts/verify-handover-browser.mjs` with an npm script rather than running it once and deleting it, which is the shape L-4 recorded as missing. Neither F03's control nor F06's is covered by a committed rig, so L-4 is **narrowed, not fully closed**: the practice is fixed and the two specific gaps remain, which is why L-4 is still listed as open in the Low band above. The heading of this entry read "Closed" until 2026-09-25 while its own body said otherwise, which audit 3's finding 5 caught: a reader scanning headings got the wrong answer.
+
+### H-1, the fixture that broke on its second run. Closed 2026-09-22 by F00B, commits `4070156..581aafd`.
+
+Two non-deterministic fixtures repaired, both test-only, no product change.
+
+1. **The known shared-state instance.** `telegramSupergroupMigration.test.ts` inserted `team_roster` rows under a fresh `teamId` but the same `group_chat_id` and never removed them, so the sighting count climbed on a second run against the same root. A `forgetTeamRoster` cleanup now runs in the `finally` block, so it holds even when the test fails partway.
+2. **A second instance nobody knew about**, in `e2e/src/scenarios/l3F1.ts`, cases S-L3-F1-05, -10, -12 and -18. The Bot API call log was cut by `Date.now()` and filtered with `call.at >= since`, so a call made just before the boundary in the same millisecond was counted rather than excluded. The cut is now an index into the append-only log. **This is stricter than the timestamp it replaced, not looser**, and it follows an idiom already used elsewhere in the same file.
+
+**The orchestrator re-ran every headline claim rather than accepting it**, and additionally ran a mutation: commenting out only the two `forgetTeamRoster(teamId)` calls restored the exact original failure (`# pass 4 / # fail 0`, then `not ok 2 ... # pass 3 / # fail 1` twice, same test name), which proves the fix is load-bearing rather than coincidental. The file was restored and the tree confirmed clean.
+
+Verified totals: server suite 417/417 three times against one unchanged root; T1 `127 passed (24.8m)` with 0 failed, 0 skipped and 0 flaky, including all three TM-T1 handover rows; typecheck clean across four workspaces; diff confined to two test files; both team flags still `fallback: false`.
+
+**No product defect was found.** All thirty T1 spec files ran and passed, including the twenty-one that had not run in the prior session, so the first-discovery risk F00B's card warned audit 3 about did not materialise.
+
+### H-3 and G02, the isolation evidence. Closed 2026-09-22 by V3.
+
+G02's decision half was confirmed by jd on 2026-09-20; the evidence half is what was missing, and H-3 required it at **3 repeats rather than once**.
+
+Both tiers now hold at three repeats:
+
+| Tier | Evidence | Repeats |
+| --- | --- | --- |
+| T1, end to end | `TM-T1-H1` in the `tm4-handover.spec.ts` burn-in | 3, twice over: the V3 worker at `9 passed (8.8m)` and the orchestrator's own re-run at `9 passed (10.0m)`, both exit 0, 0 flaky, 0 retries |
+| Server, the capability matrix | the four `RTC-12` rows at `server/src/teamHandoverRun.test.ts:496`, `:513`, `:525`, `:535`, plus `:565` that a hard denial cannot be overridden from Telegram | 3, against one unchanged root |
+
+**The V3 worker flagged a scope gap rather than asserting G02 closed, and it was right to.**
+It observed that `TM-T1-H1` exercises only the within-limit path end to end and does not itself enumerate the four matrix rows, and it declined to claim the server tier had run three times because that was outside what it had run.
+It was mistaken only in believing the server tier had run once: V2's server suite ran **three times against one unchanged root** and `teamHandoverRun.test.ts` is matched by that glob, so the matrix rows were already inside all three passes.
+The orchestrator did not rely on that inference and re-ran the four rows three times directly, plus the whole file at 34/34.
+
+So the honest statement is: the receiver's own policy decides, proven end to end at 3 repeats for the runnable path, and proven row by row at 3 repeats at the server tier.
+The two residual limits jd accepted on 2026-09-20 are unchanged and remain accepted: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment.
+`TM-T1-H1:225-227` additionally asserts no credential reaches the transcript, which passed on all six repeats across the two burn-ins.
+
+### M-4's rule 4.5, the close-path data loss. Closed 2026-09-22 by H07, commits `d300b05..1f01acd`.
+
+`/close` is now refused while a handover is live, with a reason that names what is outstanding and what to do instead.
+The guard stands **before** `revokeItemGrants` and `closeItemLink`, which is the whole point: H05's refusal to apply to a closed item was too late, because by then the grants were gone and the link shut.
+
+Nine states refuse and five allow. `OFFERED` and `APPLYING` were the two judgement calls and H07 included both, taking the ruling's purpose over its narrowest wording: an open offer is a live invitation to do work that could then never be applied, and a half-finished apply is still unapplied.
+
+**The orchestrator ran a mutation rather than trusting the tests.** Disabling only the guard reproduced the entire data-loss shape: the close applied while the record was `RETURNED`, the item closed, the receiver's grant was revoked, the apply was then refused forever, and `result.md` never reached the requester's checkout. Restored, and re-verified at 421/421 three times against one unchanged root, T1 at `127 passed (25.3m)`, typecheck clean on four workspaces.
+
+Two limits recorded rather than hidden:
+
+- The `/close` **text** command still mints its card and refuses on the tap, rather than refusing instead of the card. H07 chose one unbypassable guard over two that can diverge; making the text path refuse earlier means turning two handlers async. Cosmetic, and a small follow-up if jd wants it.
+- **No T1 row covers this yet.** H07 judged one belongs, the phone-side "`/close` on the anchor while a teammate holds the item", and left it to Phase V rather than writing it unasked. V4's auditors should see it as a known gap in end-to-end coverage, not as covered.
+- The guard is inert if `registerHandoverStateProbe` is never called. It is registered unconditionally in `startSession` beside the tap handler, which the orchestrator verified, so every real session has it; but it fails open rather than closed if a future path forgets.
