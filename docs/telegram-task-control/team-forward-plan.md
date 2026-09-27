@@ -30,7 +30,7 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 
 | New id | Old id | What it is | Why this band | Next action |
 | --- | --- | --- | --- | --- |
-| **P-A1** | jd's ruling of 2026-09-22, ex **M-2** | **199 commits exist on this machine and nowhere else.** `origin/main` is `4fd0e65` and is **415 behind**. No commit of this track is on any remote | Losing one disk loses the entire F, H, V and C tracks, M-13, and every record. It is the only item whose worst case is total | **jd decides**: push, or re-affirm keep-it-local knowing the exposure. Nothing else on this list protects against it |
+| **P-A1** | jd's rulings of 2026-09-22 and **2026-09-27** | **199 commits exist on this machine and nowhere else.** `origin/main` is `4fd0e65` and is **415 behind**. No commit of this track is on any remote | Losing one disk loses the entire F, H, V and C tracks, M-13, and every record | **DECIDED 2026-09-27 by jd: the push happens LAST, after every other item on this list is complete.** So it is scheduled, not open. The exposure is accepted deliberately in the meantime, and it grows with each task until then |
 | **P-A2** | **H-4** | Pilot database isolation is broken on main, **and the guard's own advice `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` is what silently breaks it** | A safety mechanism that recommends the thing that defeats it. Worked around in the rig, so the product defect is live and unproven against | Product fix, own task. Reproduce first on a clean checkout |
 | **P-A3** | **M-13** | **Review and respond submits a canned answer on the owner's behalf and starts a run on it.** The banner and the response box are gated on mutually exclusive states, and `HumanInputDialog` is mounted with nothing opening it | It writes an answer no human typed, onto a personal-control surface, then spends provider budget acting on it | Fix. The dead `HumanInputDialog` is probably the intended path already built |
 | **P-B1** | **M-12** | The requester's review-and-apply half has **no caller in `web/`** at all | The handover feature is half-built. Same shape as C1, C5 and P-A3: present, mounted, wired to nothing | Build the surface, or scope handover down explicitly |
@@ -62,7 +62,8 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 
 ## Suggested sequence
 
-**Before anything: settle P-A1.** It is a one-question decision, it is the only item whose worst case is total loss, and every task after it adds to the exposure.
+**P-A1 is settled and goes last.** jd ruled on 2026-09-27 that the push happens after every other item is complete.
+It stays banded **P-A** rather than being demoted, because the exposure is real and accepted rather than absent, and because the last task on this track is therefore a push to a remote that has never received any of it - which is a substantial piece of work in its own right, not a formality. Recorded risk jd is accepting: the divergence grows with every task, and the reconcile gets harder the longer it waits.
 
 **Then the two product defects, one task each, worker and worktree as usual.** P-A2 then P-A3. Both need reproducing first: P-A2 on a clean checkout, because the rig masks it, and P-A3 already has its reproduction in `m13-personal-surfaces.spec.ts`, so the fix has a red row waiting.
 
