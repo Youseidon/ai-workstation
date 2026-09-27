@@ -5,7 +5,7 @@ import type { OperationsPrompt, ProviderId } from "@agent-console/shared";
 import { PROVIDER_IDS } from "@agent-console/shared";
 import { Button } from "@/components/ui/Button";
 import { SERVER_URL } from "@/lib/serverUrl";
-import { workspaceApi, type HandoverOffer, type HandoverPreview } from "@/lib/workspacesApi";
+import { workspaceApi, type HandoverOffer, type HandoverPreview, type HandoverReview } from "@/lib/workspacesApi";
 
 export type HandoverAvailability = { enabled: true } | { enabled: false; reason: string };
 
@@ -170,6 +170,157 @@ export function HandoverControlView({
   );
 }
 
+/**
+ * M-12: the requester's **second** half, and it had no caller anywhere in `web/`.
+ *
+ * `handoverReview`, `applyHandover` and `requestHandoverChanges` each appeared
+ * exactly twice in the whole web tier - their own definitions, and a URL-shape
+ * table in `handoverControl.test.tsx` that asserts the route is right and never
+ * that anything calls it. That is what made this read as covered. Present, typed,
+ * and wired to nothing: the same shape as C1, C5 and M-13.
+ *
+ * jd ruled on 2026-09-27 to build it, against the recommendation to declare
+ * review-and-apply a deliberate phone action.
+ *
+ * Rendered from props alone, so every branch can be rendered in a test (F03, F06).
+ */
+export function HandoverReturnView({
+  review,
+  notice,
+  applied,
+  changesEpoch,
+  checking,
+  applying,
+  requesting,
+  acceptanceMet,
+  onAcceptanceMet,
+  requirements,
+  onRequirements,
+  error,
+  onCheck,
+  onApply,
+  onRequestChanges,
+}: {
+  review: HandoverReview | null;
+  notice: string | null;
+  applied: boolean;
+  changesEpoch: number | null;
+  checking: boolean;
+  applying: boolean;
+  requesting: boolean;
+  acceptanceMet: boolean;
+  onAcceptanceMet(value: boolean): void;
+  requirements: string;
+  onRequirements(value: string): void;
+  error: string | null;
+  onCheck(): void;
+  onApply(): void;
+  onRequestChanges(): void;
+}) {
+  /*
+   * Acceptance is stated, never derived. The server refuses to infer it from the
+   * result's own label - a DONE statement with no evidence is not acceptance - so
+   * this checkbox is the requester's decision and it starts unticked. Applying a
+   * partial result can never label the task complete however this reads, which is
+   * why the label is shown next to it.
+   */
+  const applyable = review !== null && review.applyOffered && acceptanceMet && !applied;
+  const requestable = review !== null && requirements.trim() !== "" && !applied;
+  return (
+    <div className="mt-3 rounded-panel border border-line bg-surface-2 p-4" aria-label="Review returned work">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 flex-1 basis-56">
+          <h3 className="text-[11px] uppercase tracking-wider text-fg-dim">Review returned work</h3>
+          <p className="mt-1 text-xs leading-5 text-fg-muted">
+            When whoever accepted hands the work back, review what they did and either apply it to this
+            checkout or send it back with what still needs changing.
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" loading={checking} disabled={applied} onClick={onCheck}>
+          Check for returned work
+        </Button>
+      </div>
+
+      {/* The server's own words when there is nothing to review - it names the
+          state the item is actually in - rather than a control that looks broken. */}
+      {notice !== null && review === null && (
+        <p data-testid="handover-review-notice" className="mt-2 break-words text-xs leading-5 text-fg-dim">
+          {notice}
+        </p>
+      )}
+
+      {review !== null && !applied && (
+        <div data-testid="handover-review" className="mt-3 border-t border-line pt-3 text-xs leading-5 text-fg">
+          <p className="text-fg-muted">
+            Returned as <strong>{review.result.label}</strong> at{" "}
+            <code className="break-all">{review.result.resultCommit}</code>.
+          </p>
+          <p className="mt-2">{review.reason}</p>
+
+          {review.refusedBecause.length > 0 && (
+            <ul data-testid="handover-review-refusals" className="mt-2 space-y-1 text-danger">
+              {review.refusedBecause.map(one => <li key={one}>Apply is not offered: {one.replaceAll("_", " ")}</li>)}
+            </ul>
+          )}
+
+          {review.evidenceMissing && (
+            <p data-testid="handover-review-evidence" className="mt-2 text-warning">
+              This result is labelled full and carries no verification evidence. Read it before accepting it.
+            </p>
+          )}
+
+          <label data-testid="handover-acceptance" className="mt-3 flex items-start gap-2">
+            <input type="checkbox" className="mt-0.5" checked={acceptanceMet} onChange={event => onAcceptanceMet(event.target.checked)} />
+            <span>
+              This result meets what I asked for.
+              {review.result.label === "partial" && " A partial result can never complete the task, whatever this says."}
+            </span>
+          </label>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="primary" disabled={!applyable} loading={applying} onClick={onApply}>
+              Apply result
+            </Button>
+          </div>
+
+          <label className="mt-3 block">
+            <span className="text-fg-dim">What still needs changing</span>
+            <textarea
+              aria-label="What still needs changing"
+              className="mt-1 w-full resize-y rounded border border-line bg-surface-0 px-2 py-1 text-xs text-fg"
+              rows={3}
+              value={requirements}
+              onChange={event => onRequirements(event.target.value)}
+              placeholder="Name what is missing; a fresh offer is published carrying it."
+            />
+          </label>
+          <Button size="sm" variant="secondary" disabled={!requestable} loading={requesting} onClick={onRequestChanges}>
+            Request changes
+          </Button>
+        </div>
+      )}
+
+      {applied && (
+        <p data-testid="handover-applied" className="mt-2 text-xs leading-5 text-success">
+          Applied to this checkout. The handover is closed and the work item carries the result as its evidence.
+        </p>
+      )}
+
+      {changesEpoch !== null && (
+        <p data-testid="handover-changes" className="mt-2 text-xs leading-5 text-info">
+          Sent back for changes. A fresh offer is published at epoch {changesEpoch}.
+        </p>
+      )}
+
+      {error !== null && (
+        <p role="alert" className="mt-2 break-words text-xs leading-5 text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function HandoverControl({ team, item }: { team: TeamStatus; item: OperationsPrompt }) {
   // The agent the last run used, so the offer asks for what this item was
   // actually being worked with rather than a house default.
@@ -183,6 +334,19 @@ export function HandoverControl({ team, item }: { team: TeamStatus; item: Operat
   const [publishing, setPublishing] = useState(false);
   const [credentialConfirmed, setCredentialConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* M-12, the returned half. Separate state, because the two halves are used at
+     different times - often in different sessions - and neither should clear the
+     other's result. */
+  const [review, setReview] = useState<HandoverReview | null>(null);
+  const [reviewNotice, setReviewNotice] = useState<string | null>(null);
+  const [applied, setApplied] = useState(false);
+  const [changesEpoch, setChangesEpoch] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+  const [acceptanceMet, setAcceptanceMet] = useState(false);
+  const [requirements, setRequirements] = useState("");
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   const availability = handoverAvailability(team, item);
 
@@ -219,7 +383,66 @@ export function HandoverControl({ team, item }: { team: TeamStatus; item: Operat
     }
   }
 
+  /*
+   * The item id, from the one route that is idempotent for a task that already
+   * has a thread. The returned half is reached in a later session than the
+   * publish half, so it cannot rely on `preview.itemId` being in this component's
+   * state - which is exactly why this half needs its own lookup rather than
+   * hanging off the one above.
+   */
+  async function itemIdFor(): Promise<string> {
+    return (await workspaceApi.openTeamItem(SERVER_URL, item.prompt.id)).itemId;
+  }
+
+  async function check(): Promise<void> {
+    setChecking(true); setReviewError(null); setReviewNotice(null); setReview(null);
+    setAcceptanceMet(false); setChangesEpoch(null);
+    try {
+      setReview(await workspaceApi.handoverReview(SERVER_URL, await itemIdFor()));
+    } catch (caught) {
+      /*
+       * The ordinary case is "nothing has been returned yet", which the server
+       * answers 409 with the state the item is actually in. That is information,
+       * not a failure, so it is shown as a notice rather than as an error - the
+       * F03 rule that a control says why it cannot act.
+       */
+      setReviewNotice(caught instanceof Error ? caught.message : "Could not read a returned result for this work item.");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function apply(): Promise<void> {
+    if (review === null) return;
+    setApplying(true); setReviewError(null);
+    try {
+      await workspaceApi.applyHandover(SERVER_URL, await itemIdFor(), acceptanceMet);
+      setApplied(true); setReview(null);
+      // The item's shared record moved, so every Team reader re-reads it.
+      window.dispatchEvent(new Event("team-roster-changed"));
+    } catch (caught) {
+      setReviewError(caught instanceof Error ? caught.message : "Could not apply this returned result.");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  async function requestChanges(): Promise<void> {
+    if (review === null || requirements.trim() === "") return;
+    setRequesting(true); setReviewError(null);
+    try {
+      const changes = await workspaceApi.requestHandoverChanges(SERVER_URL, await itemIdFor(), requirements.trim());
+      setChangesEpoch(changes.epoch); setReview(null); setRequirements("");
+      window.dispatchEvent(new Event("team-roster-changed"));
+    } catch (caught) {
+      setReviewError(caught instanceof Error ? caught.message : "Could not send this result back for changes.");
+    } finally {
+      setRequesting(false);
+    }
+  }
+
   return (
+    <>
     <HandoverControlView
       availability={availability}
       preview={preview}
@@ -234,5 +457,35 @@ export function HandoverControl({ team, item }: { team: TeamStatus; item: Operat
       onPrepare={() => void prepare()}
       onPublish={() => void publish()}
     />
+    {/*
+      * Offered where this half could act - and kept while it has something to
+      * report, which is not the same condition.
+      *
+      * Gating on `availability.enabled` alone had a defect the T1 row below
+      * caught on its first run: a successful apply finishes the work item, which
+      * makes `handoverAvailability` refuse, which unmounted this whole section -
+      * including the line confirming the apply. The requester tapped Apply and
+      * the panel vanished. So an outcome already produced keeps it mounted.
+      */}
+    {(availability.enabled || applied || changesEpoch !== null || review !== null) && (
+      <HandoverReturnView
+        review={review}
+        notice={reviewNotice}
+        applied={applied}
+        changesEpoch={changesEpoch}
+        checking={checking}
+        applying={applying}
+        requesting={requesting}
+        acceptanceMet={acceptanceMet}
+        onAcceptanceMet={setAcceptanceMet}
+        requirements={requirements}
+        onRequirements={setRequirements}
+        error={reviewError}
+        onCheck={() => void check()}
+        onApply={() => void apply()}
+        onRequestChanges={() => void requestChanges()}
+      />
+    )}
+    </>
   );
 }
