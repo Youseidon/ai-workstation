@@ -15,7 +15,7 @@ test("pilot arguments keep isolated ports and safe defaults", () => {
 });
 
 test("pilot environment enables only personal Telegram setup", () => {
-  const contents = pilotEnv({ serverPort: 4100, webPort: 3100, label: "Teammate pilot" }, testToken);
+  const contents = pilotEnv({ serverPort: 4100, webPort: 3100, label: "Teammate pilot" }, testToken, "/tmp/pilot-root");
   assert.match(contents, /^PORT=4100$/m);
   assert.match(contents, /^WEB_PORT=3100$/m);
   assert.match(contents, /^TASK_CONTROL_ENABLED=true$/m);
@@ -26,6 +26,34 @@ test("pilot environment enables only personal Telegram setup", () => {
   assert.match(contents, new RegExp(`^TELEGRAM_BOT_TOKEN="${testToken}"$`, "m"));
   assert.equal(validTelegramToken(testToken), true);
   assert.equal(validTelegramToken("not-a-token"), false);
+});
+
+/*
+ * H-4. The generated `.env` says the file "belongs only to this isolated pilot
+ * checkout", and until P-A2 that was untrue: with no `AGENT_CONSOLE_DB` the
+ * server falls back to `$XDG_STATE_HOME/agent-console/console.sqlite`, which is
+ * per-user, so two pilot checkouts on one machine shared one database. The live
+ * rig only avoided it because both `.env` files were pinned by hand.
+ */
+test("two pilot checkouts are pinned to two databases of their own", async () => {
+  const first = await mkdtemp(join(tmpdir(), "team-pilot-db-a-"));
+  const second = await mkdtemp(join(tmpdir(), "team-pilot-db-b-"));
+  try {
+    const paths = [];
+    for (const [root, args] of [[first, ["--skip-install"]], [second, ["--server-port", "4200", "--web-port", "3200", "--skip-install"]]]) {
+      await setupTeamPilot({ root, options: parsePilotArgs(args), checkGit: false, checkPorts: false, runInstall: false, tokenProvider: async () => testToken, log: () => undefined });
+      const contents = await readFile(join(root, ".env"), "utf8");
+      const match = /^AGENT_CONSOLE_DB=(.+)$/m.exec(contents);
+      assert.ok(match, `the generated .env in ${root} pins AGENT_CONSOLE_DB`);
+      paths.push(match[1]);
+    }
+    assert.equal(paths[0], join(first, ".agent-console/console.sqlite"));
+    assert.equal(paths[1], join(second, ".agent-console/console.sqlite"));
+    assert.notEqual(paths[0], paths[1], "two checkouts must not share one database");
+  } finally {
+    await rm(first, { recursive: true, force: true });
+    await rm(second, { recursive: true, force: true });
+  }
 });
 
 test("pilot setup writes a private env and refuses existing state", async () => {

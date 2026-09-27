@@ -66,10 +66,23 @@ if (
   && process.env.AGENT_CONSOLE_ALLOW_DEV_ON_LIVE !== "1"
   && (process.env.AGENT_CONSOLE_DB === undefined || process.env.AGENT_CONSOLE_DB.trim() === "")
 ) {
+  /*
+   * What this recommends matters as much as what it refuses.
+   *
+   * It used to offer `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` as the way out, which
+   * is the one way out that keeps you on the shared per-user database - the
+   * exact thing the refusal exists to prevent, and the reason the team pilot
+   * needed a manual `.env` pin on top of a script that claimed isolation (H-4).
+   * The escape hatch stays, because a person who means it should be able to say
+   * so, but it is no longer the advice. Pinning the database is.
+   */
   createLogger("server").error(
     `Refusing to run the watch server against the live database (${databasePath}). `
-    + "Use `npm run serve` for a live pipeline, or `npm run dev:sandbox` to develop against a copy. "
-    + "Set AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.",
+    + "Point this process at its own database instead: set AGENT_CONSOLE_DB to a path of its own, "
+    + "for example AGENT_CONSOLE_DB=$PWD/.agent-console/console.sqlite - that is per-checkout, while the "
+    + "default above is per-user and is shared by every checkout on this machine. "
+    + "Or use `npm run serve` for a live pipeline, or `npm run dev:sandbox` to develop against a copy. "
+    + "AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 still overrides this refusal, but it leaves you on the shared database.",
   );
   process.exit(1);
 }
