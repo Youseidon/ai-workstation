@@ -61,23 +61,88 @@ So the criticality letters are kept exactly as jd assigned them and namespaced w
 - **V5, and the whole check.** Complete: six PASS, one PARTIAL, one SKIPPED, all rows recorded.
 - **C2.** Closed 2026-09-27; V4 and V5 were its last outstanding items.
 
-## Suggested sequence
+## jd's decisions, all 2026-09-27
 
-**P-A1 is settled and goes last.** jd ruled on 2026-09-27 that the push happens after every other item is complete.
-It stays banded **P-A** rather than being demoted, because the exposure is real and accepted rather than absent, and because the last task on this track is therefore a push to a remote that has never received any of it - which is a substantial piece of work in its own right, not a formality. Recorded risk jd is accepting: the divergence grows with every task, and the reconcile gets harder the longer it waits.
+Taken one item at a time, with the evidence for each put to jd before the question.
+Recorded here because a plan that omits them reads as though the orchestrator chose them.
 
-**Then the two product defects, one task each, worker and worktree as usual.** P-A2 then P-A3. Both need reproducing first: P-A2 on a clean checkout, because the rig masks it, and P-A3 already has its reproduction in `m13-personal-surfaces.spec.ts`, so the fix has a red row waiting.
+| Item | Decision |
+| --- | --- |
+| **P-A1** push | **Goes last**, after every other item is complete. The exposure of 199 local-only commits is accepted deliberately in the meantime |
+| **P-A2** H-4 | **Fix the script *and* the guard's message.** `pilotEnv()` emits `AGENT_CONSOLE_DB`, and the guard stops recommending `AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1` - it recommends pinning instead. Touches one file outside this track, accepted |
+| **P-A3** M-13 | **Full fix.** Open the already-mounted `HumanInputDialog` from the banner, remove the canned fallback so `respond()` can never submit an unauthored answer, and add the missing `AWAITING_RESPONSE` branch to the row. The T1 spec currently asserts the defect and passes; **inverting it is its own commit** |
+| **P-A4** F10 | **Full rig work, promoted to critical.** Instance B gets its **own clone**, B3, B4 and B10 fixed in the same script, and `team.handoverEnabled` turned **on** in both instances. jd wants every Team feature including handover tested on the rig, and handover is a Git exchange that B19's shared tree makes unobservable |
+| **P-B1** M-12 | **Build the web surface** for handover review, apply and request-changes. Against the orchestrator's recommendation, which was to rule it a phone action; jd's call. It is provable end to end because the harness already has `HANDOVER_ON` |
+| **P-B2** M-15 | **Answer the view, say it is closed, and write the thread row to `CLOSED` too.** The row change is for record correctness, not routing - nothing reads it for routing - so every reader of `telegram_thread.state` is audited before it changes |
+| **P-B5** M-16 | **Its own designed task**, not folded into a bug fix, because `operationalState` is read by every surface and the reconcile moving it is what caused C3 |
+| **P-C1** M-11 | **Retire and unpin the anchor on close**, as completion does, **sequenced after P-B2**. jd's P-B2 ruling is what makes this safe: once a closed thread says so, the routability the pin was preserved for buys nothing |
+| **P-C5** M-7 | **Ruling 7 wins: a stopped-but-unreturned item is still held.** `isLiveHandoverState` is authoritative. Deciding argument: the asymmetry - picking H04 wrongly loses work, picking ruling 7 wrongly costs one explicit step |
+| **P-C7** LT-5 | **Deferred to much later.** Confirmed as genuinely intended but unscheduled, so the B19 clone in P-A4 is built as a **real second clone** and doubles as preparation |
+| **P-D5** M-1 | Stays open, intended, unscheduled. Same person-dependency as P-C7 |
+| **L-2** | **Yousef confirmed** as G04's named fallback owner. Closes L-2 |
+| **M-6** | **Product tiebreak only.** Make `taskControl.ts:321` deterministic; leave the six leaking fixtures as untidiness rather than risk |
 
-**Then one decision sitting, cheap, to clear the register.** P-B2, P-C1 and P-E1 need rulings rather than work, and P-B2's ruling decides whether it is a one-line fix or a behaviour change.
+**One standing constraint was lifted**: `team.handoverEnabled stays false`. It existed for gate **G02**, which closed 2026-09-22, and it had been copied forward for five days. jd asking "why is handover switched off" is what surfaced it.
 
-**Then a single small-fix commit each** for P-C2 and P-D1, which are one-line changes with clear causes, and P-D2 and P-D3 as tidy-ups.
+## Execution plan
 
-**Then the real remaining build**: P-B1, the requester's missing web surface, which is the last half-built thing in the feature.
+Standing model, unchanged: **every task gets its own worker, its own branch and its own worktree, and lands on main by fast-forward.** Commit messages imperative, no co-author line. Nothing is pushed until P-A1.
 
-**P-B4 before the next audit**, because an unmeasured instrument undermines whatever the audit concludes.
+**Two scheduling constraints bind the whole plan.** The T1 harness is **exclusive** and contends with the live rig, so a T1 run and rig work can never overlap. And T1 is the only proof that merged code reaches a user, so every phase that changes product code ends with a T1 run rather than beginning with one.
 
-**P-A4 early, because it unblocks testing rather than being tidy-up.** jd's instruction of 2026-09-27 is that every Team feature, handover included, is tested on the rig. That needs instance B's own clone, so F10 is promoted out of the medium band.
+### Phase 1 - stop the bleeding, then make handover testable
 
-**P-C7 (LT-5) stays deferred**, by jd, to a much later time. It needs a person, not code.
+| Order | Task | Why here |
+| --- | --- | --- |
+| 1 | **P-A3**, M-13's canned answer | The only item that actively does the wrong thing to a user right now. Its reproduction already exists, so the fix has a red row waiting once the assertions are inverted |
+| 2 | **P-A2**, H-4 | A documented setup path that silently destroys the isolation the rig depends on, and a guard that recommends the destructive move |
+| 3 | **P-A4**, F10 and the handover flag | Rig only, and it unblocks every handover proof in phases 2 and 4. Do it before anything that needs to observe a Git exchange |
 
-**A standing constraint was lifted on 2026-09-27**: `team.handoverEnabled stays false` existed for gate **G02**, which **closed on 2026-09-22** with both tiers at three repeats. The sentence outlived its reason by five days and was copied into every handover in between. It took jd asking "why is handover switched off" to surface it. Recorded, because it is the same shape as the "nothing has ever been pushed" claim corrected the same day: **a closure should name the constraint it releases.**
+Phase 1 ends with a **full T1 run** on main, the rig stopped for its duration.
+
+### Phase 2 - close semantics, in dependency order
+
+| Order | Task | Why here |
+| --- | --- | --- |
+| 4 | **P-B2**, M-15 | Must precede P-C1. Audit every reader of `telegram_thread.state` first |
+| 5 | **P-C1**, M-11 | Safe only once the thread is self-describing |
+| 6 | **P-C5**, M-7 | Independent of 4 and 5, but the same area. The `:955` rewrite is its own commit citing jd's ruling |
+
+Phase 2 ends by re-running **V5 case 11 with real grants**, which the last run could not exercise, to convert it from PARTIAL.
+
+### Phase 3 - the small fixes, one commit each
+
+| Order | Task |
+| --- | --- |
+| 7 | **M-6**'s product tiebreak |
+| 8 | **P-C2**, L-16, broadcast the settings snapshot rather than only `providers` |
+| 9 | **P-D1**, L-17, require the path in `team-pilot-state.mjs` |
+| 10 | **P-D2** and **P-D3**, L-14 and L-15 record and hygiene tidy-ups |
+| 11 | **L-2**, record Yousef |
+
+### Phase 4 - the remaining build and the instrument
+
+| Order | Task | Why here |
+| --- | --- | --- |
+| 12 | **P-B4**, L-13 | Before any further audit. An unmeasured instrument undermines whatever an audit concludes |
+| 13 | **P-B1**, M-12's web surface | Needs P-A4's rig to prove, and a C5-style T1 row under `HANDOVER_ON` |
+| 14 | **P-B3**, M-14 | Rejoin path and the two-cause `roster_conflict` split |
+| 15 | **P-C3**, M-10 | F05's missing harness case |
+
+### Phase 5 - the model change
+
+| Order | Task |
+| --- | --- |
+| 16 | **P-B5**, M-16: task state reads the handover control record. Designed first, then built. This is the one that stops C3, M-13 and M-15 having successors |
+
+### Phase 6 - the push
+
+| Order | Task |
+| --- | --- |
+| 17 | **P-A1**: the first push of this work to a remote that has never received any of it. 415 commits and climbing, against an `origin/main` that has 29 of Yousef's pipeline commits main does not have. **Not a formality** - it is its own task with its own plan, and jd is asked before it runs |
+
+### What stays untouched
+
+**P-D4** (L-12, the red lint tier) and **P-E1** (section 8 clause 1) are closed to action by jd's waivers.
+**P-D6** (M-3) is fixed only if another audit is scheduled.
+**P-D7** (L-1 to L-11) is left alone apart from the parts P-A4 retires.
