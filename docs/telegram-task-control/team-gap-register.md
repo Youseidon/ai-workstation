@@ -392,7 +392,7 @@ That is the same mechanism as the bug F00B fixed, one step removed, and it is in
 F00B correctly did not expand scope to it: the fixtures it repaired could produce a false red, these cannot today.
 Needs jd's decision on whether to take a follow-up task, because the honest fix is likely a tiebreak in the product lookup rather than more fixture cleanup.
 
-### M-7. H04's `closeAfterHandover` contradicts ruling 7, and nothing owns the reconciliation
+### M-7. H04's `closeAfterHandover` contradicted ruling 7. Ruled and fixed 2026-09-27 by P-C5
 
 Found by H07 while building the close guard, and **correctly not fixed by it**.
 
@@ -828,6 +828,20 @@ Neither existing pass could reach it: `syncTeamItem` returns for a closed link, 
 The unpin's once-only claim is `telegram_outbox.anchor`, mirroring the pin's own `PIN_PENDING` marker. Its one other reader counts send failures to decide whether to offer a *new* anchor, a question a closed item never asks because `syncTeamItem` returns first.
 
 Proof: `tm3-grants.spec.ts` **5 of 5** with the new `M-11 (T1)` row, **proved load-bearing by disabling the pass** - it then fails with `timed out waiting for the anchor edited into its final closed card`. Server **621 of 621**, typecheck exit 0 on four workspaces. The row also pins the non-loop: the unpin happens exactly once and the retired card is not edited again, against the measured baseline of an anchor that churned once an hour for eleven hours while open.
+
+### M-7, the unruled contradiction. Closed 2026-09-27 by P-C5.
+
+**jd ruled: ruling 7 wins.** A stopped-but-unreturned item is still held, and `isLiveHandoverState` is authoritative. The deciding argument was the asymmetry - choosing H04 wrongly loses another person's work, choosing ruling 7 wrongly costs one explicit step.
+
+`closeAfterHandover` kept its own `ACKNOWLEDGED` list, four of whose members - `OFFERED`, `WAITING_INPUT`, `PAUSED`, `RETURNED` - are in `LIVE_HANDOVER_STATES`. It now asks the one predicate `/close` asks, so the question is "is the handover over" rather than "has the executor stopped".
+
+The refusal reason changed with it. "The current executor has not acknowledged yet" blames a person who may have acknowledged perfectly well; it now says the handover is still live and names the state, so the owner's next step is to end the handover rather than to chase someone.
+
+**H07 tried this once and reverted** rather than weaken the `:955` assertion without a ruling. That was the right call, and the assertion change is its own commit citing the ruling that now exists.
+
+Proof: `teamHandoverRun.test.ts` **34 of 34** with the fix, after **32 pass / 2 fail** without it on the same rewritten assertions - the failure being the contradiction itself, `true !== false` on "an acknowledged stop does not end the handover". Server **621 of 621**, typecheck exit 0 on four workspaces. Nothing regresses for a user: `closeAfterHandover` has no production caller.
+
+One thing the rewrite taught, worth carrying: a state table that mutates shared state must ask its questions in an order that keeps the state meaningful. Asking in `CONTROL_STATES` order let an early non-live state close the link, after which every "leaves the link open" check was a statement about a link already shut - and it failed on `OFFERED` with a timestamp where it expected null.
 
 ### C1, the handover surface. Closed 2026-09-21 by H06, commits `2926149..04dca86`.
 
