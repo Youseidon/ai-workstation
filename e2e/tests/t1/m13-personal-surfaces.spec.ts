@@ -359,7 +359,18 @@ test("M-13 (T1): in the C3 state the detail page offers no banner, and its own B
   expect(blockedState.banner, "the \"Needs your input\" banner is gated on AWAITING_RESPONSE alone").toBe(false);
   // WorkItemDetail.tsx:407 has its own BLOCKED branch: the page is degraded, not a dead end.
   expect(blockedState.responseBox, "the BLOCKED branch's \"Your response\" box is the owner's way through").toBe(true);
-  expect(blockedState.respondAndResume).toBe("enabled");
+  /*
+   * Changed by P-A3 on jd's ruling of 2026-09-27, and this one was not
+   * predicted: the red run found it. Until then "Respond and resume" was enabled
+   * over an empty box, and pressing it submitted the canned retry text as though
+   * the owner had written it - the same unauthored answer as the banner's, from
+   * the one surface that does have a box. It is now disabled until something is
+   * typed, and the affordance the blank box carried silently is its own button
+   * that says what it does. The hint at :421 documented "leave blank to retry",
+   * so the capability is kept rather than removed.
+   */
+  expect(blockedState.respondAndResume, "an empty box cannot be submitted as an answer").toBe("disabled");
+  expect(blockedState.detailButtons.join(" | "), "and the retry it used to carry silently is now labelled").toContain("Retry with existing context");
 });
 
 test("M-13 (T1): with a real handoff question the detail page shows the banner and drops the response box", {
