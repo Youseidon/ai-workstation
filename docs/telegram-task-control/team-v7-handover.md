@@ -39,7 +39,11 @@ Two pilot instances are **running against real Telegram** under jd's authorisati
 
 **P-A0 ran on 2026-09-27 and falsified the register's reading of that state.** The register said the detail page was showing a "Continue with saved answer" button one click from replacing jd's answer with a canned string and starting a run. Neither part holds:
 
-- The hold makes `operationalState` report `AWAITING_RESPONSE` ([operationalState.ts:30](../../server/src/operationalState.ts#L30)), so the rig's banner reads **"Needs your input" / "Review and respond"**. The saved-answer label appears only where no answer is held.
+- The hold makes `operationalState` report `AWAITING_RESPONSE` ([operationalState.ts:30](../../server/src/operationalState.ts#L30)), which is still true.
+
+  **SUPERSEDED 2026-09-28 by L-18, and this is about the rig you are looking at.** The two sentences that followed - that the rig's banner reads "Needs your input" / "Review and respond", and that the saved-answer label appears only where no answer is held - described the labels *while they were inverted*, which is what L-18 was. They are now **false**, and prompt 1 carries exactly the hold they described, so the rig is the first place a reader would check.
+
+  What the rig's prompt 1 shows now: the banner reads **"Answer saved"** with **"Continue with saved answer"**, because the labels are chosen from whether an answer is actually held (`savedResponseId`) rather than from `operationalState`. An item that was merely answered and has nothing pending carries **no banner at all** - the over-broad condition that put one there is gone. Nothing broke; the labels were the defect and they are fixed.
 - Pressing either button in that state is refused by the server: `respondToBlockedPrompt` takes only a stored `BLOCKED` prompt or one with a live pending question, so the POST returns **409**, the canned string is never stored, and `startRun` is never reached.
 
 So the answer is safe on the rig, and the remaining defect is a **dead button** rather than a destructive one. The register's M-13 entry carries the reproduction, the struck-through claims and the evidence. **Still do not press it on the rig** - not because it is dangerous, but because the rig's state is the fixture for P-A3 and for V5 case 11's re-run.
