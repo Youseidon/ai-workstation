@@ -32,6 +32,9 @@ const HELD: NonNullable<OperationsPrompt["heldByTeammate"]> = {
   itemId: "awi1_75c3aabf7831461bc7c4a395",
   state: "RUNNING",
   executor: "6525517234",
+  // jd's answer of 2026-09-28: the route resolves the roster's own name, so the
+  // surfaces show it rather than the person id the control record stores.
+  executorLabel: "Junaid",
 };
 
 function prompt(held: OperationsPrompt["heldByTeammate"]): OperationsPrompt {
@@ -221,8 +224,25 @@ test("M-16: Prepare handover is disabled while a handover is already live, with 
 });
 
 test("M-16: an open offer nobody has accepted names no holder, and says to withdraw it", () => {
-  const offered = { itemId: HELD.itemId, state: "OFFERED", executor: null };
+  const offered = { itemId: HELD.itemId, state: "OFFERED", executor: null, executorLabel: null };
   assert.match(list(offered), /Offered to the team/,
     "there is nobody to name, so the badge says what is true instead of `Held by null`");
   assert.match(detail(offered), /No one has accepted it yet, so withdraw the offer first/);
+});
+
+test("M-16: the surfaces name the holder the roster knows, not the person id the record stores", () => {
+  assert.match(list(HELD), /Held by Junaid/, "the badge shows the roster's own name");
+  assert.doesNotMatch(list(HELD), /6525517234/, "and not the raw Telegram user id");
+  assert.match(detail(HELD), /Junaid is holding it/, "the refusal reason names them the same way");
+});
+
+test("M-16: a holder the roster has no name for falls back to the id rather than guessing", () => {
+  /*
+   * A roster published before the two labels were separated (B5) carries no
+   * `personLabel`, so the route resolves nothing. An id is a poor label; a wrong
+   * name would be worse, so there is no guess and no blank.
+   */
+  const unnamed = { ...HELD, executorLabel: null };
+  assert.match(list(unnamed), /Held by 6525517234/, "it falls back to the id");
+  assert.doesNotMatch(list(unnamed), /Held by (null|undefined)/, "and never renders a missing name");
 });

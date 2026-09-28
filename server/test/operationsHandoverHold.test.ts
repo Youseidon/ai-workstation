@@ -247,7 +247,13 @@ test("M-16: /api/operations carries the live handover holding each item, and tak
 
         const suite = await suiteFor(f);
         const entry = promptIn(suite, f.promptId);
-        assert.deepEqual(entry.heldByTeammate, { itemId, state: "RUNNING", executor: RECEIVER },
+        /*
+         * `executorLabel` is null here because this fixture caches no team roster,
+         * so there is no name to resolve - which is the fallback jd's answer of
+         * 2026-09-28 asks for: an id is a poor label, a wrong name is worse. The
+         * row below this suite proves the resolved case.
+         */
+        assert.deepEqual(entry.heldByTeammate, { itemId, state: "RUNNING", executor: RECEIVER, executorLabel: null },
           "the route carries the item, the control state and who holds it");
         assert.equal(entry.attention, false, "a teammate's work is not the owner's attention");
         assert.equal(suite.attentionCount, 0,
@@ -266,7 +272,7 @@ test("M-16: /api/operations carries the live handover holding each item, and tak
         workspaces.createItemLink({ itemId, promptId: f.promptId, role: "requester", epoch: offered.record.epoch, controlHead: offered.head });
 
         const entry = promptIn(await suiteFor(f), f.promptId);
-        assert.deepEqual(entry.heldByTeammate, { itemId, state: "OFFERED", executor: null },
+        assert.deepEqual(entry.heldByTeammate, { itemId, state: "OFFERED", executor: null, executorLabel: null },
           "OFFERED is a live handover with nobody holding it yet, which is what P-A5's guard also refuses");
         assert.equal(entry.attention, false);
       } finally { dropRefs(); f.cleanup(); }
@@ -334,12 +340,56 @@ test("M-16: /api/operations carries the live handover holding each item, and tak
         workspaces.createItemLink({ itemId, promptId: childId, role: "requester", epoch: running.record.epoch, controlHead: running.head });
 
         const suite = await suiteFor(f);
-        assert.deepEqual(promptIn(suite, childId).heldByTeammate, { itemId, state: "RUNNING", executor: RECEIVER },
+        assert.deepEqual(promptIn(suite, childId).heldByTeammate, { itemId, state: "RUNNING", executor: RECEIVER, executorLabel: null },
           "the walk reaches children, not just station roots");
         assert.equal(promptIn(suite, f.promptId).heldByTeammate, null, "and the station it hangs off is not held");
       } finally { dropRefs(); f.cleanup(); }
     });
   } finally {
     dropRefs();
+  }
+});
+
+test("M-16: the route resolves the holder's roster name, and falls back to the id when the roster has none", async () => {
+  const f = fixture();
+  try {
+    const { itemId, remote, created } = await record();
+    const running = await drive(remote, created, TO_RUNNING);
+    workspaces.createItemLink({ itemId, promptId: f.promptId, role: "requester", epoch: running.record.epoch, controlHead: running.head });
+
+    // No cached roster yet: nothing to resolve, so the id stands.
+    assert.equal(promptIn(await suiteFor(f), f.promptId).heldByTeammate?.executorLabel, null,
+      "with no roster cached there is no name, and the surfaces fall back to the id");
+
+    /*
+     * Now a roster that knows the holder. jd's answer of 2026-09-28: resolve the
+     * label, because the control record stores person ids - right for a shared
+     * machine-readable record, wrong for a badge - and the roster is where the
+     * names already are.
+     */
+    workspaces.upsertTeamRoster({
+      teamId: "awt1_m16labelfixture01",
+      groupChatId: "-1001",
+      remoteUrl: "https://example.invalid/team.git",
+      revision: "r1",
+      record: { members: [{ personId: RECEIVER, personLabel: "Yousef" }] },
+    });
+    assert.equal(promptIn(await suiteFor(f), f.promptId).heldByTeammate?.executorLabel, "Yousef",
+      "the route resolves the roster's own name for the holder");
+
+    // A roster that carries the person but no label for them resolves nothing
+    // rather than an empty string, which is the B5 shape.
+    workspaces.upsertTeamRoster({
+      teamId: "awt1_m16labelfixture01",
+      groupChatId: "-1001",
+      remoteUrl: "https://example.invalid/team.git",
+      revision: "r2",
+      record: { members: [{ personId: RECEIVER }] },
+    });
+    assert.equal(promptIn(await suiteFor(f), f.promptId).heldByTeammate?.executorLabel, null,
+      "a member with no personLabel resolves to null, never to an empty badge");
+  } finally {
+    dropRefs();
+    f.cleanup();
   }
 });

@@ -17,17 +17,25 @@ export type HeldByTeammate = NonNullable<OperationsPrompt["heldByTeammate"]>;
  */
 
 /**
- * The row badge. `executor` is the person id the control record carries - the
- * record stores ids, not display labels - so this reads `Held by 6525517234`
- * rather than `Held by Junaid`.
+ * Who is holding it, by name where the roster knows one.
  *
- * **Open question for jd (m16-design.md section 4), unanswered as of
- * 2026-09-28:** resolve this to a roster display label instead? That is a second
- * lookup on a surface that has no roster today. Swapping it is a change to this
- * one function and nothing else, which is why it is a function.
+ * **jd's answer to m16-design.md section 4, 2026-09-28: resolve the label.** The
+ * control record stores person ids, because that is what a shared
+ * machine-readable record should store; a badge should not show one. The route
+ * resolves it from the roster it already holds, so this reads `Held by Junaid`.
+ *
+ * A missing name falls back to the id rather than to a guess: an id is a poor
+ * label, a wrong name is worse. That happens when the roster has no
+ * `personLabel` for the holder - a roster published before the two labels were
+ * separated (B5) - and never silently shows the wrong person.
  */
+export function heldByTeammateHolder(held: HeldByTeammate): string | null {
+  return held.executor === null ? null : held.executorLabel ?? held.executor;
+}
+
 export function heldByTeammateBadge(held: HeldByTeammate): string {
-  return held.executor === null ? "Offered to the team" : `Held by ${held.executor}`;
+  const holder = heldByTeammateHolder(held);
+  return holder === null ? "Offered to the team" : `Held by ${holder}`;
 }
 
 /**
@@ -37,8 +45,9 @@ export function heldByTeammateBadge(held: HeldByTeammate): string {
  * worse than saying nothing.
  */
 export function heldByTeammateReason(held: HeldByTeammate): string {
-  const remedy = held.executor === null
+  const holder = heldByTeammateHolder(held);
+  const remedy = holder === null
     ? "No one has accepted it yet, so withdraw the offer first if you mean to work on it here."
-    : `${held.executor} is holding it, and only they can release it. Wait for the return, or ask them to return it.`;
+    : `${holder} is holding it, and only they can release it. Wait for the return, or ask them to return it.`;
   return `This item is handed over: ${held.itemId} is ${held.state}. ${remedy}`;
 }

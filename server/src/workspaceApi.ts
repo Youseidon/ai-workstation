@@ -51,11 +51,35 @@ const MAX_DRAFT_BODY_BYTES = 4 * 1024 * 1024;
  * one element to the left.
  */
 async function withHandoverHolds(snapshot: OperationsSnapshot): Promise<OperationsSnapshot> {
+  /*
+   * The roster's own names for the people the control record refers to by id.
+   *
+   * The record stores person ids because that is what a shared, machine-readable
+   * record should store; a badge should not. Resolved here rather than in `web/`
+   * because this is where the roster already is - the row list has no roster and
+   * would have had to fetch one for a string - and read once per snapshot rather
+   * than once per prompt.
+   *
+   * A name that is missing stays missing: an id is a poor label but a *wrong* name
+   * is worse, so the surfaces fall back to the id rather than to a guess.
+   */
+  const labels = new Map<string, string>();
+  for (const cached of workspaces.teamRosters()) {
+    const record = cached.record as { members?: Array<{ personId?: unknown; personLabel?: unknown }> };
+    for (const member of record.members ?? []) {
+      if (typeof member.personId === "string" && typeof member.personLabel === "string" && member.personLabel !== "") {
+        labels.set(member.personId, member.personLabel);
+      }
+    }
+  }
   for (const suite of snapshot.suites) {
     let cleared = 0;
     const walk = async (prompts: OperationsPrompt[]): Promise<void> => {
       for (const entry of prompts) {
-        entry.heldByTeammate = await liveHandoverHolding(entry.prompt.id);
+        const held = await liveHandoverHolding(entry.prompt.id);
+        entry.heldByTeammate = held === null
+          ? null
+          : { ...held, executorLabel: held.executor === null ? null : labels.get(held.executor) ?? null };
         if (entry.heldByTeammate !== null && entry.attention) {
           entry.attention = false;
           cleared += 1;

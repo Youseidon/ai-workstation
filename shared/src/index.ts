@@ -1390,7 +1390,7 @@ export interface OperationsPrompt {
    * Filled by the `/api/operations` route, not by the snapshot builder, which is
    * synchronous; the builder sets it null.
    */
-  heldByTeammate: { itemId: string; state: string; executor: string | null } | null;
+  heldByTeammate: { itemId: string; state: string; executor: string | null; executorLabel: string | null } | null;
   latestIntervention: string|null;
   /** Dynamically created when an agent posts BLOCKED with a required human action. */
   humanIntervention: HumanInterventionStep | null;
