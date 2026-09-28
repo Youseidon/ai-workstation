@@ -40,13 +40,17 @@ import { runSavedTask } from "../../src/scenarios.ts";
  *
  *  3. the saved-answer state - the item stopped for a decision and a person
  *     answered it, so the prompt is `TODO` again with a `HUMAN_RESPONSE`
- *     remark. That is the banner's *second* condition
- *     (web/components/tasks/WorkItemDetail.tsx:245), and no row here reached it
- *     until P-A0 added the two below. It has two spellings and they do not
- *     render alike: with no `human_response_hold` the item reports `READY` and
- *     the banner reads "Answer saved"; with a hold, `operationalState` returns
- *     `AWAITING_RESPONSE` (server/src/operationalState.ts:30) and the same
- *     banner reads "Needs your input" instead.
+ *     remark. No row here reached it until P-A0 added the two below. It has two
+ *     spellings and they do not render alike, and the difference between them
+ *     is what L-18 was. With no `human_response_hold` nothing is pending: the
+ *     item reports `READY`, `humanInput.savedResponseId` is null, and since
+ *     L-18 there is no banner at all - the page offers "Run work item". With a
+ *     hold the answer really is saved, `operationalState` returns
+ *     `AWAITING_RESPONSE` (server/src/operationalState.ts:30), and that is the
+ *     state whose banner reads "Answer saved" / "Continue with saved answer".
+ *     The two rows below recorded both of those the other way round until
+ *     L-18, because the banner keyed its labels on `operationalState` rather
+ *     than on whether an answer was held.
  *
  * States 1 and 2 are the same row and the same detail page; only the reported
  * state moves. State 3 needs its own item, because reaching it moves the item
@@ -84,6 +88,9 @@ interface BannerPress {
   dialog: boolean;
   dialogTextareas: number;
   dialogButtons: string[];
+  /* Every heading inside the dialog, so a title that contradicts the panel
+     under it is visible to a row rather than only to a person. */
+  dialogHeadings: string[];
   status: string;
   reportedState: string;
   humanResponses: string[];
@@ -99,7 +106,10 @@ let awaitingState: SurfaceView;
 let bannerTap: { dialog: boolean; textareas: number; response: string | null };
 let savedAnswerItem: SavedTask;
 let savedAnswerState: SurfaceView;
-let savedAnswerPress: BannerPress;
+/* What the record still held after the saved-answer item's page was looked at.
+   Since L-18 that item has no banner button, so there is nothing to press and
+   the reading below is what replaces the press. */
+let savedAnswerRecord: { status: string; reportedState: string; humanResponses: string[]; runsBefore: number; runsAfter: number };
 let heldAnswerItem: SavedTask;
 let heldAnswerState: SurfaceView;
 let heldAnswerPress: BannerPress;
@@ -320,6 +330,7 @@ test.beforeAll(async ({ harness, browser }) => {
       const dialog = (await dialogLocator.count()) > 0;
       const dialogTextareas = dialog ? await dialogLocator.locator("textarea").count() : 0;
       const dialogButtons = dialog ? (await dialogLocator.getByRole("button").allInnerTexts()).map(text => text.trim()) : [];
+      const dialogHeadings = dialog ? (await dialogLocator.locator("h2, h3").allInnerTexts()).map(text => text.trim()) : [];
       const notification = (await region.count()) === 0 ? "" : (await region.innerText()).trim();
       // "No run was started" is an assertion in these rows, so a run is given a
       // window to appear before the absence is believed.
@@ -330,6 +341,7 @@ test.beforeAll(async ({ harness, browser }) => {
         dialog,
         dialogTextareas,
         dialogButtons,
+        dialogHeadings,
         status: (await state.prompt(item)).status,
         reportedState: (await reportedState(item.promptId)) ?? "unknown",
         humanResponses: history.remarks.filter(entry => entry.kind === "HUMAN_RESPONSE").map(entry => entry.content),
@@ -339,8 +351,25 @@ test.beforeAll(async ({ harness, browser }) => {
     };
 
     savedAnswerItem = await answeredItem(SAVED_TITLE, SAVED_ANSWER, false);
+    /*
+     * Since L-18 there is no banner on this item and so no banner button to
+     * press. What the press proved is still asserted, without a press: the
+     * owner's answer must still be the only answer on the record, and merely
+     * looking at the page must start nothing. The quiet period is the same one
+     * `settleIfStarted` uses, because a run row can land after a press or a
+     * render has otherwise finished.
+     */
+    const savedRunsBefore = (await state.history(savedAnswerItem)).runs.length;
     savedAnswerState = await observe(page, savedAnswerItem.promptId, SAVED_TITLE);
-    savedAnswerPress = await pressBanner(savedAnswerItem, "Continue with saved answer");
+    await observeQuietPeriod(5_000, "a run the saved-answer item's page might have started");
+    const savedHistory = await state.history(savedAnswerItem);
+    savedAnswerRecord = {
+      status: (await state.prompt(savedAnswerItem)).status,
+      reportedState: (await reportedState(savedAnswerItem.promptId)) ?? "unknown",
+      humanResponses: savedHistory.remarks.filter(entry => entry.kind === "HUMAN_RESPONSE").map(entry => entry.content),
+      runsBefore: savedRunsBefore,
+      runsAfter: savedHistory.runs.length,
+    };
 
     heldAnswerItem = await answeredItem(HELD_TITLE, HELD_ANSWER, true);
     heldAnswerState = await observe(page, heldAnswerItem.promptId, HELD_TITLE);
@@ -445,58 +474,82 @@ function reportPress(label: string, press: BannerPress): void {
  * standing as the five rows above.
  */
 
-test("M-13 (T1): the saved-answer banner opens the dialog that can resume with the owner's answer", {
+test("M-13 (T1): an answered item with nothing held carries no saved-answer banner, and offers the run instead", {
   annotation: { type: "covers", description: "M-13" },
 }, async () => {
   report("detail / saved-answer state (TODO with a HUMAN_RESPONSE remark)", savedAnswerState);
-  reportPress("the Continue with saved answer press", savedAnswerPress);
+  console.log(`\n===== M-13 the saved-answer record after the page was looked at =====\n` +
+    `stored status: ${savedAnswerRecord.status}\noperationalState: ${savedAnswerRecord.reportedState}\n` +
+    `HUMAN_RESPONSE remarks: ${JSON.stringify(savedAnswerRecord.humanResponses)}\n` +
+    `runs before / after the visit: ${savedAnswerRecord.runsBefore} / ${savedAnswerRecord.runsAfter}\n===== end record =====\n`);
 
   // The state no row reached before P-A0: TODO, not AWAITING_RESPONSE, with the
   // owner's answer on the record. Every item answered from the BLOCKED box or
-  // from Telegram lands here, so the banner is ordinary rather than exotic.
+  // from Telegram lands here, so this state is ordinary rather than exotic.
   expect(savedAnswerState.reportedState).toBe("READY");
-  expect(savedAnswerState.banner, "WorkItemDetail.tsx:245's second condition is a TODO item with a HUMAN_RESPONSE remark").toBe(true);
-  expect(savedAnswerState.bannerHeading).toBe("Answer saved");
-  expect(savedAnswerState.detailButtons.join(" | ")).toContain("Continue with saved answer");
-  // :407 gates the box on BLOCKED or recoverable, and TODO is neither.
-  expect(savedAnswerState.responseBox, "the :407 box is absent, so there is again nothing to type into").toBe(false);
+
+  /*
+   * INVERTED for L-18, on jd's ruling of 2026-09-27 that folded L-18 into P-B5
+   * and jd's confirmation of 2026-09-28 to take it as its own task after P-B5
+   * shipped without it. Until then this row asserted `banner: true` with the
+   * heading "Answer saved" and a "Continue with saved answer" button, and that
+   * was a correct record of the defect rather than an endorsement: the banner's
+   * second condition was `prompt.status === "TODO"` plus *any* `HUMAN_RESPONSE`
+   * remark, so every item that had ever been blocked and answered carried the
+   * banner forever. This item is plainly `READY` - no hold, no pending
+   * question, `humanInput.savedResponseId` null - so there is no saved answer
+   * to continue from and nothing to review, and offering either was the whole
+   * complaint. The banner is now gated on `AWAITING_RESPONSE` alone.
+   */
+  expect(savedAnswerState.banner, "a READY item has nothing pending, so it carries no saved-answer banner").toBe(false);
+  expect(savedAnswerState.bannerHeading).toBeNull();
+  expect(savedAnswerState.detailButtons.join(" | "), "the READY branch's own button is the whole affordance here").toContain("Run work item");
+  expect(savedAnswerState.detailButtons.join(" | ")).not.toContain("Continue with saved answer");
+  expect(savedAnswerState.detailButtons.join(" | ")).not.toContain("Review and respond");
+  // The detail page's own response box is gated on BLOCKED or recoverable, and
+  // TODO is neither, so there is again nothing to type into - and nothing to say.
+  expect(savedAnswerState.responseBox).toBe(false);
   expect(savedAnswerState.respondAndResume).toBe("absent");
 
   /*
-   * Inverted by P-A3 on jd's ruling of 2026-09-27. Until then this row asserted
-   * the press was refused by the server: `respondToBlockedPrompt`
-   * (server/src/workspaces.ts:5914) takes only a stored `BLOCKED` prompt or one
-   * with a live pending question, and an answered `TODO` item is neither, so the
-   * POST returned 409 and the only possible outcome was the toast
-   * "That did not work - Prompt no longer needs human input". The button was
-   * dead. It now opens `HumanInputDialog`, which offers "Resume with saved
-   * answer" and resumes through `/respond-and-continue` with the owner's own
-   * `responseId` - the route that accepts an answered `TODO` item.
+   * What the press assertions here used to prove, kept without a press because
+   * there is no banner button on this item any more: the owner's answer is
+   * still the only answer on the record, and looking at the page starts
+   * nothing. Before L-18 those assertions read the outcome of pressing
+   * "Continue with saved answer", which opened `HumanInputDialog` on a state
+   * with nothing to resume.
    */
-  expect(savedAnswerPress.dialog, "the dead button now opens the dialog built for this state").toBe(true);
-  expect(savedAnswerPress.notification, "and raises no error, because nothing is refused any more").toBe("");
-  expect(savedAnswerPress.humanResponses, "the owner's own answer is still the only answer on the record").toEqual([SAVED_ANSWER]);
-  expect(savedAnswerPress.runsAfter, "opening the dialog starts no run by itself").toBe(savedAnswerPress.runsBefore);
-  expect(savedAnswerPress.status).toBe("TODO");
-  // The dialog is the affordance, so it has to offer the resume this state needs.
-  expect(savedAnswerPress.dialogButtons.join(" | "), "the dialog offers the resume, not a blank answer box").toContain("Resume with saved answer");
+  expect(savedAnswerRecord.humanResponses, "the owner's own answer is still the only answer on the record").toEqual([SAVED_ANSWER]);
+  expect(savedAnswerRecord.status).toBe("TODO");
+  expect(savedAnswerRecord.reportedState).toBe("READY");
+  expect(savedAnswerRecord.runsAfter, "looking at the item starts no run").toBe(savedAnswerRecord.runsBefore);
 });
 
-test("M-13 (T1): a held answer reports AWAITING_RESPONSE, so the saved-answer label never appears on the state that has one", {
+test("M-13 (T1): a held answer reports AWAITING_RESPONSE, and that is the state whose banner says the answer is saved", {
   annotation: { type: "covers", description: "M-13" },
 }, async () => {
   report("detail / held-answer state (TODO with human_response_hold)", heldAnswerState);
   reportPress("the held-answer banner press", heldAnswerPress);
 
-  // `human_response_hold` is the product's own name for a saved answer, and it
-  // is the flag the rig carries on prompt 1. operationalState.ts:30 promotes a
-  // held answer to AWAITING_RESPONSE, so the banner takes its *first* branch and
-  // reads "Needs your input" - the label that means the opposite.
+  /*
+   * INVERTED for L-18, on the same ruling of 2026-09-27 and jd's confirmation
+   * of 2026-09-28. Until then this row asserted the heading "Needs your input",
+   * a "Review and respond" button and no "Continue with saved answer" anywhere,
+   * and that too was a correct record of the defect: `human_response_hold` is
+   * the product's own record of a saved answer - it is the flag the rig carries
+   * on prompt 1 - and operationalState.ts:30 promotes a held answer to
+   * AWAITING_RESPONSE, so labels keyed on `operationalState` put "Needs your
+   * input" on the one state that *has* an answer and "Answer saved" on the one
+   * that has none. Both labels are now chosen from
+   * `humanInput.savedResponseId`, which is the fact itself rather than a state
+   * name that two situations share, and it is the same fact
+   * `HumanInputDialog` already branched on for its own heading.
+   */
   expect(heldAnswerState.reportedState).toBe("AWAITING_RESPONSE");
   expect(heldAnswerState.banner).toBe(true);
-  expect(heldAnswerState.bannerHeading).toBe("Needs your input");
-  expect(heldAnswerState.detailButtons.join(" | ")).toContain("Review and respond");
-  expect(heldAnswerState.detailButtons.join(" | ")).not.toContain("Continue with saved answer");
+  expect(heldAnswerState.bannerHeading).toBe("Answer saved");
+  expect(heldAnswerState.detailButtons.join(" | ")).toContain("Continue with saved answer");
+  expect(heldAnswerState.detailButtons.join(" | ")).not.toContain("Review and respond");
 
   /*
    * Inverted by P-A3 on the same ruling. Until then the press was refused here
@@ -508,4 +561,15 @@ test("M-13 (T1): a held answer reports AWAITING_RESPONSE, so the saved-answer la
   expect(heldAnswerPress.notification).toBe("");
   expect(heldAnswerPress.humanResponses, "the held answer survives the press").toEqual([HELD_ANSWER]);
   expect(heldAnswerPress.runsAfter).toBe(heldAnswerPress.runsBefore);
+
+  /*
+   * L-18's third instance, asserted here for the first time. The dialog's own
+   * `Modal` title was hardcoded to "Needs your input" over a panel whose
+   * heading reads "Your answer is recorded" for exactly this state. The Modal
+   * wraps the panel and is rendered before the panel has fetched the activity,
+   * so it cannot know which of the two states it is in; its title is now
+   * state-neutral and the panel's heading is what carries the state.
+   */
+  expect(heldAnswerPress.dialogHeadings, "the panel still names this state correctly").toContain("Your answer is recorded");
+  expect(heldAnswerPress.dialogHeadings, "and no heading above it contradicts that").not.toContain("Needs your input");
 });
