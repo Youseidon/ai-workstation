@@ -10,6 +10,8 @@ Two in the register were stale and are corrected below: `taskControl.ts:321` is 
 ## Rules every card inherits
 
 - Its **own worker, own branch, own worktree**; lands on main by **fast-forward**. Branch names `fix/<id>-<slug>` or `tm/<id>-<slug>`.
+- **`npm install` in a fresh worktree rewrites `package-lock.json`, and it is never yours to commit.** The local npm writes an older lock format than the committed one: about 144 deletions, all `libc` metadata on optional platform packages plus one `hasInstallScript` flag, with no resolved version or integrity hash moved. `git add -A` sweeps it in silently. `git checkout -- package-lock.json` after installing, and check `git status` before every commit. Three workers on this track have hit it, one of whom only caught it by reading its own diffstat.
+- **Do not symlink `node_modules` from another worktree.** The workspace packages resolve through relative links, so `@agent-console/shared` points at the *other* tree's source and you silently test code you did not change.
 - **Commit each proof as it is obtained.** Two workers have been killed by rate limits on this track and lost nothing because their cards said this.
 - **Reproduce the red before fixing it.** A card's claim is re-run before the worker is dispatched, and the worker proves the red itself.
 - **Never invent a scenario id.** Name a T1 row for its gap id - `M-15 (T1)`, not `TM-T1-<next free number>`. Two invented ids have already been retired here. **Check `annotation` blocks as well as test titles.**
