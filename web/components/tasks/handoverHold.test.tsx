@@ -150,7 +150,14 @@ function hasButton(markup: string, label: string): boolean {
 
 test("M-16: the row says who holds the item instead of claiming it needs the owner", () => {
   const held = list(HELD);
-  assert.match(held, /Held by 6525517234/, "the badge names the holder");
+  /*
+   * CHANGED for jd's answer of 2026-09-28 to m16-design.md section 4: resolve the
+   * label. This asserted the person id the control record stores, because that was
+   * all the badge had. The route now resolves the roster's own name, so the badge
+   * names the person. The claim is unchanged - the row names the holder - and only
+   * the spelling of the holder moves.
+   */
+  assert.match(held, /Held by Junaid/, "the badge names the holder");
   assert.equal(
     held.includes(">Needs you</span>"), false,
     "and does not also claim the item needs the owner",
@@ -177,7 +184,9 @@ test("M-16: the detail's three actions are disabled while a teammate holds the i
   }
   // P-A5's own sentences, so the button's reason and the route's refusal agree.
   assert.match(held, /awi1_75c3aabf7831461bc7c4a395 is RUNNING/, "the reason names the item and its control state");
-  assert.match(held, /6525517234 is holding it, and only they can release it/, "and who has to release it");
+  // Same change, same reason: the reason a button is refused names them the same
+  // way the badge does, which is why both read from one helper.
+  assert.match(held, /Junaid is holding it, and only they can release it/, "and who has to release it");
 
   const free = detail(null);
   assert.equal(isDisabled(free, "Respond and resume"), false,
