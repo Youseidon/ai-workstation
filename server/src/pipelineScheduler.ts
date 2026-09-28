@@ -624,7 +624,7 @@ function notReadyReason(
   descendantId: number | null,
   waitReason: string | null = null,
 ): string {
-  if (blockingPromptId === null) return "Every station on this pipeline is already finished.";
+  if (blockingPromptId === null) return "Every station in this suite is already finished.";
   const target = descendantId ?? blockingPromptId;
   const prompt = workspaces.resolvePrompt(workspaceId, target);
   const label = prompt.externalKey ?? prompt.title;
@@ -819,10 +819,29 @@ async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipel
   return { stopped, interruptId };
 }
 
+/**
+ * A stage whose every station is already DONE or SKIPPED. A fresh named run
+ * starts at stage one, so without skipping these a pipeline stopped part-way
+ * could never be played again: the first, long-finished suite refuses with
+ * `nothing_ready` before the rail ever reaches the stage with work left.
+ * A stage with no steps is not "finished" — the suite play reports it as empty.
+ */
+function namedStageFinished(pipelineId: number, suiteId: number): boolean {
+  const steps = workspaces.remainingPipelinePromptIds(suiteId, pipelineId);
+  return steps.length > 0 && steps.every((promptId) => {
+    const status = workspaces.promptOutcome(promptId).status;
+    return status === "DONE" || status === "SKIPPED";
+  });
+}
+
 async function startNextNamedStage(named: PipelineRun, preferPlayTarget = false): Promise<PipelineRun> {
   const pipeline = workspaces.getPipeline(named.pipelineId);
-  const currentIndex = named.currentSuiteId === null ? -1 : pipeline.stages.findIndex((stage) => stage.suiteId === named.currentSuiteId);
-  const next = pipeline.stages[currentIndex + 1];
+  let nextIndex = named.currentSuiteId === null ? 0 : pipeline.stages.findIndex((stage) => stage.suiteId === named.currentSuiteId) + 1;
+  while (nextIndex < pipeline.stages.length && namedStageFinished(named.pipelineId, pipeline.stages[nextIndex]!.suiteId)) {
+    log.info(`named-skip-finished pipeline=${named.pipelineId} suite=${pipeline.stages[nextIndex]!.suiteId}`);
+    nextIndex++;
+  }
+  const next = pipeline.stages[nextIndex];
   if (next === undefined) {
     log.info(`named-complete pipeline=${named.pipelineId}`);
     return workspaces.updateNamedPipelineRun(named.id, {
@@ -910,6 +929,10 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   const suiteOwner = workspaces.activePipelineForWorkspace(pipeline.workspaceId);
   if (suiteOwner !== null) {
     throw new WorkspaceError(409, "workspace_busy", "Another suite pipeline already owns this workspace.");
+  }
+  // Refuse before creating a run that would only record itself COMPLETE.
+  if (pipeline.stages.every((stage) => namedStageFinished(pipelineId, stage.suiteId))) {
+    throw new WorkspaceError(422, "nothing_ready", "Every station on this pipeline is already finished.");
   }
   const created = workspaces.createNamedPipelineRun({
     id: newId("npipe"),
