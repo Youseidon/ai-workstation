@@ -260,13 +260,36 @@ test("M-16 (T1): the owner's row names the teammate holding the item and offers 
   const named = await eventually("the owner's row to name the teammate holding the item", async () => {
     await page.reload();
     await row().waitFor({ timeout: 60_000 });
-    return /Held by (\S+)/.exec(await row().innerText())?.[1];
+    // A display label can contain spaces - the harness's is "Team B" - so this
+    // captures to the end of the line rather than to the first space. A `\S+`
+    // here captured "Team" and compared it to an id.
+    return /Held by (.+)/.exec(await row().innerText())?.[1]?.trim();
   }, 240_000);
 
   const mine = localRecord(team.envA, itemId);
   expect(mine, "env A has a control record of its own for this item").not.toBeNull();
-  expect(named, "the badge names the executor this workstation's own record carries, not the remote's").toBe(mine!.executor);
-  expect(mine!.executor, "and that executor is somebody, which is what makes the badge nameable").not.toBeNull();
+  expect(mine!.executor, "the executor is somebody, which is what makes the badge nameable").not.toBeNull();
+
+  /*
+   * CHANGED for jd's answer of 2026-09-28 to m16-design.md section 4: resolve the
+   * label. This asserted the badge equalled `mine.executor`, the person id the
+   * control record stores. The route now resolves the roster's own name for that
+   * person, so the assertion reads the roster the same way the product does -
+   * `personLabel` where there is one, the id where there is not - rather than
+   * hardcoding either. Asserting the rule and not the value is what keeps this row
+   * true when the harness renames its fixtures.
+   */
+  const rosterLabel = (() => {
+    for (const row of team.envA.app.query<{ record_json: string }>("SELECT record_json FROM team_roster")) {
+      const record = JSON.parse(row.record_json) as { members?: Array<{ personId?: string; personLabel?: string }> };
+      const member = (record.members ?? []).find(one => one.personId === mine!.executor);
+      if (member?.personLabel) return member.personLabel;
+    }
+    return null;
+  })();
+  expect(rosterLabel, "env A's roster knows a display name for the holder, so there is something to resolve").not.toBeNull();
+  expect(named, "the badge names the holder the roster knows, not the id the record stores").toBe(rosterLabel);
+  expect(named, "and the raw person id is not what the owner is shown").not.toContain(mine!.executor!);
   expect(LIVE_STATES, "the state the owner's own record is in is a live handover state")
     .toContain(mine!.state);
 
