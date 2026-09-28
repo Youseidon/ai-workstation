@@ -14,8 +14,16 @@ type Props = { item: OperationsPrompt; provider: ProviderId; model: string | nul
 type Draft = { text: string; intent: "answer" | "instructions" | "clarify"; responseId?: number; questionRevision?: string };
 const emptyDraft: Draft = { text: "", intent: "answer" };
 
+/*
+ * The title is state-neutral on purpose. This wrapper renders before the panel
+ * inside it has fetched the activity, so it cannot know whether the owner is
+ * being asked something or is looking at an answer they already saved - and it
+ * used to claim "Needs your input" over a panel whose own heading read "Your
+ * answer is recorded" (L-18). The panel has the fact and carries the state; the
+ * title says only which surface this is.
+ */
 export function HumanInputDialog(props: Props) {
-  return <Modal open title="Needs your input" description={props.item.prompt.title} size="lg" onClose={props.onClose}>
+  return <Modal open title="Your input" description={props.item.prompt.title} size="lg" onClose={props.onClose}>
     <HumanInputPanel key={`${props.item.workspace.id}:${props.item.prompt.id}`} {...props} />
   </Modal>;
 }

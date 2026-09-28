@@ -135,9 +135,24 @@ export function WorkItemDetail({
   const [tab, setTab] = useState<DetailTab>("overview");
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  const sessions = activity !== null && item !== null && activity.item.prompt.id === item.prompt.id
-    ? activity.sessions
-    : [];
+  // Only trust the fetched activity when it describes the item on screen: the
+  // fetch is async and the selection can move under it. Three readers below
+  // asked this question and each carried its own copy of the guard; the banner
+  // was the one that did not, and read another item's remarks (L-18).
+  const itemActivity =
+    activity !== null && item !== null && activity.item.prompt.id === item.prompt.id ? activity : null;
+  /*
+   * Whether an answer is actually held, which is the fact both banner labels
+   * below are about. `savedResponseId` is non-null exactly when the item is
+   * TODO, nothing new is being asked, and a `human_response_hold` carries the
+   * owner's answer - so it distinguishes the two situations that
+   * `AWAITING_RESPONSE` covers, which the state name cannot. It is the same
+   * fact `HumanInputDialog` branches on for its own heading, so the banner and
+   * the panel it opens can no longer disagree.
+   */
+  const answerHeld = itemActivity?.humanInput.savedResponseId != null;
+
+  const sessions = itemActivity?.sessions ?? [];
   const activeSessionId =
     sessions.some((entry) => entry.id === sessionId) ? sessionId : sessions[0]?.id ?? null;
   const selectedSession = sessions.find((entry) => entry.id === activeSessionId) ?? null;
@@ -148,9 +163,9 @@ export function WorkItemDetail({
   );
 
   const timeline = useMemo(() => {
-    if (activity === null || item === null || activity.item.prompt.id !== item.prompt.id) return [];
+    if (itemActivity === null) return [];
     return [
-      ...activity.remarks.map((entry) => ({
+      ...itemActivity.remarks.map((entry) => ({
         id: `r${entry.id}`,
         at: entry.createdAt,
         label: activityRemarkLabel(entry),
@@ -162,7 +177,7 @@ export function WorkItemDetail({
               ? "border-info/50"
               : "border-line",
       })),
-      ...activity.events.map((entry) => ({
+      ...itemActivity.events.map((entry) => ({
         id: `e${entry.id}`,
         at: entry.createdAt,
         label: `${entry.actorType} · ${entry.previousStatus} → ${entry.newStatus}`,
@@ -170,7 +185,7 @@ export function WorkItemDetail({
         tone: "border-line",
       })),
     ].sort((a, b) => a.at.localeCompare(b.at));
-  }, [activity, item]);
+  }, [itemActivity]);
 
   if (item === null) {
     return (
@@ -247,16 +262,32 @@ export function WorkItemDetail({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {tab === "overview" && (
           <div className="space-y-4">
-            {(item.operationalState === "AWAITING_RESPONSE" || (item.prompt.status === "TODO" && activity?.remarks.some(entry => entry.kind === "HUMAN_RESPONSE"))) && (
+            {/*
+                `AWAITING_RESPONSE` alone, which is the one state that means
+                something is pending on a person. This used to fire on
+                `prompt.status === "TODO"` plus any `HUMAN_RESPONSE` remark as
+                well, which is every item that was ever blocked and answered -
+                including one reported plainly `READY` with nothing pending,
+                whose only honest offer is the Run button further down (L-18).
+            */}
+            {item.operationalState === "AWAITING_RESPONSE" && (
               <div className="rounded-panel border border-warning/40 bg-warning/5 p-4">
-                <h3 className="mb-2 text-sm font-semibold text-warning">{item.operationalState === "AWAITING_RESPONSE" ? "Needs your input" : "Answer saved"}</h3>
+                {/*
+                    Both labels read `answerHeld`, not the state name. Keying
+                    them on `AWAITING_RESPONSE` had them the wrong way round:
+                    `operationalState` promotes a held answer to that same
+                    state, so the state that *has* the owner's answer said
+                    "Needs your input" and the state with none said "Answer
+                    saved" (L-18).
+                */}
+                <h3 className="mb-2 text-sm font-semibold text-warning">{answerHeld ? "Answer saved" : "Needs your input"}</h3>
                 <p className="mb-3 text-xs leading-5 text-fg-muted">Review the latest question, answer it, or change the instructions before continuing.</p>
                 {/* Opens `HumanInputDialog`, which is the surface built for both
                     of these states and which nothing opened before P-A3. It
                     used to call `onRespond`, and since neither banner state
                     renders the box at :407 that submitted an answer nobody had
                     typed - M-13. */}
-                <Button variant="success" onClick={onOpenHumanInput}>{item.operationalState === "AWAITING_RESPONSE" ? "Review and respond" : "Continue with saved answer"}</Button>
+                <Button variant="success" onClick={onOpenHumanInput}>{answerHeld ? "Continue with saved answer" : "Review and respond"}</Button>
               </div>
             )}
             {item.latestHandoff !== null && (
@@ -285,7 +316,7 @@ export function WorkItemDetail({
                 do not trust. */}
             <WhyThisStatus
               item={item}
-              events={activity !== null && activity.item.prompt.id === item.prompt.id ? activity.events : []}
+              events={itemActivity?.events ?? []}
               catalog={statusCatalog}
               triggerSentences={triggerSentences}
             />
