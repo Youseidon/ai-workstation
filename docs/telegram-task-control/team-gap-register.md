@@ -793,7 +793,7 @@ They are complements, not alternatives: 1 stops the loss, 2 stops the class. **1
 
 Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix jd chooses.
 
-### M-16. The owner's surfaces cannot see a live handover, which is the root of C3, M-13, M-15 and M-17. **Re-scoped 2026-09-28: alignment, not an overhaul**
+### M-16. The owner's surfaces cannot see a live handover, which is the root of C3, M-13, M-15 and M-17. **Re-scoped 2026-09-28: alignment, not an overhaul. Closed 2026-09-28 by P-B5**
 
 **Registered 2026-09-27 on jd's design observation, which re-derived a model the code already half has.**
 
@@ -825,6 +825,8 @@ What replaces it: **one DTO field** carrying the live handover, filled in that a
 **The 30 hand-keyed comparisons are left alone, deliberately, and the reason matters**: every one of them is correct. The item really is `BLOCKED`. It is also handed over, and that second fact simply had nowhere to live. Auditing them was work the overhaul created for itself.
 
 **Re-banded from "the riskiest task on the plan" to a small fix**, which is what it became once P-A5 took the work-loss out of it.
+
+**Closed 2026-09-28 by P-B5.** The full entry, with its proofs and what it deliberately did not do, is in "Closed while this register was open" below.
 
 ## Low
 
@@ -862,6 +864,59 @@ Fixed by gating the check on the run having reached the build, rather than remov
 | L-18 | **The saved-answer banner's condition is too broad and its two labels are the wrong way round** | Found by P-A0's reproduction on 2026-09-27 and **deliberately left** by P-A3, because changing either is a change to a personal-control surface `A5` covers beyond what jd's P-A3 ruling names. Two parts. **The condition**: the banner at [WorkItemDetail.tsx:245](../../web/components/tasks/WorkItemDetail.tsx#L245) fires on `prompt.status === "TODO"` plus *any* `HUMAN_RESPONSE` remark, so every item that was ever blocked and answered carries it forever - including one reported plainly `READY` with nothing pending, which is what P-A0's row observes. **The labels**: `human_response_hold` is the product's own record of a saved answer, and [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes a held answer to `AWAITING_RESPONSE`, so the state that *has* a saved answer reads "Needs your input" and the state that has none reads "Answer saved". `HumanInputDialog`'s own `Modal` title is a third instance: it is hardcoded to "Needs your input" while the panel inside reads "Your answer is recorded". Not severe after P-A3 - every one of these labels now opens a dialog that describes the state correctly and offers the right action - so this is wording and a gate, not a broken path. **`M-16` is the real answer to all three**: each is a surface inferring person-waiting state from prompt status by hand. Registered 2026-09-27. **jd ruled the same day: fold into P-B5.** It stays unfixed until then rather than being taken separately, because `M-16` is the answer to all three instances and doing the labels twice is worse than doing them once in the right place. **Not closed and not waived** - it is scheduled. |
 
 ## Closed while this register was open
+
+### M-16, the owner's surfaces and the live handover. Closed 2026-09-28 by P-B5, as the alignment jd re-scoped it to.
+
+One DTO field, filled in one already-async route, read by three surfaces. **No new display status, no schema column, no migration, and nothing touched in `operationalState`** - which is what jd's re-scope of 2026-09-28 asked for, and all of which the first design had proposed.
+
+`OperationsPrompt.heldByTeammate` carries `{ itemId, state, executor }` or null. The snapshot builder sets it null, because it is synchronous and reading a control record is git I/O; the `/api/operations` route fills it by awaiting **P-A5's own `liveHandoverHolding`**, unchanged, and forces `attention` to false on the prompts that are held. `operationalState` still returns `BLOCKED`, which is true: the item is blocked *and* handed over, and the second fact now has somewhere to live.
+
+The three reads:
+
+- **`WorkItemList`** - the row badge reads `Held by <executor>` rather than "Needs you", and `RowAction` returns null rather than `Respond`.
+- **`WorkItemDetail`** - the BLOCKED branch's "Respond and resume", "Retry with existing context" and "Mark complete" are disabled and carry the reason, with a line above them naming who holds it. Those are the exact three P-A5 answers with a 409.
+- **`HandoverControlView`** - "Prepare handover" is disabled with the reason, because a second handover over a live one is already refused server-side.
+
+The wording is P-A5's own, from `assertNoLiveHandover`, in one small module the three share. A second spelling of one refusal is how a person gets told two different things about it.
+
+**Two things the design did not say, both of which had to be built anyway:**
+
+1. **The enrichment recurses into `children`.** An item link is keyed by prompt id and nothing stops a sub-step carrying one, so a walk over station roots alone would leave a held sub-step saying "Needs you". Covered by its own server row.
+2. **`suite.attentionCount` is decremented by what was cleared.** It is built from the very `attention` flags this clears, so leaving it alone would have made the board's "Needs you 1" chip disagree with the empty list behind it - M-16's own complaint moved one element to the left. The T1 row asserts the count moves, so this cannot regress silently.
+
+**Three claims in the design that turned out to be wrong, recorded so nobody re-derives them:**
+
+1. `WorkItemDetail`'s BLOCKED branch is at **`:416`**, not `:407`. `:407` is the latest-intervention block above it.
+2. Disabling "Prepare handover" by folding the check into `handoverAvailability` - the obvious way - is **wrong**. That same predicate gates whether `HandoverReturnView` is mounted at all, and a live handover is exactly when the requester needs "Check for returned work". It would have removed the review panel for the whole handover. The view takes a separate `held` prop instead and `handoverAvailability` is untouched.
+3. The design's observed output listed the detail's dead buttons but not the **suite attention chip**, which is the visible half of complaint 2. See point 2 above.
+
+Proof:
+
+- **Server 633 of 633** (625 before, plus 8 new rows in `operationsHandoverHold.test.ts`), run twice with no failures. Red first: all seven of those rows failed against unchanged product code on the missing field, `+ undefined - null` and `+ undefined - { executor: 'yousef', itemId: ..., state: 'RUNNING' }`, not on setup.
+- **Web 100 of 100** (95 before, plus 5 in `handoverHold.test.tsx`). Red first on all five: `the badge names the holder`, `expected: false / actual: true` for the Respond button, `expected: true / actual: false` for the disabled buttons and for Prepare handover.
+- **Shared 91 of 91. Typecheck exit 0** on shared, server, web and e2e.
+- **`M-16 (T1)`** in `m16-handover-surfaces.spec.ts`, **1 passed in 1.8m**, three phases on two booted workstations: the owner's row before any handover, the same row while env B genuinely holds the item after accepting through its own Telegram card, and the same row after a real apply ends the handover.
+- **Proved load-bearing by mutation.** With the route forced to set the field to null and nothing else changed, the row fails: `Error: timed out waiting for the owner's row to name the teammate holding the item` after 4.1m. Green again with the mutation reverted.
+- **The handover machinery is untouched**: `m17-handover-hold`, `tm4-handover` (three rows), `m12-web-handover-review` and `c4-close-guard-handover` (four rows) - **9 passed in 4.3m**.
+- **No assertion was weakened.** Two existing fixtures now pass the new `held` prop and the new DTO field, both as null: `handoverControl.test.tsx` and `recovery.test.tsx`. Neither has a row involving a handover, so no assertion in either changes meaning.
+- **No live credential was used**, and the live rig was stopped for every harness run.
+
+**The trap this row had to avoid**, from `m17-handover-hold.spec.ts`: the product reads **this workstation's local** bare control clone, which can lag the shared remote by up to one control poll, and a first version of the M-17 row failed by asserting the remote's executor. So the badge is cross-checked against env A's own record at `<repoRoot>/.agent-console/handover/control.git`, never against `team.bareRepository`. Only `executor` is compared exactly, because it is the one field that does not move once `accept_offer` sets it; `state` is asserted to be *a* member of `LIVE_HANDOVER_STATES` rather than a particular one.
+
+**Deliberately not done:**
+
+- **No display status, no catalog entry, no rollup semantics.** `STEP_DISPLAY_STATUSES` is a closed set 26 files read.
+- **No schema column and no migration.** Measured rather than assumed: only a link carrying a `control_head` needs a read at all, and the read is local.
+- **No change to `operationalState`.** The reconcile that moved it is what caused C3.
+- **No audit of the 30 hand-keyed comparisons.** Every one is correct; the item really is `BLOCKED`.
+- **`L-18` is NOT closed by this.** The P-B5 card folds it in, and it was not done: the banner's over-broad condition at `WorkItemDetail.tsx`, its two inverted labels and `HumanInputDialog`'s hardcoded modal title are all about the *saved-answer* state, not about a handover, and none of them is a read of `heldByTeammate`. Doing them here would have been a second, unrelated change to the same surfaces inside a task jd had just narrowed. **L-18 stays open and still scheduled.**
+- **No timeout or escalation** for a receiver who goes quiet, as the design says: `RETURNED` already raises the review card.
+- **No T1 assertion that Respond comes back** on a still-blocked item nobody holds. A finished apply completes the work item, and there is no cancel route - `begin`, `preview`, `publish`, `review`, `apply` and `request-changes` are the whole set - so a blocked-and-unheld item is not reachable at the end of a crossing. The row's first phase carries that half instead, asserting "Needs you" and `Respond` on the same row before any handover exists.
+- **Nothing about the receiver's own surfaces at T1.** The executor-link case - the one that breaks handover if it is wrong - is covered at the server tier, where it costs one fixture instead of a third workstation.
+
+**Still owed by jd, and unanswered as of 2026-09-28**: m16-design.md section 4, the label. The badge reads `Held by 6525517234`, the person id the control record carries, because the record stores ids and not display labels. Resolving it to a roster display label is a second lookup on a surface that has no roster today. It is implemented as the person-id version in one function, `heldByTeammateBadge`, so swapping it is a one-line change.
+
+**Noted while fixing**: web lint is **20 problems** both with and without this change, so it adds none. The L-12 waiver and the state of record both say 19, which is one stale - drift from a commit since 2026-09-27, not from this task.
 
 ### M-13, both personal-control surfaces. Closed 2026-09-27 by P-A0 and P-A3.
 
