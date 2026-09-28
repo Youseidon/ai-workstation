@@ -93,13 +93,19 @@ export function useSettings(serverUrl: string) {
    * the Team thread panel's button still looked enabled. The API gate held, so
    * the stale button could not act; it could only mislead.
    *
-   * The broadcast carries the whole snapshot, so this applies it rather than
+   * The broadcast carries the whole snapshot, so this prefers it rather than
    * re-fetching: one message, no round trip, and every gated surface re-renders.
+   *
+   * **Derived, not mirrored.** Copying it into state inside an effect is what
+   * `setState` in an effect means, and eslint is right to refuse it - it costs a
+   * cascading render for no gain. Preferring it here is also *correct* rather than
+   * merely cheaper, and only because every settings mutation broadcasts: both
+   * `PUT`/`POST` and the reset route call `broadcastSettingsChange`
+   * (server/src/index.ts:370 and :396), so once one has arrived it is never staler
+   * than the copy fetched on mount. Before the first one it is null and the
+   * fetched copy wins.
    */
   const broadcast = useAgentConsole().settings;
-  useEffect(() => {
-    if (broadcast !== null) setSnapshot(broadcast);
-  }, [broadcast]);
 
   const reload = useCallback(async () => {
     apply(await getSnapshot(serverUrl));
@@ -131,9 +137,11 @@ export function useSettings(serverUrl: string) {
     [serverUrl, apply],
   );
 
+  // The broadcast wins once one has arrived; see the note above the read of it.
+  const current = broadcast ?? snapshot;
   return {
-    snapshot,
-    loading: snapshot === null && errors.length === 0,
+    snapshot: current,
+    loading: current === null && errors.length === 0,
     saving,
     errors,
     reload,
