@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { inspect } from "node:util";
 import { telegramRetryDelayMs } from "../src/integrations/telegram/adapter.ts";
 import { TelegramApiError, redactBotToken } from "../src/integrations/telegram/botApi.ts";
-import { BotToken, TELEGRAM_TOKEN_ENV, takeTelegramCredential } from "../src/integrations/telegram/credentials.ts";
+import { BotToken, persistTelegramCredential, readStoredTelegramCredential, TELEGRAM_TOKEN_ENV, takeTelegramCredential } from "../src/integrations/telegram/credentials.ts";
 import { HttpTelegramBotApi, normalizeTelegramUpdate } from "../src/integrations/telegram/httpBotApi.ts";
 import { formatTelegramMessage } from "../src/integrations/telegram/liveFormat.ts";
 
@@ -64,6 +67,21 @@ test("bot token cannot leak through string, JSON or inspect, and leaves the envi
   assert.deepEqual(takeTelegramCredential({}), { token: null, problem: null });
 
   assert.equal(redactBotToken(`GET https://api.telegram.org/bot${rawToken}/getMe`), "GET https://api.telegram.org/bot[redacted-token]/getMe");
+});
+
+test("the UI-managed Telegram credential is stored owner-only and read without exposing it", () => {
+  const directory = mkdtempSync(join(tmpdir(), "telegram-credential-"));
+  const path = join(directory, "telegram-token");
+  try {
+    persistTelegramCredential(token, path);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(readFileSync(path, "utf8").trim(), rawToken);
+    const loaded = readStoredTelegramCredential(path);
+    assert.equal(loaded.token?.reveal(), rawToken);
+    assert.equal(JSON.stringify(loaded), '{"token":"[redacted-token]","problem":null}');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("getUpdates long-polls for 25 seconds from the durable offset and keeps only task-related fields", async () => {

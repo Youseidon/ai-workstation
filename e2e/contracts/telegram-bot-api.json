@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-15",
+  "recordedAt": "2026-09-28",
   "source": "api.telegram.org via the harness test bot",
   "steps": {
     "getUpdates.probe": {
@@ -217,7 +217,7 @@
             "username": "username_4",
             "type": "private"
           },
-          "date": 1007,
+          "date": 1011,
           "reply_to_message": {
             "message_id": 1001,
             "from": {
@@ -252,9 +252,9 @@
     "update.messagePlain": {
       "status": 200,
       "body": {
-        "update_id": 1011,
+        "update_id": 1012,
         "message": {
-          "message_id": 1012,
+          "message_id": 1013,
           "from": {
             "id": 1002,
             "is_bot": false,
@@ -268,7 +268,7 @@
             "username": "username_4",
             "type": "private"
           },
-          "date": 1007,
+          "date": 1014,
           "text": "Contract recording: plain text"
         }
       }
@@ -373,7 +373,7 @@
             "type": "private"
           },
           "date": 1003,
-          "edit_date": 1013,
+          "edit_date": 1015,
           "text": "Contract recording: edited"
         }
       }

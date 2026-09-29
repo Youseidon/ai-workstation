@@ -169,16 +169,23 @@ async function waitFor<T>(probe: () => T | null | undefined | false, label: stri
   }
 }
 
-function harness(options: { settings?: Partial<TelegramRuntimeSettings>; token?: "stub" | "none"; now?: () => number } = {}) {
+function harness(options: {
+  settings?: Partial<TelegramRuntimeSettings>;
+  token?: "stub" | "none";
+  now?: () => number;
+  persistCredential?: (token: BotToken) => void;
+} = {}) {
   const stub = new StubTelegram(7_000_000_000 + Math.floor(Math.random() * 1_000_000));
   const settings: TelegramRuntimeSettings = { enabled: true, teamEnabled: true, handoverEnabled: false, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
   const logs: string[] = [];
   const sleeps: number[] = [];
+  const persisted: string[] = [];
   const log = (level: string) => (message: string, extra?: unknown) => { logs.push(`${level} ${message} ${extra === undefined ? "" : String(extra)}`); };
   const runtime = new TelegramLiveRuntime({
     settings: () => settings,
     credential: { token: options.token === "none" ? null : BotToken.parse(stub.rawToken), problem: null },
     createApi: (token, contentForRef) => new HttpTelegramBotApi({ token, contentForRef, fetch: stub.fetch }),
+    persistCredential: options.persistCredential ?? (token => { persisted.push(token.reveal()); }),
     // Record the requested backoff but do not actually wait for it.
     sleep: (ms, signal) => {
       sleeps.push(ms);
@@ -195,7 +202,7 @@ function harness(options: { settings?: Partial<TelegramRuntimeSettings>; token?:
   });
   const botId = `telegram-${stub.botUserId}`;
   return {
-    stub, settings, logs, sleeps, runtime, botId,
+    stub, settings, logs, sleeps, persisted, runtime, botId,
     async cleanup() {
       await runtime.stop();
       for (const actor of workspaces.taskControlActors("telegram")) workspaces.removeTaskControlActor(actor.id);
@@ -291,6 +298,58 @@ test("an unconfigured install polls nothing: disabled, fake transport and missin
     } finally {
       await h.cleanup();
     }
+  }
+});
+
+test("a token configured from the UI is validated, persisted and connected without a restart", async () => {
+  const h = harness({ token: "none" });
+  try {
+    assert.equal(h.runtime.status().state, "missing_token");
+    await h.runtime.configureToken(`  ${h.stub.rawToken}  `);
+    await waitFor(() => h.runtime.status().state === "polling", "configured bot polling");
+    assert.deepEqual(h.persisted, [h.stub.rawToken]);
+    assert.deepEqual(h.runtime.status().bot, { id: String(h.stub.botUserId), username: "l1_stub_bot" });
+    assert.equal(h.runtime.status().tokenConfigured, true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a rejected UI token neither persists nor replaces the missing-token state", async () => {
+  const h = harness({ token: "none" });
+  try {
+    h.stub.script("getMe", { status: 401, body: { ok: false, error_code: 401, description: "Unauthorized" } });
+    await assert.rejects(
+      h.runtime.configureToken(h.stub.rawToken),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "telegram_token_rejected",
+    );
+    assert.deepEqual(h.persisted, []);
+    assert.equal(h.runtime.status().state, "missing_token");
+    assert.equal(h.runtime.status().tokenConfigured, false);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a credential write failure leaves the existing bot connected and hides local paths", async () => {
+  const h = harness({
+    persistCredential: () => { throw new Error("write failed at /private/operator/path"); },
+  });
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "existing bot polling");
+
+    await assert.rejects(
+      h.runtime.configureToken(h.stub.rawToken),
+      (error: unknown) => error instanceof WorkspaceError
+        && error.code === "telegram_credential_write_failed"
+        && !error.message.includes("/private/operator/path"),
+    );
+
+    assert.equal(h.runtime.status().state, "polling");
+    assert.equal(h.runtime.status().tokenConfigured, true);
+  } finally {
+    await h.cleanup();
   }
 });
 
@@ -528,7 +587,7 @@ test("a rejected bot token stops polling with a clear status instead of hammerin
     await h.runtime.reconcile();
     await waitFor(() => h.runtime.status().state === "auth_failed", "auth failure");
     assert.ok(h.sleeps.includes(5 * 60_000), "retries only after five minutes");
-    assert.match(h.runtime.status().reason, /TELEGRAM_BOT_TOKEN/);
+    assert.match(h.runtime.status().reason, /Telegram setup screen/);
   } finally {
     await h.cleanup();
   }

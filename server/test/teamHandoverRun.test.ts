@@ -73,8 +73,8 @@ import { WorkspaceError, workspaces } from "../src/workspaces.ts";
  * and env B restarting mid-offer.
  */
 
-const REQUESTER = "jd";
-const RECEIVER = "yousef";
+const REQUESTER = "requester";
+const RECEIVER = "receiver";
 const OTHER_RECEIVER = "sam";
 const PROVIDER = "claude";
 const MODEL = "sonnet";
@@ -131,8 +131,8 @@ function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}
   execFileSync("git", ["init", "--bare", "-q", bare]);
 
   git(source, ["init", "-q", "-b", "work"]);
-  git(source, ["config", "user.email", "jd@invalid"]);
-  git(source, ["config", "user.name", "jd"]);
+  git(source, ["config", "user.email", "requester@example.invalid"]);
+  git(source, ["config", "user.name", "requester"]);
   writeFileSync(join(source, "task.md"), "half finished\n");
   git(source, ["add", "-A"]);
   git(source, ["commit", "-q", "-m", "snapshot"]);
@@ -149,22 +149,22 @@ function fixture(prefix: string, options: { policy?: () => ReceiverPolicy } = {}
   // Env B's own actor, and the requester's group actor as env B's roster knows it.
   workspaces.upsertTaskControlActor({
     id: `fake-tg-${RECEIVER}-private`, transport: "fake_telegram", transportUserId: "9001",
-    chatId: `${prefix}-yousef-private`, topicId: null, label: "Yousef",
+    chatId: `${prefix}-receiver-private`, topicId: null, label: "Teammate",
   });
   workspaces.upsertTeamGroupActor({
     id: `fake-tg-${REQUESTER}-group-${itemId}`, transport: "fake_telegram", transportUserId: "9000",
-    chatId: groupChat, label: "jd",
+    chatId: groupChat, label: "requester",
   });
   workspaces.upsertTeamGroupActor({
     id: `fake-tg-${RECEIVER}-group-${itemId}`, transport: "fake_telegram", transportUserId: "9001",
-    chatId: groupChat, label: "Yousef",
+    chatId: groupChat, label: "Teammate",
   });
 
   const control = new BareGitControlRecordRemote(bare, itemId);
   const env: ReceiverEnvironment = {
     personId: RECEIVER,
-    workstationId: "yousef-desktop",
-    botId: "yousef-bot",
+    workstationId: "receiver-workstation",
+    botId: "receiver-bot",
     chatId: groupChat,
     topicId: null,
     actorId: `fake-tg-${RECEIVER}-group-${itemId}`,
@@ -626,7 +626,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       // second is the one driven to the record first, so arrival order at a bot
       // cannot be what decides it.
       const secondToReachABot = await acceptHandoverOffer(f.control, { env: other, itemId: f.itemId, offer, commandId: "b-accept-sam", fromHead: head });
-      const firstToReachABot = await acceptHandoverOffer(f.control, { env: f.env, itemId: f.itemId, offer, commandId: "b-accept-yousef", fromHead: head });
+      const firstToReachABot = await acceptHandoverOffer(f.control, { env: f.env, itemId: f.itemId, offer, commandId: "b-accept-receiver", fromHead: head });
 
       assert.equal(secondToReachABot.kind, "claimed", "the accept whose shared update landed first wins");
       assert.equal(firstToReachABot.kind, "lost", "and the tap that reached a bot first loses");
@@ -643,7 +643,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
         assert.equal((db.prepare("SELECT COUNT(*) n FROM workspace_start_intent WHERE released_at IS NULL").get() as { n: number }).n, 0,
           "the loser starts no run");
         const events = execFileSync("git", ["--git-dir", f.bare, "ls-tree", "--name-only", `${current.head}:events`], { encoding: "utf8" });
-        assert.equal(events.includes("b-accept-yousef.json"), false, "and its command is never recorded");
+        assert.equal(events.includes("b-accept-receiver.json"), false, "and its command is never recorded");
         assert.equal(events.includes("b-accept-sam.json"), true);
       } finally { db.close(); }
       assert.deepEqual(
@@ -665,7 +665,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       await acceptHandoverOffer(f.control, { env: other, itemId: f.itemId, offer, commandId: "b-sam-wins", fromHead: head });
 
       const acceptRef = discovery.card.actions.find(one => one.action === "accept_offer")!.ref;
-      const lost = await acceptHandoverOffer(f.control, { env: f.env, itemId: f.itemId, offer, commandId: "b-yousef-loses", actionRef: acceptRef, fromHead: head });
+      const lost = await acceptHandoverOffer(f.control, { env: f.env, itemId: f.itemId, offer, commandId: "b-receiver-loses", actionRef: acceptRef, fromHead: head });
       assert.equal(lost.kind, "lost");
 
       const db = database();
@@ -730,6 +730,18 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
         assert.match(refused.reason, /expired/i, "the expiry reason is what it gives");
         assert.equal(edits(), before, "no card is renewed automatically");
         assert.equal((await f.control.read())!.record.state, "OFFERED");
+
+        const sends = () => (db.prepare(`SELECT COUNT(*) n FROM telegram_outbox
+          WHERE operation='send' AND bot_id=? AND json_extract(payload_json,'$.kind')='handover_offer'
+            AND json_extract(payload_json,'$.itemId')=?`).get(f.env.botId, f.itemId) as { n: number }).n;
+        const sentBeforeRediscovery = sends();
+        const rediscovered = await discoverHandoverOffer(f.control, f.env);
+        assert.equal(rediscovered.kind, "offer", "the next receiver poll may renew an undecided stale offer");
+        if (rediscovered.kind !== "offer") return;
+        const renewedAccept = rediscovered.card.actions.find(one => one.action === "accept_offer")!;
+        assert.equal(renewedAccept.ref, acceptRef, "the persistent card keeps the same callback ref");
+        assert.equal(Date.parse(workspaces.taskControlAction(renewedAccept.ref)!.expires_at) > Date.now(), true, "and that ref is live again");
+        assert.equal(sends(), sentBeforeRediscovery, "renewal does not post another Telegram reminder");
       } finally { db.close(); }
     } finally { f.dispose(); }
   });
@@ -793,8 +805,8 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       if (started.kind !== "started") return;
 
       writeFileSync(join(started.worktree, "task.md"), "half finished\nsome progress\n");
-      git(started.worktree, ["config", "user.email", "yousef@invalid"]);
-      git(started.worktree, ["config", "user.name", "yousef"]);
+      git(started.worktree, ["config", "user.email", "receiver@example.invalid"]);
+      git(started.worktree, ["config", "user.name", "receiver"]);
       git(started.worktree, ["commit", "-qam", "progress so far"]);
       const resultCommit = git(started.worktree, ["rev-parse", "HEAD"]);
 
@@ -880,7 +892,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
       const head = (await f.control.read())!.head;
       await applyControlTransition(f.control, {
         event: "stop_request", actor: { personId: REQUESTER }, commandId: "a-cancel", epoch: 1, roster: f.env.roster,
-        fromHead: head, payload: { reason: "jd wants it back" },
+        fromHead: head, payload: { reason: "requester wants it back" },
       });
       await applyControlTransition(f.control, {
         event: "stop_proven", actor: { personId: RECEIVER }, commandId: "b-proved", epoch: 1, roster: f.env.roster,
@@ -911,7 +923,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
         (error: unknown) => error instanceof WorkspaceError && error.code === "control_condition_unmet" && error.fields?.state === "WITHDRAWN",
         "where the proof cannot be produced the attempt fails with the current state",
       );
-      assert.equal((await f.control.read())!.record.state, "WITHDRAWN", "and jd stays held rather than seizing");
+      assert.equal((await f.control.read())!.record.state, "WITHDRAWN", "and requester stays held rather than seizing");
       const ok = await reacquireOwnership(f.control, { itemId: f.itemId, actor: { personId: REQUESTER }, commandId: "a-proven", proof: { noOtherExecutor: true }, roster: f.env.roster });
       assert.equal(ok.record.state, "LOCAL");
       assert.equal(offer.epoch, 1);
@@ -946,7 +958,7 @@ test("TM-T1-H2: race, failure, partial return and no-reclaim", async (t) => {
         itemId: f.itemId, actor: { personId: RECEIVER }, commandId: "b-local-ack", writingStopped: true, roster: f.env.roster,
       });
       /*
-       * REWRITTEN by P-C5, citing jd's ruling of 2026-09-27: ruling 7 wins, and a
+       * REWRITTEN by P-C5, citing requester's ruling of 2026-09-27: ruling 7 wins, and a
        * stopped-but-unreturned item is still held.
        *
        * This asserted the opposite - "the item closes once the receiver's own

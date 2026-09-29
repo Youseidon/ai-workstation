@@ -63,9 +63,6 @@ try {
   throw new Error("Missing .env. Run npm run setup:team-pilot first.");
 }
 
-if ((values.TELEGRAM_BOT_TOKEN ?? "").trim() === "") {
-  throw new Error("TELEGRAM_BOT_TOKEN is empty. Set it locally in .env before starting the pilot.");
-}
 if (values.TEAM_ENABLED !== "false") {
   throw new Error("TEAM_ENABLED must remain false in .env; enable Team explicitly from the Agents page after pairing.");
 }

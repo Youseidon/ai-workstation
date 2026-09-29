@@ -10,7 +10,8 @@ import { TaskControlService, type HandoverTap } from "../src/taskControl.ts";
 import { mintItemId } from "../src/teamItems.ts";
 import type { TeamRoster } from "../src/teamRoster.ts";
 import { compareCapabilities } from "../src/teamHandoverRun.ts";
-import { applyControlTransition } from "../src/teamControlRecord.ts";
+import { applyControlTransition, OFFER_DEADLINE_MS } from "../src/teamControlRecord.ts";
+import { BareGitHandoverPackageRemote, publishHandoverOffer } from "../src/teamHandoverCapture.ts";
 import { formatTelegramMessage } from "../src/integrations/telegram/liveFormat.ts";
 import { renderHandoverOfferCard, renderHandoverReviewCard } from "../src/taskControlRenderer.ts";
 import { renderTeamItemActionCard } from "../src/teamItemViews.ts";
@@ -24,8 +25,11 @@ import {
   requestItemChanges,
   handleHandoverTap,
   knownHandoverRecord,
+  listTeamHandovers,
   listControlItems,
   pollControlRecords,
+  postReturnWorkCard,
+  performWebHandoverAction,
   previewItemHandover,
   publishItemHandover,
   receiverPolicy,
@@ -48,8 +52,8 @@ import { WorkspaceError, workspaces } from "../src/workspaces.ts";
  * default-off contract is what the last case here asserts.
  */
 
-const REQUESTER = "jd";
-const RECEIVER = "yousef";
+const REQUESTER = "requester";
+const RECEIVER = "receiver";
 const PROVIDER = "claude";
 
 function git(directory: string, args: string[]): string {
@@ -79,8 +83,8 @@ function fixture(prefix: string): Fixture {
   execFileSync("git", ["init", "--bare", "-q", bare]);
 
   git(source, ["init", "-q", "-b", "work"]);
-  git(source, ["config", "user.email", "jd@invalid"]);
-  git(source, ["config", "user.name", "jd"]);
+  git(source, ["config", "user.email", "requester@example.invalid"]);
+  git(source, ["config", "user.name", "requester"]);
   writeFileSync(join(source, "task.md"), "half finished\n");
   git(source, ["add", "-A"]);
   git(source, ["commit", "-q", "-m", "base"]);
@@ -102,8 +106,8 @@ function fixture(prefix: string): Fixture {
     groupChatId: groupChat,
     remoteUrl: bare,
     members: [
-      { personId: REQUESTER, telegramUserId: "9000", botId: "jd-bot", botUsername: "jd_bot", workstationId: "jd-laptop", workstationLabel: "jd-laptop", personLabel: "jd" },
-      { personId: RECEIVER, telegramUserId: "9001", botId: "yousef-bot", botUsername: "yousef_bot", workstationId: "yousef-desktop", workstationLabel: "yousef-desktop", personLabel: "Yousef" },
+      { personId: REQUESTER, telegramUserId: "9000", botId: "requester-bot", botUsername: "requester_bot", workstationId: "requester-workstation", workstationLabel: "requester-workstation", personLabel: "requester" },
+      { personId: RECEIVER, telegramUserId: "9001", botId: "receiver-bot", botUsername: "receiver_bot", workstationId: "receiver-workstation", workstationLabel: "receiver-workstation", personLabel: "Teammate" },
     ],
     usedInviteIds: [],
     commandIds: [],
@@ -119,6 +123,10 @@ function fixture(prefix: string): Fixture {
     });
   }
 
+  assert.equal(handoverSurfaceInternals.surfaceTestSeams.handoverRoot, null, "surface fixtures must not overlap");
+  const surfaceRoot = mkdtempSync(join(tmpdir(), `${prefix}-surface-`));
+  handoverSurfaceInternals.surfaceTestSeams.handoverRoot = surfaceRoot;
+
   return {
     itemId,
     promptId: prompt.id,
@@ -126,13 +134,14 @@ function fixture(prefix: string): Fixture {
     source,
     clone,
     roster,
-    requester: { roster, botId: "jd-bot", providers: [PROVIDER] },
-    receiver: { roster, botId: "yousef-bot", providers: [PROVIDER] },
+    requester: { roster, botId: "requester-bot", providers: [PROVIDER] },
+    receiver: { roster, botId: "receiver-bot", providers: [PROVIDER] },
     dispose() {
+      handoverSurfaceInternals.surfaceTestSeams.handoverRoot = null;
       for (const entry of workspaces.list()) {
         if (entry.id === workspace.id || entry.id === receiverWorkspace.id) workspaces.remove(entry.id);
       }
-      for (const directory of [bare, source, clone]) rmSync(directory, { recursive: true, force: true });
+      for (const directory of [bare, source, clone, surfaceRoot]) rmSync(directory, { recursive: true, force: true });
     },
   };
 }
@@ -154,6 +163,33 @@ async function offered(f: Fixture) {
     acknowledgedBytes: preview.totalBytes,
   });
   return { preview, ...published };
+}
+
+/** Publishes through the same engine with a controlled clock for deadline behavior. */
+async function offeredAt(f: Fixture, now: Date) {
+  await beginItemHandover(f.requester, f.itemId);
+  const preview = await previewItemHandover(f.requester, f.itemId, { provider: PROVIDER });
+  const env = requesterEnvironment(f.requester, f.itemId);
+  return publishHandoverOffer({
+    preview,
+    control: controlRemote(f.itemId, f.bare),
+    packages: new BareGitHandoverPackageRemote(preview.workDirectory, f.bare),
+    commandId: `publish-at-${f.itemId}`,
+    actor: { personId: env.personId, workstationId: env.workstationId },
+    confirmations: ["publish"],
+    acknowledgedBytes: preview.totalBytes,
+    requested: { hostAccess: false, sandbox: HANDOVER_SANDBOX, tools: [] },
+    now,
+  });
+}
+
+async function withoutClaimedRun<T>(operation: () => Promise<T>): Promise<T> {
+  handoverSurfaceInternals.surfaceTestSeams.suppressClaimedRun = true;
+  try {
+    return await operation();
+  } finally {
+    handoverSurfaceInternals.surfaceTestSeams.suppressClaimedRun = false;
+  }
 }
 
 test("C1: the requester's route path captures, publishes and leaves an open call on the shared remote", async () => {
@@ -242,20 +278,20 @@ test("C1: the control-record read is what makes a receiver discover an open call
     assert.equal(discovered.items, 1);
 
     // The card is posted by the receiver's own bot, not the requester's.
-    const outbox = workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId);
+    const outbox = workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId);
     assert.notEqual(outbox, null, "the receiver's own bot posts its own Accept card");
-    assert.equal(workspaces.handoverOfferCardOutbox("jd-bot", f.itemId), null);
-    const actions = workspaces.handoverActionsForItem("yousef-bot", f.itemId);
+    assert.equal(workspaces.handoverOfferCardOutbox("requester-bot", f.itemId), null);
+    const actions = workspaces.handoverActionsForItem("receiver-bot", f.itemId);
     assert.deepEqual(actions.map(one => one.action).sort(), ["accept_offer", "decline_offer"]);
 
     // A second read does not repost it.
     await pollControlRecords(f.receiver);
-    assert.equal(workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId), outbox);
+    assert.equal(workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId), outbox);
 
     // The requester does not accept their own open call.
     const own = await pollControlRecords(f.requester);
     assert.deepEqual(own.discovered, []);
-    assert.equal(workspaces.handoverOfferCardOutbox("jd-bot", f.itemId), null);
+    assert.equal(workspaces.handoverOfferCardOutbox("requester-bot", f.itemId), null);
 
     // The requested capabilities are inside the receiver's own policy, so the
     // Accept card is offered rather than withheld (RTC-12, within_limit).
@@ -287,7 +323,7 @@ test("C1: a tap routes into the engine, and the claim is the record's compare-an
   try {
     await offered(f);
     await pollControlRecords(f.receiver);
-    const accept = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "accept_offer")!;
+    const accept = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "accept_offer")!;
 
     const tap: HandoverTap = {
       action: "accept_offer",
@@ -295,13 +331,13 @@ test("C1: a tap routes into the engine, and the claim is the record's compare-an
       itemId: f.itemId,
       epoch: 1,
       commandId: "b-accept-1",
-      botId: "yousef-bot",
+      botId: "receiver-bot",
       chatId: f.roster.groupChatId,
       topicId: null,
       transportUserId: "9001",
-      promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+      promptId: workspaces.handoverCandidatePrompt("receiver-bot", f.itemId)!,
     };
-    const receipt = await handleHandoverTap(f.receiver, tap);
+    const receipt = await withoutClaimedRun(() => handleHandoverTap(f.receiver, tap));
     assert.equal(receipt.state, "APPLIED");
 
     // The shared record, not the tap, is what records the claim.
@@ -318,24 +354,81 @@ test("C1: a tap routes into the engine, and the claim is the record's compare-an
   }
 });
 
+test("C1: expired undecided receiver actions renew in place before a web decision", async () => {
+  enable();
+  const f = fixture("surface-web-expired");
+  try {
+    await offered(f);
+    await pollControlRecords(f.receiver);
+    const firstAccept = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "accept_offer");
+    assert.notEqual(firstAccept, undefined);
+
+    workspaces.expireHandoverActionsForItem("receiver-bot", f.itemId);
+    const expired = workspaces.taskControlAction(firstAccept!.ref);
+    assert.equal(expired !== null && Date.parse(expired.expires_at) <= Date.now(), true, "the original local action is stale");
+
+    const summaries = await listTeamHandovers(f.receiver);
+    const summary = summaries.find(one => one.itemId === f.itemId);
+    assert.deepEqual(summary?.actions.sort(), ["accept", "decline"], "the web inbox advertises only freshly backed actions");
+    const freshAccept = workspaces.handoverActionsForItem("receiver-bot", f.itemId).findLast(one => one.action === "accept_offer");
+    assert.equal(freshAccept?.ref, firstAccept!.ref, "the web action renews the persistent card ref");
+    assert.equal(Date.parse(workspaces.taskControlAction(freshAccept!.ref)!.expires_at) > Date.now(), true, "and that ref is live");
+
+    const receipt = await performWebHandoverAction(f.receiver, f.itemId, "decline");
+    assert.equal("state" in receipt ? receipt.state : "", "APPLIED");
+    const decidedExpiry = workspaces.taskControlAction(firstAccept!.ref)!.expires_at;
+    const outbox = workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId);
+    await listTeamHandovers(f.receiver);
+    assert.equal(workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId), outbox, "a final local decision never reposts the card");
+    assert.equal(workspaces.taskControlAction(firstAccept!.ref)!.expires_at, decidedExpiry, "a final decline never renews its sibling action");
+  } finally {
+    f.dispose();
+    disable();
+  }
+});
+
+test("C1: a receiver records an overdue offer and never advertises stale Accept or Decline actions", async () => {
+  enable();
+  const f = fixture("surface-deadline");
+  try {
+    await offeredAt(f, new Date(Date.now() - OFFER_DEADLINE_MS - 1_000));
+
+    const polled = await pollControlRecords(f.receiver);
+    assert.deepEqual(polled.expired, [f.itemId], "the receiver need not wait for the requester to record expiry");
+    assert.deepEqual(polled.discovered, [], "an overdue offer never creates a local action card");
+
+    const summary = (await listTeamHandovers(f.receiver)).find(one => one.itemId === f.itemId);
+    assert.equal(summary?.state, "WITHDRAWN");
+    assert.deepEqual(summary?.actions, [], "the inbox does not advertise Accept or Decline after the deadline");
+    assert.deepEqual(workspaces.handoverActionsForItem("receiver-bot", f.itemId), []);
+    await assert.rejects(
+      () => performWebHandoverAction(f.receiver, f.itemId, "accept"),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "action_not_available",
+    );
+  } finally {
+    f.dispose();
+    disable();
+  }
+});
+
 test("C1: a tap this surface offers no button for is refused rather than read as something else", async () => {
   enable();
   const f = fixture("surface-unknown-tap");
   try {
     await offered(f);
     await pollControlRecords(f.receiver);
-    const decline = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "decline_offer")!;
+    const decline = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "decline_offer")!;
     const receipt = await handleHandoverTap(f.receiver, {
       action: "withdraw_offer",
       actionRef: decline.ref,
       itemId: f.itemId,
       epoch: 1,
       commandId: "b-withdraw-1",
-      botId: "yousef-bot",
+      botId: "receiver-bot",
       chatId: f.roster.groupChatId,
       topicId: null,
       transportUserId: "9001",
-      promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+      promptId: workspaces.handoverCandidatePrompt("receiver-bot", f.itemId)!,
     });
     assert.equal(receipt.state, "REJECTED");
     assert.equal(receipt.errorCode, "action_not_available");
@@ -376,7 +469,7 @@ test("C1: both settings stay false by default, and each route says which one ref
     // The capability gate H04 built still refuses a tap, with both settings named.
     const control = new TaskControlService({
       enabled: true, teamEnabled: true, handoverEnabled: false,
-      notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", botId: "jd-bot",
+      notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", botId: "requester-bot",
     });
     let called = false;
     control.registerHandoverTapHandler(async () => { called = true; throw new Error("unreachable"); });
@@ -393,8 +486,8 @@ test("C1: the requester's environment is built from the roster, never from the o
   try {
     const env = requesterEnvironment(f.requester, f.itemId);
     assert.equal(env.personId, REQUESTER);
-    assert.equal(env.workstationId, "jd-laptop");
-    assert.equal(env.botId, "jd-bot");
+    assert.equal(env.workstationId, "requester-workstation");
+    assert.equal(env.botId, "requester-bot");
     assert.equal(env.remoteUrl, f.bare);
     assert.equal(env.workDirectory, f.source);
     assert.deepEqual(env.roster, [REQUESTER, RECEIVER]);
@@ -416,12 +509,12 @@ test("C1: the requester's environment is built from the roster, never from the o
  */
 async function claimedAndRunning(f: Fixture, offer: { epoch: number }) {
   await pollControlRecords(f.receiver);
-  const accept = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "accept_offer")!;
-  await handleHandoverTap(f.receiver, {
+  const accept = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "accept_offer")!;
+  await withoutClaimedRun(() => handleHandoverTap(f.receiver, {
     action: "accept_offer", actionRef: accept.ref, itemId: f.itemId, epoch: offer.epoch,
-    commandId: `b-accept-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
-    transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
-  });
+    commandId: `b-accept-${f.itemId}`, botId: "receiver-bot", chatId: f.roster.groupChatId, topicId: null,
+    transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("receiver-bot", f.itemId)!,
+  }));
 }
 
 test("C1: Return work publishes the result, and the requester's poll turns it into a review card", async () => {
@@ -440,7 +533,7 @@ test("C1: Return work publishes the result, and the requester's poll turns it in
     ] as const) {
       const current = (await remote.read())!;
       await applyControlTransition(remote, {
-        event, actor: { personId: RECEIVER, workstationId: "yousef-desktop" },
+        event, actor: { personId: RECEIVER, workstationId: "receiver-workstation" },
         commandId: `b-${event}`, epoch: current.record.epoch, fromHead: current.head,
         roster: [REQUESTER, RECEIVER], payload,
       });
@@ -462,25 +555,48 @@ test("C1: Return work publishes the result, and the requester's poll turns it in
     workspaces.beginAgentRun({ runId, workspaceId: receiverWorkspace.id, promptId: task.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     workspaces.updateAgentStatus(runId, { requestId: `${runId}-done`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "handover work finished", verificationSummary: "surface fixture" });
     workspaces.finishAgentRun(runId, "done");
-    handoverSurfaceInternals.activeRuns.set(f.itemId, {
+    const activeRun = {
       itemId: f.itemId, runId, worktree, workspaceId: receiverWorkspace.id,
-      promptId: task.id, cardPromptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+      promptId: task.id, cardPromptId: workspaces.handoverCandidatePrompt("receiver-bot", f.itemId)!,
       provider: "claude", model: null,
-    });
+    };
+    handoverSurfaceInternals.activeRuns.set(f.itemId, activeRun);
+    const runningRecord = (await remote.read())!.record;
 
     // The receiver's poll offers Return work once the run has ended.
     const polled = await pollControlRecords(f.receiver);
     assert.deepEqual(polled.returnable, [f.itemId]);
-    const returnAction = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "return_work");
+    const returnAction = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "return_work");
     assert.ok(returnAction, "the receiver's own bot offers Return work");
+    const returnCardCount = () => workspaces.telegramOutbox().filter(one => {
+      const payload = one.payload as { kind?: string; itemId?: string };
+      return one.botId === "receiver-bot" && payload.kind === "team_item_action" && payload.itemId === f.itemId;
+    }).length;
+    const firstReturnCardCount = returnCardCount();
+
+    workspaces.expireHandoverActionsForItem("receiver-bot", f.itemId);
+    const expiredReturnExpiry = workspaces.taskControlAction(returnAction.ref)!.expires_at;
+    assert.ok(Date.parse(expiredReturnExpiry) <= Date.now());
+    await pollControlRecords(f.receiver);
+    const renewedReturn = workspaces.handoverActionsForItem("receiver-bot", f.itemId).findLast(one => one.action === "return_work");
+    assert.equal(renewedReturn?.ref, returnAction.ref, "an expired undecided Return keeps the persistent action ref");
+    assert.ok(Date.parse(workspaces.taskControlAction(returnAction.ref)!.expires_at) > Date.parse(expiredReturnExpiry),
+      "the existing Return action receives a later expiry");
+    assert.equal(returnCardCount(), firstReturnCardCount, "renewing Return does not enqueue another Telegram card");
 
     const returned = await handleHandoverTap(f.receiver, {
       action: "return_work", actionRef: returnAction.ref, itemId: f.itemId, epoch: 1,
-      commandId: `b-return-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
+      commandId: `b-return-${f.itemId}`, botId: "receiver-bot", chatId: f.roster.groupChatId, topicId: null,
       transportUserId: "9001", promptId: task.id,
     });
     assert.equal(returned.state, "APPLIED", returned.message);
     assert.match(returned.message, /Returned full work/, "a completed run returns a full result, not a partial one");
+    const appliedReturn = workspaces.taskControlAction(returnAction.ref)!;
+    assert.notEqual(appliedReturn.applied_command_id, null);
+    const appliedExpiry = appliedReturn.expires_at;
+    assert.equal(postReturnWorkCard(f.receiver, f.itemId, activeRun, runningRecord), null);
+    assert.equal(workspaces.taskControlAction(returnAction.ref)!.expires_at, appliedExpiry, "an applied Return ref remains final");
+    assert.equal(returnCardCount(), firstReturnCardCount, "an applied Return never reposts its card");
 
     // RETURNED releases the executor; there is no release action and no
     // RELEASED state anywhere in the record.
@@ -554,9 +670,9 @@ test("C1: an inert offer card keeps its reason and offers no tap", () => {
     promptId: null,
     actions: [{ ref: "tc_accept", action: "accept_offer" }],
     inert: true,
-    reason: "yousef holds this item now (CLAIMED).",
+    reason: "receiver holds this item now (CLAIMED).",
   }), () => null);
-  assert.match(formatted.text, /yousef holds this item now/);
+  assert.match(formatted.text, /receiver holds this item now/);
   assert.equal(formatted.replyMarkup, null);
 });
 
@@ -568,7 +684,7 @@ test("Q9: the review card offers Apply only when the merge is clean", () => {
     resultId: "r-1",
     resultCommit: "b".repeat(40),
     label: "full" as const,
-    verification: ["run r-1 on yousef-desktop"],
+    verification: ["run r-1 on receiver-workstation"],
     uncertainEffects: [],
     evidenceMissing: false,
     divergedPaths: [],
@@ -657,15 +773,15 @@ test("TM-T1-H3: Request changes opens a new epoch whose fresh offer is discovera
   try {
     const { offer } = await offered(f);
     await pollControlRecords(f.receiver);
-    const firstCard = workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId);
+    const firstCard = workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId);
     assert.notEqual(firstCard, null);
 
     // The teammate declines this round, so the next one must still reach them.
-    const decline = workspaces.handoverActionsForItem("yousef-bot", f.itemId).find(one => one.action === "decline_offer")!;
+    const decline = workspaces.handoverActionsForItem("receiver-bot", f.itemId).find(one => one.action === "decline_offer")!;
     await handleHandoverTap(f.receiver, {
       action: "decline_offer", actionRef: decline.ref, itemId: f.itemId, epoch: offer.epoch,
-      commandId: `b-decline-${f.itemId}`, botId: "yousef-bot", chatId: f.roster.groupChatId, topicId: null,
-      transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("yousef-bot", f.itemId)!,
+      commandId: `b-decline-${f.itemId}`, botId: "receiver-bot", chatId: f.roster.groupChatId, topicId: null,
+      transportUserId: "9001", promptId: workspaces.handoverCandidatePrompt("receiver-bot", f.itemId)!,
     });
 
     // The requester re-offers the same package at a new epoch. `requestHandoverChanges`
@@ -675,7 +791,7 @@ test("TM-T1-H3: Request changes opens a new epoch whose fresh offer is discovera
     const walk = async (event: string, payload: Record<string, unknown>) => {
       const current = (await remote.read())!;
       await applyControlTransition(remote, {
-        event: event as never, actor: { personId: event === "accept_offer" ? RECEIVER : RECEIVER, workstationId: "yousef-desktop" },
+        event: event as never, actor: { personId: event === "accept_offer" ? RECEIVER : RECEIVER, workstationId: "receiver-workstation" },
         commandId: `w-${event}-${f.itemId}`, epoch: current.record.epoch, fromHead: current.head,
         roster: [REQUESTER, RECEIVER], payload,
       });
@@ -696,14 +812,14 @@ test("TM-T1-H3: Request changes opens a new epoch whose fresh offer is discovera
     // The teammate who declined the previous round discovers the new one.
     const rediscovered = await pollControlRecords(f.receiver);
     assert.deepEqual(rediscovered.discovered, [f.itemId]);
-    const secondCard = workspaces.handoverOfferCardOutbox("yousef-bot", f.itemId);
+    const secondCard = workspaces.handoverOfferCardOutbox("receiver-bot", f.itemId);
     assert.notEqual(secondCard, firstCard, "a new epoch posts a fresh card rather than leaving the spent one");
     // Tappable means unexpired **and** undecided: an action that already carries
     // a receipt is answered from it rather than re-applied, which is why
     // `expireHandoverActionsForItem` leaves a decided one alone. The previous
     // round's decline is decided, so it is not a live button; its accept was
     // never tapped, so ending it is what stops a stale card being usable.
-    const tappable = workspaces.handoverActionsForItem("yousef-bot", f.itemId).filter(one => {
+    const tappable = workspaces.handoverActionsForItem("receiver-bot", f.itemId).filter(one => {
       const action = workspaces.taskControlAction(one.ref);
       return action !== null
         && Date.parse(action.expires_at) > Date.now()

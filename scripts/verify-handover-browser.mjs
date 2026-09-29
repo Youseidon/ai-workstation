@@ -41,6 +41,7 @@ const preview = {
 };
 
 const base = {
+  held: null,
   preparing: false,
   publishing: false,
   credentialConfirmed: false,

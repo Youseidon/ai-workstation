@@ -335,7 +335,7 @@ test("capability reports a missing live token instead of 'Telegram configured'",
   assert.deepEqual(withLiveTokenState(configured, true), configured);
   const missing = withLiveTokenState(configured, false);
   assert.equal(missing.setup, "telegram_missing_token");
-  assert.match(missing.reason, /TELEGRAM_BOT_TOKEN/);
+  assert.match(missing.reason, /Telegram setup screen/);
   const fake = { ...configured, transport: "fake_telegram" as const, setup: "fake_only" as const };
   assert.deepEqual(withLiveTokenState(fake, false), fake);
 });
@@ -364,16 +364,16 @@ test("H07: close_thread is refused in every live handover state and applies in e
       record: {
         version: 1, teamId, groupChatId, remoteUrl: "local", usedInviteIds: [], commandIds: [], updatedAt: new Date().toISOString(),
         members: [
-          { personId: "jd", telegramUserId: "101", botId, botUsername: "owner_bot", workstationId: botId, workstationLabel: "jd-laptop", personLabel: "jd" },
-          { personId: "yousef", telegramUserId: "202", botId: "telegram-yousef", botUsername: "yousef_bot", workstationId: "ws-yousef", workstationLabel: "yousef-desktop", personLabel: "yousef" },
+          { personId: "requester", telegramUserId: "101", botId, botUsername: "owner_bot", workstationId: botId, workstationLabel: "requester-workstation", personLabel: "requester" },
+          { personId: "receiver", telegramUserId: "202", botId: "telegram-receiver", botUsername: "receiver_bot", workstationId: "ws-receiver", workstationLabel: "receiver-workstation", personLabel: "receiver" },
         ],
       },
     });
-    const owner = workspaces.upsertTeamGroupActor({ id: `h07-owner-${workspace.id}`, transport: "fake_telegram", transportUserId: "101", chatId: groupChatId, label: "jd" });
+    const owner = workspaces.upsertTeamGroupActor({ id: `h07-owner-${workspace.id}`, transport: "fake_telegram", transportUserId: "101", chatId: groupChatId, label: "requester" });
 
     const record = (state: ControlState, itemId: string): ControlRecord => ({
-      version: 1, itemId, state, epoch: 1, requester: "jd",
-      executor: state === "RETURNED" || state === "APPLYING" ? null : "yousef",
+      version: 1, itemId, state, epoch: 1, requester: "requester",
+      executor: state === "RETURNED" || state === "APPLYING" ? null : "receiver",
       branch: `aw/handover/${itemId}`, lastCommandId: null, offerDeadline: null, resultLabel: null,
       updatedAt: new Date().toISOString(),
     });
@@ -382,7 +382,7 @@ test("H07: close_thread is refused in every live handover state and applies in e
     const close = async (state: ControlState | null) => {
       const item = workspaces.createItemLink({ itemId: mintItemId(), promptId: prompt.id, role: "requester", epoch: 1 });
       const ref = `h07-close-${item.itemId}`;
-      workspaces.grantItemCapability({ itemId: item.itemId, personId: "yousef", capability: "context", commandId: `${ref}-grant` });
+      workspaces.grantItemCapability({ itemId: item.itemId, personId: "receiver", capability: "context", commandId: `${ref}-grant` });
       workspaces.createTaskControlAction({
         ref, action: "close_thread", promptId: prompt.id, actorId: owner.id, chatId: groupChatId, botId,
         messageId: "close-card", expectedRevision: workspaces.humanInputState(prompt.id).revision,
@@ -397,7 +397,7 @@ test("H07: close_thread is refused in every live handover state and applies in e
       return {
         receipt,
         closed: workspaces.itemLink(item.itemId)!.closedAt !== null,
-        granted: workspaces.hasItemCapability(item.itemId, "yousef", "context"),
+        granted: workspaces.hasItemCapability(item.itemId, "receiver", "context"),
       };
     };
 
@@ -426,7 +426,7 @@ test("H07: close_thread is refused in every live handover state and applies in e
     const returned = await close("RETURNED");
     assert.match(returned.receipt.message ?? "", /Apply the returned work or cancel the handover first/);
     const claimed = await close("CLAIMED");
-    assert.match(claimed.receipt.message ?? "", /yousef is holding .* \(CLAIMED\)/, "and a held item names who holds it");
+    assert.match(claimed.receipt.message ?? "", /receiver is holding .* \(CLAIMED\)/, "and a held item names who holds it");
 
     // A probe that cannot read the record refuses rather than closing: the
     // close never proceeds on a state nobody could check.

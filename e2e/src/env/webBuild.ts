@@ -18,7 +18,12 @@ function files(dir: string, skip: (name: string) => boolean): string[] {
 /** Everything that changes the production bundle: web sources, shared sources, lockfile and the baked server URL. */
 export function webSourceHash(serverUrl: string): string {
   const hash = createHash("sha256").update(serverUrl);
-  const skip = (name: string) => name === "node_modules" || name.startsWith(".next") || name === "test-results";
+  const skip = (name: string) =>
+    name === "node_modules"
+    || name.startsWith(".next")
+    || name === "test-results"
+    || name === "next-env.d.ts"
+    || name.endsWith(".tsbuildinfo");
   for (const file of [...files(webDir, skip), ...files(join(repoRoot, "shared/src"), skip), join(repoRoot, "package-lock.json")].sort()) {
     hash.update(relative(repoRoot, file)).update(readFileSync(file));
   }
