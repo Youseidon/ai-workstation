@@ -117,6 +117,23 @@ test("an agent cannot turn an in-workspace repair into a human blocker", () => {
   } finally { ctx.cleanup(); }
 });
 
+test("an agent cannot ask a human to repair tracker scope or choose a speculative mapping", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.markAgentRunRunning(runId);
+    assert.throws(
+      () => workspaces.updateAgentStatus(runId, {
+        requestId: unique("status"), expectedStatus: "IN_PROGRESS", status: "BLOCKED",
+        reason: "The saved work-item scope names routes that are absent from the authoritative catalog.",
+        verificationSummary: "Update the saved database work item with actual route IDs, or choose one of three speculative route mappings and requeue it.",
+      }),
+      (error: unknown) => error instanceof WorkspaceError && error.code === "recoverable_blocker",
+    );
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "IN_PROGRESS");
+  } finally { ctx.cleanup(); }
+});
+
 test("a budget stop is resumable, not a crash", () => {
   const ctx = fixture();
   try {

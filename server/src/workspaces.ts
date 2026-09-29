@@ -2232,6 +2232,13 @@ function validateVerifyRepair(oldCommand:string,newCommand:string):void {
 
 function recoverableBlocker(reason:string,action:string):boolean {
   const text=`${reason}\n${action}`.toLowerCase();
+  // Keeping the orchestration record aligned with the repository is console
+  // work, not a decision the operator can meaningfully make. Test this before
+  // the broad `choose`/`decision` escape hatch below: agents commonly dress a
+  // scope mismatch up as a menu of speculative mappings, but asking a human to
+  // edit the saved prompt or route inventory still does not make it external.
+  const orchestrationRepair=/(?:edit|change|modify|fix|update|correct|rewrite|clarify).{0,100}(?:saved |database )?(?:work[ -]?item|prompt|tracker|scope|route (?:inventory|mapping|catalog)|catalog route)|(?:work[ -]?item|prompt|tracker|scope|route (?:inventory|mapping|catalog)|catalog route).{0,100}(?:edit|change|modify|fix|update|correct|rewrite|clarify)/.test(text);
+  if(orchestrationRepair)return true;
   const external=/credential|secret|password|api key|approval|legal|billing|account owner|physical access|choose|decision|confirm requirement/.test(text);
   if(external)return false;
   const verifyRecipe=/(verify|verification|acceptance).{0,80}(command|script|recipe)|(?:command|script|recipe).{0,80}(verify|verification|acceptance)|tracker database|work-item database/.test(text);

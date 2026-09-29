@@ -86,8 +86,10 @@ Post exactly one of \`done\`, \`continue\`, \`blocked\`, or \`decompose\` throug
 is refused with their output if any fails. \`continue\` records what remains and re-queues this
 item on this working tree — keep posting it until \`done\` passes, or until a real human question
 needs \`blocked\`. The rail does not stop for \`continue\`.
-\`blocked\` is only for a concrete action that a human must take (a credential, a decision that was
-not delegated to you, an external system); remaining work is never a blocker. ${decompose}
+\`blocked\` is only for action only a human can take (credentials, undelegated decisions, external
+systems); remaining work is never a blocker. Reconcile stale saved scope from repository evidence;
+never ask the user to edit the tracker or choose a speculative mapping.
+${decompose}
 Bank progress with \`remark --kind PROGRESS\` after each verified piece; if this run is stopped by
 its budget you get a short wrap-up turn on the same session to record what remains. Do not look
 for or edit a tracker file; the database is the tracker.

@@ -574,3 +574,41 @@ for (const paused of [false, true]) test(`save-only holds a late completion call
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, promptId).ready, false);
   } finally { ctx.cleanup(); }
 });
+
+test("a fresh play skips named stages that are already finished", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipe-"));
+  const workspace = workspaces.create({ name: unique("ws"), description: "", workDirectory: dir });
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: unique("prog"), overview: "" }) as ProgramRecord;
+    const finishedSuite = workspaces.createChild("suite", program.id, { name: unique("done"), overview: "" }) as SuiteRecord;
+    const openSuite = workspaces.createChild("suite", program.id, { name: unique("open"), overview: "" }) as SuiteRecord;
+    const donePrompt = workspaces.createChild("prompt", finishedSuite.id, { title: unique("a"), content: "a" }) as PromptRecord;
+    const skippedPrompt = workspaces.createChild("prompt", finishedSuite.id, { title: unique("b"), content: "b" }) as PromptRecord;
+    const openPrompt = workspaces.createChild("prompt", openSuite.id, { title: unique("c"), content: "c" }) as PromptRecord;
+    const pipeline = workspaces.createPipeline({ workspaceId: workspace.id, name: unique("pipe"), suiteIds: [finishedSuite.id, openSuite.id] });
+    for (const prompt of [donePrompt, skippedPrompt, openPrompt]) workspaces.addNamedPipelineStep(pipeline.id, prompt.id, { provider: "claude" });
+    workspaces.completePrompt(donePrompt.id, "USER", { verificationSummary: "Verified by hand." });
+    workspaces.skipPrompt(skippedPrompt.id, "USER", "Not needed.");
+    const started = stubStarts();
+
+    const run = await pipelineScheduler.playNamed(pipeline.id, { provider: "claude" });
+    assert.equal(run.state, "PLAYING");
+    assert.equal(run.currentSuiteId, openSuite.id);
+    assert.deepEqual(started.map((args) => args.promptId), [openPrompt.id]);
+
+    // Once every stage is finished, a fresh play is refused instead of recording an empty run.
+    const live = workspaces.activePipeline(openSuite.id)!;
+    await pipelineScheduler.stopNamed(pipeline.id);
+    workspaces.finishAgentRun(live.currentRunId!, "done");
+    workspaces.completePrompt(openPrompt.id, "USER", { verificationSummary: "Verified by hand." });
+    await assert.rejects(
+      pipelineScheduler.playNamed(pipeline.id, {}),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "nothing_ready",
+    );
+  } finally {
+    setPipelineStationStarter(null);
+    resetSettings();
+    workspaces.remove(workspace.id);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
