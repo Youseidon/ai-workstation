@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES } from "@agent-console/shared";
-import type { OperationsPrompt, OperationsSnapshot, StartUnknownClassification } from "@agent-console/shared";
+import type { OperationsPrompt, OperationsSnapshot, StartUnknownClassification, TeamHandoverSummary } from "@agent-console/shared";
 import { PageChrome } from "@/components/shell/chrome";
 import { VerificationPanel } from "@/components/VerificationPanel";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,7 @@ import { useDialogs } from "@/components/ui/Dialogs";
 import { useToast } from "@/components/ui/Toast";
 import { SuiteHeader } from "@/components/tasks/SuiteHeader";
 import { SuiteRail } from "@/components/tasks/SuiteRail";
+import { TeamHandoversPanel } from "@/components/tasks/TeamHandoversPanel";
 import { HumanInputDialog } from "@/components/HumanInputDialog";
 import { WorkItemDetail } from "@/components/tasks/WorkItemDetail";
 import { WorkItemList } from "@/components/tasks/WorkItemList";
@@ -29,6 +30,7 @@ import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 type Pane = "suites" | "list" | "detail";
+type TaskSurface = "work" | "team";
 
 /*
  * The retry text an owner gets when they ask to continue on what the agent
@@ -53,7 +55,7 @@ function clampDetailHeight(value: number): number {
 export function TasksView() {
   const console_ = useAgentConsole();
   const { operationsRevision } = console_;
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, setWorkspaceId } = useWorkspace();
   const toast = useToast();
   const dialogs = useDialogs();
   const params = useSearchParams();
@@ -68,6 +70,7 @@ export function TasksView() {
   const [response, setResponse] = useState("");
   const [inputItem, setInputItem] = useState<OperationsPrompt | null>(null);
   const [pane, setPane] = useState<Pane>("list");
+  const [surface, setSurface] = useState<TaskSurface>("work");
   const [focusRecordId, setFocusRecordId] = useState<number | null>(null);
   const [detailHeight, setDetailHeight] = useState(() => {
     if (typeof window === "undefined") return DETAIL_HEIGHT_DEFAULT;
@@ -326,7 +329,7 @@ export function TasksView() {
     }, "Response sent");
 
   /*
-   * An answer nobody typed is never submitted (M-13, jd's ruling of
+   * An answer nobody typed is never submitted (M-13, requester's ruling of
    * 2026-09-27). This used to fall back to RETRY_WITH_EXISTING_CONTEXT for an
    * empty box, which is how the banner - a surface with no box in it at all -
    * submitted that text on the owner's behalf and started a run on it. The
@@ -503,6 +506,20 @@ export function TasksView() {
     setDetailCollapsed(false);
   };
 
+  const openTeamTask = (task: NonNullable<TeamHandoverSummary["localTask"]>) => {
+    // This route is already mounted, so changing its query alone does not
+    // re-run the deep-link initialisers above. Move the live selection as well.
+    setSnapshot(null);
+    setActivity(null);
+    setWorkspaceId(task.workspaceId);
+    setSuiteId(null);
+    setPromptId(task.promptId);
+    setPane("detail");
+    setDetailCollapsed(false);
+    setSurface("work");
+    window.history.replaceState(null, "", `/tasks?workspace=${task.workspaceId}&prompt=${task.promptId}`);
+  };
+
   const detailProps = {
     suite,
     item: listItem,
@@ -554,6 +571,30 @@ export function TasksView() {
           </Button>
         </div>
       )}
+
+      <div className="flex items-center gap-1 border-b border-line bg-surface-1 px-4 py-1.5" aria-label="Task view">
+        {(["work", "team"] as TaskSurface[]).map(option => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={surface === option}
+            onClick={() => setSurface(option)}
+            className={cn(
+              "rounded-md px-3 py-1 text-xs transition-colors",
+              surface === option ? "bg-surface-3 text-fg" : "text-fg-dim hover:bg-surface-2 hover:text-fg",
+            )}
+          >
+            {option === "work" ? "Work items" : "Team handovers"}
+          </button>
+        ))}
+      </div>
+
+      {surface === "team" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <TeamHandoversPanel onOpenTask={openTeamTask} />
+        </div>
+      ) : (
+        <>
 
       {/* Below xl the three panes stack, one at a time. */}
       <div className="flex items-center gap-1 border-b border-line bg-surface-1 px-4 py-1.5 xl:hidden">
@@ -737,6 +778,8 @@ export function TasksView() {
           )}
         </aside>
       </div>
+        </>
+      )}
     </main>
   );
 }

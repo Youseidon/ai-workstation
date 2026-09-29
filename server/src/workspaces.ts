@@ -4259,7 +4259,7 @@ export const workspaces = {
    * it was in. `team_id` breaks it: it is unique, it never changes, and it makes
    * the answer a fact about the rows rather than about the query plan.
    *
-   * jd ruled on 2026-09-27: **the product tiebreak only**. The six fixture files
+   * requester ruled on 2026-09-27: **the product tiebreak only**. The six fixture files
    * that leak rows into the shared root stay as untidiness rather than risk, which
    * is what they become once this no longer depends on row order.
    */
@@ -4328,7 +4328,7 @@ export const workspaces = {
    *
    * - `telegramItemThreadForMessage` (`:4515`) filters `t.state<>'ANCHOR_GONE'`,
    *   so a reply into a closed thread still routes and still gets an answer -
-   *   which is what jd's ruling asks for.
+   *   which is what requester's ruling asks for.
    * - the outbox delivery join (`:4657`) also filters only `<>'ANCHOR_GONE'`.
    * - the anchor-replacement test (`:4602`) reads `=== "ANCHOR_GONE"` alone.
    * - the pin sweep (`:4581`) and its release (`:4586`) key on `'PIN_PENDING'`.
@@ -4533,6 +4533,28 @@ export const workspaces = {
         AND json_extract(payload_json,'$.itemId')=? AND expires_at>?
         AND ref NOT IN (SELECT action_ref FROM task_control_receipt)`)
       .run(now, requireText(botId, "botId", 120), itemId, now).changes;
+  },
+  /** Extends this bot's undecided handover buttons for one offer epoch without posting another card. */
+  renewHandoverActionsForItem(botId: string, itemId: string, epoch: number, expiresAt: string): number {
+    if (!isItemId(itemId)) return 0;
+    if (!Number.isInteger(epoch) || epoch < 1) return 0;
+    const expires = new Date(expiresAt);
+    if (Number.isNaN(expires.getTime())) throw new WorkspaceError(422, "validation_error", "expiresAt must be an ISO timestamp.");
+    return db.prepare(`UPDATE task_control_action SET expires_at=?
+      WHERE bot_id=? AND json_extract(payload_json,'$.kind')='handover_offer'
+        AND json_extract(payload_json,'$.itemId')=?
+        AND json_extract(payload_json,'$.epoch')=?
+        AND applied_command_id IS NULL`)
+      .run(expiresAt, requireText(botId, "botId", 120), itemId, epoch).changes;
+  },
+  /** Extends one undecided handover button in place without replacing its ref or card. */
+  renewHandoverAction(ref: string, expiresAt: string): boolean {
+    const expires = new Date(expiresAt);
+    if (Number.isNaN(expires.getTime())) throw new WorkspaceError(422, "validation_error", "expiresAt must be an ISO timestamp.");
+    return db.prepare(`UPDATE task_control_action SET expires_at=?
+      WHERE ref=? AND applied_command_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM task_control_receipt WHERE action_ref=task_control_action.ref AND state='APPLIED')`)
+      .run(expiresAt, requireText(ref, "ref", 160)).changes === 1;
   },
   hasItemCapability(itemId: string, personId: string, capability: ItemGrantCapability): boolean {
     if (!isItemId(itemId) || !isItemGrantCapability(capability)) return false;

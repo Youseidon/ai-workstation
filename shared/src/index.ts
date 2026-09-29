@@ -1598,6 +1598,51 @@ export const HANDOVER_ACTIONS = [
 ] as const;
 export type HandoverAction = (typeof HANDOVER_ACTIONS)[number];
 
+export type TeamHandoverRole = "requester" | "receiver" | "observer";
+
+/** Local, role-aware projection of one shared handover control record for web UI. */
+export interface TeamHandoverSummary {
+  itemId: string;
+  state: string;
+  epoch: number;
+  role: TeamHandoverRole;
+  requester: { personId: string; label: string };
+  executor: { personId: string; label: string } | null;
+  branch: string;
+  updatedAt: string;
+  offerDeadline: string | null;
+  resultLabel: "full" | "partial" | null;
+  provider: ProviderId | null;
+  model: string | null;
+  repository: {
+    ready: boolean;
+    reason: string | null;
+    workspaceId: number | null;
+    workspaceName: string | null;
+    workDirectory: string | null;
+  };
+  localTask: {
+    promptId: number;
+    workspaceId: number;
+    title: string;
+    runId: string | null;
+    runState: string | null;
+  } | null;
+  actions: Array<"accept" | "decline" | "withdraw" | "return">;
+}
+
+export interface TeamItemAccessSummary {
+  itemId: string;
+  closedAt: string | null;
+  editable: boolean;
+  members: Array<{
+    personId: string;
+    label: string;
+    owner: boolean;
+    capabilities: Array<"context" | "answer" | "resume">;
+  }>;
+}
+
 export const TASK_CONTROL_ACTIONS = [
   "save_human_response",
   "answer_and_resume",

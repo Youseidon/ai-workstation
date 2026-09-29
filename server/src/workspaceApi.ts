@@ -295,6 +295,11 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res,200,{status:telegramRuntime.status()});
       return true;
     }
+    if(url.pathname==="/api/task-control/telegram/credential"){
+      if(method!=="PUT")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else{const input=await body(req,4096);json(res,200,{status:await telegramRuntime.configureToken(input.token)});}
+      return true;
+    }
     if(url.pathname==="/api/task-control/telegram/pairing"){
       if(method==="POST")json(res,201,{pairing:telegramRuntime.startPairing()});
       else if(method==="DELETE"){telegramRuntime.cancelPairing();res.writeHead(204);res.end();}
@@ -346,8 +351,35 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       return true;
     }
     if (url.pathname === "/api/task-control/team/items") {
+      if (method === "GET") json(res, 200, { item: telegramRuntime.teamItemForPrompt(Number(url.searchParams.get("promptId"))) });
+      else if (method === "POST") { const input = await body(req); json(res, 201, { item: telegramRuntime.openTeamItem(input.promptId) }); }
+      else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    if (url.pathname === "/api/task-control/team/handovers") {
+      if (method === "GET") json(res, 200, { handovers: await telegramRuntime.teamHandovers() });
+      else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    const handoverActionMatch = url.pathname.match(/^\/api\/task-control\/team\/handovers\/([^/]+)\/(accept|decline|withdraw|return)$/);
+    if (handoverActionMatch) {
       if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
-      else { const input = await body(req); json(res, 201, { item: telegramRuntime.openTeamItem(input.promptId) }); }
+      else json(res, 200, { result: await telegramRuntime.teamHandoverAction(decodeURIComponent(handoverActionMatch[1]!), handoverActionMatch[2]!) });
+      return true;
+    }
+    const teamItemAccessMatch = url.pathname.match(/^\/api\/task-control\/team\/items\/([^/]+)\/access(?:\/([^/]+))?$/);
+    if (teamItemAccessMatch) {
+      const itemId = decodeURIComponent(teamItemAccessMatch[1]!);
+      const personId = teamItemAccessMatch[2] === undefined ? null : decodeURIComponent(teamItemAccessMatch[2]);
+      if (method === "GET" && personId === null) json(res, 200, { access: telegramRuntime.teamItemAccess(itemId) });
+      else if (method === "PUT" && personId !== null) json(res, 200, { access: telegramRuntime.setTeamItemAccess(itemId, personId, await body(req)) });
+      else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    const teamItemCloseMatch = url.pathname.match(/^\/api\/task-control\/team\/items\/([^/]+)\/close$/);
+    if (teamItemCloseMatch) {
+      if (method !== "POST") json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      else json(res, 200, { result: await telegramRuntime.closeTeamItem(decodeURIComponent(teamItemCloseMatch[1]!)) });
       return true;
     }
     // Handover, the requester's side (C1). Team-off is already refused above with

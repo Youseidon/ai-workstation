@@ -25,11 +25,11 @@ function remaining(iso: string, now: number): string {
 }
 
 /**
- * Live Bot API status and phone pairing (L1). The token itself is configured
- * in `.env` and never reaches the browser; this panel only sees whether one is
- * set and the bot identity it resolved to.
+ * Live Bot API status and phone pairing (L1). The token is write-only during
+ * setup; this status panel sees only whether one is set and the bot identity it
+ * resolved to.
  */
-export function TelegramSetupPanel({ refreshKey, unsavedChanges = false }: { refreshKey: unknown; unsavedChanges?: boolean }) {
+export function TelegramSetupPanel({ refreshKey, unsavedChanges = false, onOpenSetup }: { refreshKey: unknown; unsavedChanges?: boolean; onOpenSetup(): void }) {
   const [status, setStatus] = useState<TelegramLiveStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,6 +84,9 @@ export function TelegramSetupPanel({ refreshKey, unsavedChanges = false }: { ref
         <h3 className="text-[12px] text-fg">Live Telegram</h3>
         <Badge tone={state.tone} dot pulse={status.state === "connecting"}>{state.label}</Badge>
         {status.bot?.username && <span className="font-mono text-[11px] text-fg-muted">@{status.bot.username}</span>}
+        <Button className="ml-auto" size="sm" variant="ghost" onClick={onOpenSetup}>
+          {status.tokenConfigured ? "Manage Telegram" : "Set up Telegram"}
+        </Button>
       </div>
       <p className="mt-1 text-[11px] leading-snug text-fg-dim">{status.reason}</p>
       {unsavedChanges && <p className="mt-1 text-[11px] leading-snug text-warning">Save the Task Control changes above to apply them.</p>}

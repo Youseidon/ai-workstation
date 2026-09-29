@@ -38,6 +38,7 @@ import { useProviderUsage } from "@/lib/providerUsage";
 import { useSettings } from "@/lib/useSettings";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { TelegramSetupPanel } from "./TelegramSetupPanel";
+import { TelegramSetupDialog } from "./TelegramSetupDialog";
 import { TeamCreatePanel } from "./TeamCreatePanel";
 import { TeamJoinPanel } from "./TeamJoinPanel";
 import { TeamStatusPanel } from "./TeamStatusPanel";
@@ -97,6 +98,7 @@ export function AgentsView() {
   const [configuring, setConfiguring] = useState<ProviderId | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [taskControlCapability, setTaskControlCapability] = useState<TaskControlCapability | null>(null);
+  const [telegramSetupOpen, setTelegramSetupOpen] = useState(false);
 
   const agents = providers.map((provider) => agentState(provider, runs, items, lastRun));
   const writing = runs.filter((run) => run.role === "execute").length;
@@ -199,6 +201,28 @@ export function AgentsView() {
     [drafts, dialogs, refreshProviders, save, snapshot],
   );
 
+  const enableTelegram = useCallback(async () => {
+    const result = await save({
+      "taskControl.enabled": true,
+      "taskControl.transport": "telegram",
+      "taskControl.notificationsEnabled": true,
+      "taskControl.remoteActionsEnabled": true,
+    });
+    if (!result.ok) throw new Error(result.errors.join(" ") || "Telegram settings could not be saved.");
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next["taskControl.enabled"];
+      delete next["taskControl.transport"];
+      delete next["taskControl.notificationsEnabled"];
+      delete next["taskControl.remoteActionsEnabled"];
+      return next;
+    });
+  }, [save]);
+
+  const refreshTelegramCapability = useCallback(() => {
+    void workspaceApi.taskControlCapability(SERVER_URL).then(setTaskControlCapability).catch(() => setTaskControlCapability(null));
+  }, []);
+
   return (
     <main className="flex h-full flex-col bg-surface-0">
       <PageChrome
@@ -294,6 +318,9 @@ export function AgentsView() {
                   {CAPABILITY_BADGE[taskControlCapability.setup].label}
                 </Badge>
               )}
+              <Button className="ml-auto" size="sm" variant="primary" onClick={() => setTelegramSetupOpen(true)}>
+                {taskControlCapability?.setup === "telegram_configured" ? "Manage Telegram" : "Set up Telegram"}
+              </Button>
             </div>
             <p className="mt-1 text-[11px] text-fg-dim">
               {taskControlCapability?.reason ?? "Personal task controls stay local until the live Telegram transport is enabled and a phone is paired."}
@@ -346,7 +373,7 @@ export function AgentsView() {
               </div>
             )}
             {taskControlTransport === "telegram" && (
-              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} />
+              <TelegramSetupPanel refreshKey={snapshot} unsavedChanges={taskControlDirty.length > 0} onOpenSetup={() => setTelegramSetupOpen(true)} />
             )}
             {taskControlTransport === "telegram" && teamEnabled && (
               <>
@@ -357,6 +384,17 @@ export function AgentsView() {
             )}
           </section>
         )}
+
+        <TelegramSetupDialog
+          open={telegramSetupOpen}
+          onClose={() => setTelegramSetupOpen(false)}
+          onEnable={enableTelegram}
+          onChanged={refreshTelegramCapability}
+          controlsEnabled={taskControlCapability?.enabled === true
+            && taskControlCapability.transport === "telegram"
+            && taskControlCapability.notificationsEnabled
+            && taskControlCapability.remoteActionsEnabled}
+        />
 
         <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {agents.map((agent) => {

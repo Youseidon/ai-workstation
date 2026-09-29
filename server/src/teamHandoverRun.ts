@@ -245,6 +245,31 @@ const actionRef = () => `tc_${randomBytes(18).toString("base64url")}`;
 
 const ttl = (options: { ttlMs?: number }) => options.ttlMs ?? harnessSeams.actionTtlMs ?? 10 * 60 * 1000;
 
+function liveOfferActionsForEpoch(
+  actions: Array<{ ref: string; action: TaskControlAction }>,
+  epoch: number,
+  now: Date,
+): Array<{ ref: string; action: TaskControlAction }> {
+  const nowMs = now.getTime();
+  return actions.filter(one => {
+    const stored = workspaces.taskControlAction(one.ref);
+    if (stored === null || stored.applied_command_id !== null) return false;
+    const payload = decodeHandoverActionPayload(stored.payload_json);
+    return payload?.kind === "handover_offer"
+      && payload.epoch === epoch
+      && Date.parse(stored.expires_at) > nowMs;
+  });
+}
+
+function hasAppliedOfferDecisionForEpoch(actions: Array<{ ref: string; action: TaskControlAction }>, epoch: number): boolean {
+  return actions.some(one => {
+    const stored = workspaces.taskControlAction(one.ref);
+    if (stored === null || stored.applied_command_id === null) return false;
+    const payload = decodeHandoverActionPayload(stored.payload_json);
+    return payload?.kind === "handover_offer" && payload.epoch === epoch;
+  });
+}
+
 /**
  * The receiver's local candidate task for one offer. It is the task the worktree
  * is linked to once the claim wins, and it exists before the claim because a
@@ -380,10 +405,23 @@ export async function discoverHandoverOffer(
     // can never become valid again, so treating it as "already discovered"
     // would make every round after the first undiscoverable by anyone.
     if (outboxId !== null && workspaces.handoverOfferCardEpoch(env.botId, offer.itemId) === offer.epoch) {
-      // Already discovered at this epoch: the card stands, and a further poll
-      // does not repost it.
       const actions = workspaces.handoverActionsForItem(env.botId, offer.itemId);
-      return { kind: "offer", offer, comparison, promptId, card: { outboxId, botId: env.botId, actions, inert: false } };
+      const liveActions = liveOfferActionsForEpoch(actions, offer.epoch, options.now ?? new Date());
+      if (liveActions.length > 0 || hasAppliedOfferDecisionForEpoch(actions, offer.epoch)) {
+        // Already discovered at this epoch: the card stands, and a further poll
+        // does not repost it. A local decision also stays local; a declined
+        // round must not re-prompt that person when its inert buttons expire.
+        return { kind: "offer", offer, comparison, promptId, card: { outboxId, botId: env.botId, actions: liveActions, inert: false } };
+      }
+      // The shared offer is still open, but this workstation's local action
+      // rows aged out before anyone decided. Keep the original Telegram card
+      // persistent by extending its existing refs in place instead of sending a
+      // fresh card every TTL.
+      const now = options.now ?? new Date();
+      const expiresAt = new Date(now.getTime() + ttl(options)).toISOString();
+      workspaces.renewHandoverActionsForItem(env.botId, offer.itemId, offer.epoch, expiresAt);
+      const renewedActions = liveOfferActionsForEpoch(actions, offer.epoch, now);
+      return { kind: "offer", offer, comparison, promptId, card: { outboxId, botId: env.botId, actions: renewedActions, inert: false } };
     }
     // A new epoch: end the spent round's buttons before offering fresh ones, so
     // a stale card cannot be tapped beside the live one.
@@ -969,7 +1007,7 @@ export async function recordLocalCompletionCancelRequest(
  * It had its own list of "acknowledged" states, and four of them - `OFFERED`,
  * `WAITING_INPUT`, `PAUSED` and `RETURNED` - are in `LIVE_HANDOVER_STATES`. So a
  * close was permitted in four states where `/close` itself is refused, on the
- * theory that a stopped executor is a finished one. jd ruled on 2026-09-27 that
+ * theory that a stopped executor is a finished one. requester ruled on 2026-09-27 that
  * **a stopped-but-unreturned item is still held**, and that `isLiveHandoverState`
  * is authoritative. The deciding argument was the asymmetry: choosing the other
  * way wrongly loses another person's work, choosing this way wrongly costs one

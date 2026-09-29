@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { ProviderId, TaskControlAction, TaskControlReceipt, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
+import type { ProviderId, TaskControlAction, TaskControlReceipt, TeamHandoverSummary, TeamItemAccessSummary, TelegramLiveState, TelegramLiveStatus, TelegramPairingState } from "@agent-console/shared";
 import { isProviderId } from "@agent-console/shared";
 import { assertHarnessBot, isHarnessMode } from "../../harnessGuard.ts";
 import { harnessSeams } from "../../harnessSeams.ts";
@@ -12,12 +12,12 @@ import { settings as appSettings } from "../../settings.ts";
 import { TaskControlService } from "../../taskControl.ts";
 import { defaultWorkstationLabel, taskSummary, taskTagFor } from "../../telegramSummary.ts";
 import { renderTeamItemAccessMessage, renderTeamItemActionCard, renderTeamItemAnchor, renderTeamItemContext, renderTeamItemView, teamItemAnchorAge, teamItemAnchorMaterial, type TeamItemAccessAction, type TeamItemGrantedCommand, type TeamItemViewState } from "../../teamItemViews.ts";
-import type { ItemGrantCapability } from "../../teamGrants.ts";
+import { isItemGrantCapability, type ItemGrantCapability } from "../../teamGrants.ts";
 import { itemTag } from "../../teamItems.ts";
 import { encodeTeamThreadRequestAction, parseTeamThreadRequest, renderTeamThreadConfirmation, renderTeamThreadRequest, teamThreadRequestIdentity, type TeamThreadRequestDecision } from "../../teamThreadRequests.ts";
 import { routeTeamItemMessage } from "../../teamRouting.ts";
 import { cachedAccountUsage, detectProviders } from "../../adapters/registry.ts";
-import { assertHandoverEnabled, decodeHandoverActionPayload } from "../../teamHandoverRun.ts";
+import { assertHandoverEnabled, closeAfterHandover, decodeHandoverActionPayload } from "../../teamHandoverRun.ts";
 import { handoverPipelineHold } from "../../teamResultApply.ts";
 import type { CapturePreview, HandoverConfirmation, PublishedOffer } from "../../teamHandoverCapture.ts";
 import {
@@ -26,6 +26,8 @@ import {
   beginItemHandover,
   handleHandoverTap,
   knownHandoverRecord,
+  listTeamHandovers,
+  performWebHandoverAction,
   pollControlRecords,
   previewItemHandover,
   publishItemHandover,
@@ -40,7 +42,7 @@ import { join as joinPath } from "node:path";
 import { TelegramAdapter, type TelegramDelivery } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { anchorAgeInstant } from "./card.ts";
-import { bootTelegramCredential, type BotToken, type TelegramCredential } from "./credentials.ts";
+import { bootTelegramCredential, BotToken, persistTelegramCredential, type TelegramCredential } from "./credentials.ts";
 import { HttpTelegramBotApi, TELEGRAM_POLL_TIMEOUT_SECONDS } from "./httpBotApi.ts";
 import type { TelegramTextPayload } from "./liveFormat.ts";
 import { COMMANDS, decodeNav, parseCommand, renderView, type ViewContext, type ViewRequest } from "./views.ts";
@@ -60,6 +62,8 @@ export interface TelegramRuntimeOptions {
   credential: TelegramCredential;
   /** Builds the Bot API client; tests inject a stubbed fetch through this. */
   createApi?: (token: BotToken, contentForRef: (ref: string) => string | null) => LiveTelegramBotApi;
+  /** Persists a token only after Telegram has accepted it. Tests keep this in memory. */
+  persistCredential?: (token: BotToken) => void;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   logger?: Logger;
@@ -158,12 +162,12 @@ function textPayload(text: string): TelegramTextPayload {
 /**
  * Supervises the live Bot API transport (L1). Default-off: it makes no network
  * call unless task control is enabled, the transport is `telegram` and a token
- * was supplied at boot. Validation, receipts and revision binding all stay in
+ * was supplied at boot or through local setup. Validation, receipts and revision binding all stay in
  * TaskControlService; this class only moves messages and decides when to post.
  */
 export class TelegramLiveRuntime {
   private readonly settings: () => TelegramRuntimeSettings;
-  private readonly credential: TelegramCredential;
+  private credential: TelegramCredential;
   private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   private readonly now: () => number;
   private readonly log: Logger;
@@ -241,6 +245,52 @@ export class TelegramLiveRuntime {
         createdAt: actor.created_at,
       })),
     };
+  }
+
+  /**
+   * Validates and installs a write-only credential from the local setup UI.
+   * The old live session remains untouched until getMe succeeds and persistence
+   * completes, so a typo cannot disconnect an already working bot.
+   */
+  async configureToken(raw: unknown): Promise<TelegramLiveStatus> {
+    const token = typeof raw === "string" ? BotToken.parse(raw) : null;
+    if (token === null) {
+      throw new WorkspaceError(422, "invalid_telegram_token", "Paste the complete bot token from @BotFather.");
+    }
+
+    const api = this.createApi(token);
+    let bot: { id: string; username: string | null };
+    try {
+      bot = await api.getMe();
+      this.options.assertBot?.(bot.id);
+      if (bot.id !== token.botId) throw new Error("The token bot id did not match Telegram's bot identity.");
+    } catch (error) {
+      if (error instanceof TelegramApiError && error.kind === "unauthorized") {
+        throw new WorkspaceError(422, "telegram_token_rejected", "Telegram rejected that bot token. Copy a fresh token from @BotFather and try again.");
+      }
+      if (error instanceof WorkspaceError) throw error;
+      const message = redactBotToken(error instanceof Error ? error.message : String(error), token.reveal());
+      throw new WorkspaceError(503, "telegram_validation_unavailable", `Telegram could not validate the bot token: ${message}`);
+    }
+
+    const update = this.transition.then(async () => {
+      try {
+        (this.options.persistCredential ?? persistTelegramCredential)(token);
+      } catch {
+        throw new WorkspaceError(500, "telegram_credential_write_failed", "The validated token could not be saved to the owner-only local credential file.");
+      }
+      await this.stopSession();
+      this.credential = { token, problem: null };
+      this.bot = bot;
+      this.lastError = null;
+      this.nextRetryAt = null;
+      await this.apply();
+    });
+    // Keep later reconciles usable if this particular update fails, while still
+    // returning the failure to the caller that submitted the token.
+    this.transition = update.catch(error => this.log.error(this.safe(`credential update failed: ${error instanceof Error ? error.message : String(error)}`)));
+    await update;
+    return this.status();
   }
 
   startPairing(): TelegramPairingState {
@@ -443,6 +493,15 @@ export class TelegramLiveRuntime {
     return { itemId: link.itemId };
   }
 
+  teamItemForPrompt(promptId: unknown): { itemId: string } | null {
+    this.requireTeamEnabled();
+    if (!Number.isSafeInteger(promptId) || Number(promptId) <= 0) {
+      throw new WorkspaceError(422, "validation_error", "A saved task is required.");
+    }
+    const link = workspaces.itemLinksForPrompt(Number(promptId)).find(one => one.role === "requester" && one.closedAt === null);
+    return link === undefined ? null : { itemId: link.itemId };
+  }
+
   /** Harness-only lifecycle control used to prove a completed item creates a fresh anchor when reopened. */
   harnessReopenTeamItem(itemId: unknown): void {
     if (!isHarnessMode()) throw new WorkspaceError(404, "not_found", "Route not found");
@@ -562,6 +621,73 @@ export class TelegramLiveRuntime {
       throw new WorkspaceError(422, "validation_error", "Say what needs changing; a fresh offer is published with it.");
     }
     return requestItemChanges(this.handoverContext(), TelegramLiveRuntime.handoverItemId(itemId), { requirements });
+  }
+
+  async teamHandovers(): Promise<TeamHandoverSummary[]> {
+    return listTeamHandovers(this.handoverContext());
+  }
+
+  async teamHandoverAction(itemId: unknown, action: unknown) {
+    const item = TelegramLiveRuntime.handoverItemId(itemId);
+    if (action !== "accept" && action !== "decline" && action !== "withdraw" && action !== "return") {
+      throw new WorkspaceError(422, "validation_error", "Choose accept, decline, withdraw or return.");
+    }
+    return performWebHandoverAction(this.handoverContext(), item, action);
+  }
+
+  teamItemAccess(itemId: unknown): TeamItemAccessSummary {
+    this.requireTeamEnabled();
+    const context = this.surfaceContext(this.requireSession().botId);
+    const item = TelegramLiveRuntime.handoverItemId(itemId);
+    const link = workspaces.itemLink(item);
+    if (link === null) throw new WorkspaceError(404, "item_not_found", "Team item not found.");
+    const me = context.roster.members.find(member => member.botId === context.botId);
+    if (me === undefined) throw new WorkspaceError(409, "team_owner_missing", "This workstation is not in the Team roster.");
+    return {
+      itemId: item,
+      closedAt: link.closedAt,
+      editable: link.role === "requester",
+      members: context.roster.members.map(member => ({
+        personId: member.personId,
+        label: member.personLabel ?? member.workstationLabel,
+        owner: member.personId === me.personId && link.role === "requester",
+        capabilities: workspaces.itemGrants(item, { activeOnly: true, personId: member.personId }).map(grant => grant.capability),
+      })),
+    };
+  }
+
+  setTeamItemAccess(itemId: unknown, personId: unknown, input: { capabilities?: unknown }): TeamItemAccessSummary {
+    const item = TelegramLiveRuntime.handoverItemId(itemId);
+    const current = this.teamItemAccess(item);
+    if (!current.editable) throw new WorkspaceError(403, "owner_required", "Only the item owner can change Team access.");
+    if (current.closedAt !== null) throw new WorkspaceError(409, "item_closed", "This Team thread is closed.");
+    if (typeof personId !== "string" || !current.members.some(member => member.personId === personId)) {
+      throw new WorkspaceError(404, "team_member_not_found", "That person is not in this Team.");
+    }
+    const requested = Array.isArray(input.capabilities) ? input.capabilities.filter(isItemGrantCapability) : [];
+    if (!Array.isArray(input.capabilities) || requested.length !== input.capabilities.length) {
+      throw new WorkspaceError(422, "validation_error", "Capabilities must contain only context, answer or resume.");
+    }
+    const active = new Set(workspaces.itemGrants(item, { activeOnly: true, personId }).map(grant => grant.capability));
+    for (const capability of requested) {
+      if (!active.has(capability)) workspaces.grantItemCapability({ itemId: item, personId, capability, commandId: `web-grant-${randomBytes(12).toString("base64url")}` });
+    }
+    for (const capability of active) {
+      if (!requested.includes(capability)) workspaces.revokeItemCapability({ itemId: item, personId, capability, commandId: `web-revoke-${randomBytes(12).toString("base64url")}` });
+    }
+    return this.teamItemAccess(item);
+  }
+
+  async closeTeamItem(itemId: unknown): Promise<{ closed: boolean; reason: string }> {
+    const item = TelegramLiveRuntime.handoverItemId(itemId);
+    const access = this.teamItemAccess(item);
+    if (!access.editable) throw new WorkspaceError(403, "owner_required", "Only the item owner can close this thread.");
+    const record = await knownHandoverRecord(item);
+    if (record !== null) return closeAfterHandover(record, { itemId: item, commandId: `web-close-${randomBytes(12).toString("base64url")}` });
+    const commandId = `web-close-${randomBytes(12).toString("base64url")}`;
+    workspaces.revokeItemGrants({ itemId: item, commandId });
+    const closed = workspaces.closeItemLink({ itemId: item, commandId });
+    return { closed, reason: closed ? "Thread closed; grants ended." : "This item thread was already closed." };
   }
 
   private panelStatus(roster: TeamRoster): TeamPanelStatus {
@@ -695,6 +821,11 @@ export class TelegramLiveRuntime {
     return this.credential.token === null ? null : `telegram-${this.credential.token.botId}`;
   }
 
+  private createApi(token: BotToken): LiveTelegramBotApi {
+    const contentForRef = (ref: string) => workspaces.telegramActionContent(ref);
+    return this.options.createApi?.(token, contentForRef) ?? new HttpTelegramBotApi({ token, contentForRef });
+  }
+
   private safe(text: string): string {
     return redactBotToken(text, this.credential.token?.reveal());
   }
@@ -708,7 +839,7 @@ export class TelegramLiveRuntime {
     const current = this.settings();
     if (!current.enabled) this.setState("disabled", "Telegram task control is disabled.");
     else if (current.transport !== "telegram") this.setState("disabled", "Transport is Fake Telegram, so the live Bot API is not used.");
-    else if (this.credential.token === null) this.setState("missing_token", this.credential.problem ?? "Set TELEGRAM_BOT_TOKEN in .env and restart the server.");
+    else if (this.credential.token === null) this.setState("missing_token", this.credential.problem ?? "Connect your bot from the Telegram setup screen.");
   }
 
   private setState(state: TelegramLiveState, reason: string): void {
@@ -732,8 +863,8 @@ export class TelegramLiveRuntime {
   private startSession(): void {
     const token = this.credential.token!;
     const botId = this.botRecordId()!;
+    const api = this.createApi(token);
     const contentForRef = (ref: string) => workspaces.telegramActionContent(ref);
-    const api = this.options.createApi?.(token, contentForRef) ?? new HttpTelegramBotApi({ token, contentForRef });
     const control = new TaskControlService(() => {
       const current = this.settings();
       return { enabled: current.enabled, teamEnabled: current.teamEnabled, handoverEnabled: current.handoverEnabled, notificationsEnabled: current.notificationsEnabled, remoteActionsEnabled: current.remoteActionsEnabled, transport: "telegram", botId };
@@ -871,7 +1002,7 @@ export class TelegramLiveRuntime {
     let delay: number;
     if (apiError.kind === "unauthorized") {
       delay = AUTH_RETRY_MS;
-      this.setState("auth_failed", "Telegram rejected the bot token. Fix TELEGRAM_BOT_TOKEN in .env and restart the server.");
+      this.setState("auth_failed", "Telegram rejected the bot token. Replace it from the Telegram setup screen.");
     } else if (apiError.kind === "rate_limited") {
       delay = apiError.retryAfterMs ?? 1000;
       this.setState("backoff", "Telegram asked this bot to slow down.");

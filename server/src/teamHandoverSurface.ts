@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ProgramRecord, PromptRecord, SuiteRecord, TaskControlReceipt } from "@agent-console/shared";
+import { isProviderId, type ProgramRecord, type PromptRecord, type SuiteRecord, type TaskControlReceipt, type TeamHandoverSummary } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { harnessSeams } from "./harnessSeams.ts";
 import { startExecute } from "./runService.ts";
@@ -15,6 +15,7 @@ import {
   controlRef,
   handoverBranch,
   expireOfferIfDue,
+  applyControlTransition,
   type ControlRecord,
   type ControlRecordRemote,
 } from "./teamControlRecord.ts";
@@ -33,6 +34,7 @@ import {
   acceptHandoverOffer,
   assertHandoverEnabled,
   classifyHandoverStop,
+  decodeHandoverActionPayload,
   declineHandoverOffer,
   discoverHandoverOffer,
   returnHandoverWork,
@@ -42,6 +44,7 @@ import {
 } from "./teamHandoverRun.ts";
 import {
   applyReturnedResult,
+  deleteHandoverBranch,
   handoverPipelineHold,
   requestHandoverChanges,
   reviewReturnedResult,
@@ -81,12 +84,16 @@ import { itemSubject, WorkspaceError, workspaces } from "./workspaces.ts";
 
 const HANDOVER_PROGRAM = "Team handover";
 const HANDOVER_SUITE = "Handover offers";
+const surfaceTestSeams: { suppressClaimedRun: boolean; handoverRoot: string | null } = {
+  suppressClaimedRun: false,
+  handoverRoot: null,
+};
 
 /** The recorded default shared-record read interval (tm4.md, Scope). */
 export const CONTROL_READ_INTERVAL_MS = 5_000;
 
 function handoverRoot(): string {
-  return join(config.repoRoot, ".agent-console", "handover");
+  return surfaceTestSeams.handoverRoot ?? join(config.repoRoot, ".agent-console", "handover");
 }
 
 /** One private bare clone carries every item's control ref; the refs do not collide. */
@@ -396,7 +403,7 @@ export async function applyItemHandover(context: SurfaceContext, itemId: string,
   assertHandoverEnabled();
   const env = requesterEnvironment(context, itemId);
   const remote = controlRemote(itemId, env.remoteUrl);
-  return applyReturnedResult(remote, {
+  const applied = await applyReturnedResult(remote, {
     env,
     itemId,
     baseline: handoverBaseline(env, itemId),
@@ -404,6 +411,8 @@ export async function applyItemHandover(context: SurfaceContext, itemId: string,
     acceptance: { met: input.acceptanceMet },
     integrationRoot: integrationRoot(),
   });
+  await deleteHandoverBranch(remote, { env, itemId });
+  return applied;
 }
 
 export async function requestItemChanges(context: SurfaceContext, itemId: string, input: { requirements: string }) {
@@ -517,7 +526,7 @@ async function tapAccept(context: SurfaceContext, tap: HandoverTap, remote: Cont
     actionRef: tap.actionRef,
     fromHead: current.head,
   });
-  if (result.kind === "claimed") {
+  if (result.kind === "claimed" && !surfaceTestSeams.suppressClaimedRun) {
     // The claim is what the tap answers. The run is this workstation's own work
     // afterwards and must not hold the callback open, so it is started detached
     // and its failure is reported on the item's own thread.
@@ -592,6 +601,36 @@ export function activeHandoverRun(itemId: string): ActiveHandoverRun | null {
   return activeRuns.get(itemId) ?? null;
 }
 
+function recoverActiveHandoverRun(context: SurfaceContext, itemId: string): ActiveHandoverRun | null {
+  const cached = activeRuns.get(itemId);
+  if (cached !== undefined) return cached;
+  const returnAction = workspaces.handoverActionsForItem(context.botId, itemId).findLast(one => one.action === "return_work");
+  if (returnAction === undefined) return null;
+  const action = workspaces.taskControlAction(returnAction.ref);
+  if (action === null) return null;
+  try {
+    const promptId = action.prompt_id;
+    const home = workspaces.promptHome(promptId);
+    const workspace = workspaces.get(home.workspaceId);
+    const activity = workspaces.latestRunActivity(promptId);
+    if (activity === null) return null;
+    const recovered: ActiveHandoverRun = {
+      itemId,
+      runId: activity.id,
+      worktree: workspace.workDirectory,
+      workspaceId: workspace.id,
+      promptId,
+      cardPromptId: workspaces.handoverCandidatePrompt(context.botId, itemId) ?? promptId,
+      provider: activity.provider,
+      model: activity.model,
+    };
+    activeRuns.set(itemId, recovered);
+    return recovered;
+  } catch {
+    return null;
+  }
+}
+
 async function runClaimedItem(context: SurfaceContext, itemId: string, offer: PublishedOffer): Promise<void> {
   const env = receiverEnvironment(context);
   const clone = handoverClone(context.roster.remoteUrl);
@@ -660,8 +699,8 @@ function commitResult(run: ActiveHandoverRun, itemId: string): string {
 }
 
 async function tapReturn(context: SurfaceContext, tap: HandoverTap, remote: ControlRecordRemote): Promise<TaskControlReceipt> {
-  const run = activeRuns.get(tap.itemId);
-  if (run === undefined) {
+  const run = recoverActiveHandoverRun(context, tap.itemId);
+  if (run === null) {
     return receipt(tap, "REJECTED", "This workstation is not running this item.", "handover_run_missing");
   }
   const env = receiverEnvironment(context);
@@ -716,8 +755,23 @@ export function handoverStopSignal(promptId: number): { completed?: boolean; quo
  * receiver's behalf.
  */
 export function postReturnWorkCard(context: SurfaceContext, itemId: string, run: ActiveHandoverRun, record: ControlRecord): number | null {
-  const existing = workspaces.handoverActionsForItem(context.botId, itemId).some(one => one.action === "return_work");
-  if (existing) return null;
+  const existing = workspaces.handoverActionsForItem(context.botId, itemId).findLast(one => {
+    if (one.action !== "return_work") return false;
+    const stored = workspaces.taskControlAction(one.ref);
+    const payload = stored === null ? null : decodeHandoverActionPayload(stored.payload_json);
+    return payload?.kind === "handover_offer" && payload.epoch === record.epoch;
+  });
+  if (existing !== undefined) {
+    const stored = workspaces.taskControlAction(existing.ref);
+    if (stored === null || stored.applied_command_id !== null || Date.parse(stored.expires_at) > Date.now()) return null;
+    // Return is a persistent local reminder. If nobody decided before its TTL,
+    // keep the original ref/card usable; never add another Telegram message.
+    workspaces.renewHandoverAction(
+      existing.ref,
+      new Date(Date.now() + (harnessSeams.actionTtlMs ?? 10 * 60 * 1000)).toISOString(),
+    );
+    return null;
+  }
   const env = receiverEnvironment(context);
   const ref = `tc_${randomBytes(18).toString("base64url")}`;
   const reason = classifyHandoverStop(handoverStopSignal(run.promptId));
@@ -790,7 +844,7 @@ export interface ControlPollResult {
  * look. It does four things and each is one workstation's own business:
  *
  * - a teammate discovers an open call and posts **its own** Accept card;
- * - a requester whose offer has passed its 24-hour deadline records the expiry
+ * - any member who reads an offer past its 24-hour deadline records the expiry
  *   through the same validated shared update as a decline (it is never inferred);
  * - a requester whose work has come back is shown the review card, which is what
  *   makes D01 work: the return lands while env A is stopped and the card appears
@@ -810,13 +864,17 @@ export async function pollControlRecords(context: SurfaceContext): Promise<Contr
     const record = current.record;
     const mine = record.requester === me.personId;
     try {
-      if (mine && record.state === "OFFERED") {
+      if (record.state === "OFFERED") {
         const expiry = await expireOfferIfDue(remote, {
           actor: { personId: me.personId, workstationId: me.workstationId },
           commandId: commandId("expire"),
           roster: context.roster.members.map(one => one.personId),
         });
-        if (expiry.expired) { result.expired.push(itemId); continue; }
+        if (expiry.expired) {
+          workspaces.expireHandoverActionsForItem(context.botId, itemId);
+          result.expired.push(itemId);
+          continue;
+        }
       }
       if (!mine && record.state === "OFFERED") {
         const discovery = await discoverHandoverOffer(remote, receiverEnvironment(context));
@@ -829,8 +887,8 @@ export async function pollControlRecords(context: SurfaceContext): Promise<Contr
         continue;
       }
       if (!mine && record.executor === me.personId) {
-        const run = activeRuns.get(itemId);
-        if (run !== undefined && runEnded(run)) {
+        const run = recoverActiveHandoverRun(context, itemId);
+        if (run !== null && runEnded(run)) {
           result.returnable.push(itemId);
           postReturnWorkCard(context, itemId, run, record);
         }
@@ -838,6 +896,183 @@ export async function pollControlRecords(context: SurfaceContext): Promise<Contr
     } catch { /* one item's failure never stops the pass */ }
   }
   return result;
+}
+
+/* ------------------------------- web inbox -------------------------------- */
+
+function personLabel(roster: TeamRoster, personId: string): string {
+  const member = roster.members.find(one => one.personId === personId);
+  return member?.personLabel ?? member?.workstationLabel ?? personId;
+}
+
+function repositoryStatus(context: SurfaceContext): TeamHandoverSummary["repository"] {
+  try {
+    const clone = handoverClone(context.roster.remoteUrl);
+    const workspace = workspaces.get(clone.workspaceId);
+    return {
+      ready: true,
+      reason: null,
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workDirectory: workspace.workDirectory,
+    };
+  } catch (error) {
+    return {
+      ready: false,
+      reason: error instanceof Error ? error.message : "The Team repository is not registered on this workstation.",
+      workspaceId: null,
+      workspaceName: null,
+      workDirectory: null,
+    };
+  }
+}
+
+function localTask(context: SurfaceContext, itemId: string): TeamHandoverSummary["localTask"] {
+  const promptId = recoverActiveHandoverRun(context, itemId)?.promptId
+    ?? workspaces.itemLink(itemId)?.promptId
+    ?? workspaces.handoverCandidatePrompt(context.botId, itemId);
+  if (promptId === null) return null;
+  try {
+    const home = workspaces.promptHome(promptId);
+    const prompt = workspaces.resolvePrompt(home.workspaceId, promptId);
+    const run = workspaces.latestRunActivity(promptId);
+    return { promptId, workspaceId: home.workspaceId, title: prompt.title, runId: run?.id ?? null, runState: run?.state ?? null };
+  } catch {
+    return null;
+  }
+}
+
+function offerAcceptsReceiverActions(record: ControlRecord, now = Date.now()): boolean {
+  if (record.state !== "OFFERED" || record.offerDeadline === null) return false;
+  const deadline = Date.parse(record.offerDeadline);
+  return Number.isFinite(deadline) && now <= deadline;
+}
+
+/** Current, role-aware handover records for the local Team member. */
+export async function listTeamHandovers(context: SurfaceContext): Promise<TeamHandoverSummary[]> {
+  assertHandoverEnabled();
+  // Discovery also creates the receipt-backed Accept/Decline/Return actions
+  // consumed by the web buttons. Running it here keeps the inbox useful even
+  // when Telegram's background delivery loop has not completed a pass yet.
+  await pollControlRecords(context);
+  const me = memberFor(context.roster, context.botId);
+  const repository = repositoryStatus(context);
+  const summaries: TeamHandoverSummary[] = [];
+  for (const itemId of listControlItems(context.roster.remoteUrl)) {
+    const remote = controlRemote(itemId, context.roster.remoteUrl);
+    const current = await remote.read();
+    if (current === null) continue;
+    const record = current.record;
+    const offer = await readPublishedOffer(record, remote);
+    const role = record.requester === me.personId ? "requester" : "receiver";
+    const actions: TeamHandoverSummary["actions"] = [];
+    if (role === "requester" && (record.state === "PREPARING" || record.state === "OFFERED")) actions.push("withdraw");
+    if (role === "receiver" && offerAcceptsReceiverActions(record)) {
+      const localActions = liveLocalHandoverActions(context.botId, itemId, record.epoch);
+      if (repository.ready && localActions.has("accept_offer")) actions.push("accept");
+      if (localActions.has("decline_offer")) actions.push("decline");
+    }
+    const run = recoverActiveHandoverRun(context, itemId);
+    if (record.executor === me.personId && run !== null && runEnded(run)) actions.push("return");
+    summaries.push({
+      itemId,
+      state: record.state,
+      epoch: record.epoch,
+      role,
+      requester: { personId: record.requester, label: personLabel(context.roster, record.requester) },
+      executor: record.executor === null ? null : { personId: record.executor, label: personLabel(context.roster, record.executor) },
+      branch: record.branch,
+      updatedAt: record.updatedAt,
+      offerDeadline: record.offerDeadline,
+      resultLabel: record.resultLabel,
+      provider: offer !== null && isProviderId(offer.provider) ? offer.provider : null,
+      model: offer?.model ?? null,
+      repository: { ...repository },
+      localTask: localTask(context, itemId),
+      actions,
+    });
+  }
+  return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function liveLocalHandoverActions(botId: string, itemId: string, epoch: number): Set<"accept_offer" | "decline_offer" | "return_work"> {
+  const now = Date.now();
+  const live = new Set<"accept_offer" | "decline_offer" | "return_work">();
+  for (const reference of workspaces.handoverActionsForItem(botId, itemId)) {
+    if (reference.action !== "accept_offer" && reference.action !== "decline_offer" && reference.action !== "return_work") continue;
+    const stored = workspaces.taskControlAction(reference.ref);
+    if (stored === null || stored.applied_command_id !== null || Date.parse(stored.expires_at) <= now) continue;
+    const payload = decodeHandoverActionPayload(stored.payload_json);
+    if (payload?.kind !== "handover_offer" || payload.epoch !== epoch) continue;
+    live.add(reference.action);
+  }
+  return live;
+}
+
+async function outstandingAction(context: SurfaceContext, itemId: string, action: "accept_offer" | "decline_offer" | "return_work") {
+  await pollControlRecords(context);
+  const current = await controlRemote(itemId, context.roster.remoteUrl).read();
+  if (current === null) return null;
+  if ((action === "accept_offer" || action === "decline_offer") && !offerAcceptsReceiverActions(current.record)) return null;
+  const epoch = current.record.epoch;
+  const now = Date.now();
+  return workspaces.handoverActionsForItem(context.botId, itemId).findLast(one => {
+    if (one.action !== action) return false;
+    const stored = workspaces.taskControlAction(one.ref);
+    if (stored === null || stored.applied_command_id !== null || Date.parse(stored.expires_at) <= now) return false;
+    const payload = decodeHandoverActionPayload(stored.payload_json);
+    return payload?.kind === "handover_offer" && payload.epoch === epoch;
+  }) ?? null;
+}
+
+/** Web actions use the same receipt-producing handler as Telegram cards. */
+export async function performWebHandoverAction(
+  context: SurfaceContext,
+  itemId: string,
+  action: "accept" | "decline" | "withdraw" | "return",
+): Promise<TaskControlReceipt | { state: string; message: string }> {
+  assertHandoverEnabled();
+  const item = itemId.trim();
+  const me = memberFor(context.roster, context.botId);
+  const remote = controlRemote(item, context.roster.remoteUrl);
+  const current = await remote.read();
+  if (current === null) throw new WorkspaceError(404, "control_not_found", "This item has no control record yet.");
+
+  if (action === "withdraw") {
+    if (current.record.requester !== me.personId) throw new WorkspaceError(403, "requester_required", "Only the requester can withdraw this offer.");
+    const event = current.record.state === "PREPARING" ? "abandon_preparation" : "withdraw_offer";
+    const outcome = await applyControlTransition(remote, {
+      event,
+      actor: { personId: me.personId, workstationId: me.workstationId },
+      commandId: commandId("web-withdraw"),
+      epoch: current.record.epoch,
+      fromHead: current.head,
+      roster: context.roster.members.map(one => one.personId),
+    });
+    previews.delete(item);
+    workspaces.updateItemControlHead({ itemId: item, controlHead: outcome.head, epoch: outcome.record.epoch });
+    return { state: outcome.record.state, message: event === "abandon_preparation" ? "Handover preparation abandoned." : "Offer withdrawn." };
+  }
+
+  const mapped = action === "accept" ? "accept_offer" : action === "decline" ? "decline_offer" : "return_work";
+  const reference = await outstandingAction(context, item, mapped);
+  if (reference === null) throw new WorkspaceError(409, "action_not_available", `The ${action} action is not available in the current item state.`);
+  const promptId = workspaces.taskControlAction(reference.ref)?.prompt_id
+    ?? workspaces.handoverCandidatePrompt(context.botId, item)
+    ?? workspaces.itemLink(item)?.promptId;
+  if (promptId === null || promptId === undefined) throw new WorkspaceError(409, "handover_task_missing", "This workstation has no local task for the handover yet.");
+  return handleHandoverTap(context, {
+    action: mapped,
+    actionRef: reference.ref,
+    itemId: item,
+    epoch: current.record.epoch,
+    commandId: commandId(`web-${action}`),
+    botId: context.botId,
+    chatId: context.roster.groupChatId,
+    topicId: null,
+    transportUserId: me.telegramUserId,
+    promptId,
+  });
 }
 
 function runEnded(run: ActiveHandoverRun): boolean {
@@ -873,4 +1108,4 @@ export async function handoverStatus(context: SurfaceContext, itemId: string): P
 }
 
 /** Exposed for the tests that drive the surface without a Telegram session. */
-export const handoverSurfaceInternals = { previews, activeRuns, offeredProviders, controlRef, controlBare, worktreeRoot };
+export const handoverSurfaceInternals = { previews, activeRuns, offeredProviders, controlRef, controlBare, worktreeRoot, surfaceTestSeams };

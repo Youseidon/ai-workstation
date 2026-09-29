@@ -331,10 +331,10 @@ const FIELDS: FieldDef[] = [
     envVar: "TASK_CONTROL_TRANSPORT",
     fallback: "fake_telegram",
     description:
-      "Fake Telegram is the in-memory test transport and never touches the network. Telegram long-polls the real Bot API using TELEGRAM_BOT_TOKEN from .env, which is read at boot and never shown here.",
+      "Fake Telegram is the in-memory test transport and never touches the network. Telegram long-polls the real Bot API using the bot connected from the setup screen (or TELEGRAM_BOT_TOKEN from .env). The token is never shown here.",
     options: [
       option("fake_telegram", "Fake Telegram", "Local fake used by tests and development"),
-      option("telegram", "Telegram", "Live Bot API; needs TELEGRAM_BOT_TOKEN in .env"),
+      option("telegram", "Telegram", "Live Bot API; connect a bot from the setup screen"),
     ],
   },
   {

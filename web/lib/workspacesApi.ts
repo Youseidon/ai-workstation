@@ -1,4 +1,4 @@
-import type { AgentRequest, AgentSession, ApiErrorBody, DefinitionOfDone, DodEvaluation, HumanInputRequest, InstructionProposalRecord, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, ProgramDraftBody, ProgramDraftPreview, ProgramDraftRecord, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, StartUnknownClassification, StatusDefinition, SuitePipelineRun, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, TaskControlCapability, TelegramLiveStatus, TelegramPairingState, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+import type { AgentRequest, AgentSession, ApiErrorBody, DefinitionOfDone, DodEvaluation, HumanInputRequest, InstructionProposalRecord, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, ProgramDraftBody, ProgramDraftPreview, ProgramDraftRecord, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, StartUnknownClassification, StatusDefinition, SuitePipelineRun, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, TaskControlCapability, TeamHandoverSummary, TeamItemAccessSummary, TelegramLiveStatus, TelegramPairingState, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -75,6 +75,7 @@ export const workspaceApi = {
   async report(serverUrl:string,workspaceId?:number){return (await request<{report:UsageReport}>(serverUrl,`/api/report${workspaceId===undefined?"":`?workspace=${workspaceId}`}`)).report;},
   taskControlCapability(serverUrl:string){return request<{capability:TaskControlCapability}>(serverUrl,"/api/task-control/capability").then(r=>r.capability);},
   telegramStatus(serverUrl:string){return request<{status:TelegramLiveStatus}>(serverUrl,"/api/task-control/telegram").then(r=>r.status);},
+  configureTelegram(serverUrl:string,token:string){return request<{status:TelegramLiveStatus}>(serverUrl,"/api/task-control/telegram/credential",{method:"PUT",...json({token})}).then(r=>r.status);},
   startTelegramPairing(serverUrl:string){return request<{pairing:TelegramPairingState}>(serverUrl,"/api/task-control/telegram/pairing",{method:"POST",...json({})}).then(r=>r.pairing);},
   cancelTelegramPairing(serverUrl:string){return request<void>(serverUrl,"/api/task-control/telegram/pairing",{method:"DELETE"});},
   confirmTelegramPairing(serverUrl:string,code:string){return request<{status:TelegramLiveStatus}>(serverUrl,"/api/task-control/telegram/pairing/confirm",{method:"POST",...json({code})}).then(r=>r.status);},
@@ -91,6 +92,12 @@ export const workspaceApi = {
   confirmTeamJoin(serverUrl:string){return request<{team:{teamId:string;instruction:string}}>(serverUrl,"/api/task-control/team/join/confirm",{method:"POST",...json({})}).then(r=>r.team);},
   /** Opens a Team item thread on the owner's own work item (R-B). Refused with prompt_already_complete once the task is finished. */
   openTeamItem(serverUrl:string,promptId:number){return request<{item:{itemId:string}}>(serverUrl,"/api/task-control/team/items",{method:"POST",...json({promptId})}).then(r=>r.item);},
+  teamItemForPrompt(serverUrl:string,promptId:number){return request<{item:{itemId:string}|null}>(serverUrl,`/api/task-control/team/items?promptId=${promptId}`).then(r=>r.item);},
+  teamHandovers(serverUrl:string){return request<{handovers:TeamHandoverSummary[]}>(serverUrl,"/api/task-control/team/handovers").then(r=>r.handovers);},
+  teamHandoverAction(serverUrl:string,itemId:string,action:"accept"|"decline"|"withdraw"|"return"){return request<{result:unknown}>(serverUrl,`/api/task-control/team/handovers/${encodeURIComponent(itemId)}/${action}`,{method:"POST",...json({})}).then(r=>r.result);},
+  teamItemAccess(serverUrl:string,itemId:string){return request<{access:TeamItemAccessSummary}>(serverUrl,`/api/task-control/team/items/${encodeURIComponent(itemId)}/access`).then(r=>r.access);},
+  setTeamItemAccess(serverUrl:string,itemId:string,personId:string,capabilities:Array<"context"|"answer"|"resume">){return request<{access:TeamItemAccessSummary}>(serverUrl,`/api/task-control/team/items/${encodeURIComponent(itemId)}/access/${encodeURIComponent(personId)}`,{method:"PUT",...json({capabilities})}).then(r=>r.access);},
+  closeTeamItem(serverUrl:string,itemId:string){return request<{result:{closed:boolean;reason:string}}>(serverUrl,`/api/task-control/team/items/${encodeURIComponent(itemId)}/close`,{method:"POST",...json({})}).then(r=>r.result);},
   /**
    * Handover, the requester's six steps (C1). Every one of them answers 403
    * team_disabled or handover_disabled while the capability is off, which is

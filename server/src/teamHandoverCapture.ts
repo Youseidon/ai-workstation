@@ -25,7 +25,7 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
  * that moved, and stops with its own named reason on content the first release
  * cannot carry: symlinks escaping the tree, submodule contents and LFS objects.
  *
- * Secrets **warn and do not refuse**, by jd's ruling of 2026-09-20. The preview
+ * Secrets **warn and do not refuse**, by requester's ruling of 2026-09-20. The preview
  * lists every uncommitted file by path, flags credential shapes, and a flagged
  * match takes its own confirmation rather than riding along with the ordinary
  * Publish tap.
@@ -167,7 +167,7 @@ export interface CapturePreview {
   totalBytes: number;
   largestBytes: number;
   large: boolean;
-  /** Always false: the preview warns and never refuses (jd's ruling of 2026-09-20). */
+  /** Always false: the preview warns and never refuses (requester's ruling of 2026-09-20). */
   blocked: boolean;
   requiredConfirmations: HandoverConfirmation[];
   risk: string;
@@ -642,16 +642,33 @@ export class BareGitHandoverPackageRemote implements HandoverPackageRemote {
 
   /** Reads the ref and every reachable object back out of the remote. */
   async verify(commit: string, branch: string): Promise<boolean> {
-    const ref = spawnSync("git", ["--git-dir", this.bareDirectory, "rev-parse", "--verify", "-q", `refs/heads/${branch}`], { encoding: "utf8" });
-    if (ref.status !== 0 || ref.stdout.trim() !== commit) return false;
-    const objects = spawnSync("git", ["--git-dir", this.bareDirectory, "rev-list", "--objects", commit], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    if (objects.status !== 0) return false;
-    const ids = objects.stdout.split("\n").map(line => line.split(" ")[0]).filter(one => one !== undefined && one !== "");
-    if (ids.length === 0) return false;
-    const checked = spawnSync("git", ["--git-dir", this.bareDirectory, "cat-file", "--batch-check"], {
-      encoding: "utf8", input: `${ids.join("\n")}\n`, maxBuffer: 64 * 1024 * 1024,
-    });
-    return checked.status === 0 && !/missing|ambiguous/.test(checked.stdout);
+    let directory = this.bareDirectory;
+    let temporary: string | null = null;
+    try {
+      // Test rigs use a local bare path. Production Teams use an HTTPS/SSH
+      // remote, which cannot be passed to `git --git-dir`; fetch the exact ref
+      // into an empty bare repository before inspecting its objects.
+      if (!existsSync(directory)) {
+        temporary = mkdtempSync(join(tmpdir(), "agent-console-handover-verify-"));
+        if (spawnSync("git", ["init", "--bare", "-q", temporary], { encoding: "utf8" }).status !== 0) return false;
+        const fetched = spawnSync("git", ["--git-dir", temporary, "fetch", "--quiet", "--no-tags", this.bareDirectory,
+          `+refs/heads/${branch}:refs/heads/${branch}`], { encoding: "utf8" });
+        if (fetched.status !== 0) return false;
+        directory = temporary;
+      }
+      const ref = spawnSync("git", ["--git-dir", directory, "rev-parse", "--verify", "-q", `refs/heads/${branch}`], { encoding: "utf8" });
+      if (ref.status !== 0 || ref.stdout.trim() !== commit) return false;
+      const objects = spawnSync("git", ["--git-dir", directory, "rev-list", "--objects", commit], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+      if (objects.status !== 0) return false;
+      const ids = objects.stdout.split("\n").map(line => line.split(" ")[0]).filter(one => one !== undefined && one !== "");
+      if (ids.length === 0) return false;
+      const checked = spawnSync("git", ["--git-dir", directory, "cat-file", "--batch-check"], {
+        encoding: "utf8", input: `${ids.join("\n")}\n`, maxBuffer: 64 * 1024 * 1024,
+      });
+      return checked.status === 0 && !/missing|ambiguous/.test(checked.stdout);
+    } finally {
+      if (temporary !== null) rmSync(temporary, { recursive: true, force: true });
+    }
   }
 }
 
