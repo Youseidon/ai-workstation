@@ -76,7 +76,7 @@ A phone card must let the operator decide without opening the laptop.
 It moves from general to specific:
 
 ```text
-jd-laptop · ai-workstation · Telegram L1 / Live setup · pipeline step 3/5
+operator-laptop · ai-workstation · Telegram L1 / Live setup · pipeline step 3/5
 Task: Add live bot credential storage
 Goal: <objective, 1-2 lines>
 So far: <top completed items> · verification 41 passed, 0 failed
@@ -223,6 +223,12 @@ limits. Never share project state with a new party merely because quota ran out.
 Request changes creates a revised offer. The executor approves renewed work;
 the requester does not separately approve the executor's acceptance. A reopened
 task creates a new revision; old buttons and grants remain invalid.
+
+Offer and Return-work reminders persist without notification spam. If their
+ten-minute local action reference expires while the shared decision is still
+open, the workstation renews that reference in place and does not send another
+Telegram message. The user may need to refresh and tap again. Durable Accept,
+Decline, Return, Withdraw and Apply outcomes remain final for that epoch.
 
 ## 8. Lifecycle decision coverage
 

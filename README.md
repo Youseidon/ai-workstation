@@ -26,10 +26,14 @@ counts, all rendered as a scrolling terminal-style log.
 
 ## Quick start
 
-Telegram task control supports personal control and default-off two-person Team
-item threads and grants. Team handover is not included. Real two-person join and
-thread/grant phone checks remain explicit human checks.
-See the [Telegram task control and teammate takeover design](docs/telegram-task-control/README.md).
+Telegram task control supports personal notifications and validated phone
+actions. The default-off two-person Team feature adds private-group item
+threads, access grants and Git-backed handover from offer through return,
+requester review and apply.
+
+See the [Team and Telegram user guide](docs/team-and-telegram-user-guide.md) for
+setup and day-to-day use. Protocol, test and historical material is indexed
+separately in the [Telegram task-control documentation](docs/telegram-task-control/README.md).
 
 ```bash
 npm install
@@ -40,28 +44,34 @@ npm run serve             # builds, then runs the backend and frontend without w
 Open <http://localhost:3000>. The backend listens on <http://127.0.0.1:4000>
 (`/api/providers`, `/api/health`, and the WebSocket at `/ws`).
 
+To connect Telegram, open **Agents → Set up Telegram**. The guided flow creates
+and validates your personal bot connection, stores the token locally, enables
+personal controls and pairs your private chat. Do not put the token in a task,
+terminal command or shared file. Every teammate repeats the flow on their own
+workstation with a different bot.
+
 ## Running a live pipeline
 
-### Side-by-side Team pilot
+### Test-only side-by-side Team pilot
 
-Do not update an existing AI Workstation checkout for the first Team test. Clone
-the Team feature branch into a separate directory so its `.env`,
+This is an operator/test rig, not the normal Team installation path above. Do
+not update an existing AI Workstation checkout for a pilot run. Clone the tested
+branch into a separate directory so its `.env`,
 `.agent-console/console.sqlite`, settings and ports cannot affect the existing
 installation:
 
 ```bash
 git clone --branch <team-feature-branch> --single-branch <source-repository-url> ai-workstation-team-pilot
 cd ai-workstation-team-pilot
-npm run setup:team-pilot -- --label "Teammate pilot"
+npm run setup:team-pilot -- --label "Receiver workstation"
 ```
 
 The setup command refuses an existing `.env`, `.agent-console` directory or
 tracked local changes. It installs the locked dependencies, configures frontend
 port 3100 and backend port 4100, enables only personal Telegram setup, and keeps
-notifications, remote actions, Team and host access off. It requests the
-dedicated pilot-bot token through a hidden terminal prompt, never prints it or
-passes it on a command line, and writes it only to the private local `.env`.
-It then starts the pilot, waits for readiness and opens the Agents page.
+Team and host access off. It then starts the pilot, waits for readiness and opens
+the Agents page. Choose **Set up Telegram** there; the guided flow enables
+personal notifications and remote actions after it validates the bot token.
 
 For later starts, run:
 
@@ -69,11 +79,14 @@ For later starts, run:
 npm run dev:team-pilot
 ```
 
-Open <http://localhost:3100/agents>, pair the teammate privately, and only then
+Open <http://localhost:3100/agents>, run **Set up Telegram**, and only then
 enable Team for the LT-3 join check. Use a separate throwaway private Git
 repository as the shared Team/workspace repository; it is distinct from the
 source repository carrying this application branch. Do not copy another
 workstation's `.env`, `.agent-console`, bot token or provider credentials.
+See the [test-harness setup](docs/e2e-live-setup.md) and the historical runbooks
+in the [documentation index](docs/telegram-task-control/README.md) before using
+live test accounts.
 
 `npm run build` typechecks the server and builds the frontend; `npm run start`
 runs both without watch mode.
@@ -91,7 +104,7 @@ npm run dev:sandbox       # development: a copy of the database on :4100 / :3100
 ```
 
 `dev:sandbox` copies `~/.local/state/agent-console/console.sqlite` (and its WAL)
-to `/tmp/agent-console-sandbox/`, then starts the watch server against the copy
+to `${TMPDIR:-/tmp}/agent-console-sandbox/`, then starts the watch server against the copy
 on its own ports. Pass `--keep` to reuse the existing copy instead of taking a
 fresh one (`npm run dev:sandbox -- --keep`). The live database is never opened.
 

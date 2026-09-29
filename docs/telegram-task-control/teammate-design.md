@@ -1,7 +1,12 @@
 # Teammate design: one bot per person, item threads and handover
 
-Status: design of record for team features, from jd's review on 2026-09-16.
-Decisions 1 to 6 of that review are settled; this document is the first full write-up of them and still awaits jd's read.
+> **Design/protocol reference.** The implementation and
+> [user guide](../team-and-telegram-user-guide.md) are authoritative for current
+> UI labels and available administration actions. Dated code facts and rollout
+> statements below preserve the reviewed design history.
+
+Status: design of record for team features, from operator's review on 2026-09-16.
+Decisions 1 to 6 of that review are settled; this document is the first full write-up of them and still awaits operator's read.
 Parent: [Design baseline](README.md).
 History: [the original proposal](teammate-design-proposal.md) and [the review notes](teammate-design-review-notes.md), both superseded by this document wherever they disagree.
 Replaces, once folded into the baseline: the teammate parts of [User flows](user-flows.md) sections 4 to 7, [Protocol](protocol.md) sections 2, 4, 5, 7 and 8, and milestones M3, M4, M5 and L2 of the [engineering plan](engineering-plan.md).
@@ -30,16 +35,16 @@ Every state change, at every level, stays an action reference with a durable rec
 ```mermaid
 flowchart LR
   subgraph TG[Telegram]
-    B1[jd's bot]
-    B2[Yousef's bot]
-    PC1[jd's private chat]
-    PC2[Yousef's private chat]
+    B1[operator's bot]
+    B2[<git-author>'s bot]
+    PC1[operator's private chat]
+    PC2[<git-author>'s private chat]
     G[Team group: one anchor per shared item]
   end
-  subgraph W1[jd-laptop]
+  subgraph W1[operator-laptop]
     O1[own bot poll + ownership check + task control]
   end
-  subgraph W2[yousef-desktop]
+  subgraph W2[receiver-workstation]
     O2[own bot poll + ownership check + task control]
   end
   R[(Shared GitHub repo: refs/aw/team, refs/aw/items/*, aw/handover/* branches)]
@@ -60,10 +65,10 @@ Size of the change: 4 build slices plus one harness slice, 7 T0 and 7 T1 scenari
 | ID | Requirement | Interpretation |
 | --- | --- | --- |
 | R-A | A requester who needs help finishing a work item, whether their LLM allowance is about to run out or not, can have another person continue it on their own workstation. | **Amended 2026-09-20.** An open handover: publish a branch, offer it to whoever is available, first accept wins, run, return, apply. The trigger is either a quota warning or `/handover` on the item's anchor. A receiver who cannot finish may release the work back to the requester unfinished; the requester may not seize a claimed item, and cancels the item instead. The receiver runs under their own login and subscription; **G01 was recorded on 2026-09-20** in [implementation.md](implementation.md) section 6b and finds that ordinary use, because nothing is delegated and no credential is shared. Rules and eventualities are in [handover-rules.md](handover-rules.md). |
-| R-B | The owner of a work item can start a Telegram thread about it to discuss it, with no handover and no quota trigger; the owner can grant the other person commands that act on the owner's workstation for that item. | **Amended by jd on 2026-09-19** to owner-initiated threads. Only the item's owner opens the thread, because a teammate can never learn the owner's numeric prompt id: nothing in the product shows one to them (B15). `/discuss` stays in the code but has no usable human entry point, and becomes live again only if cross-member task visibility is ever built. The owner keeps every decision and every grant. The data model keeps person ids so a third member does not need a redesign, but nothing here is built or tested for three. |
+| R-B | The owner of a work item can start a Telegram thread about it to discuss it, with no handover and no quota trigger; the owner can grant the other person commands that act on the owner's workstation for that item. | **Amended by operator on 2026-09-19** to owner-initiated threads. Only the item's owner opens the thread, because a teammate can never learn the owner's numeric prompt id: nothing in the product shows one to them (B15). `/discuss` stays in the code but has no usable human entry point, and becomes live again only if cross-member task visibility is ever built. The owner keeps every decision and every grant. The data model keeps person ids so a third member does not need a redesign, but nothing here is built or tested for three. |
 | R-C | Telegram carries all human messaging and pushes notifications; the repository carries files. | Holds. The repository also carries three small machine records no human reads: the roster, the item control record and the handover branch. There is no message relay in the repository. |
-| R-D | Exactly one bot, jd's; teammates never touch BotFather; teammate setup under a minute. | **Revised by jd on 2026-09-16.** Each person creates and owns their own bot, because Telegram delivers a bot's updates to exactly one receiver, so a shared bot forces either an election or a relay between the two machines. The teammate visits BotFather once, guided by the app, so their setup is about 3 minutes rather than under one. Nothing about the team is in anyone else's hands. |
-| R-E | No dependency on jd's workstation being online. | Holds completely for personal control, threads on Yousef's items, grants Yousef already holds, handover execution and joining with an already issued code. Anything that acts on jd's workstation waits for it, by D01. |
+| R-D | Exactly one bot, operator's; teammates never touch BotFather; teammate setup under a minute. | **Revised by operator on 2026-09-16.** Each person creates and owns their own bot, because Telegram delivers a bot's updates to exactly one receiver, so a shared bot forces either an election or a relay between the two machines. The teammate visits BotFather once, guided by the app, so their setup is about 3 minutes rather than under one. Nothing about the team is in anyone else's hands. |
+| R-E | No dependency on operator's workstation being online. | Holds completely for personal control, threads on <git-author>'s items, grants <git-author> already holds, handover execution and joining with an already issued code. Anything that acts on operator's workstation waits for it, by D01. |
 | R-F | Lean evidence: mostly T0 and T1 on the fake Telegram, a small counted set of real checks. | Section 8. No GramJS client and no T3 automation for team features. |
 | R-G | Telegram-only participants without the app are out of scope. | Accepted. Group members not on the roster are ignored. |
 
@@ -132,10 +137,10 @@ New: add "The same rule holds for both people in an item thread. A slash command
 
 | Item | Change | New text or reason |
 | --- | --- | --- |
-| G01 subscription delegation | Keep for handover only; does not gate threads or grants. | A grant resumes on the owner's own subscription on the owner's own workstation. jd records the handover decision when the handover slices start. |
+| G01 subscription delegation | Keep for handover only; does not gate threads or grants. | A grant resumes on the owner's own subscription on the owner's own workstation. operator records the handover decision when the handover slices start. |
 | G02 permissions and secrets | Revise. | New: "For a trusted two-person team, Git credentials readable by same-user agent processes are a documented accepted risk (section 7). No Telegram credential is shared at all. Any wider release reinstates certified isolation." |
 | G03 remote integrity | Revise. | New: "Control refs are updated only by fast-forward or compare-and-swap push; a non-fast-forward rewrite detected on fetch disables handover until inspected." Device signatures and a signed roster are removed: each person's bot and repository access already identify them. |
-| G04 team governance | Revise. | New: "jd records the team's audience (two people), storage (the shared GitHub repository and the team group) and retention (everything kept) once, in `implementation.md`." |
+| G04 team governance | Revise. | New: "operator records the team's audience (two people), storage (the shared GitHub repository and the team group) and retention (everything kept) once, in `implementation.md`." |
 | README boundary "One bot per registered workstation ... do not clone bot tokens" | Keep. | The review restored it: this design never clones a token. |
 | README boundary "If a bot's workstation is offline, its buttons cannot be processed immediately" | Revise. | New: "A tap is processed when its owning workstation is online. Telegram drops an uncollected tap after about 2.5 minutes, the already accepted solo behaviour (commit 800fb9a), so a card whose workstation was away gets fresh buttons when it returns." |
 | User flows 4 "Its own bot posts Accept and run ... Do not put the only execution approval button on the sender's bot" | Keep. | With a bot per person this is automatic: the receiver's own bot posts the Accept card. |
@@ -160,7 +165,7 @@ New: add "The same rule holds for both people in an item thread. A slash command
 ### 4.1 Code facts this design rests on (verified 2026-09-16)
 
 - The bot record id is `telegram-<numeric bot id>` (`integrations/telegram/runtime.ts`), so two people's bots are distinct records everywhere, and `telegram_inbox`'s primary key `(bot_id, update_id)` needs no change.
-- The token is read from `TELEGRAM_BOT_TOKEN` in `.env` at boot and a change needs a restart (`integrations/telegram/credentials.ts`). Each person sets their own, exactly as jd does today, so no reloadable credential is needed.
+- The token can come from `TELEGRAM_BOT_TOKEN` for existing deployments or from the owner-only local credential file written by the Agents-page setup flow (`integrations/telegram/credentials.ts`). A UI-supplied token is validated with `getMe` and takes effect without a restart. Each person still sets up their own bot; no token is shared.
 - `telegram_thread` (migration 23) already holds `subject_kind`, `subject_id`, the anchor through `status_message_id` and the states ACTIVE, PIN_PENDING and ANCHOR_GONE. Item threads add a subject kind; the anchor and reply behaviour is C1's and is not rebuilt.
 - `task_control_actor` is unique on `(transport, transport_user_id, chat_id, topic_id)` with `topic_id` nullable, which is the shape a group actor needs.
 - `task_control_action.action` is constrained to `save_human_response` and `answer_and_resume`, and `task_control_receipt` already enforces applied-once per action.
@@ -183,27 +188,32 @@ New: add "The same rule holds for both people in an item thread. A slash command
 
 ### 4.3 Creating the team and joining it
 
-One-time team creation by jd, about 3 minutes:
+One-time team creation by operator, about 3 minutes:
 
-1. jd creates a private Telegram group and adds his own bot as administrator with Pin messages and Invite users.
+1. operator creates a private Telegram group and adds his own bot as administrator with Pin messages and Invite users.
 2. In the Agents page he chooses Create team; the app shows a code; he sends `/team <code>` in the group.
-3. jd's workstation observes the chat, checks the bot's administrator rights with `getChatMember`, asks jd to confirm locally, and writes `refs/aw/team`: team id, group chat id, jd as person with his bot id and username, and jd-laptop as workstation.
+3. operator's workstation observes the chat, checks the bot's administrator rights with `getChatMember`, asks operator to confirm locally, and writes `refs/aw/team`: team id, group chat id, operator as person with his bot id and username, and operator-laptop as workstation.
 
-Yousef joining, about 3 minutes, and jd's app may be offline for all but the last step:
+<git-author> joining, about 3 minutes, and operator's app may be offline for all but the last step:
 
-1. Yousef sets up the app for personal control the same way any solo operator does: create a bot in BotFather, put the token in `.env`, start the server, pair by the `t.me/<their bot>?start=<code>` link and confirm locally.
-   This is the existing L1 flow, unchanged, and it is useful on its own before any team exists.
-2. jd sends Yousef a join code, `awj1.` plus base64url JSON: version, team id, group chat id, repository remote URL, invite id and a 24-hour expiry.
+1. <git-author> opens **Set up Telegram** on the Agents page. The guided flow links to BotFather, validates and stores their own bot token locally without a restart, opens the `t.me/<their bot>?start=<code>` pairing link and asks them to confirm the observed identity locally.
+   This personal-control flow is useful on its own before any team exists.
+2. operator sends <git-author> a join code, `awj1.` plus base64url JSON: version, team id, group chat id, repository remote URL, invite id and a 24-hour expiry.
    It carries no credential.
-3. Yousef pastes it into Join team on the Agents page.
+3. <git-author> pastes it into Join team on the Agents page.
    Their app checks the remote is reachable with `git ls-remote` using their existing Git credentials, finds or asks for the local workspace with that remote, and adds their person, bot and workstation to `refs/aw/team` by compare-and-swap push.
    A second use of the same invite id loses the race and is refused.
-4. Their app then shows the one step that needs jd: "Ask jd to add @<their bot> to the team group and make it an administrator with Pin messages."
-   Bots cannot add bots, so jd does this by hand, once per teammate, and jd's app shows him the same instruction with the bot username when the roster changes.
-5. jd's workstation creates a one-member, one-hour invite link (`createChatInviteLink`) for Yousef the person; Yousef taps it and joins the group.
+4. Their app then shows the one step that needs operator: "Ask operator to add @<their bot> to the team group and make it an administrator with Pin messages."
+   Bots cannot add bots, so operator does this by hand, once per teammate, and operator's app shows him the same instruction with the bot username when the roster changes.
+5. operator's workstation creates a one-member, one-hour invite link (`createChatInviteLink`) for <git-author> the person; <git-author> taps it and joins the group.
 
-Removing a teammate: jd removes them from the roster, his workstation disables their group actor and all their grants, and he removes the person and their bot from the group.
-No token rotation is needed, because no token was shared.
+Removing a teammate was designed as: the owner removes them from the roster,
+the owner's workstation disables their group actor and grants, and the owner
+removes the person and bot from the group. The current UI does not expose that
+complete shared-roster removal. Until it does, close live work, remove the
+person and bot from the group, disable the old Team on both workstations and
+create a new Team for the reduced membership. No token rotation is needed
+solely because of membership removal, because no token was shared.
 
 ### 4.4 Which workstation handles an update
 
@@ -251,11 +261,11 @@ The app uses its own bare clone of the remote under `.agent-console/team/remote.
 
 ### 5.1 Start an item thread (R-B)
 
-1. jd opens a task in the local app and chooses Discuss with Yousef, or sends `/discuss <task key>` in his private chat.
+1. operator opens a task in the local app and chooses Discuss with <git-author>, or sends `/discuss <task key>` in his private chat.
    The phone path renders a card whose tap is the action (D17).
-2. jd-laptop maps the task to a global item id, posts and pins the anchor summary card in the team group with the `team` audience (no quota, no local paths, sanitized as today), and posts an access message ("Yousef: read only") with Grant buttons that only jd's taps apply.
+2. operator-laptop maps the task to a global item id, posts and pins the anchor summary card in the team group with the `team` audience (no quota, no local paths, sanitized as today), and posts an access message ("<git-author>: read only") with Grant buttons that only operator's taps apply.
 3. Either person may start a thread on either person's item (D19).
-   When Yousef starts one on jd's item, yousef-desktop posts a request card in the group and jd-laptop posts the anchor once jd confirms, because only the owning workstation can speak for the item.
+   When <git-author> starts one on operator's item, receiver-workstation posts a request card in the group and operator-laptop posts the anchor once operator confirms, because only the owning workstation can speak for the item.
 
 ### 5.2 Discuss and read-only commands
 
@@ -275,11 +285,11 @@ Replying to an item's anchor, these answer from the owning workstation with no r
 | --- | --- | --- |
 | `context` | `/context` | Read-only: objective, completed list, decisions and assumptions, important files, the last 10 remarks and the open question, sanitized. No receipt. |
 | `answer` | Reply to the item's question card, or `/answer <text>`; Save answer on the resulting card | Records the answer and keeps the task waiting (D11). |
-| `resume` | `/resume`; Answer and resume on an answer card (needs `answer` too); Resume with saved answer | Starts one run with the task's last provider and model under the owner's settings. The card states "Uses jd's <provider> allowance." |
+| `resume` | `/resume`; Answer and resume on an answer card (needs `answer` too); Resume with saved answer | Starts one run with the task's last provider and model under the owner's settings. The card states "Uses operator's <provider> allowance." |
 
 Owner-only commands, each rendering a card whose tap is the action: `/grant context|answer|resume|all`, `/revoke [capability|all]`, `/handover`, `/close`.
 The access message carries the same Grant and Revoke buttons and is edited in place after each change.
-A command without the grant gets "Ask jd to grant answer on this item." and nothing else.
+A command without the grant gets "Ask operator to grant answer on this item." and nothing else.
 
 Validation of a state-changing tap, on the owning workstation, in this order: the action reference exists and belongs to this bot, chat and message; it has not expired (10 minutes); the tapping user is the actor the card was issued to; for the other person's actions, the capability is granted now; the expected revision matches; then the existing `saveHumanResponse` or `respondAndContinue` path.
 Every result is a `task_control_receipt`, and a duplicate tap returns the first receipt.
@@ -287,37 +297,42 @@ If both people answer at once, one applies and the other is rejected as a change
 
 ### 5.4 Handover (R-A), outline
 
-Detail is written when slice TM4 starts, after jd's G01 decision.
+Detail is written when slice TM4 starts, after operator's G01 decision.
 The shape is settled:
 
-1. Trigger: Start handover on a quota warning in jd's private chat, or `/handover` on the item's anchor. Existing grants end.
-2. jd-laptop holds the task and its pipeline, waits until no run owns the workspace, and creates a snapshot commit of tracked and untracked non-ignored files through a temporary index, so HEAD, index and worktree are untouched, plus a context file (objective, requirements, answers, open questions, completed and pending work, verification, recommended provider).
+1. Trigger: Start handover on a quota warning in operator's private chat, or `/handover` on the item's anchor. Existing grants end.
+2. operator-laptop holds the task and its pipeline, waits until no run owns the workspace, and creates a snapshot commit of tracked and untracked non-ignored files through a temporary index, so HEAD, index and worktree are untouched, plus a context file (objective, requirements, answers, open questions, completed and pending work, verification, recommended provider).
    Unsupported content (symlinks escaping the tree, submodule contents, LFS objects) stops the capture with a named reason.
-3. jd reviews a preview and taps Publish offer.
-   jd-laptop pushes branch `aw/handover/<item>`, then the control record as `OFFERED` (epoch 1, no named receiver since 2026-09-20, requested provider and model).
-4. yousef-desktop discovers it on the next shared-record read (5 seconds, the recorded default), compares the requested provider, model, Host access and sandbox mode with its own workspace settings, and posts its own Accept and run card from its own bot.
-5. Yousef taps Accept; yousef-desktop claims by compare-and-swap push (`CLAIMED`). A withdraw that won first makes the claim fail with the current state, and the loser re-validates rather than retrying blindly: a claim that lost stays lost.
-6. yousef-desktop creates a worktree of the branch, links it to a local task, runs it through the normal start path, and posts progress on the anchor.
-   Requirement questions are posted by yousef-desktop and issued to jd as actor, so they apply while jd-laptop is offline; access, provider and allowance questions are asked to Yousef locally.
+3. operator reviews a preview and taps Publish offer.
+   operator-laptop pushes branch `aw/handover/<item>`, then the control record as `OFFERED` (epoch 1, no named receiver since 2026-09-20, requested provider and model).
+4. receiver-workstation discovers it on the next shared-record read (5 seconds, the recorded default), compares the requested provider, model, Host access and sandbox mode with its own workspace settings, and posts its own Accept and run card from its own bot.
+5. <git-author> taps Accept; receiver-workstation claims by compare-and-swap push (`CLAIMED`). A withdraw that won first makes the claim fail with the current state, and the loser re-validates rather than retrying blindly: a claim that lost stays lost.
+6. receiver-workstation creates a worktree of the branch, links it to a local task, runs it through the normal start path, and posts progress on the anchor.
+   Requirement questions are posted by receiver-workstation and issued to operator as actor, so they apply while operator-laptop is offline; access, provider and allowance questions are asked to <git-author> locally.
 7. Return pushes result commits on the same branch and `RETURNED`.
-   jd-laptop posts Review, Request changes and Apply.
-   Apply fetches the branch and merges it in jd's checkout: a clean fast-forward or merge completes the task, releases the pipeline hold (D12) and records `APPLIED`; a conflict stops with Git's own conflict state and says so, and the phone only offers Apply when the merge is clean (Q9).
+   operator-laptop posts Review, Request changes and Apply.
+   Apply fetches the branch and merges it in operator's checkout: a clean fast-forward or merge completes the task, releases the pipeline hold (D12) and records `APPLIED`; a conflict stops with Git's own conflict state and says so, and the phone only offers Apply when the merge is clean (Q9).
 8. Request changes opens a new epoch and a fresh offer.
 
 ### 5.5 Offline and failure cases
 
 | Case | What people see |
 | --- | --- |
-| Yousef taps a card from jd's bot while jd-laptop is online | Receipt toast at once, result message a few seconds later, exactly as personal control today. |
-| Yousef taps while jd-laptop is offline under about 2.5 minutes | The tap is delivered when jd-laptop returns and applied if the action has not expired. |
-| Yousef taps while jd-laptop is offline longer | Telegram drops the uncollected tap (already accepted, commit 800fb9a). On return the workstation renews the open card's buttons with "Buttons renewed after this workstation was offline. Tap again if you already did." |
+| <git-author> taps a card from operator's bot while operator-laptop is online | Receipt toast at once, result message a few seconds later, exactly as personal control today. |
+| <git-author> taps while operator-laptop is offline under about 2.5 minutes | The tap is delivered when operator-laptop returns and applied if the action has not expired. |
+| <git-author> taps while operator-laptop is offline longer | Telegram drops the uncollected tap (already accepted, commit 800fb9a). On return the workstation renews the open card's buttons with "Buttons renewed after this workstation was offline. Tap again if you already did." |
 | Either person writes a reply while the other workstation is offline | Messages wait in Telegram for 24 hours and are processed on return. |
 | A tap arrives after its 10-minute action expired | Rejected with "Not applied: this action expired". No card is renewed automatically; the requester sends the item command again for a fresh action. |
-| Yousef's workstation is off when the offer is published | jd sees "Waiting for yousef-desktop"; the Accept card appears when it returns. |
-| jd-laptop is off when Yousef returns work | The completion report is visible at once; Apply waits for jd-laptop (D01). |
+| <git-author>'s workstation is off when the offer is published | operator sees "Waiting for receiver-workstation"; the Accept card appears when it returns. |
+| operator-laptop is off when <git-author> returns work | The completion report is visible at once; Apply waits for operator-laptop (D01). |
 | The repository is unreachable | Threads, grants and personal control are unaffected, because they never touch it. Handover steps retry and say what they are waiting for. |
 | One person's token is revoked in BotFather | Only that person's bot stops; the other person's control is unaffected. |
 | The group is upgraded to a supergroup | Telegram sends a migration message carrying the new chat id. Each workstation rewrites its roster copy, group actors, thread rows and anchor pointers to the new id before processing anything else, and the panel says the group id changed. Until a workstation has done that, it treats the old id as unusable rather than posting into a dead chat. |
+
+The expiry rows above describe ordinary Team item/grant cards. Persistent
+handover offer and Return-work actions are the implemented exception: while the
+shared decision is still open, their existing local refs renew in place and the
+bot does not post another reminder message.
 
 ## 6. Protocol and data additions
 
@@ -356,7 +371,7 @@ Sized for two people who trust each other and share a private repository.
 
 | Asset or action | Protection | Deliberately not defended |
 | --- | --- | --- |
-| Telegram credentials | Never shared. Each person's token stays in their own `.env`, redacted in logs and covered by the token sweep. | A person losing control of their own machine. |
+| Telegram credentials | Never shared. Each person's token stays in their owner-only local credential file (or their own `.env` on an existing deployment), redacted in logs and covered by the token sweep. | A person losing control of their own machine. |
 | Private chats | Private by construction: each person's chat is with their own bot, and the other bot cannot read it. | Nothing. This is now a real boundary rather than a convention. |
 | Join codes | Single use through the roster's used invite ids, 24-hour expiry, no credential inside. | Someone who holds the code can add themselves to the roster until it expires or is used; they still need repository access to do anything. |
 | Actions on a workstation | Owner-local action records, actor check against the Telegram user id from that person's own pairing, grant check at tap time, revision, expiry, message binding, idempotent receipts. | A teammate misusing a capability they were granted. |
@@ -388,11 +403,11 @@ Every rule in section 4.4, every grant rule in 5.3 and every failure row in 5.5 
 
 | ID | Who and time | Steps | Pass |
 | --- | --- | --- | --- |
-| LT-1 Two bots in a group | jd, 5 min, the test bot plus a second throwaway bot | Record `getMe.can_read_all_group_messages` for both bots. Put both in a group; record `getChatMember` rights for both, pin a message, and create and use a one-member `createChatInviteLink`. Send `/status`, `/status@one-bot`, a reply to each bot's own message from someone other than its owner, and discussion replying to nothing. | Records exactly which of these each bot receives. Recorded 2026-09-16: both bots were administrators; both reported `can_read_all_group_messages=false`; plain commands, addressed commands, replies to either bot message and unanchored discussion reached both bots. The fake must model administrator delivery this broadly; routing correctness comes from ownership filtering, not Telegram privacy mode. |
-| LT-3 Join | jd and Yousef, 10 min, real bots | Yousef's own L1 setup, then the join code, then jd adds their bot and sends the invite link. | Yousef's total setup recorded by stopwatch; both panels show the team; the roster has both people and both bots. |
-| LT-4 Thread and grant | jd and Yousef, 5 min, throwaway workspace with the fake agent | jd starts a thread; Yousef `/resume` is refused; jd grants answer and resume; Yousef answers and resumes from their phone. | Exactly one run on jd-laptop; phone look check of the anchor card, access message and toasts on both phones. |
-| LG-1 Repository refs | jd, 2 min, script | Push, fetch and compare-and-swap `refs/aw/*`; attempt a non-fast-forward; push an `aw/handover/*` branch. | Custom refs accepted, conflict rejected, no Actions run triggered. Prior art suggests this passes; if refused, fall back to `aw-*` branches with `[skip ci]`. |
-| LT-5 Handover smoke (optional) | jd and Yousef, 10 min | Section 5.4 with the fake agent across the two real machines. | Result merged on jd-laptop once. |
+| LT-1 Two bots in a group | operator, 5 min, the test bot plus a second throwaway bot | Record `getMe.can_read_all_group_messages` for both bots. Put both in a group; record `getChatMember` rights for both, pin a message, and create and use a one-member `createChatInviteLink`. Send `/status`, `/status@one-bot`, a reply to each bot's own message from someone other than its owner, and discussion replying to nothing. | Records exactly which of these each bot receives. Recorded 2026-09-16: both bots were administrators; both reported `can_read_all_group_messages=false`; plain commands, addressed commands, replies to either bot message and unanchored discussion reached both bots. The fake must model administrator delivery this broadly; routing correctness comes from ownership filtering, not Telegram privacy mode. |
+| LT-3 Join | operator and <git-author>, 10 min, real bots | <git-author>'s own L1 setup, then the join code, then operator adds their bot and sends the invite link. | <git-author>'s total setup recorded by stopwatch; both panels show the team; the roster has both people and both bots. |
+| LT-4 Thread and grant | operator and <git-author>, 5 min, throwaway workspace with the fake agent | operator starts a thread; <git-author> `/resume` is refused; operator grants answer and resume; <git-author> answers and resumes from their phone. | Exactly one run on operator-laptop; phone look check of the anchor card, access message and toasts on both phones. |
+| LG-1 Repository refs | operator, 2 min, script | Push, fetch and compare-and-swap `refs/aw/*`; attempt a non-fast-forward; push an `aw/handover/*` branch. | Custom refs accepted, conflict rejected, no Actions run triggered. Prior art suggests this passes; if refused, fall back to `aw-*` branches with `[skip ci]`. |
+| LT-5 Handover smoke (optional) | operator and <git-author>, 10 min | Section 5.4 with the fake agent across the two real machines. | Result merged on operator-laptop once. |
 
 These become H-TM rows in `human-verification.md` as their slices land.
 
@@ -403,12 +418,12 @@ Release points: after TM3, item threads and grants can be enabled with no gate; 
 
 ## 10. Open items
 
-1. LT-1 recorded that administrator bots in the group both receive plain commands, addressed commands, replies to either bot's message and unanchored discussion, despite `can_read_all_group_messages=false`. jd decided on 2026-09-16 to model this administrator delivery in the fake and keep correctness in the local ownership filters.
+1. LT-1 recorded that administrator bots in the group both receive plain commands, addressed commands, replies to either bot's message and unanchored discussion, despite `can_read_all_group_messages=false`. operator decided on 2026-09-16 to model this administrator delivery in the fake and keep correctness in the local ownership filters.
 2. Four new default values, proposed and not yet recorded: team taps expire after 10 minutes; a grant lasts until revoked, the thread closes or a handover starts; a join code is single use with a 24-hour expiry; the item id is short and opaque, and the group tag built from it follows C1's tag rules.
    The proposal's 128-character topic name cap is gone with topics.
-3. G01 for handover: whether Yousef running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. Recorded before TM4 starts.
+3. G01 for handover: whether <git-author> running a handed-over task on their own login and subscription, after personally accepting it, counts as ordinary use. Recorded before TM4 starts.
 4. Handover detail (section 5.4) is written when TM4 starts, not before.
 5. Migration numbers 24 to 26 assume nothing else lands first; the L1 defects that go first must be checked for a migration.
 6. Topics stay unavailable (C0). If a bot and group ever qualify, item threads can move onto real topics through the same registry seam, and this design does not need to change to allow it.
 7. LG-1 runs before TM1, not with handover: the one-winner claim depends on how the host treats a non-fast-forward push of the ref shape we choose, and the fallback to an ordinary branch is a different implementation, not a different setting.
-8. Handover is symmetric by construction, but only the jd to Yousef direction is in the scenario list. If the reverse ever matters, it needs its own row rather than an assumption.
+8. Handover is symmetric by construction, but only the operator to <git-author> direction is in the scenario list. If the reverse ever matters, it needs its own row rather than an assumption.

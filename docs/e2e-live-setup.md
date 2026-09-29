@@ -19,7 +19,7 @@ The harness refuses to run if other users can read the file.
 | `E2E_TELEGRAM_API_HASH` | You | Telegram API hash for the user client. |
 | `E2E_TELEGRAM_USER_SESSION` | Sign-in tool | Session of the automated client. It gives full access to your Telegram account while it exists. |
 | `E2E_TELEGRAM_TEST_BOT_ID`, `E2E_TELEGRAM_TEST_BOT_USERNAME` | Sign-in tool | Identity of the test bot, used by the guard. |
-| `E2E_TELEGRAM_OPERATOR_BOT_ID` | Sign-in tool | Id (not token) of your own app's bot, read once from the repository `.env`, so the harness can refuse it. |
+| `E2E_TELEGRAM_OPERATOR_BOT_ID` | You or the sign-in tool | Numeric id (not token) of your normal app bot, so the harness can refuse it. The sign-in tool can derive it only from a legacy repository `.env` token; enter it yourself when normal setup used the Agents UI credential. |
 | `E2E_TELEGRAM_OPERATOR_USER_ID` | Sign-in tool | Your Telegram user id; the phone driver checks the session belongs to it. |
 
 The harness never prints these values, and every run ends with a token sweep that fails if the bot token, API hash or session appears in any log, trace, artifact or database copy.
@@ -44,6 +44,13 @@ The harness never prints these values, and every run ends with a token sweep tha
    E2E_TELEGRAM_API_HASH=<api_hash>
    EOF
    ```
+
+   If the normal app has a bot configured through **Agents → Set up Telegram**,
+   also add its numeric bot id as `E2E_TELEGRAM_OPERATOR_BOT_ID`. The login tool
+   deliberately cannot read the owner-only UI credential file and otherwise
+   leaves this guard value empty. The numeric id is visible in the app's
+   Telegram status response or is the digits before `:` in that bot's token;
+   never put the token itself in the harness field.
 
 4. Sign in the automated client:
 

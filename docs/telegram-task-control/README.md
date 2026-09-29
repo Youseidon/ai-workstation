@@ -1,31 +1,81 @@
-# Telegram task control and teammate takeover
+# Telegram task-control documentation
 
-Design baseline: 2026-09-13. Revised 2026-09-14 to separate personal and
-teammate enablement (D16). Status: local answer-control foundation implemented
-against a fake Telegram transport; no live bot exists yet. Personal live
-Telegram control is scheduled as milestone L1 and is not blocked by any
-unresolved gate. Teammate transfer remains unimplemented and gated. See
-[implementation status](implementation.md#0-current-implementation-status).
+Current status: personal Telegram control, two-person Team item threads and
+Git-backed handover are implemented behind default-off settings. The current UI
+covers personal bot setup, Team create/join, handover preparation and publish,
+receiver Accept/Decline/Return, requester Withdraw/Review/Apply/Request changes,
+repository readiness and persistent local handover reminders. Dated reports and
+plans below describe the tree at the time they were written; they are not setup
+instructions or proof of the current checkout.
 
-This enhancement lets a person control their own workstation tasks through
-Telegram and ask a teammate to continue a task on the teammate's computer.
-The first audience is one trusted internal team. Personal subscription allowance
-is the requested execution source; availability of a supported delegation method
-is a release gate, not an established capability.
+Start with the [Team and Telegram user guide](../team-and-telegram-user-guide.md).
+It is the canonical normal-user setup and operating guide. Existing deployments
+may still use an environment token, but ordinary users should use **Agents → Set
+up Telegram**.
 
-## Read in this order
+## Current references
 
-1. This document: scope, decisions, architecture and boundaries.
-2. [User flows](user-flows.md): exact choices, waiting behaviour and exceptions.
-3. [Protocol](protocol.md): identity, records, concurrency and runtime contracts.
-4. [Implementation and acceptance](implementation.md): code mapping, rollout,
-   failure tests and release gates.
-5. [Executable engineering plan](engineering-plan.md): baseline classification,
-   traceability and dependency-ordered milestones.
-6. [M1 human verification checklist](human-verification.md): reviewer-facing
-   fake-service test cases and stop conditions.
-7. [Engineering standards](../engineering-standards.md): repository code-change
-   standards and execution contract.
+| Document | Classification | Use it for |
+| --- | --- | --- |
+| [Team and Telegram user guide](../team-and-telegram-user-guide.md) | Current user documentation | Normal setup, Team membership, handover, recovery and security limits. |
+| [User flows](user-flows.md) | Design/protocol reference | Exact choices, waiting behaviour and exceptional flows. UI wording in the user guide and current code wins if illustrative text has drifted. |
+| [Runtime protocol](protocol.md) | Design/protocol reference | Identity, records, concurrency, authority and recovery invariants. |
+| [Teammate design](teammate-design.md) | Design/protocol reference | One bot per workstation, private group and shared-Git architecture. |
+| [Handover rules](handover-rules.md) | Design/protocol reference | Handover state rules and failure cases; rows marked Proposed remain proposals. |
+| [Human verification](human-verification.md) | Historical operator/test checklist | Manual cases and the automated/live evidence boundary, with results scoped to their recorded dates. |
+| [Engineering standards](../engineering-standards.md) | Current developer documentation | Repository change and verification rules. |
+| [Live harness setup](../e2e-live-setup.md) | Current operator/test material | Dedicated test bot/client setup only, never normal product setup. |
+
+The scenario tables under [`../e2e-scenarios`](../e2e-scenarios/) and
+[`scenarios/claude-sdk-tools.md`](scenarios/claude-sdk-tools.md) are test and
+protocol material. Their “written before implementation” headers describe test
+design provenance, not current product status.
+
+## Historical implementation evidence
+
+These records are retained because they contain unique test results, security
+decisions, protocol rationale or known limitations. Read claims at their stated
+date; do not treat an old open-item list as the current backlog. Public copies
+replace personal names, account and chat identifiers, repository locations and
+machine-specific paths with explicit placeholders.
+
+| Document | Classification |
+| --- | --- |
+| [Implementation plan and release evidence](implementation.md) | Historical implementation ledger with a current status notice. |
+| [Executable engineering plan](engineering-plan.md) | Historical plan and traceability record; completed implementation supersedes its future-tense steps. |
+| [Pilot bug log](pilot-bug-log.md), [gap register](team-gap-register.md), [forward plan](team-forward-plan.md), [task cards](team-plan-cards.md) | Historical defect/plan evidence. |
+| [Team completion report](team-completion-report.md), [burn-down tracker](team-burndown-tracker.md), [Team track tracker](team-track-tracker.md) | Historical completion and execution evidence. |
+| [Team audits 1](team-track-audit-1.md), [2](team-track-audit-2.md), [3](team-track-audit-3.md) and [4](team-track-audit-4.md) | Dated audit evidence; pass/fail statements apply only to the audited commits. |
+| [2026-09-28 Telegram execution report](../telegram-test-execution-2026-09-28.md) | Dated mixed automated/live test report with unresolved findings. |
+| [2026-09-29 two-workstation round trip](../live-two-workstation-roundtrip-20260929.md) | Dated partial live evidence; it explicitly does not prove durable Telegram delivery/actions. |
+
+## Archived in place
+
+The following files are obsolete as instructions or superseded as plans, but
+are retained in place because other evidence links to them or they preserve
+unique reasoning. Their prominent historical notices are authoritative.
+
+- [Solo join check](solo-team-join-check.md) and [solo thread/grant check](solo-team-thread-grant-check.md): records of a specific one-machine rig, not current setup.
+- [Case 11 rerun](case11-rerun-script.md) and [V5 phone script](v5-phone-script.md): one-off operator scripts.
+- [Team track dev brief](team-track-dev-brief.md) and [Team burn-down dev brief](team-burndown-dev-brief.md): completed orchestration briefs.
+- [Reconcile](team-reconcile-handover.md), [M9](team-m9-handover.md), [V4](team-v4-handover.md), [V5](team-v5-handover.md), [V6](team-v6-handover.md) and [V7](team-v7-handover.md) handoff notes: session snapshots superseded by later implementation and evidence.
+- [M16 design](m16-design.md): implemented design record.
+- [Original teammate proposal](teammate-design-proposal.md) and [review notes](teammate-design-review-notes.md): superseded design history.
+
+No historical document is evidence for a later commit unless a current report
+explicitly re-ran its check. The current verifier for that instrumented live rig
+is `scripts/verify-live-two-workstation-roundtrip.mjs`; its stricter requirements
+supersede the earlier broad PASS. The runner and verifier require the target
+repository, Telegram group and bot usernames through `TEAM_HANDOVER_*`
+environment variables; they are still operator tools, not normal user commands.
+
+## Design baseline
+
+This design lets a person control their own workstation tasks through Telegram
+and ask a trusted teammate to continue a task on the teammate's computer. The
+UI, backend, database, agent execution and credentials remain local. Telegram
+carries human coordination; the private Git remote carries transferable work
+and shared control records.
 
 MUST and MUST NOT are requirements. Defaults are concrete implementation choices
 selected to complete the design, not claims that the user supplied every value.

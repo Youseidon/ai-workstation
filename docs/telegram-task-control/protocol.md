@@ -105,7 +105,7 @@ specification as the separated form a later release may need; nothing in TM4
 asserts them, and the immutability rule below applies to them if they are ever
 built.
 
-**Amended 2026-09-21 by jd's ruling**, which settled a disagreement this section
+**Amended 2026-09-21 by operator's ruling**, which settled a disagreement this section
 had with [teammate-design.md](teammate-design.md), [handover-rules.md](handover-rules.md),
 the H02 task row and the G04 record. This section previously put every record
 under `refs/heads/` and keyed them to `<task-id>`, which predates the item
@@ -260,6 +260,13 @@ code or trusted authorization fields. Resolve it to a stored action and validate
 actor, chat/topic/message, bot, revision, epoch and expiry. Answer the callback
 promptly with receipt/rejection; report actual application separately. Do not
 interpret a repeated callback as a new command.
+
+Expiry does not erase an undecided shared handover. Offer and Return-work cards
+are persistent local reminders: while the same epoch still permits the decision,
+their existing local action references may be extended in place without posting
+another Telegram message. A stale tap is still rejected, and a durable Accept,
+Decline, Return, Withdraw or Apply outcome is never reopened. Ordinary item/grant
+actions are not persistent and must be requested again after expiry.
 
 Personal commands commit locally. Shared decisions commit through the Git protocol
 before being described as accepted/applied. A Telegram callback can be received
