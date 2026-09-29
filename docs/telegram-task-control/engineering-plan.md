@@ -1,5 +1,11 @@
 # Executable engineering plan
 
+> **Historical plan and traceability record.** Implementation has passed many of
+> the future-tense steps below. The baseline table has been corrected to the
+> current checkout; dated milestone notes remain unchanged as historical
+> evidence. Use the [user guide](../team-and-telegram-user-guide.md), not this
+> plan, for setup.
+
 Parent: [Design baseline](README.md). Contracts: [User flows](user-flows.md),
 [Protocol](protocol.md) and [Implementation evidence](implementation.md).
 Repository standards: [Engineering standards](../engineering-standards.md).
@@ -21,20 +27,20 @@ current source and tests support the claimed behaviour.
 | Local handoff brief/successor workflow | Partially implemented | `handoffCoordinator.ts` can run an LLM handoff and start a local successor. It is not Task Transfer: it lacks factual no-LLM package capture, shared Git records, named teammate acceptance and return/apply review. |
 | Workspace/run concurrency | Implemented (M2) | Migration 19 adds `workspace_start_intent` with a unique active index on effective directory; `reserveStartIntent` runs before awaited provider detection and is shared by all start paths. Verified by aliased-path race tests. |
 | Startup recovery | Implemented for ownership (M2/M2d); process proof still absent | `reconcileStartIntentsForRestart` classifies unreleased intents as `START_UNKNOWN`, recovery refuses them, and `classifyStartUnknown` lets an operator record known-stopped/no-spawn to release the gate. The app still cannot itself prove an OS subprocess stopped; that remains an operator confirmation, not a machine fact. |
-| Telegram enrollment, polling, inbox/outbox and rendering | L1 implemented; verified on real Telegram by the harness (T3) and the operator's phone look check, 2026-09-16 | L1 adds the real Bot API client, token storage, long-poll runtime with backoff, pairing with local confirmation and the Live Telegram panel over the M1 contracts. The full T3 run of 2026-09-15 passed against a dedicated test bot and the phone look check passed on rendering (implementation.md, L1 T3 close-out). Topics and teammate use are not implemented. |
-| Remote actor authorization and command receipts | L1 implemented for personal control; verified by T3 | Real callback queries are answered and receipted idempotently for Save answer, Answer and resume and Resume with saved answer, including expired and superseded actions. Shared-command publication is not implemented. |
+| Telegram enrollment, polling, inbox/outbox and rendering | Implemented for personal and Team use | The real Bot API client, UI-managed local credential, long-poll runtime, durable delivery, pairing and Live Telegram panel are wired. Team uses a private administrator group with item anchors; forum topics are not guaranteed. Dated T3 evidence remains in the implementation ledger and execution report. |
+| Remote actor authorization and command receipts | Implemented for personal and Team actions | Callback queries are actor-, revision-, expiry- and message-bound and receipted idempotently. Team grants and handover decisions use the same validated action model. Persistent handover offer/return actions can renew locally in place while ordinary item-grant actions require reissue after expiry. |
 | Quota advisor | Implemented (M2/M2b) | `quotaAdvisor.ts` evaluates real `collectAccountUsage()` telemetry behind `/api/providers/usage` with freshness, window/reset dedupe and advisory-only choices; rendered in the Agents UI. It never pauses, switches provider or spends. The L3 `/status` and `/quota` views deliver it to the phone; the `/status` quota headline passed T3 on 2026-09-15 (H-L3-40). |
-| Shared Git control history and package/result refs | Not implemented | No administrative checkout, roster validation, signed control branches, package manifests, result application or force-rewrite detection exist. |
-| Named teammate transfer | Not implemented | No offer, claim, receiver-local policy comparison, isolated checkout, return/apply or further-handoff lifecycle is implemented. |
+| Shared Git control history and package/result refs | Implemented for the trusted-team first release | The remote carries `refs/aw/team`, per-item control refs and handover/result branches. Capture, fetch, return and apply are implemented with compare-and-swap control updates. This is not a claim of signed-commit enforcement or hostile-member isolation. |
+| Teammate handover | Implemented behind default-off Team and handover settings | An open offer can be prepared/published, accepted or declined, run in a receiver worktree, returned, reviewed, applied or sent back for changes. It is an open call to the eligible Team rather than a named-recipient transfer. |
 | Personal-subscription teammate execution | **Recorded 2026-09-20; no longer blocking** | Gate G01 asked for provider-supported delegation and quota/billing evidence. The record in [implementation.md](implementation.md) section 6b finds that the handover as designed delegates nothing: the receiver accepts the task themselves and resumes it under their own login on their own machine, no credential is shared, and each person's usage lands on their own account. It holds only while acceptance stays an explicit human action and credentials are never shared. G02 still gates enabling handover. |
-| Provider/runtime secret isolation for unattended team execution | Blocked by external evidence | Gate G02 requires tested isolation for provider, bot, Git and signing credentials. Existing same-user file modes or prompt rules are insufficient evidence. |
-| Remote integrity and governance | Blocked by external evidence | Gates G03-G04 require Git host policy, signing verification, roster authority, data audience, storage, retention and owner decisions. |
+| Provider/runtime secret isolation for team execution | Known limitation; default off | Each workstation keeps its own credentials, and bot tokens are not passed to agents. Same-user processes and accepted repository content remain inside the trust boundary; the product is not a hostile-teammate sandbox. |
+| Remote integrity and governance | Partially implemented, operator-owned | Compare-and-swap refs and local validation provide ordering, but repository access policy, retention and team membership governance remain operator responsibilities. |
 | CI workflows | Not implemented in this checkout | No `.github` directory exists locally. Mandatory checks must therefore be documented and run manually until CI is added. |
 
-Observed discrepancies:
+Historical discrepancies at the time this plan was opened:
 
-- The README labels L1 personal Telegram control as implemented and off by
-  default, and teammate takeover and topics as planned, not available.
+- The README then labelled teammate takeover as planned rather than available;
+  that contradiction has since been corrected.
 - `implementation.md` says all server tests and frontend checks passed on
   2026-09-13, but this plan did not rerun DB-backed tests because current tests
   load the repository database path. Treat that as prior evidence to preserve,
@@ -409,16 +415,16 @@ workstations, package signing and device keys, and any hosted relay.
 Gates: TM0 to TM3 need none, because nothing runs on another person's
 workstation or subscription without that person's own workstation applying it
 (D16). TM4 needs the G01 record and G02 as revised in the design; G03 applies to
-the control record; G04 is jd's one-time governance note.
+the control record; G04 is operator's one-time governance note.
 
 #### Code facts this track is built on (checked 2026-09-16)
 
 - The bot record id is `telegram-<numeric bot id>`, so two people's bots are
   distinct records everywhere and `telegram_inbox(bot_id, update_id)` needs no
   change.
-- The token is read from `TELEGRAM_BOT_TOKEN` at boot and needs a restart, which
-  is exactly how each person sets up their own bot. No reloadable credential is
-  needed.
+- Existing deployments may still provide `TELEGRAM_BOT_TOKEN`, but the
+  Agents-page setup flow now validates and writes an owner-only local credential
+  and reloads it without a restart. Each person still uses their own bot.
 - `telegram_thread` (migration 23) already holds subjects, the anchor and the
   ANCHOR_GONE recovery; item threads add a subject kind and reuse the rest.
 - `task_control_actor` is unique on `(transport, transport_user_id, chat_id,
@@ -436,7 +442,7 @@ the control record; G04 is jd's one-time governance note.
 | Slice | Builds | Proven by | Done when |
 | --- | --- | --- | --- |
 | TM0 Harness | Two environments on offset ports sharing one fake Telegram with two bots and one bare repository; group membership and admin rights, invite links, LT-1 administrator-delivery rules for group messages, `network.cutGit()` per environment. | Harness self-tests; LT-1 and LG-1 recorded first, because both decide behaviour the fake must copy. | Any team scenario can be written, and the fake's delivery rules match LT-1. |
-| TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, migration 24 (`team_roster`, group actor sentinel and unique index), the one manual "ask jd to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4, TM-T0-5 (migration 24); TM-T1-1; then LT-3. | Two people, two bots and one group exist, with jd's workstation offline for all but the last step. |
+| TM1 Team and roster | Create team, join code carrying no credential, `refs/aw/team` with compare-and-swap, roster cache, migration 24 (`team_roster`, group actor sentinel and unique index), the one manual "ask operator to add your bot" step, team status in the panel. | TM-T0-3, TM-T0-4, TM-T0-5 (migration 24); TM-T1-1; then LT-3. | Two people, two bots and one group exist, with operator's workstation offline for all but the last step. |
 | TM2 Item threads | Migration 25 (`telegram_thread` rebuilt to allow `item`, `item_link`), team-wide item ids, item subjects in the thread registry, anchor lifecycle in the group, `team` summary audience, read-only views, and the routing rules over LT-1's broad administrator delivery: owner answers, others stay silent, addressed-to-another ignored, unknown item answered once by the typer's own workstation, anchor and unanchored discussion dropped, no "not a task question" in the group. | TM-T0-1, TM-T0-5 (migration 25); TM-T1-2, TM-T1-3, TM-T1-6, TM-T1-7; L1 and L3 suites unchanged. | Both people can discuss a shared item, and personal control is provably untouched. |
 | TM3 Grants | Migration 26 (action check widened by table rebuild, `item_grant`), grant and revoke cards, the access message, `/context`, `/answer`, `/resume`, teammate removal. | TM-T0-2, TM-T0-5 (migration 26); TM-T1-4, TM-T1-5; then LT-4. | R-B is usable by two people on real phones. This is the first release point. |
 | TM4 Handover | Snapshot commit through a temporary index, branch `aw/handover/<item>`, the control record, offer, accept and claim, worktree run, requirement questions across workstations, return, and apply by ordinary merge. Two commits: capture through run, then return and apply. | TM-T0-6, TM-T0-7; TM-T1-H1 to TM-T1-H3; LT-5 optional. | R-A works end to end with the fake agent, behind the handover capability. G01 was recorded on 2026-09-20; G02 is what remains before the capability may be enabled. |
@@ -455,7 +461,7 @@ T0, seven scenarios, each table-driven rather than split per case:
 | TM-T0-6 | **The item control record and its lifecycle**: protocol.md section 5's table built rather than summarized, single-parent writes, the remote's non-fast-forward rejection as the compare-and-swap, the simultaneous-accept race at the record tier, uncertain-push resolution by command id, stable error codes on an out-of-table transition, epoch advance, offer expiry, and `item_link.control_head` written and read back across a restart. |
 | TM-T0-7 | **Capture, preview and publish**: HEAD, index and worktree untouched, untracked included, ignored excluded, escaping symlink, submodule and LFS refused, the closed-item and completed-during-capture refusals, the secret warning taking its own confirmation, and the branch pushed and verified before the record is published. |
 
-**Amended 2026-09-21 by jd's ruling.** TM-T0-6 previously read "Snapshot
+**Amended 2026-09-21 by operator's ruling.** TM-T0-6 previously read "Snapshot
 capture" and TM-T0-7 "Apply", which contradicted the H02 and H03 rows of
 [team-burndown-dev-brief.md](team-burndown-dev-brief.md) section 5: H02 is the
 control record and migration and says "TM-T0-6 passes", H03 is capture and offer
@@ -472,16 +478,16 @@ T1, seven for R-B plus three for handover, all on two environments:
 
 | ID | Given, when, then |
 | --- | --- |
-| TM-T1-1 | Yousef joins with jd-laptop stopped: roster gains their person, bot and workstation, the manual bot-add step is shown, both panels agree. |
+| TM-T1-1 | <git-author> joins with operator-laptop stopped: roster gains their person, bot and workstation, the manual bot-add step is shown, both panels agree. |
 | TM-T1-2 | Team enabled on both: each person's private-chat question and tap work on their own machine, and neither inbox ever holds the other's private-chat update. |
 | TM-T1-3 | Group routing live: with both administrator bots receiving group updates, a command on an anchor is answered once by the owner, an unknown item gets one error from the typer's workstation, anchor and unanchored discussion get nothing, a non-roster member gets nothing. |
-| TM-T1-4 | jd grants answer and resume; Yousef answers and resumes: exactly one run on jd-laptop, and the card names jd's allowance. |
-| TM-T1-5 | Revoke while Yousef's card is open, and a tap after the action expired with jd-laptop stopped in between: both rejected, no run, and a fresh card requires Yousef to issue the command again. |
+| TM-T1-4 | operator grants answer and resume; <git-author> answers and resumes: exactly one run on operator-laptop, and the card names operator's allowance. |
+| TM-T1-5 | Revoke while <git-author>'s card is open, and a tap after the action expired with operator-laptop stopped in between: both rejected, no run, and a fresh card requires <git-author> to issue the command again. |
 | TM-T1-6 | Thread lifecycle: anchor pinned at start, updated and unpinned at completion, grants end, old buttons rejected, reopen posts a new anchor. |
-| TM-T1-7 | Yousef starts a thread on jd's item: request card only, anchor after jd confirms, nothing shared before that. |
-| TM-T1-H1 | Full handover with the fake agent: publish, accept, worktree run, a requirement question answered while jd-laptop is stopped, return, apply, task complete. |
+| TM-T1-7 | <git-author> starts a thread on operator's item: request card only, anchor after operator confirms, nothing shared before that. |
+| TM-T1-H1 | Full handover with the fake agent: publish, accept, worktree run, a requirement question answered while operator-laptop is stopped, return, apply, task complete. |
 | TM-T1-H2 | Receiver offline at publish accepts on return, and a withdraw racing an accept leaves exactly one winner and no orphan run. |
-| TM-T1-H3 | jd's tree diverged: apply refuses to complete, leaves Git's conflict state, and a second apply returns the first receipt. |
+| TM-T1-H3 | operator's tree diverged: apply refuses to complete, leaves Git's conflict state, and a second apply returns the first receipt. |
 
 Real checks, four plus one optional, recorded as H-TM rows in
 [human-verification.md](human-verification.md): LT-1 two bots in a group
@@ -658,8 +664,8 @@ tracker), and a final "publish a release report" step duplicating
 
     Local cleanup (operator's real database):
 
-    - Delete the throwaway workspaces "L1 Telegram test" (its task was left in START_UNKNOWN by a dev-server restart during testing) and "L1 HITL test", and their `/tmp/l1-telegram-test` and `/tmp/l1-hitl-test` directories.
-    - Delete leftover `alias-*` and `ws-*` workspaces pointing at `/tmp/intent-work-*`, created by an earlier test run that did not use an isolated `AGENT_CONSOLE_REPO_ROOT`.
+    - Delete the throwaway workspaces "L1 Telegram test" (its task was left in START_UNKNOWN by a dev-server restart during testing) and "L1 HITL test", and their `${TMPDIR:-/tmp}/l1-telegram-test` and `${TMPDIR:-/tmp}/l1-hitl-test` directories.
+    - Delete leftover `alias-*` and `ws-*` workspaces pointing at `${TMPDIR:-/tmp}/intent-work-*`, created by an earlier test run that did not use an isolated `AGENT_CONSOLE_REPO_ROOT`.
 
     Defects found during L1, to fix or explicitly defer:
 
@@ -721,7 +727,7 @@ tracker), and a final "publish a release report" step duplicating
     Queued follow-ups (status and Stop, Ask the agent, starting from the phone, brief version 2) are planned only after this step.
 
 8. Build the Team track of section 3b, after the step 7a L1 defects are fixed.
-   jd decided the order on 2026-09-16, because TM0 changes the harness ports and
+   operator decided the order on 2026-09-16, because TM0 changes the harness ports and
    fake Telegram those fixes also use. A development agent works from
    [team-track-dev-brief.md](team-track-dev-brief.md), which covers TM0 to TM3.
    Record LT-1 (two bots in a group) and LG-1 (repository refs) first, because

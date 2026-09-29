@@ -1,10 +1,13 @@
 # Audit 3: the F track
 
+> **Historical audit evidence.** Findings apply to the audited tree and date;
+> later fixes do not rewrite this report.
+
 Auditor: a fresh agent with no part in the build, run on 2026-09-25.
 Checklist: section 4 of [team-track-dev-brief.md](team-track-dev-brief.md), unchanged.
 Range: `dc3e9de..main`, where main's tip is `3e21628`.
 Tasks in scope: F00A, F00B, F01, F02, F03, F04, F05, F06, F07, F08, F09, and F10, which was never started.
-Tree: `/home/junaid/aw-audit3`, a detached-HEAD worktree of `/home/junaid/ai-workstation` at `3e21628`, with its own `npm install`.
+Tree: `<user-home>/aw-audit3`, a detached-HEAD worktree of `<user-home>/ai-workstation` at `3e21628`, with its own `npm install`.
 
 Nothing was pushed, no remote ref was written, no T2 or T3 tier was run, no live Telegram credential or paid provider was used, no agent was spawned, nobody was contacted, and no product code, test or fixture was changed.
 The only file this audit writes is this report.
@@ -17,7 +20,7 @@ Nothing found is a live product defect, and every F-track fix this audit could r
 Three of the five failures are record-keeping (D1, D9, A6), one is A2's lint tier, which is entirely upstream's and is a recorded, attributed fact rather than a finding against this work, and one is A1, where five acceptance criteria across F02, F03, F05, F06 and F00B are either unmet or not re-verifiable.
 The detail, and what would close each one, is in the check sections below.
 
-Recorded facts this audit was given and confirmed rather than re-litigated: `git log --merges dc3e9de..main` returns three commits, of which none is a task landing; 29 commits in the range are upstream author Yousef's and belong to no tracker row by design; nothing has ever been pushed, and `origin/main` moved because Yousef pushed to the real remote; `npx eslint` in `web` reports 19 problems, 17 errors and 2 warnings, every error in upstream's own files.
+Recorded facts this audit was given and confirmed rather than re-litigated: `git log --merges dc3e9de..main` returns three commits, of which none is a task landing; 29 commits in the range are upstream author <git-author>'s and belong to no tracker row by design; nothing has ever been pushed, and `origin/main` moved because <git-author> pushed to the real remote; `npx eslint` in `web` reports 19 problems, 17 errors and 2 warnings, every error in upstream's own files.
 
 ## 1. Discipline, D1 to D9
 
@@ -43,25 +46,25 @@ Command: `grep -n '^| F' docs/telegram-task-control/team-burndown-tracker.md` an
 
 F03 to F09 each carry a distinct id and pass.
 Four rows (F00A, F01, F02, F04) share the value `orchestrator`, which both repeats and is not a worker agent id.
-That is authorized: jd's decision of 2026-09-20, recorded in the tracker's decision table and in section 2 of [team-burndown-dev-brief.md](team-burndown-dev-brief.md), splits the work so the orchestrator implements Phase A itself.
+That is authorized: operator's decision of 2026-09-20, recorded in the tracker's decision table and in section 2 of [team-burndown-dev-brief.md](team-burndown-dev-brief.md), splits the work so the orchestrator implements Phase A itself.
 F00A and F04 are outside the letter of that decision, which names F01 and F02, though both rows state their reason in place (F00A a test-only fixture repair found on the baseline, F04 one approved table row).
 F00B's id is `one worker`, which is not an id at all, so its row cannot show that it ran in a fresh context.
 
 The check as written does not hold, and it is recorded as failed rather than softened.
-What would close it: an id in F00B's row, and jd's waiver in writing for the four orchestrator rows.
+What would close it: an id in F00B's row, and operator's waiver in writing for the four orchestrator rows.
 
 ### D2: every task landed from its own branch by fast-forward, and the range is linear. **PASS**
 
 ```
 $ git log --merges --format='%h %an %s' dc3e9de..HEAD
-a641b0c Junaid Reconcile main with origin/main by merge, not rebase
-b855ec2 Yousef Nourizadeh Merge pull request #2 from Youseidon/pipeline-continuation-loop
-fa92586 Yousef Nourizadeh Merge pull request #1 from Youseidon/pipeline-status-model
+a641b0c Requester operator Reconcile main with origin/main by merge, not rebase
+b855ec2 <git-author> Merge pull request #2 from <git-user>/pipeline-continuation-loop
+fa92586 <git-author> Merge pull request #1 from <git-user>/pipeline-status-model
 ```
 
 None of the three is a task landing.
-`a641b0c` is the reconcile of `origin/main` into main, done by the orchestrator on jd's instruction of 2026-09-22 and recorded in tracker row R1.
-The other two are Yousef's own pull-request merges, which arrived inside his 29 commits.
+`a641b0c` is the reconcile of `origin/main` into main, done by the orchestrator on operator's instruction of 2026-09-22 and recorded in tracker row R1.
+The other two are <git-author>'s own pull-request merges, which arrived inside his 29 commits.
 
 Over the F track's own window the history is strictly linear:
 
@@ -85,7 +88,7 @@ $ git rev-list --left-right --count origin/main...HEAD
 ```
 
 `origin/main` is not the `44ad588` recorded at the top of the tracker, so the check as literally worded does not hold.
-The cause is not a push from here: `4fd0e65` is Yousef's own commit of 2026-09-18, and the ref moved when a worker ran a `git fetch`, which is a remote read.
+The cause is not a push from here: `4fd0e65` is <git-author>'s own commit of 2026-09-18, and the ref moved when a worker ran a `git fetch`, which is a remote read.
 The substantive half holds exactly: no commit of ours is reachable from any remote ref, and main is 365 ahead and 0 behind.
 The tracker recorded this on 2026-09-21 and asked that audit 3 use the honest form of the check, which is what is done here.
 
@@ -109,14 +112,14 @@ F07's `ac42b6d` also edits `handover-rules.md` and the brief's H02 row, which is
 
 Every subject in the F window is imperative (`Seed`, `Assert`, `Render`, `Make`, `Stop`, `Reproduce`, `Refuse`, `Rewrite`, `Repair`, `Keep`, `Issue`, `Pin`, `Compare`, `Bound`, `Retire`, `Carry`, `Name`, `Say`, `Read`, `Cut`, `Clear`, `Record`, `Close`, `Mark`, `Log`).
 
-A per-commit sweep for trailers over the whole range finds 15 commits carrying one, and every one of them is Yousef's:
+A per-commit sweep for trailers over the whole range finds 15 commits carrying one, and every one of them is <git-author>'s:
 
 ```
 $ for c in $(git rev-list dc3e9de..HEAD); do ... grep -qi 'co-authored-by' ...; done
-e053719|Youseidon|... || Co-authored-by: Cursor <cursoragent@cursor.com>
-b2f2e33|Youseidon|... || Co-authored-by: Cursor <cursoragent@cursor.com>
-8809a7b|Youseidon|... || Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-(12 more, all Youseidon)
+e053719|<git-user>|... || Co-authored-by: Cursor <cursoragent@cursor.com>
+b2f2e33|<git-user>|... || Co-authored-by: Cursor <cursoragent@cursor.com>
+8809a7b|<git-user>|... || Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+(12 more, all <git-user>)
 ```
 
 No commit of ours carries a co-author line.
@@ -125,9 +128,9 @@ No commit of ours carries a co-author line.
 
 ```
 $ git worktree list
-/home/junaid/ai-workstation  3e21628 [main]
-/home/junaid/aw-audit3       3e21628 (detached HEAD)
-/home/junaid/aw-audit4       3e21628 (detached HEAD)
+<user-home>/ai-workstation  3e21628 [main]
+<user-home>/aw-audit3       3e21628 (detached HEAD)
+<user-home>/aw-audit4       3e21628 (detached HEAD)
 $ git branch --list 'tm/*' 'fix/*' -a
 (no output)
 $ git branch
@@ -138,21 +141,21 @@ $ git branch
 The two extra worktrees are the audit worktrees for audits 3 and 4, not task worktrees.
 No `fix/*` or `tm/*` branch remains.
 
-### D7: the slice's scenario table was committed, and jd's skim recorded, before that slice's first product code commit. **PASS by analogue**
+### D7: the slice's scenario table was committed, and operator's skim recorded, before that slice's first product code commit. **PASS by analogue**
 
 The F track is a defect burn-down, not a progression slice, and it has no scenario table of its own, so the check has no literal subject in this range.
 Its equivalents were all in place before the first F product commit `7cca9cd`:
 [pilot-bug-log.md](pilot-bug-log.md) with B1 to B19 and [team-burndown-dev-brief.md](team-burndown-dev-brief.md) with the task cards both landed on the pilot branch, merged as `dc3e9de`, which is the range's starting commit.
-jd's involvement in the range is recorded as four decisions of 2026-09-20 in the tracker's decision table (the R-B wording, the B6 approach, the wall-clock sweep, the execution model).
+operator's involvement in the range is recorded as four decisions of 2026-09-20 in the tracker's decision table (the R-B wording, the B6 approach, the wall-clock sweep, the execution model).
 
 The one scenario table inside the range, `tm4.md`, belongs to the H track and to audit 4.
 It is worth noting here only because line 66 of it asserts the F track's fixes as load-bearing, including F05's, which section A1 shows has no harness row.
 
-### D8: every jd stop point has jd's answer recorded; no worker contacted jd or spawned an agent. **PASS**
+### D8: every operator stop point has operator's answer recorded; no worker contacted operator or spawned an agent. **PASS**
 
-The burn-down brief marks no F task as a jd stop point in the task tables.
+The burn-down brief marks no F task as a operator stop point in the task tables.
 The four decisions the F track actually needed are recorded with dates in the tracker's decision table, and each is reflected in the work: F04's wording (approved verbatim, landed in `a94da5e`), F09's B6 form (a sentence on the card, landed in `4628ec7`, dedupe untouched), F00B's existence, and the split execution model.
-No row or log entry records a task as `blocked: jd`, and the tracker's log describes the orchestrator, not a worker, taking every question to jd.
+No row or log entry records a task as `blocked: operator`, and the tracker's log describes the orchestrator, not a worker, taking every question to operator.
 This audit contacted nobody and spawned nothing.
 
 ### D9: the tracker agrees with git. **FAIL**
@@ -163,11 +166,11 @@ Mapping verified by `git log --reverse --format='%h|%an|%ad|%s' dc3e9de..HEAD` a
 Three defects, the first two of them the reason for the FAIL:
 
 1. **F04's row names no commit.** Its merged-commits cell reads `` `(with this commit)` ``, a self-reference that stopped resolving as soon as another commit landed.
-   The commit is `a94da5e`, found by `git log -S "Amended by jd on 2026-09-19" -- docs/telegram-task-control/teammate-design.md`.
+   The commit is `a94da5e`, found by `git log -S "Amended by operator on 2026-09-19" -- docs/telegram-task-control/teammate-design.md`.
    D9 requires a `done` row to name commits that exist on main; this row names none.
 2. **Seventeen commits of ours in the F window belong to no row.** They are the G01, G02 and G04 gate and handover-rules documents: `4bfd183`, `40366b2`, `3eb9b69`, `0cd9651`, `0547644`, `6ef7378`, `6303e01`, `744ce79`, `86fab96`, `d7273fa`, `53310c7`, `8039fcc`, `cadb207`, `25b64d9`, `a94da5e`, `5554c06`, `bb4121c`.
    They are explained by the brief's G01 row and the decision table, and they are documentation only, but D9's exception covers only the orchestrator's tracker and audit commits, and these are neither.
-3. The 29 upstream commits are Yousef's, were never claimed, and are out of range rather than unexplained.
+3. The 29 upstream commits are <git-author>'s, were never claimed, and are out of range rather than unexplained.
    No commit of ours lacks a row apart from the seventeen above.
    Recorded as given.
 
@@ -201,7 +204,7 @@ It is still an acceptance criterion the track did not meet, and section 3 of thi
 The fifth criterion, *"the UI is checked at both widths"*, cannot be re-verified: the fixture that produced that evidence was not committed.
 Gap register L-4 records exactly this for F03.
 
-**F04. PASS.** `teammate-design.md:63` reads amended to owner-initiated with jd's date, and B15 is closed by decision in the bug log.
+**F04. PASS.** `teammate-design.md:63` reads amended to owner-initiated with operator's date, and B15 is closed by decision in the bug log.
 Landed in `a94da5e`.
 
 **F05. FAIL on one criterion of three.** The migration signal, the local rewrite, the compare-and-swap republish and the retry are all present and tested: `httpBotApi.ts:72-75` normalizes `migrate_to_chat_id` and `migrate_from_chat_id`, `workspaces.rewriteTeamChatId` moves every local row in one transaction (`workspaces.ts:4194`), `runtime.ts:938` republishes, and `adapter.ts:144` makes the upgrade the exception to anchor retirement.
@@ -293,7 +296,7 @@ $ cd web && npx eslint .
 
 Exact tally by file: `components/pipeline/PipelineBoard.tsx` 9 errors and both warnings; `components/programs/ProgramDraftPanel.tsx` 3 errors; `components/activity/ActivityView.tsx`, `components/pipeline/DefinitionOfDonePanel.tsx`, `components/pipeline/PipelineDashboard.tsx`, `components/pipeline/StatusCatalogPanel.tsx` and `components/pipeline/SuiteFallbackEditor.tsx` one error each.
 The recorded correction this audit was given says every error is under `components/activity/` or `components/pipeline/`; three of the seventeen are in `components/programs/ProgramDraftPanel.tsx`, so that figure needs one word widened.
-It does not change the attribution, which this audit checked per file rather than assuming: `git log --format='%an' -- <file>` gives Youseidon only for `ProgramDraftPanel.tsx` (2 commits) and `PipelineBoard.tsx` (14), and for `ActivityView.tsx` eight Youseidon commits plus one of ours, which is the reconcile merge `a641b0c` itself and not an F task.
+It does not change the attribution, which this audit checked per file rather than assuming: `git log --format='%an' -- <file>` gives <git-user> only for `ProgramDraftPanel.tsx` (2 commits) and `PipelineBoard.tsx` (14), and for `ActivityView.tsx` eight <git-user> commits plus one of ours, which is the reconcile merge `a641b0c` itself and not an F task.
 
 The F track's own web files lint clean:
 
@@ -329,7 +332,7 @@ No F-track scenario is skipped or `fixme`: the full T1 run reports 127 passed wi
 `human-verification.md` carries four H-TM rows, each with a date and an outcome:
 `H-TM-LT1` PASS 2026-09-16 with its four section 4.4 assumptions marked confirmed or disproved;
 `H-TM-LG1` PASS 2026-09-17;
-`H-TM-LT3` deferred by operator instruction 2026-09-17, with an explicit instruction not to mark PASS before the real jd and Yousef run;
+`H-TM-LT3` deferred by operator instruction 2026-09-17, with an explicit instruction not to mark PASS before the real operator and <git-author> run;
 `H-TM-LT4` deferred by operator instruction 2026-09-18, on the same terms.
 
 No new real check fell due inside the F track.
@@ -364,9 +367,9 @@ Nothing in the burn-down brief cancels A6, and section 8 of that brief still req
 
 What would close it: one F-track entry in `implementation.md` with the commands and the counts this audit records in A2 and A3.
 
-### A7: any design fact a real check disproved is corrected in the design, the plan and the fake, with jd's approval recorded. **PASS**
+### A7: any design fact a real check disproved is corrected in the design, the plan and the fake, with operator's approval recorded. **PASS**
 
-The F track's one design-level correction of this kind is F04, and it is complete: the solo pilot disproved R-B's teammate-initiated direction (a teammate can never learn the owner's numeric prompt id, B15), `teammate-design.md:63` now reads owner-initiated and names jd's amendment date, B15 is closed as resolved by decision, and the tracker's decision table records jd approving the wording verbatim on 2026-09-20.
+The F track's one design-level correction of this kind is F04, and it is complete: the solo pilot disproved R-B's teammate-initiated direction (a teammate can never learn the owner's numeric prompt id, B15), `teammate-design.md:63` now reads owner-initiated and names operator's amendment date, B15 is closed as resolved by decision, and the tracker's decision table records operator approving the wording verbatim on 2026-09-20.
 The plan side follows in the same commit `a94da5e`.
 No fake change was needed, because the correction removes a flow rather than changing transport behaviour.
 
@@ -423,7 +426,7 @@ They are things a later reader would be misled by, found while re-verifying the 
 
 | Step | Command | Result |
 | --- | --- | --- |
-| Install | `npm install` in `/home/junaid/aw-audit3` | exit 0 |
+| Install | `npm install` in `<user-home>/aw-audit3` | exit 0 |
 | Full T1 | `cd e2e && npx playwright test --project=t1` | `127 passed (27.1m)` |
 | Burn-in | `cd e2e && npx playwright test --repeat-each=3 --max-failures=1 --project=t1 tests/t1/tm3-grants.spec.ts` | `9 passed (6.3m)` |
 | Server suite, 3 times, one root | `cd server && AGENT_CONSOLE_DB=<fixed> SETTINGS_FILE=<fixed> node --import tsx --test --test-concurrency=1 test/*.test.ts` | `# pass 618  # fail 0` each time |
@@ -443,13 +446,13 @@ This audit restored the file, so the worktree holds this report and nothing else
 
 ## 5. What blocks what
 
-A FAIL blocks the next task until a new task with its own worker fixes it or jd waives it in writing in the tracker, and the orchestrator reports the result to jd either way.
+A FAIL blocks the next task until a new task with its own worker fixes it or operator waives it in writing in the tracker, and the orchestrator reports the result to operator either way.
 Ranked by what actually matters:
 
 1. **A1's F05 gap** is the only one with product risk behind it, and the risk is coverage rather than a known defect: the supergroup upgrade, one of the two defects the brief calls unrecoverable from inside the app, is asserted only at the T0 runtime tier, and M9 has just finished demonstrating what a tier gap can hide.
    Closing it means teaching the e2e fake to upgrade a group, which is real work and was sized as such in the brief's own table ("F05 large: needs the fake to model a supergroup upgrade mid-test, which no scenario does yet").
 2. **A1's F02 gap**, B17's pinned anchor, needs a decision rather than a fix: either a task owns the unpin, or the gap register records it as accepted with the reason the bug log already gives.
 3. **A6, D9 and D1** are documentation, fixable in one pass: an F-track entry in `implementation.md` with the counts in section 4 above, F04's sha in its row, an id in F00B's row, and either rows or a stated exception for the seventeen gate documentation commits.
-4. **A1's two-width halves** (F03 and F06) are one small rig each, in the shape H06 already committed, or an explicit acceptance from jd that the evidence is unreproducible.
-5. **A2's lint tier** is upstream's and needs jd's call on whether main is allowed to carry `origin/main`'s lint debt.
+4. **A1's two-width halves** (F03 and F06) are one small rig each, in the shape H06 already committed, or an explicit acceptance from operator that the evidence is unreproducible.
+5. **A2's lint tier** is upstream's and needs operator's call on whether main is allowed to carry `origin/main`'s lint debt.
    Nothing in the F track can close it.

@@ -1,6 +1,10 @@
 # Team burndown: completion report
 
-Written 2026-09-26 for jd, by the orchestrator.
+> **Historical completion report.** Verdicts apply to the 2026-09-26 checkpoint.
+> Later work and the current product status are indexed from `README.md`; open
+> items in this report are not automatically still open.
+
+Written 2026-09-26 for operator, by the orchestrator.
 This is the report section 8 of [team-burndown-dev-brief.md](team-burndown-dev-brief.md) asks for.
 
 **Read section 1 before anything else.** Two of section 8's five clauses are **not** met, and one
@@ -14,15 +18,15 @@ of those two cannot be made true by any amount of further work on this track.
 | 2. B1 to B14 and B17 to B19 closed or explicitly deferred with a reason **in the bug log** | **MET, as of 2026-09-26.** It was not met when this report was started |
 | 3. B15 closed by the F04 amendment; B16 stays a pointer to B11 | **MET** |
 | 4. LT-4's re-run rows are recorded | **MET, as of 2026-09-26** |
-| 5. The orchestrator reports the nine listed things to jd | **MET by this document** |
+| 5. The orchestrator reports the nine listed things to operator | **MET by this document** |
 
 Two of these deserve their reasoning stated rather than a tick.
 
 **Clause 1 is the one that matters.**
-Audit 3 and audit 4 both **FAILed**, on the same five check ids, and jd routed both in writing with a
+Audit 3 and audit 4 both **FAILed**, on the same five check ids, and operator routed both in writing with a
 mixture of fixes and waivers.
-The brief's own *rule* offers waiver as an alternative to fixing, and jd exercised it, so the track is
-correctly routed and nothing is outstanding against jd's instructions.
+The brief's own *rule* offers waiver as an alternative to fixing, and operator exercised it, so the track is
+correctly routed and nothing is outstanding against operator's instructions.
 **But the clause says the audits pass, and they did not.**
 A waiver changes what must be done about a failure; it does not convert the failure into a pass.
 This report will not record clause 1 as met, and no later document should either.
@@ -69,7 +73,7 @@ This table is the index; the rows hold the detail.
 | C3 | V | `5c314b8..dfc7865` | Gap C3 |
 | C4 | V | `77ed7ef` | Gap C4 |
 | C5 | V | `12ddb8e..a109232` | Gap C5. **The last build task** |
-| M-13 | V | `395fa16` | Reproduction only, no product change, under jd's prove-first ruling |
+| M-13 | V | `395fa16` | Reproduction only, no product change, under operator's prove-first ruling |
 | R1, M8, M9 | - | see their rows | The reconcile and its consequences |
 
 **C5 and M-13 had no rows in that table until today.**
@@ -92,7 +96,7 @@ first-hand reading, not a figure carried forward.
 | Web | **95 of 95**, 0 fail, exit 0 | Re-run 2026-09-26 |
 | Typecheck, all four workspaces | exit 0 | Re-run 2026-09-26. shared, server, web, e2e |
 | **Full T1 end-to-end** | **140 of 140**, 0 flaky, 26.4 minutes | **NOT re-run for this report.** Run on main by the orchestrator earlier in this track |
-| Web lint | **19 problems, 17 errors, 2 warnings, exit 1** | Re-run 2026-09-26. **L-12, waived by jd 2026-09-25** |
+| Web lint | **19 problems, 17 errors, 2 warnings, exit 1** | Re-run 2026-09-26. **L-12, waived by operator 2026-09-25** |
 | F-track files lint, on their own | exit 0, no output | Re-run 2026-09-26 |
 | `e2e` workspace self-tests | **unmeasured** | **L-13.** In no tier any check names |
 
@@ -106,7 +110,7 @@ and then to 140 for M-13's five rows.
 **The lint tier is red and is reported as red.**
 All 17 errors are in upstream's own files, `origin/main` does not pass lint either, and the F-track files
 lint clean on their own.
-jd waived it on 2026-09-25 and nothing in this track can close it.
+operator waived it on 2026-09-25 and nothing in this track can close it.
 It is named here so that no later reader can infer a green lint tier from this report's silence.
 
 ## 4. Burn-in results
@@ -135,12 +139,12 @@ That condition is the decision's load-bearing half and should travel with it.
 ## 6. Real checks and their outcomes
 
 **LT-4, the two-account Team thread and grant check.**
-September's first pass, cases 0a to 12, was run by jd personally against the real bots on 2026-09-19 and
+September's first pass, cases 0a to 12, was run by operator personally against the real bots on 2026-09-19 and
 2026-09-20, and its rows are in
 [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md)'s Progress table.
 The re-run that clause 4 asks for is in that document's **Re-run for V5** table and is described below.
 
-**V5, 2026-09-26 and 2026-09-27, against the live rig with live Telegram credentials authorized by jd.**
+**V5, 2026-09-26 and 2026-09-27, against the live rig with live Telegram credentials authorized by operator.**
 **V5 is complete**: six cases PASS, one PARTIAL with its cause newly understood, one SKIPPED.
 
 | Case | Outcome |
@@ -148,13 +152,13 @@ The re-run that clause 4 asks for is in that document's **Re-run for V5** table 
 | 0a notifications and remote actions | **PASS** |
 | 0b task waiting on a question | **PASS.** Card posted unprompted, `kind: personal_question`, both buttons, options parsed |
 | 1 roster on both sides | **PASS.** `refs/aw/team` at `4255c668…`, confirmed by `git ls-remote` against GitHub itself, so the round trip is real |
-| 2 open the item thread | **PASS.** `201`, item `awi1_63460787e23fa7d635890376`, anchor message 85, access message 87 reading exactly as specified. **The pin was verified through `getChat`**, not from the local `anchor` column |
+| 2 open the item thread | **PASS.** `201`, item `<redacted-item-id>`, anchor message 85, access message 87 reading exactly as specified. **The pin was verified through `getChat`**, not from the local `anchor` column |
 | 12 default-off regression | **PASS, all three halves.** The phone half ran the full personal write-and-apply round trip with Team off, and the tap was verified genuine |
 | 3 read-only views | **PASS.** Five replies to the anchor, each answered once by the owner's bot; instance B received every update and stayed silent |
 | 11 close the thread | **PARTIAL.** B17 reproduces, and the second look corrected B17's own cause. Registered **M-15** |
 | 10 cross-owner thread request | **SKIPPED**, B15, still not a real scenario |
 
-**Cases 3, 11 and 12's phone half were run by jd personally on 2026-09-27**, from the script at
+**Cases 3, 11 and 12's phone half were run by operator personally on 2026-09-27**, from the script at
 [v5-phone-script.md](v5-phone-script.md), because a bot token cannot type as a user.
 Before handing it over, instance B was confirmed **live and long-polling**, so that case 3's "instance B
 stays silent" is an assertion rather than a tautology: its process holds two established connections to
@@ -177,10 +181,10 @@ With Team off and the page reloaded, all four are gone from both surfaces.
 Turning Team back on restores all four.
 The criterion as written is met.
 
-**The bots' group rights**, which V6 left open and jd had asserted, are now verified.
+**The bots' group rights**, which V6 left open and operator had asserted, are now verified.
 `getChatMember` was asked through **both** tokens independently, so neither answer rests on one bot's view.
 Both are `administrator` with `can_pin_messages: true`.
-jd was right.
+operator was right.
 The Team panel instruction that asks for this is emitted unconditionally and never asks Telegram, so it
 is not evidence either way and polling it loops forever.
 
@@ -226,7 +230,7 @@ PASS at both widths.
 All four corrections it was given reproduced exactly.
 **It failed two of this session's own commits and was right both times.**
 
-**Both were routed by jd in writing**, audit 4 mirroring audit 3: D9, A6 and D1's record halves fixed as
+**Both were routed by operator in writing**, audit 4 mirroring audit 3: D9, A6 and D1's record halves fixed as
 documentation commits; A2's lint tier and A1's remaining half waived, with every deviation registered as
 M-10, M-11, L-4 or L-12.
 Two of audit 4's findings became tasks rather than waivers, **C4** and **C5**, and audit 3's sharpest
@@ -242,7 +246,7 @@ passes by agreement.
 
 ## 9. Design corrections made
 
-- **R-B amended to owner-initiated threads**, in the wording jd approved on 2026-09-20, by F04.
+- **R-B amended to owner-initiated threads**, in the wording operator approved on 2026-09-20, by F04.
   This closed B15 by making the written requirement match what is built, rather than by building the
   teammate-initiated direction.
 - **M-4's rule 4.5**, the close-path data loss, closed by H07.
@@ -261,11 +265,11 @@ passes by agreement.
 Nothing is in flight.
 No worktree, no task branch, `git status` clean, nothing ever pushed.
 
-**Nothing needs jd personally any more.**
+**Nothing needs operator personally any more.**
 V5's three phone cases were run on 2026-09-27 and are recorded.
 **Every clause of section 8 that can be met is now met**, and the one that cannot is clause 1.
 
-**Open gaps, none blocking, in jd's own priority order from 2026-09-26:**
+**Open gaps, none blocking, in operator's own priority order from 2026-09-26:**
 
 - **H-4**, high. The pilot's database isolation is broken on main and the guard's own advice
   (`AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1`) is what silently breaks it.
@@ -274,7 +278,10 @@ V5's three phone cases were run on 2026-09-27 and are recorded.
 - **M-13's canned-answer defect**, the sharpest open item on the board.
   A button that submits an answer on the owner's behalf and starts a run on it, with the dialog that
   should open already mounted and called by nothing.
-- **M-12**, the requester's review-and-apply half has no web surface at all.
+- **M-12** was subsequently built on 2026-09-27: review and apply have browser
+  crossing proof, and request-changes has a web caller plus server coverage.
+  The request-changes **second crossing remains unproven end to end**, so only
+  that proof obligation stays open.
 - **M-14**, a workstation that loses its database cannot rejoin a team it is already listed in, and
   `roster_conflict` covers at least two distinct states, one remote and one a stale local mirror.
 - **M-15**, new on 2026-09-27: a closed item thread answers its view commands as though it were open and
@@ -285,7 +292,7 @@ V5's three phone cases were run on 2026-09-27 and are recorded.
 - **F10**, the rig task, carrying B3, B4, B10 and B19. Needed before **LT-5** and nothing else.
 - **LT-5** itself, blocked on F10 and on B19 specifically: instance B needs its own clone.
 
-## 11. jd's decisions this track is built on
+## 11. operator's decisions this track is built on
 
 Recorded here because a report that omits them reads as though the orchestrator chose them.
 
@@ -297,7 +304,7 @@ Recorded here because a report that omits them reads as though the orchestrator 
 - **2026-09-26**: **live Telegram bot credentials authorized** for the orchestrator, an explicit exception
   to a standing rule.
   Every task record from that point states that a live credential **was** used.
-- **2026-09-26**: jd runs cases 3 and 11 by phone; the orchestrator runs 2 and 12.
+- **2026-09-26**: operator runs cases 3 and 11 by phone; the orchestrator runs 2 and 12.
 - **2026-09-26**: rebuild the rig fresh on main rather than updating it in place.
 - **2026-09-26**: the roster push to the pilot repo is in scope, it being a throwaway repository separate
   from `ai-workstation`.

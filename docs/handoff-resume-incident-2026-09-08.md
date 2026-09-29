@@ -1,5 +1,8 @@
 # Handoff resume conflict — 2026-09-08
 
+> **Historical incident report.** Retained for root-cause and recovery evidence;
+> it is not a current operating procedure.
+
 ## Root cause
 
 POST `/api/prompts/19/handoff` returned 409 because database prompt ID 19
@@ -56,7 +59,7 @@ agent was Claude. However, prompt ID 20 had a saved station assignment of
 station-over-pipeline precedence silently overrode the chosen successor.
 
 The Codex adapter received no explicit model. The local
-`/home/junaid/.codex/config.toml` contained `model = "gpt-6-astra"` on line 1;
+`<user-home>/.codex/config.toml` contained `model = "gpt-6-astra"` on line 1;
 the origin of that setting is unknown. The CLI reported that this model required
 a newer Codex version. No Codex configuration or installation was changed.
 
@@ -75,7 +78,7 @@ models, retrying Claude, and retaining other station assignments.
 The existing ready brief was reused through POST `/api/prompts/20/handoff`
 with Claude selected for both roles and pipeline ID 5. The API returned
 `started=true`, `reusedReady=true`, and successor run
-`run_3e3b52a1-e661-4e27-9dcc-19caa0fa5408`. This correction targets task ID 20;
+`<redacted-run-id>`. This correction targets task ID 20;
 other tasks may still have intentionally saved Codex assignments.
 
 ## Permanent pipeline override and manual correction
@@ -118,7 +121,7 @@ browser automation was unavailable.
 
 Pipeline 5 was updated through PATCH `/api/pipelines/5` to pin Claude with its
 configured default model. POST `/api/prompts/21/respond-and-continue` then
-returned successor `run_22caf014-2d1c-4d1d-a0e1-f11870e6c738`; the database
+returned successor `<redacted-run-id>`; the database
 confirmed that successor was RUNNING with provider `claude`. Database ID 20
 remained DONE. This is now a persistent pipeline correction rather than a
 one-task assignment change.
@@ -129,12 +132,12 @@ The user requested diagnosis before further changes. The prior pipeline 5
 completed task IDs 20 and 21 with Claude. The latest failures are in pipeline 7,
 `AWS study — Post-MVP generator`, task ID 23 (`Selection, review, and progress`).
 
-- Claude execute `run_f7a3517d-dca8-4b5d-8406-fbe154ff80cb` stopped with
+- Claude execute `<redacted-run-id>` stopped with
   `Claude reported: rate_limit` and `You're out of extra usage · resets 1am
   (Australia/Sydney)`, followed by process exit code 1.
 - A later Codex attempt with no model inherited `gpt-6-astra` and failed the
   CLI-version requirement.
-- The latest execute `run_b760b2b9-f0cf-40b6-8c53-67a28c985e7c` used exactly
+- The latest execute `<redacted-run-id>` used exactly
   the pipeline's saved override: `codex` / `gpt-5.6-sol`. It produced no work
   output and received HTTP 400 saying that model requires newer Codex.
 - The live `/api/providers` response confirms `/usr/bin/codex`, version
@@ -165,6 +168,6 @@ A read-only ephemeral `gpt-5.6-sol` smoke test returned `OK` and
 
 Retried task ID 23 through `/api/prompts/23/respond-and-continue`; the API
 returned `started=true` with run
-`run_1696ec14-0d59-482e-a6e8-aff305640e21`. The CLI compatibility failure was
+`<redacted-run-id>`. The CLI compatibility failure was
 verified resolved; completion of the task's implementation remains the
 pipeline agent's work.

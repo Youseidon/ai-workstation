@@ -1,5 +1,11 @@
 # Solo two-account Team join check (LT-3 by yourself)
 
+> **Historical one-machine pilot runbook.** This captures the LT-3 rig and its
+> evidence; it is not normal product setup. Use the
+> [Team and Telegram user guide](../team-and-telegram-user-guide.md). In
+> particular, current setup stores bot tokens through **Agents → Set up
+> Telegram**; the pilot setup script no longer asks for a token.
+
 This is the LT-3 "Join" check from
 [teammate-design.md](teammate-design.md) section 8.4, run by one person with two
 Telegram accounts instead of two people.
@@ -7,7 +13,7 @@ It proves the teammate connect path end to end: create team, join code, join,
 roster with two people and two bots.
 
 Everything runs on one machine.
-Account A plays the owner (jd), account B plays the teammate (Yousef).
+Account A plays the owner (operator), account B plays the teammate (<git-author>).
 
 ## One-time setup (about 15 minutes)
 
@@ -49,18 +55,18 @@ You need both signed in simultaneously to send and receive as each side.
 
 ### 5. Two app instances
 
-Instance A is this checkout: ports 3100 (web) and 4100 (server), bot A token in
-`.env`.
-Instance B is a second, separate checkout on different ports:
+Instance A is one isolated pilot checkout on ports 3100/4100. Connect bot A
+through **Agents → Set up Telegram**. Instance B is a second, separate checkout
+on different ports:
 
 ```bash
-git clone --branch feature/team-telegram-pilot --single-branch \
-  /home/junaid/ai-workstation-team-pilot ~/ai-workstation-team-pilot-b
-cd ~/ai-workstation-team-pilot-b
-npm run setup:team-pilot -- --label "Teammate pilot" --server-port 4200 --web-port 3200
+git clone --branch <tested-branch> --single-branch \
+  <source-repository-url> ai-workstation-team-pilot-b
+cd ai-workstation-team-pilot-b
+npm run setup:team-pilot -- --label "Receiver workstation" --server-port 4200 --web-port 3200
 ```
 
-The setup command asks for bot B's token through a hidden prompt.
+Open instance B's Agents page and connect bot B through **Set up Telegram**.
 Never copy instance A's `.env`, `.agent-console` or bot token into instance B;
 the check is only meaningful if the two workstations share nothing but the group
 and the repository.
@@ -69,10 +75,10 @@ Instance B also needs a local clone of the shared repository registered as a
 workspace, because the join refuses a code whose remote no workstation tracks:
 
 ```bash
-git clone git@github.com:<you>/aw-team-pilot-shared.git ~/team-shared
+git clone <shared-private-repository-url> team-shared
 ```
 
-Add `~/team-shared` as a workspace in instance B's UI before joining.
+Add `team-shared` as a workspace in instance B's UI before joining.
 
 ## The check (about 10 minutes)
 

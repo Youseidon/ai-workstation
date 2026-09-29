@@ -1,6 +1,10 @@
 # Case 11 re-run: the phone half, with real grants
 
-Written 2026-09-27 for jd, by the orchestrator, as the closing item of the plan's Phase 2.
+> **Archived one-off operator script.** It records a dated live-rig procedure
+> and is not normal product setup. Use the current user guide for supported UI
+> flows.
+
+Written 2026-09-27 for operator, by the orchestrator, as the closing item of the plan's Phase 2.
 This is the **only** step in Phase 2 that a bot token cannot run: creating a grant needs a real user to type in the group and a real user to tap a card, and a bot token can do neither.
 
 ## Why the re-run exists
@@ -29,7 +33,7 @@ node scripts/team-pilot-state.mjs ~/ai-workstation-team-pilot/.agent-console/con
 
 Pass the database path explicitly. With no path the script reads `main`'s fixture and prints a **wholly fake team** - that is L-17.
 
-**Do not use prompt 1 / item `awi1_63460787e23fa7d635890376` for this.** It is the fixture P-A3 and the handover work reference, it carries jd's own held answer `Integer cents is fine`, and closing it would spend it. This script creates a fresh item instead.
+**Do not use prompt 1 / item `<redacted-item-id>` for this.** It is the fixture P-A3 and the handover work reference, it carries operator's own held answer `Integer cents is fine`, and closing it would spend it. This script creates a fresh item instead.
 
 ## Step 0 - a fresh blocked item, no phone needed
 
@@ -63,13 +67,13 @@ The group gets a **pinned anchor** whose first line is `#item_<...>` and an **It
 
 ## Step 1 - real grants, which is the whole point
 
-**As account A (`Jj`)**, reply to the anchor:
+**As account A (`Requester operator`)**, reply to the anchor:
 
 ```
 /grant answer
 ```
 
-A card appears with a `Grant` button. **Tap it as account A.** The Item access message should be **edited in place** to read `Junaid: answer`, not reposted.
+A card appears with a `Grant` button. **Tap it as account A.** The Item access message should be **edited in place** to read `Requester operator: answer`, not reposted.
 
 Then do the same for `resume`:
 
@@ -77,7 +81,7 @@ Then do the same for `resume`:
 /grant resume
 ```
 
-Tap `Grant`. Access should read `Junaid: answer, resume`.
+Tap `Grant`. Access should read `Requester operator: answer, resume`.
 
 **Do these within ten minutes of the card appearing.** A card minted and left expires, and a late tap is correctly refused as `action_expired` - that is case 9's subject and it would muddy this run.
 
@@ -85,7 +89,7 @@ Tap `Grant`. Access should read `Junaid: answer, resume`.
 
 ```
 node -e 'const {DatabaseSync}=require("node:sqlite");
-const db=new DatabaseSync("/home/junaid/ai-workstation-team-pilot/.agent-console/console.sqlite");
+const db=new DatabaseSync("<user-home>/ai-workstation-team-pilot/.agent-console/console.sqlite");
 console.log(db.prepare("SELECT item_id,person_id,capability,granted_at,revoked_at FROM item_grant WHERE revoked_at IS NULL").all());'
 ```
 
@@ -93,7 +97,7 @@ Two rows with `revoked_at` null. **If this prints nothing, stop** - closing now 
 
 ## Step 2 - account B's granted command works
 
-**As account B (`Junaid`)**, reply to the anchor:
+**As account B (`Requester operator`)**, reply to the anchor:
 
 ```
 /answer Use three
@@ -128,14 +132,14 @@ A confirmation card appears. **Tap `Close thread` as account A.**
 Within a minute or so of the close, check all five:
 
 1. **The anchor is no longer pinned**, and its text now ends with `Thread closed`. It should be the **same message, edited** - not a new one. (M-11, new)
-2. **As account B**, reply `/answer Use five` to the anchor. **Pass:** refused, naming the capability - `Ask Jj to grant answer on this item.` This is the criterion the last run could not exercise.
+2. **As account B**, reply `/answer Use five` to the anchor. **Pass:** refused, naming the capability - `Ask Requester operator to grant answer on this item.` This is the criterion the last run could not exercise.
 3. **As either account**, reply `/status` to the anchor. **Pass:** it still answers, **and** carries the line `This item thread is closed.` (M-15, new)
 4. Repeat 3 for `/access`, `/help` and `/task`. All four answer. `/task` carries `Thread closed` in its footer; the other three carry the full sentence.
 5. Read the rows back:
 
 ```
 node -e 'const {DatabaseSync}=require("node:sqlite");
-const db=new DatabaseSync("/home/junaid/ai-workstation-team-pilot/.agent-console/console.sqlite");
+const db=new DatabaseSync("<user-home>/ai-workstation-team-pilot/.agent-console/console.sqlite");
 console.log("link:",db.prepare("SELECT item_id,closed_at,closed_command_id FROM item_link WHERE closed_at IS NOT NULL").all());
 console.log("thread:",db.prepare("SELECT subject_id,state,status_message_id FROM telegram_thread WHERE subject_kind=?").all("item"));
 console.log("grants:",db.prepare("SELECT capability,granted_at,revoked_at FROM item_grant").all());'

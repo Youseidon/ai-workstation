@@ -1,5 +1,9 @@
 # End-to-end slice test harness plan
 
+> **Historical harness plan.** Status and open-slice statements describe the
+> plan at the dates shown. Current commands live in `package.json` and `e2e/`;
+> current results are recorded in dated execution reports.
+
 Status (2026-09-15): H0 to H6 built.
 T0, T1 and burn-in run on this machine; every T3 row is blocked until the operator's one-time live setup ([`e2e-live-setup.md`](e2e-live-setup.md)).
 H7 and H8 in progress, H9 not started.
@@ -343,7 +347,7 @@ Test cases are derived from the specification, before the code exists, by someon
 
 | Role | Owns | Does not own |
 | --- | --- | --- |
-| Operator (jd) | Risk priorities; accepting, trimming or extending the scenario table of product-facing slices (the Claude defect fix, L1 scenarios, L3 slices and later product work). Reviews a table, not test code (about 5 minutes per slice). Harness-internal slices (H0 to H4, H7 to H9) still get a scenario table, checked by the review pass instead (decided 2026-09-14). | Writing or reading test code. |
+| Operator (operator) | Risk priorities; accepting, trimming or extending the scenario table of product-facing slices (the Claude defect fix, L1 scenarios, L3 slices and later product work). Reviews a table, not test code (about 5 minutes per slice). Harness-internal slices (H0 to H4, H7 to H9) still get a scenario table, checked by the review pass instead (decided 2026-09-14). | Writing or reading test code. |
 | Test-design pass: a separate agent session, before implementation | Derives the scenario table for the slice from its requirement IDs (RTC), decision points (B-rows), acceptance scenarios (T-rows), user-flow sections and verification rows (H-rows): happy path, every failure path, races, restarts, duplicates, authorization and secret exposure. Works from documents and existing public interfaces only, never from the new implementation. | Implementation choices. |
 | Implementing agent | Writes the scenarios so they fail before the code exists, builds until they pass, adds code-level tests for branches the specification does not mention, keeps all scenarios passing burn-in. | Deciding a spec-derived scenario is unnecessary; removing one needs the operator's agreement. |
 | Review pass: `/code-review` or a reviewer agent, after implementation | Challenges gaps: IDs without scenarios, failure paths asserted only in the UI, assertions that cannot fail, unexplained uncovered branches, surviving mutants. | Rewriting the implementation. |

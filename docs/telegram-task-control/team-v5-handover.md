@@ -1,5 +1,8 @@
 # V5 handover: the sprint to completion
 
+> **Archived session handoff.** Superseded by later V-series records and current
+> implementation evidence.
+
 **CLOSED 2026-09-26. Its successor is [team-v6-handover.md](team-v6-handover.md), which is the current working knowledge.**
 C5 is closed, M-13 is reproduced, and V5 is four of seven cases done against live Telegram. This file's state table is superseded: T1 is now **140 of 140** and main is **404 ahead** at `698dcef`.
 
@@ -14,22 +17,22 @@ Read this first, then [team-burndown-tracker.md](team-burndown-tracker.md) and [
 
 | Thing | Value |
 | --- | --- |
-| main | `/home/junaid/ai-workstation`, clean, tip `c6ff1ff` |
+| main | `<user-home>/ai-workstation`, clean, tip `c6ff1ff` |
 | main vs `origin/main` | **389 ahead, 0 behind. Nothing has ever been pushed**; `git branch -r --contains HEAD` is empty |
 | Worktrees / task branches | One worktree, the checkout itself. **Zero** `fix/*` or `tm/*` branches |
 | **Full T1 suite** | **134 of 134**, 0 flaky, 28.5 minutes, verified by the orchestrator on the merged tree |
 | Server suite | **618 of 618, three times** against one root with `AGENT_CONSOLE_DB` and `SETTINGS_FILE` pinned |
 | Shared / Web | 91 of 91 / **95 of 95** |
 | Typecheck | Clean, four workspaces |
-| Web lint | **19 problems, 17 errors, 2 warnings, exit 1.** Entirely upstream's files. Waived by jd, registered **L-12**. `origin/main` does not pass lint either |
+| Web lint | **19 problems, 17 errors, 2 warnings, exit 1.** Entirely upstream's files. Waived by operator, registered **L-12**. `origin/main` does not pass lint either |
 | Audit 3, F track | **FAIL**, routed. `team-track-audit-3.md` |
 | Audit 4, H track | **FAIL**, routed. `team-track-audit-4.md` |
 
-The pilot checkout `/home/junaid/ai-workstation-team-pilot` is the **test rig only**. Product code never goes there, even though sessions are often launched from it.
+The pilot checkout `<user-home>/ai-workstation-team-pilot` is the **test rig only**. Product code never goes there, even though sessions are often launched from it.
 
 ## 2. What this session did, in one paragraph each
 
-**Both audits FAILed on the same five ids** - D1, D9, A1, A2, A6 - for partly different reasons. jd routed both the same way on 2026-09-26: the record-shaped failures were fixed as documentation, and D1's authorization half, A2's lint tier and A1's unmeetable criteria were **waived by jd in writing**, which the brief's audit rule expressly allows. Every deviation a waiver covers was registered as a gap so that waiving it did not make it disappear: **M-10, M-11, L-4, L-12, L-13, L-14, L-15**. The waivers are in the tracker under "jd's waivers of audit 3" and "jd's waivers of audit 4".
+**Both audits FAILed on the same five ids** - D1, D9, A1, A2, A6 - for partly different reasons. operator routed both the same way on 2026-09-26: the record-shaped failures were fixed as documentation, and D1's authorization half, A2's lint tier and A1's unmeetable criteria were **waived by operator in writing**, which the brief's audit rule expressly allows. Every deviation a waiver covers was registered as a gap so that waiving it did not make it disappear: **M-10, M-11, L-4, L-12, L-13, L-14, L-15**. The waivers are in the tracker under "operator's waivers of audit 3" and "operator's waivers of audit 4".
 
 **C3 was a live product defect and it was found by verifying a documentation sentence**, not by any suite. `operationalState` returns `BLOCKED` for a stored `BLOCKED` prompt where it returned `AWAITING_RESPONSE` before the reconcile; M-9 built `awaitsResponse` for exactly that and converted the two consumers it found, and **two Team-owned consumers still compared by hand**. On the primary Team path `/status` said `Decision: none waiting` while the decision card sat on the owner's phone, and the Open Team thread control was disabled with a self-contradicting sentence. Fixed, with the predicate moved to `shared/` so one definition serves both tiers. **This is the fourth defect of the M-9 family.**
 
@@ -51,19 +54,19 @@ It is sized larger than C4 and its criterion 6 tells the worker to **stop and re
 
 The LT-4 re-run, cases 2, 3, 11 and 12 of [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md).
 
-**Ask jd before starting it.** It needs the pilot rig with real Telegram bots, which collides with the standing no-live-credential rule. That collision has never been resolved, only deferred, and it is the single thing standing between this track and its own definition of done.
+**Ask operator before starting it.** It needs the pilot rig with real Telegram bots, which collides with the standing no-live-credential rule. That collision has never been resolved, only deferred, and it is the single thing standing between this track and its own definition of done.
 
 ### 3.3 The completion report
 
 Section 8 of [team-burndown-dev-brief.md](team-burndown-dev-brief.md) defines done. Measured honestly, **three of its five clauses are met**:
 
 - met: B1-B14 and B17-B19 closed or explicitly deferred with a reason; B15 closed by F04's amendment with B16 a pointer to B11; the orchestrator's reporting.
-- **not met: "Audit 3 and audit 4 pass."** Both FAILed. jd's written waivers satisfy the brief's *rule*, which offers waiver as an alternative to fixing, but they do not make the clause true. **Do not report this as met.**
+- **not met: "Audit 3 and audit 4 pass."** Both FAILed. operator's written waivers satisfy the brief's *rule*, which offers waiver as an alternative to fixing, but they do not make the clause true. **Do not report this as met.**
 - **not met: "LT-4's re-run rows are recorded."** That is V5.
 
-The report owes jd: commits per task, counts per tier, burn-in results, the G01 decision, real checks and outcomes, both audit results, design corrections, and everything left open.
+The report owes operator: commits per task, counts per tier, burn-in results, the G01 decision, real checks and outcomes, both audit results, design corrections, and everything left open.
 
-## 4. Decisions waiting on jd
+## 4. Decisions waiting on operator
 
 1. **V5 itself**, per 3.2.
 2. **Whether invariant A5 keeps holding** for `web/components/tasks/WorkItemDetail.tsx:245-249` and `web/components/tasks/WorkItemList.tsx:365`. Both are the same mechanism as C3 and reachable the same way: the first means the owner's own "Needs your input" banner and Respond button do not render on the item asking them a question; the second is C3's mirror image, branching on `BLOCKED` with **no `AWAITING_RESPONSE` branch at all**. They are personal-control surfaces, which A5 says this track leaves unchanged, so they were left alone. **The C3 harness now produces the exact state that would prove them**, so settling this is far cheaper than it was.
@@ -96,12 +99,12 @@ The report owes jd: commits per task, counts per tier, burn-in results, the G01 
 
 ## 7. Standing constraints, unchanged
 
-No push and no remote write without jd's explicit approval, shown first. Nothing has ever been pushed.
+No push and no remote write without operator's explicit approval, shown first. Nothing has ever been pushed.
 No paid provider, no live Telegram credential.
 Never two harness runs at once.
 `team.enabled` and `team.handoverEnabled` both stay false by default.
 Lint exists in the `web` workspace only.
-Commit messages are imperative and carry **no co-author line of any kind** - jd's standing rule and audit check D5.
+Commit messages are imperative and carry **no co-author line of any kind** - operator's standing rule and audit check D5.
 Every task gets its own worker, its own branch and its own worktree, and lands by fast-forward.
 
-**Stop and ask jd**: before V5, before any push, on any audit FAIL, and before changing a personal-control surface that invariant A5 covers.
+**Stop and ask operator**: before V5, before any push, on any audit FAIL, and before changing a personal-control surface that invariant A5 covers.

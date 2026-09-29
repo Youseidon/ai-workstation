@@ -1,13 +1,17 @@
 # M-16 design: align the owner's surfaces with the handover the backend already knows about
 
-Written 2026-09-27, **rewritten 2026-09-28** for jd, by the orchestrator.
-**Nothing here is built.**
+> **Implemented design record.** Retained for rationale and acceptance evidence;
+> it is not a pending implementation plan.
+
+Written 2026-09-27, **rewritten 2026-09-28** for operator, by the orchestrator.
+**Implemented 2026-09-28.** This remains the reviewed design record; later
+status corrections are called out rather than rewriting its history.
 
 ## 0. Why this was rewritten, and what it replaces
 
 The first version of this design added a member to the status model: a new `AWAITING_RETURN` display status, a catalog entry with its own precedence and rollup semantics, a schema column on `item_link` with a migration to cache the control state, and a change to `operationalState` - a function 26 files read - followed by an audit of 30 hand-keyed comparisons.
 
-**jd asked two questions, one after the other, and both found real over-reach.**
+**operator asked two questions, one after the other, and both found real over-reach.**
 
 1. *"Is P-B5 really needed?"* - answered by reproducing it, which found **M-17**: the owner could answer, run and complete an item a teammate was actively holding, and those actions **worked**. That was a live work-loss path, and **P-A5 closed it on 2026-09-28** with a narrow server guard.
 2. *"Is it a design overhaul or just aligning UI state to backend state?"* - it was an overhaul, and alignment does the job.
@@ -82,8 +86,12 @@ Filled in the **`/api/operations` route**, which is already async, by reusing **
 - **Web:** the three surfaces render from the field, from props alone, as F03 and F06 require.
 - **T1:** one row, built from `m17-handover-hold.spec.ts`'s crossing, asserting that while a teammate holds the item the owner's row says `Held by` and **offers no Respond**, and that it goes back afterwards. That row is the only thing that proves the surfaces are wired rather than merely present, which is the failure mode this track has hit three times.
 
-## 4. The one question left for jd
+## 4. Resolved label question
 
 The other three questions in the first version existed only because of the new status, and are retired with it.
 
-**The label.** `Held by <executor>` on the row, where `<executor>` is the person id the control record carries. It is the only name available - the record stores person ids, not display labels - so the badge may read `Held by 6525517234` rather than `Held by Junaid`. Resolving it to a roster label is possible but is a second lookup on a surface that has no roster today. **Acceptable, or worth the lookup?**
+**Answered by operator on 2026-09-28: resolve the label.** The route resolves the
+executor through the roster it already holds, so the badge reads `Held by
+Requester operator` when `personLabel` exists and falls back to the stable person id only
+for older/unnamed roster entries. The implementation is centralized in
+`web/components/tasks/handoverHold.ts`.

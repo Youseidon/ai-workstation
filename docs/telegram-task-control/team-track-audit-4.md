@@ -1,10 +1,13 @@
 # Audit 4: the H track
 
+> **Historical audit evidence.** Findings apply to the audited tree and date;
+> later browser and live evidence is recorded separately.
+
 Auditor: a fresh agent with no part in the build, run on 2026-09-26.
 Checklist: section 4 of [team-track-dev-brief.md](team-track-dev-brief.md), unchanged.
 Range: `dc3e9de..HEAD`, where HEAD is `a23d1dd`.
 Tasks in scope: H01, H01b, H02, H03, H04, H05, H06, H07, the TM4 handover build.
-Tree: `/home/junaid/aw-audit4`, a detached-HEAD worktree of `/home/junaid/ai-workstation` at `a23d1dd`, installed with `npx -y npm@11 install`.
+Tree: `<user-home>/aw-audit4`, a detached-HEAD worktree of `<user-home>/ai-workstation` at `a23d1dd`, installed with `npx -y npm@11 install`.
 
 Nothing was pushed, no remote ref was written, no `git fetch` was run, no T2 or T3 tier was run, no live Telegram credential or paid provider was used, no agent was spawned, nobody was contacted, and no product code, test or fixture was changed.
 `team.enabled` and `team.handoverEnabled` were not enabled.
@@ -18,12 +21,12 @@ Ten checks pass: D2 to D8, A3, A4, A5 and A7.
 No live product defect was found, and every H-track criterion that has an independent statement anywhere is met on main and green.
 Two of the five failures are record-keeping (D1, D9), one is `implementation.md` having no TM4 entry at all (A6), one is A2's lint tier, which is entirely upstream's, and one is A1, where three of the eight tasks in range have no acceptance criteria written anywhere except the tracker row that is itself the evidence, and H07's close guard has server-tier proof only.
 
-**jd's waivers of audit 3 do not cover this range** and were not applied to it.
+**operator's waivers of audit 3 do not cover this range** and were not applied to it.
 The five failures here are judged on the H track's own evidence.
 
 The sharpest single finding is not one of the five.
-`e2e/tests/t1/tm4-handover.spec.ts:382-384` records that closing a thread while a handover is live is unasserted "because whether `/close` may happen at all mid-handover is M-4's open question and is jd's to rule".
-jd ruled the next day, H07 built the guard, and nobody corrected the comment, so the only end-to-end spec for handover still tells its reader the question is open.
+`e2e/tests/t1/tm4-handover.spec.ts:382-384` records that closing a thread while a handover is live is unasserted "because whether `/close` may happen at all mid-handover is M-4's open question and is operator's to rule".
+operator ruled the next day, H07 built the guard, and nobody corrected the comment, so the only end-to-end spec for handover still tells its reader the question is open.
 Detail under A1, H07.
 
 Tier counts measured by this audit, on its own worktree, not taken from any document:
@@ -64,10 +67,10 @@ Two do not, and they fail in the two different ways audit 3 found on the F track
 H01b is not a fresh context by its own record: the cell says the H01 worker was resumed, so the check's stated purpose, that each task ran in a fresh context, is not met for H01b and is recorded as not met rather than argued away.
 
 H07's cell is `one worker`, which names no agent.
-The tracker itself anticipates this: the section "jd's waivers of audit 3" records that F00B's identical defect was fixed to `worker/F00B`, and that **"H07 is inside audit 4's range, so it is left as it stands rather than corrected ahead of its own auditor, and reported to jd instead."**
+The tracker itself anticipates this: the section "operator's waivers of audit 3" records that F00B's identical defect was fixed to `worker/F00B`, and that **"H07 is inside audit 4's range, so it is left as it stands rather than corrected ahead of its own auditor, and reported to operator instead."**
 That is the right call and it does not change the check's result.
 
-jd's execution-model decision of 2026-09-20 authorises the orchestrator running tasks directly, and jd's waiver of 2026-09-25 covers four F-track rows.
+operator's execution-model decision of 2026-09-20 authorises the orchestrator running tasks directly, and operator's waiver of 2026-09-25 covers four F-track rows.
 Neither covers H01b or H07.
 
 ### D2: every task landed from its own `tm/<id>-*` branch by fast-forward, and the range is linear. **PASS**, with the literal reading recorded
@@ -76,14 +79,14 @@ Literal check, as the evidence column words it:
 
 ```
 $ git log --merges --format='%h %an %s' dc3e9de..HEAD
-a641b0c Junaid Reconcile main with origin/main by merge, not rebase
-b855ec2 Yousef Nourizadeh Merge pull request #2 from Youseidon/pipeline-continuation-loop
-fa92586 Yousef Nourizadeh Merge pull request #1 from Youseidon/pipeline-status-model
+a641b0c Requester operator Reconcile main with origin/main by merge, not rebase
+b855ec2 <git-author> Merge pull request #2 from <git-user>/pipeline-continuation-loop
+fa92586 <git-author> Merge pull request #1 from <git-user>/pipeline-status-model
 ```
 
 Not empty, so the literal check fails.
 This is the reading I was given as a carried-forward correction and it is recorded here in full rather than summarised: none of the three is a task landing.
-`a641b0c` is the reconcile jd ordered on 2026-09-22; `b855ec2` and `fa92586` are upstream author Yousef's own pull-request merges, which arrived inside his 29 commits.
+`a641b0c` is the reconcile operator ordered on 2026-09-22; `b855ec2` and `fa92586` are upstream author <git-author>'s own pull-request merges, which arrived inside his 29 commits.
 
 Honest check, over the H track's own span:
 
@@ -108,7 +111,7 @@ Every start sha I checked is a real first commit of its task, for example `013fe
 
 ### D3: nothing was pushed. **PASS** on the honest reading, **FAIL** on the literal one
 
-Both readings are recorded, per jd's ruling of 2026-09-22 recorded as gap M-3.
+Both readings are recorded, per operator's ruling of 2026-09-22 recorded as gap M-3.
 
 Literal: `origin/main` is still the starting commit the tracker recorded. **FAIL.**
 
@@ -176,8 +179,8 @@ $ for c in <the 29 H commits>; do git log -1 --format='%B' $c; done \
 
 ```
 $ git worktree list
-/home/junaid/ai-workstation  39d7935 [main]
-/home/junaid/aw-audit4       a23d1dd (detached HEAD)
+<user-home>/ai-workstation  39d7935 [main]
+<user-home>/aw-audit4       a23d1dd (detached HEAD)
 
 $ git branch --list 'tm/*' 'fix/*'
 (no output)
@@ -186,27 +189,27 @@ $ git branch --list 'tm/*' 'fix/*'
 The only extra worktree is this audit's own.
 No `tm/*` or `fix/*` branch remains.
 
-### D7: the slice's scenario table was committed, and jd's skim recorded, before that slice's first product code commit. **PASS**
+### D7: the slice's scenario table was committed, and operator's skim recorded, before that slice's first product code commit. **PASS**
 
 ```
 93:1f96657 2026-09-21 07:13:58 Mark H01 in progress
 94:5b00ebe 2026-09-21 07:19:07 Add the TM4 handover scenario table
 95:8bf767d 2026-09-21 10:00:47 Settle the ref namespace, the offer deadline, row 4.4 and the T0 mapping
-96:59a19a7 2026-09-21 10:01:13 Fold jd's four TM4 rulings into the scenario table
+96:59a19a7 2026-09-21 10:01:13 Fold operator's four TM4 rulings into the scenario table
 99:013fec5 2026-09-21 11:52:44 Add TM-T0-6 red against a control-record skeleton
 ```
 
-`docs/e2e-scenarios/tm4.md` lands at `5b00ebe`, jd's skim and the four rulings it produced are recorded at `8bf767d` and folded into the table at `59a19a7`, and the first H-track product code commit is `013fec5`, two hours later.
+`docs/e2e-scenarios/tm4.md` lands at `5b00ebe`, operator's skim and the four rulings it produced are recorded at `8bf767d` and folded into the table at `59a19a7`, and the first H-track product code commit is `013fec5`, two hours later.
 Ancestry confirms the order rather than the timestamps alone: `5b00ebe` and `59a19a7` are both ancestors of `013fec5`.
 
-### D8: every jd stop point has jd's answer recorded; no worker contacted jd or spawned an agent. **PASS**
+### D8: every operator stop point has operator's answer recorded; no worker contacted operator or spawned an agent. **PASS**
 
-The H track has one stop point marked **jd** in the brief: H01's skim.
+The H track has one stop point marked **operator** in the brief: H01's skim.
 It is recorded in the tracker's log of 2026-09-21 and in `tm4.md` itself, which carries the four rulings it produced.
 The two later rulings the H track depends on, ruling 6 (the decline outcome) and ruling 7 (refuse `/close` while a handover is live), are recorded in the log of 2026-09-22 and in section 8 of [handover-rules.md](handover-rules.md), both marked **Ruled**.
 
-Nothing in the range records a worker contacting jd or Yousef, or spawning an agent.
-One constraint deviation is recorded in the tracker and is repeated here rather than left in a log nobody rereads: the H05 worker ran `git fetch --no-tags /home/junaid/ai-workstation main` once inside its worktree to locate `main` before rebasing, although its card said not to fetch in the product repository, and **reported it unprompted**.
+Nothing in the range records a worker contacting operator or <git-author>, or spawning an agent.
+One constraint deviation is recorded in the tracker and is repeated here rather than left in a log nobody rereads: the H05 worker ran `git fetch --no-tags <user-home>/ai-workstation main` once inside its worktree to locate `main` before rebasing, although its card said not to fetch in the product repository, and **reported it unprompted**.
 It is a local path, no network and no remote write, and `origin/main` is unmoved by it.
 A constraint that is bent and reported is worth more than one that is bent quietly, so this is recorded as a deviation and not as a failure of D8.
 
@@ -220,10 +223,10 @@ The second half fails, narrowly and for a reason that is not the H track's.
 ```
 $ git rev-list dc3e9de..HEAD | wc -l
 186
-$ ... of which by author:  157 Junaid, 29 Yousef/Youseidon
+$ ... of which by author:  157 Requester operator, 29 <git-author>/<git-user>
 ```
 
-Yousef's 29 are out of range rather than unexplained, as I was given and as gap M-3 records.
+<git-author>'s 29 are out of range rather than unexplained, as I was given and as gap M-3 records.
 Of the 157 that are ours, 90 are named by a tracker row and **67 are named by none**.
 
 The tracker's stated exception, in the section "Commits in the F window that belong to no row", covers 16 of the 67, and **I verified its own claim rather than accepting it**, with the command the tracker itself gives:
@@ -257,7 +260,7 @@ $ git show --stat --format='' e6125c4 | tail -4
 ```
 
 `e6125c4` is a change to a **test file** that belongs to no row and is outside the stated documentation-only exception.
-It is F-track remediation of audit 3's sharpest finding, done on jd's ruling of 2026-09-25, and it is a good change.
+It is F-track remediation of audit 3's sharpest finding, done on operator's ruling of 2026-09-25, and it is a good change.
 It still means the check's own sentence, "every commit on main in the range belongs to a row, apart from the orchestrator's own tracker and audit commits", is false as written.
 
 Closing D9 costs one sentence: widen the stated exception to name these two commits and what they carry.
@@ -272,7 +275,7 @@ No worker report was available to me and no tracker cell was taken on trust.
 **Three of the eight tasks in range have no acceptance criteria written anywhere except the tracker row that is itself their evidence.**
 [team-burndown-dev-brief.md](team-burndown-dev-brief.md) section 5 gives a card with criteria for G01, H01, H02, H03, H04 and H05 and for nothing else.
 `grep -n "H06\|H07\|H01b" team-burndown-dev-brief.md` returns nothing.
-H01b, H06 and H07 were opened after the brief was written, H06 against gap C1 and H07 against jd's ruling 7, and their criteria live only in the gap register entry and in the orchestrator's own row.
+H01b, H06 and H07 were opened after the brief was written, H06 against gap C1 and H07 against operator's ruling 7, and their criteria live only in the gap register entry and in the orchestrator's own row.
 A1 exists precisely to stop a tracker row standing in for a criterion, so for these three the check is **unverifiable as written**.
 What I could do, and did, is verify every factual claim those three rows make; all of them reproduced.
 
@@ -287,14 +290,14 @@ What I could do, and did, is verify every factual claim those three rows make; a
 | Covers the proof required before a requester reacquires ownership | PASS | `tm4.md:112`, sixth clause |
 | Covers the capture preview's secret warning | PASS | `tm4.md:86` and `tm4.md:99` |
 | No product code in the commit | PASS | the one file above |
-| jd's skim | PASS | tracker log 2026-09-21 and commit `8bf767d` |
+| operator's skim | PASS | tracker log 2026-09-21 and commit `8bf767d` |
 
 Deviation, recorded in the row and reproduced here: the worker added `TM-T0-5-29` unasked, on the precedent that every prior migration has one.
 
-#### H01b, folding jd's four rulings in. Claims verified; no card exists.
+#### H01b, folding operator's four rulings in. Claims verified; no card exists.
 
 `59a19a7` touches `tm4.md` only.
-Each claim the row makes reproduces: the ref subsection is settled and carries the LG-1 evidence; TM-T0-6 asserts the custom ref with no conditional; the 24-hour offer deadline is recorded at `tm4.md:58-60` **and attributed to the orchestrator's proposal accepted by jd** rather than to jd unprompted; the corrected form of handover rule 4.4 is asserted positively inside TM-T1-H2's sixth case.
+Each claim the row makes reproduces: the ref subsection is settled and carries the LG-1 evidence; TM-T0-6 asserts the custom ref with no conditional; the 24-hour offer deadline is recorded at `tm4.md:58-60` **and attributed to the orchestrator's proposal accepted by operator** rather than to operator unprompted; the corrected form of handover rule 4.4 is asserted positively inside TM-T1-H2's sixth case.
 The deadline is real in the product, not only in the table: `teamControlRecord.ts:106` is `export const OFFER_DEADLINE_MS = 24 * 60 * 60 * 1000`, with `expire_offer` guarded by it at lines 253 and 259.
 
 #### H02, the item control record. Criteria met.
@@ -351,7 +354,7 @@ The lesson the tracker draws is the right one and is repeated here: a `fixme` no
 | Server tier | PASS | `test/teamResultApply.test.ts`: `# tests 25  # pass 25  # fail 0`. The row claims 23; H07 added two to the same file, which accounts for the difference exactly |
 
 Same deviation as H04: none of the last three held at H05's merge.
-They were parked into Phase V by jd's instruction of 2026-09-20, and Phase V ran them.
+They were parked into Phase V by operator's instruction of 2026-09-20, and Phase V ran them.
 
 #### H06, the handover surface. Claims verified; no card exists.
 
@@ -375,7 +378,7 @@ It does not open the real Next.js page, so it does not prove the control's place
 
 #### H07, refuse `/close` while a handover is live. Guard met at the server tier; **no end-to-end proof.**
 
-Its criteria are jd's ruling 7 of 2026-09-22, recorded in the tracker log and as ruling 7 in section 8 of [handover-rules.md](handover-rules.md).
+Its criteria are operator's ruling 7 of 2026-09-22, recorded in the tracker log and as ruling 7 in section 8 of [handover-rules.md](handover-rules.md).
 
 | Criterion | Result | Evidence |
 | --- | --- | --- |
@@ -393,10 +396,10 @@ The tracker's log of 2026-09-22 says the same in the worker's own words, and add
 **The T1 spec's own explanation of this gap is now false**, which is worse than the gap and is the single sharpest thing I found.
 `e2e/tests/t1/tm4-handover.spec.ts:382-384` reads:
 
-> Not asserted here, and recorded rather than implied: B28, closing or leaving the Telegram thread while a handover is live, **because whether `/close` may happen at all mid-handover is M-4's open question and is jd's to rule**
+> Not asserted here, and recorded rather than implied: B28, closing or leaving the Telegram thread while a handover is live, **because whether `/close` may happen at all mid-handover is M-4's open question and is operator's to rule**
 
 `git blame` puts that comment in `04dca86`, H06, on 2026-09-21.
-jd ruled on it the next day, M-4's rule 4.5 is recorded **CLOSED** in the gap register, and H07 shipped the guard.
+operator ruled on it the next day, M-4's rule 4.5 is recorded **CLOSED** in the gap register, and H07 shipped the guard.
 H07 did not update the comment, so the spec still tells its next reader that the case is unassertable pending a ruling that has already been made.
 That is the same failure mode as an invented scenario id: a test file asserting something about coverage that is not true.
 
@@ -414,7 +417,7 @@ Two further H07 facts, both recorded rather than buried, both confirmed by me:
 
 Five of eight tasks (H01, H02, H03, H04, H05) have criteria stated independently of the tracker, and every one of those criteria is met on main and re-verified here.
 Three of eight (H01b, H06, H07) have no such statement, so the check's central demand, verification against something other than the row, cannot be satisfied for them.
-H07 additionally has no end-to-end proof of the behaviour jd ruled on, which is the one part of this range with a user consequence behind it.
+H07 additionally has no end-to-end proof of the behaviour operator ruled on, which is the one part of this range with a user consequence behind it.
 
 That is what a FAIL means here: a record and coverage failure, not a defect.
 
@@ -436,18 +439,18 @@ The 19 problems sit in seven files, and `git log` on each shows the authorship:
 
 | File | Errors | Warnings | Authors |
 | --- | --- | --- | --- |
-| `components/activity/ActivityView.tsx` | 1 | 0 | Youseidon, plus the reconcile merge |
-| `components/pipeline/DefinitionOfDonePanel.tsx` | 1 | 0 | Youseidon |
-| `components/pipeline/PipelineBoard.tsx` | 9 | 2 | Youseidon |
-| `components/pipeline/PipelineDashboard.tsx` | 1 | 0 | Youseidon |
-| `components/pipeline/StatusCatalogPanel.tsx` | 1 | 0 | Youseidon |
-| `components/pipeline/SuiteFallbackEditor.tsx` | 1 | 0 | Youseidon |
-| `components/programs/ProgramDraftPanel.tsx` | 3 | 0 | Youseidon, two commits |
+| `components/activity/ActivityView.tsx` | 1 | 0 | <git-user>, plus the reconcile merge |
+| `components/pipeline/DefinitionOfDonePanel.tsx` | 1 | 0 | <git-user> |
+| `components/pipeline/PipelineBoard.tsx` | 9 | 2 | <git-user> |
+| `components/pipeline/PipelineDashboard.tsx` | 1 | 0 | <git-user> |
+| `components/pipeline/StatusCatalogPanel.tsx` | 1 | 0 | <git-user> |
+| `components/pipeline/SuiteFallbackEditor.tsx` | 1 | 0 | <git-user> |
+| `components/programs/ProgramDraftPanel.tsx` | 3 | 0 | <git-user>, two commits |
 
 The correction I was given holds in every particular: 17 errors and 2 warnings, not 11 warnings, and the errors are not confined to `components/activity/` and `components/pipeline/`, because three are in `ProgramDraftPanel.tsx`.
 No H-track file lints with an error; `HandoverControl.tsx`, `handoverControl.test.tsx` and `TeamThreadPanel.tsx` are all clean.
 
-jd waived this tier for the F track on 2026-09-25 and registered it as L-12.
+operator waived this tier for the F track on 2026-09-25 and registered it as L-12.
 **That waiver does not extend to this range**, so A2 is recorded as FAIL on the lint tier, exactly as audit 3 recorded it, and nothing in the H track can close it.
 
 ### A3: burn-in at 3 repeats passes for every T1 scenario the range added. **PASS**
@@ -515,15 +518,15 @@ It was added on 2026-09-25 to close audit 3's identical A6 failure on the F trac
 
 This is the exact defect audit 3 found, one track over, and it is cheap to close: an H-track section in the shape of 6e, carrying the counts in section 0 of this report.
 
-### A7: any design fact a real check disproved is corrected in the design, the plan and the fake, with jd's approval recorded. **PASS**
+### A7: any design fact a real check disproved is corrected in the design, the plan and the fake, with operator's approval recorded. **PASS**
 
 No live check ran in this range, so nothing was disproved by one.
-Three design facts were disproved by work inside the range, and all three were corrected with jd's ruling recorded:
+Three design facts were disproved by work inside the range, and all three were corrected with operator's ruling recorded:
 
-| Fact | Disproved by | Correction, with jd's approval |
+| Fact | Disproved by | Correction, with operator's approval |
 | --- | --- | --- |
 | The control branch sits at `aw/control/<task-id>` under `refs/heads/` ([protocol.md](protocol.md) section 4) | H01, against `teammate-design.md` and the LG-1 evidence | settled to `refs/aw/items/<item>/control`; tracker log 2026-09-21, folded into `tm4.md` at `59a19a7` |
-| An offer never expires on its own (handover rules row 4.2) | H01, against protocol.md's own Offer record | [handover-rules.md](handover-rules.md):109, marked **Ruled**, corrected to 24 hours, with the value attributed to the orchestrator's proposal accepted by jd |
+| An offer never expires on its own (handover rules row 4.2) | H01, against protocol.md's own Offer record | [handover-rules.md](handover-rules.md):109, marked **Ruled**, corrected to 24 hours, with the value attributed to the orchestrator's proposal accepted by operator |
 | A requester completing their task locally stops the receiver's run (handover rules row 4.4) | H01, as remote Stop across workstations, an excluded mechanism | handover-rules.md:135, marked **Ruled**, corrected to a recorded cancel request; asserted positively in `tm4.md:112` |
 
 The fake was not contradicted by anything in this range.
@@ -539,7 +542,7 @@ It does **not** open a browser.
 So the requester's **web** control, `HandoverControl.tsx`, has no end-to-end proof that it is wired to the routes it calls: its evidence is a React unit test that renders it from props and the two-width rig that renders it into Chromium in isolation.
 That is a strictly smaller claim than "TM4 reaches a user", and the gap is the same shape as the one gap M-9 found: a surface that compiles, lints, passes its unit tests and is reached by nobody.
 Three defects of exactly that kind survived four tasks of server-tier green in this very track, and two of them, H06's epoch-dedupe and group-actor defects, were found only by driving a real tap.
-Alongside it, **H07's close guard has server-tier proof only**, so the behaviour jd ruled on for data-loss reasons has never been exercised end to end, and the spec comment that explains why still cites an open question jd closed the following day.
+Alongside it, **H07's close guard has server-tier proof only**, so the behaviour operator ruled on for data-loss reasons has never been exercised end to end, and the spec comment that explains why still cites an open question operator closed the following day.
 
 **2. `implementation.md` is missing TM4 entirely**, which is A6 above but is worth naming separately because the file is what a later reader quotes.
 As it stands, a reader of `implementation.md` would conclude the Team track ended at TM3 plus a defect burn-down.
@@ -577,7 +580,7 @@ Every id used as a test-name prefix in the five H-track server test files, `TM-T
 Stating the negative result explicitly, because it is evidence the lesson was learnt.
 
 **8. The two open C3 surfaces are not in this range.**
-Gap **C3**, the two Team surfaces still comparing `operationalState` to `AWAITING_RESPONSE` by hand, is open, unreproduced, ruled by jd to get its own task, and I did not touch or investigate it.
+Gap **C3**, the two Team surfaces still comparing `operationalState` to `AWAITING_RESPONSE` by hand, is open, unreproduced, ruled by operator to get its own task, and I did not touch or investigate it.
 For the record: `teamItemViews.ts:169` is TM2's and `web/components/tasks/TeamThreadPanel.tsx:25` is F03's, so neither belongs to H01 to H07.
 It is relevant to this audit only as the standing proof that a green suite at every tier is consistent with a broken user surface, which is why finding 1 is worded the way it is.
 
@@ -594,7 +597,7 @@ It is not a check failure, because the server tier does assert the record's half
 
 | Step | Command | Result |
 | --- | --- | --- |
-| Install | `npx -y npm@11 install` in `/home/junaid/aw-audit4` | exit 0 |
+| Install | `npx -y npm@11 install` in `<user-home>/aw-audit4` | exit 0 |
 | Typecheck | `npm run typecheck` | exit 0, four workspaces |
 | Lint | `cd web && npx eslint .` | exit 1, `19 problems (17 errors, 2 warnings)` |
 | Lint, per-file attribution | `cd web && npx eslint . -f json`, then `git log` on each file | 7 files, all upstream-authored |
@@ -623,14 +626,14 @@ The full T1 pass took **23.0 minutes**, inside the 25 the handover predicts; the
 
 ## 5. What blocks what
 
-A FAIL blocks the next task until a new task with its own worker fixes it or jd waives it in writing in the tracker, and the orchestrator reports the result to jd either way.
+A FAIL blocks the next task until a new task with its own worker fixes it or operator waives it in writing in the tracker, and the orchestrator reports the result to operator either way.
 Ranked by what actually matters:
 
 1. **H07's missing end-to-end row** is the only failure with product risk behind it.
-   The behaviour jd ruled on is a data-loss guard, and it is proven only at the tier that this track has twice watched be green over a broken surface.
+   The behaviour operator ruled on is a data-loss guard, and it is proven only at the tier that this track has twice watched be green over a broken surface.
    One T1 case that closes a thread while a handover is live, asserting the refusal reaches the phone, closes it.
    H07 itself judged that a row belongs and left it to Phase V rather than writing it unasked, which was the right call for a worker and is now due.
-   The same task should correct `tm4-handover.spec.ts:382-384`, which still says the case cannot be asserted because jd has not ruled, a day after jd ruled.
+   The same task should correct `tm4-handover.spec.ts:382-384`, which still says the case cannot be asserted because operator has not ruled, a day after operator ruled.
 2. **A1's three cardless tasks** (H01b, H06, H07) need criteria written down somewhere other than the row that reports them.
    Cheapest honest fix: add the three to section 5 of [team-burndown-dev-brief.md](team-burndown-dev-brief.md) with the criteria they were actually held to, or record in the tracker that they were opened without cards and why.
    This is a record fix, not a rebuild; nothing about the work changes.
@@ -638,7 +641,7 @@ Ranked by what actually matters:
    It will trip every later reader until it exists.
 4. **D1 and D9** are two cells and one sentence.
    H07's `one worker` needs an id or a stated reason, H01b's cell needs to say plainly that the H01 worker was resumed and that this is a repeat, and D9's stated exception needs to name `5db1a21` and `e6125c4` and what they carry beyond documentation.
-5. **A2's lint tier** is upstream's, is identical to what jd waived for the F track, and nothing in the H track can close it.
+5. **A2's lint tier** is upstream's, is identical to what operator waived for the F track, and nothing in the H track can close it.
    It needs the same ruling extended to this range, or it will fail every audit from here on.
 
 Not blocking, and offered as maintenance: findings 3, 4 and 5 of section 3, which are stale figures and rendering defects in the two documents every future session reads first.

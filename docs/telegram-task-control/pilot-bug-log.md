@@ -1,5 +1,9 @@
 # Team pilot bug log
 
+> **Historical defect evidence.** Fixed/open labels are snapshots from the
+> pilot sequence. Consult current code/tests and later reports before treating
+> any entry as an open product defect.
+
 Defects found while running the solo two-account Team checks on 2026-09-19 and
 2026-09-20.
 See [solo-team-join-check.md](solo-team-join-check.md) and
@@ -113,7 +117,7 @@ that is awaiting a response, once a roster exists.
 ## B3 - `npm run dev` in a pilot checkout served the wrong port silently. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
-It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so operator's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
 Rig only: no product code path is affected, and the pilot is always launched through
 `dev:team-pilot`, which sets the port correctly.
 
@@ -148,7 +152,7 @@ and on the live rig, both instances: `dev:web: serving the web app on port 3100
 ## B4 - the pilot inherited provider credentials from the launching shell. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
-It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so operator's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
 Rig only. Worked around throughout by launching with `env -u ANTHROPIC_API_KEY`, which is
 recorded in every handover, and the live rig runs that way now.
 
@@ -186,7 +190,7 @@ Proved on one machine, in one shell, with the same fake key, with and without
 the launcher in between:
 
 ```
-no launcher:      claude.apiKey = "sk-ant-B4-PROBE-not-a-real-key"
+no launcher:      claude.apiKey = "<invalid-probe-key>"
 dev:team-pilot:   claude.apiKey = "", isSet=False, and the variable appears
                   0 times in the server process's own /proc/<pid>/environ
 ```
@@ -235,20 +239,20 @@ Team views then render that value as the workstation, including the literal
 line `Owner workstation: <value>`
 ([teamItemViews.ts:81](../../server/src/teamItemViews.ts#L81)).
 
-Observed: the personal question card said `Junaid pilot` while the roster for
-the same workstation held `Jj`, the Telegram display name of the paired
+Observed: the personal question card said `Requester workstation` while the roster for
+the same workstation held `Requester operator`, the Telegram display name of the paired
 account.
 Reproduced on the live group 2026-09-19: the item anchor's breadcrumb reads
-`· Jj ·` and its footer reads `Owner: Jj`, and `/status` prints
-`Owner workstation: Jj`, for the same machine whose personal card says
-`Junaid pilot`.
+`· Requester operator ·` and its footer reads `Owner: Requester operator`, and `/status` prints
+`Owner workstation: Requester operator`, for the same machine whose personal card says
+`Requester workstation`.
 
 Suggested fix: carry both, and render the configured workstation label where a
 workstation is named and the person's name where a person is named.
 
 ## B6 - an expired personal question card is never replaced
 
-**Fixed 2026-09-21 by F09, commit `4628ec7`, in the form jd chose on 2026-09-20.**
+**Fixed 2026-09-21 by F09, commit `4628ec7`, in the form operator chose on 2026-09-20.**
 Every personal question card, in both the current layout and the legacy L1 one,
 now ends with "These buttons expire; a reply with your answer always brings a
 fresh card." So the recovery path that already existed is no longer
@@ -257,7 +261,7 @@ undiscoverable.
 `notifyWaitingTasks`' dedupe is untouched, and so is the `expires_at`-blind check
 at `workspaces.ts:1598-1601`. **This is the accepted trade, not an oversight:** a
 waiting task may still sit with dead buttons, in exchange for no extra posting and
-no re-post loop. The suggested fix below offers both options; jd took the second.
+no re-post loop. The suggested fix below offers both options; operator took the second.
 
 Severity: medium; a task can sit awaiting a response with no usable card.
 
@@ -310,7 +314,7 @@ is left with an `item_link` row and a `telegram_thread` row whose
 
 Observed: prompt 2 was answered and resumed from the phone at 10:29 and
 completed at 10:30; the item opened at 10:36 returned
-`{"item":{"itemId":"awi1_84e1..."}}` and posted nothing.
+`{"item":{"itemId":"<redacted-item-id>..."}}` and posted nothing.
 
 Suggested fix: refuse with a specific error when the prompt is already
 complete, rather than creating a link and returning success.
@@ -422,7 +426,7 @@ while an undelivered anchor for that thread already exists.
 ## B10 - the pilot launcher's signal handlers did not stop the pilot. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
-It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so operator's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
 Rig only, and it bites scripts rather than people: Ctrl+C in an attached terminal still
 works, because the terminal signals the whole process group.
 
@@ -520,7 +524,7 @@ Observed 2026-09-19 on the first item: outbox rows 15, 16, 17, 18, 19, 21, 23,
 27, 29, 30, 32, 36, 37 and 40, each an `edit` targeting outbox 13, one per minute
 at a fixed offset, while nothing about the task changed.
 
-Observed 2026-09-19 on item `awi1_70e8584ed9e957f9fd198dd8`: outbox rows 81
+Observed 2026-09-19 on item `<redacted-item-id>`: outbox rows 81
 through 118 are 38 consecutive edits to the anchor, outbox 79, one per minute
 from 13:54:52 to 14:31:52, each differing only in `blocked N min ago` counting
 40 up to 77.
@@ -623,7 +627,7 @@ ends - a process killed between its `DONE` status and its own bookkeeping, since
 live rather than frozen and wrong. It stays in step and stays quiet, because F07
 suppresses the churn, and the first pass after that row resolves retires it. The
 F08 worker judged a live truthful anchor better than a frozen false one, and the
-orchestrator agreed; it is reversible if jd wants a bound on how long an anchor
+orchestrator agreed; it is reversible if operator wants a bound on how long an anchor
 may stay pinned waiting for a run that will never end.
 
 Severity: medium; the contradictory card is the permanent record of the item in
@@ -648,7 +652,7 @@ Observed 2026-09-19 after case 7, outbox 69, the message still pinned-then-
 unpinned in the group:
 
 ```
-State line:  Completed · Owner: Jj
+State line:  Completed · Owner: Requester operator
 Body:        Blocked on: ... Required human action: Choose whether amounts ...
              If you wait: This task and its pipeline stay paused; other
              workspaces continue.
@@ -696,7 +700,7 @@ So the last thing the closing refresh does is publish `Grant context`,
 live for the usual ten minutes.
 
 Observed 2026-09-19 at 12:58:56, on the item closed by case 7: outbox 70 reads
-`Junaid: read only` and carries actions `tc_UVYD55NWgT5`, `tc_raGajku4gLU` and
+`Requester operator: read only` and carries actions `tc_UVYD55NWgT5`, `tc_raGajku4gLU` and
 `tc_XZwn6gIsFL_`, all `grant`, all unexpired until 13:08:56, against prompt 3
 which is `DONE` and a thread which is `ANCHOR_GONE`.
 
@@ -717,7 +721,7 @@ The consequence is positional: the buttons appear on a message sitting wherever
 the access message was first posted, not at the bottom of the group.
 Observed 2026-09-20: all four refreshes of that item's access message, outbox 140,
 143, 151 and 156, edited message 41, which was first sent at 13:54:30Z the day
-before, so the fresh buttons never showed up in the current conversation and jd
+before, so the fresh buttons never showed up in the current conversation and operator
 could not find them while looking for them.
 They are reachable by scrolling back, which is how the two expired taps at 14:31Z
 on 2026-09-19 happened, so this is friction rather than protection.
@@ -728,7 +732,7 @@ the one that closes the item.
 ## B15 - R-B is unreachable in both directions, so `/discuss` has no usable entry point
 
 **Closed 2026-09-20 as resolved by decision.**
-R-B was amended to owner-initiated threads, in the wording jd approved on
+R-B was amended to owner-initiated threads, in the wording operator approved on
 2026-09-20, so the written requirement now matches what is built.
 The owner's route is the control that F03 adds; the teammate-initiated direction
 is deliberately not built, and `/discuss` keeps no usable human entry point until
@@ -771,7 +775,7 @@ So the only way a teammate can name a prompt id is for the owner to read it out
 of their own database and say it aloud, at which point the owner would rather
 open the thread themselves, which is B2.
 
-jd's decision on 2026-09-19: the teammate-initiated scenario is not real, so the
+operator's decision on 2026-09-19: the teammate-initiated scenario is not real, so the
 discovery gap is not worth closing. Case 10 was skipped on that basis. The
 cleaner resolution is to amend R-B down to owner-initiated threads so the
 written requirement matches what is built, rather than leaving an accepted
@@ -850,7 +854,7 @@ Both of those require the prompt to be `DONE` or `SKIPPED`
 ([runtime.ts:942](../../server/src/integrations/telegram/runtime.ts#L942)), so a
 thread closed on a still-blocked task is never retired.
 
-Observed 2026-09-20 on item `awi1_70e8584ed9e957f9fd198dd8`, prompt 4 `BLOCKED`,
+Observed 2026-09-20 on item `<redacted-item-id>`, prompt 4 `BLOCKED`,
 closed by account A at 02:30:34Z:
 
 - the receipt said `Thread closed; grants ended.` and both grants were revoked,
@@ -861,7 +865,7 @@ closed by account A at 02:30:34Z:
 - the anchor stayed pinned and kept taking its periodic edit (B11)
 - `/task` from account B at 02:37Z, after the close, still answered in full with
   the blocker text, the required human action, both options with their pros and
-  cons, and `State: awaiting response · Owner: Jj`
+  cons, and `State: awaiting response · Owner: Requester operator`
 
 That last point is the user-visible shape of the defect: the owner ends the
 teammate's granted access, the bot confirms `Thread closed`, and the teammate can
@@ -892,7 +896,7 @@ ordinary command rather than those buttons:
 - `/grant context` from account A was accepted on the closed thread, minting card
   outbox 159 rather than any refusal
 - the tap applied at 02:42:04.363Z, receipted `Done: Granted context.`, and the
-  access message was edited to `Junaid: context` (outbox 161)
+  access message was edited to `Requester operator: context` (outbox 161)
 - the grant was still active after 63 checks over the following three minutes,
   during which the one-second delivery loop had about 180 opportunities to sweep
   it
@@ -914,7 +918,7 @@ The two-button card now names the consequence above the allowance line:
 
 ```
 Answer and resume starts the run. If the task completes, the item closes and every grant ends.
-Uses Junaid's claude allowance.
+Uses Requester operator's claude allowance.
 ```
 
 A card whose only button is `Save answer` states neither line, so the two cards
@@ -960,7 +964,7 @@ not only by wording.
 ## B19 - the pilot rig shared one working tree, so LT-5 could not run on it. Fixed 2026-09-27 by P-A4
 
 **Deferred 2026-09-26, with the reason recorded here rather than only elsewhere.**
-It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so jd's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
+It is carried by **F10**, the rig task, and by **L-1** in [team-gap-register.md](team-gap-register.md). F10 is needed before **LT-5** and before nothing else, so operator's burn-down left it last. Section 8 of the dev brief asks for the deferral reason to be in this log; it was in the gap register and the tracker but not here, which is why these four lines were added.
 Rig only, and it is the one of the four that actually blocks something: LT-5 cannot run
 until instance B has its own clone. Nothing in V5 touches Git, so V5 is unaffected.
 
@@ -970,7 +974,7 @@ Severity: none for the product; a note about this rig only.
 instance keeps its own bare roster mirror at `.agent-console/team/remote.git`, so
 roster replication travels through the remote for real.
 It does not isolate the workspace: both instances' workspace 1 has
-`work_directory` `/home/junaid/ai-workstation-team-workspace`, instance A as
+`work_directory` `<user-home>/ai-workstation-team-workspace`, instance A as
 `Team pilot workspace` and instance B as `pilot-project`, the same checkout with
 the same `origin`.
 
@@ -983,15 +987,15 @@ No TM3 case is affected, since none of them touches Git.
 Consequence to remember: give instance B its own clone before attempting LT-5.
 
 **FIXED 2026-09-27 by P-A4.** Built as a **real second clone**, not a copy,
-because jd confirmed a second machine is intended though unscheduled, so this
-doubles as LT-5 preparation. `/home/junaid/ai-workstation-team-workspace-b` is
+because operator confirmed a second machine is intended though unscheduled, so this
+doubles as LT-5 preparation. `<user-home>/ai-workstation-team-workspace-b` is
 an independent `git clone` of the same remote the first tree has, and instance
 B's workspace 1 was repointed at it through the product's own
 `PATCH /api/workspaces/1` rather than by editing the database:
 
 ```
-4100: Team pilot workspace -> /home/junaid/ai-workstation-team-workspace
-4200: pilot-project        -> /home/junaid/ai-workstation-team-workspace-b
+4100: Team pilot workspace -> <user-home>/ai-workstation-team-workspace
+4200: pilot-project        -> <user-home>/ai-workstation-team-workspace-b
 ```
 
 Proved observable, which is the whole point of the change - a commit written in

@@ -1,5 +1,10 @@
 # M1/M2 human verification checklist
 
+> **Operator/test material, not a user setup guide.** Rows preserve the result
+> known at the date recorded. Use the
+> [Team and Telegram user guide](../team-and-telegram-user-guide.md) for current
+> setup and the dated execution reports for later evidence.
+
 Scope: M1 personal task-control foundation and M2 local execution
 safety/quota advisor, including its M2b/M2c/M2d hardening continuations
 (local task-control robustness, local start-unknown recovery UX and local
@@ -40,26 +45,26 @@ Expected commit topics:
 - Do not place live bot tokens, provider credentials or private remote URLs in
   settings or docs.
 - Prefer an isolated copy without `.agent-console` for mutation checks:
-  `rsync -a --exclude .git --exclude .agent-console --exclude node_modules ./ /tmp/aw-m1-human-check/`
+  `rsync -a --exclude .git --exclude .agent-console --exclude node_modules ./ ${TMPDIR:-/tmp}/aw-m1-human-check/`
 
 ## Reviewer test cases
 
 Automated status reflects the isolated verification run recorded in
-`implementation.md` on 2026-09-13. Human status reflects Junaid's M1
+`implementation.md` on 2026-09-13. Human status reflects Requester operator's M1
 fake-service verification sign-off on 2026-09-13.
 
 | ID | Case | Steps | Expected result | Automated status | Human status |
 | --- | --- | --- | --- | --- | --- |
-| H-M1-01 | Default-off capability | Start the server or inspect `TaskControlService.capability()` with default settings. | Capability reports disabled/default-off and G01-G04 remain blocked. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-02 | Settings are visible | Open Agents settings and inspect Task Control, or inspect `server/src/settings.ts` and `web/components/agents/AgentsView.tsx`. | Task Control has enablement, notifications, remote actions, transport and bot ID fields; defaults do not enable remote actions. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-03 | Fake pairing | Run `server/src/taskControl.test.ts`. | Pairing is single-use, expires and rejects wrong chat/topic. Usernames are not authority. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-04 | Fake question render | Run `server/src/taskControl.test.ts`. | Rendered phone payload redacts localhost URLs and secret-like values; no raw run IDs or transcript dumps are included. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-05 | Durable fake outbox | Run `server/src/telegramAdapter.test.ts`. | Send failure is recorded, retry can mark the same outbox item sent, and no task state changes merely because send failed. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-06 | Durable fake inbox | Run `server/src/telegramAdapter.test.ts`. | Updates are stored before the cursor advances; duplicate updates are ignored by primary key. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-07 | Fake E2E Save then Resume | Run `server/src/telegramAdapter.test.ts`. | Fake adapter posts a question, processes callback updates, saves an answer, reissues current actions and resumes exactly once. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-08 | Wrong actor/bot/topic | Run `server/src/taskControl.test.ts`. | Wrong actor, bot and topic are rejected with durable receipts and no task mutation. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-09 | Stale revision | Run `server/src/taskControl.test.ts`. | A changed task/question rejects the old action; no answer is saved. | PASS | PASS - Junaid, 2026-09-13 |
-| H-M1-10 | Disabled remote actions | Run `server/src/taskControl.test.ts`. | Remote callbacks are rejected while remote controls are disabled. Local Stop remains outside this feature. | PASS | PASS - Junaid, 2026-09-13 |
+| H-M1-01 | Default-off capability | Start the server or inspect `TaskControlService.capability()` with default settings. | Capability reports disabled/default-off and G01-G04 remain blocked. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-02 | Settings are visible | Open Agents settings and inspect Task Control, or inspect `server/src/settings.ts` and `web/components/agents/AgentsView.tsx`. | Task Control has enablement, notifications, remote actions, transport and bot ID fields; defaults do not enable remote actions. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-03 | Fake pairing | Run `server/src/taskControl.test.ts`. | Pairing is single-use, expires and rejects wrong chat/topic. Usernames are not authority. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-04 | Fake question render | Run `server/src/taskControl.test.ts`. | Rendered phone payload redacts localhost URLs and secret-like values; no raw run IDs or transcript dumps are included. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-05 | Durable fake outbox | Run `server/src/telegramAdapter.test.ts`. | Send failure is recorded, retry can mark the same outbox item sent, and no task state changes merely because send failed. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-06 | Durable fake inbox | Run `server/src/telegramAdapter.test.ts`. | Updates are stored before the cursor advances; duplicate updates are ignored by primary key. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-07 | Fake E2E Save then Resume | Run `server/src/telegramAdapter.test.ts`. | Fake adapter posts a question, processes callback updates, saves an answer, reissues current actions and resumes exactly once. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-08 | Wrong actor/bot/topic | Run `server/src/taskControl.test.ts`. | Wrong actor, bot and topic are rejected with durable receipts and no task mutation. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-09 | Stale revision | Run `server/src/taskControl.test.ts`. | A changed task/question rejects the old action; no answer is saved. | PASS | PASS - Requester operator, 2026-09-13 |
+| H-M1-10 | Disabled remote actions | Run `server/src/taskControl.test.ts`. | Remote callbacks are rejected while remote controls are disabled. Local Stop remains outside this feature. | PASS | PASS - Requester operator, 2026-09-13 |
 | H-M2-01 | Durable effective-directory reservation | Run `server/src/startIntent.test.ts`. | Aliased workspace paths produce exactly one active `workspace_start_intent`; the competing start is rejected. | PASS | Pending |
 | H-M2-02 | Reservation before provider discovery | Run `server/src/runService.test.ts`. | Source-order regression confirms `reserveStartIntent` precedes awaited provider discovery. | PASS | Pending |
 | H-M2-03 | Restart unknown ownership | Run `server/src/startIntent.test.ts`. | Start-after-spawn and unreleased start-intent rows classify as `START_UNKNOWN` and stay unreleased. | PASS | Pending |
@@ -80,10 +85,10 @@ fake-service verification sign-off on 2026-09-13.
 
 Human UI evidence:
 
-- Junaid confirmed `http://localhost:3011/agents` shows the Task Control section
+- Requester operator confirmed `http://localhost:3011/agents` shows the Task Control section
   with Enable task control, Notifications, Remote actions, Transport and Bot ID
   controls.
-- Junaid confirmed all M1 human verification cases pass for the local
+- Requester operator confirmed all M1 human verification cases pass for the local
   fake-service scope.
 - Runtime was corrected by running the backend with `ALLOWED_ORIGINS` including
   `http://localhost:3011` and `http://127.0.0.1:3011`; WebSocket acceptance from
@@ -92,17 +97,17 @@ Human UI evidence:
 Use an isolated copy for DB-backed tests where possible:
 
 ```bash
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-full npm test --workspace server
+AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts
+AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2-full npm test --workspace server
 node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2b-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
+AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2b-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
 npm run test:quota-ui --workspace web
 npm run typecheck --workspace shared
 npm run typecheck --workspace server
 npm run typecheck --workspace web
 npm run lint --workspace web -- lib/providerUsage.ts components/agents/usage.tsx components/agents/usage.test.tsx
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2d-verify node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
-AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2d-full npm test --workspace server
+AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2d-verify node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/pipelineScheduler.test.ts server/src/operationalState.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts
+AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2d-full npm test --workspace server
 npm run test:quota-ui --workspace web
 npm run typecheck --workspace shared
 npm run typecheck --workspace server
@@ -155,7 +160,7 @@ Teammate transfer, group topics and Git transfer remain out of scope and gated b
 
 ### L1 preconditions
 
-- `TELEGRAM_BOT_TOKEN` is set in the repository root `.env` (gitignored), and the server was restarted after setting it.
+- A bot token is connected through **Agents → Set up Telegram** (recommended), or `TELEGRAM_BOT_TOKEN` is set in the repository root `.env` before the server starts.
 - Agents page: Enable task control, Notifications and Remote actions are on, Transport is Telegram, and all four changes are saved.
 - The Live Telegram panel shows connected, and the operator's phone is paired through Pair a phone with local confirmation.
 - Use a throwaway workspace for any case that resumes work, because resume starts a real provider run.
@@ -174,7 +179,7 @@ A fake-Telegram harness run (T1) counts as Automated only.
 | ID | Case | Steps | Expected result | Harness scenario (tier) | Automated status | Live status |
 | --- | --- | --- | --- | --- | --- | --- |
 | H-L1-01 | Default-off, no network | Run with task control disabled, with the Fake Telegram transport, and with no token. | No Bot API call is made; the panel shows off or no token; pairing is refused. | S-L1-01 (T1) | PASS | Pending |
-| H-L1-02 | Token isolation | Inspect logs, `/api/task-control/*`, `/api/settings` and a full database dump. | The token appears nowhere; it is removed from `process.env` at boot so agent processes do not inherit it. | S-L1-28 (T1, T3) | PASS; T3 PASS 2026-09-15 (real Telegram, test bot) | PASS for a stubbed-Telegram run of the real app, 2026-09-14; a sweep after real-bot use is H-L1-17; live satisfied 2026-09-16 by T3 plus the phone look check |
+| H-L1-02 | Token isolation | Inspect logs, `/api/task-control/*`, `/api/settings` and a full database dump. | The token appears nowhere; an env token is removed from `process.env` at boot, while a UI-managed token is held only by the Telegram runtime, so agent processes inherit neither. | S-L1-28 (T1, T3) | PASS; T3 PASS 2026-09-15 (real Telegram, test bot) | PASS for a stubbed-Telegram run of the real app, 2026-09-14; a sweep after real-bot use is H-L1-17; live satisfied 2026-09-16 by T3 plus the phone look check |
 | H-L1-03 | Connect and long poll | Start the server with the token and live settings. | The panel shows connected with the bot identity; polling uses a 25s window. | S-L1-02 (T1, T3); S-L1-30 (T1) | PASS; T3 PASS 2026-09-15 (real Telegram, test bot) | PASS - 2026-09-14, after the connect-timeout fix in known issues; live satisfied 2026-09-16 by T3 plus the phone look check |
 | H-L1-04 | Pairing with local confirmation | Pair a phone, send `/start <code>` from the private chat, confirm in the local panel. | The observed Telegram identity is shown before confirmation; the bot confirms pairing; a wrong code gets no reply; a group chat is refused. | S-L1-03 (T1, T3); S-L1-04, S-L1-30 (T1) | PASS; T3 PASS 2026-09-15 (real Telegram, test bot) | PASS - 2026-09-14 (happy path only); live satisfied 2026-09-16 by T3 plus the phone look check |
 | H-L1-05 | Human-in-the-loop to completion | Start a saved task whose agent must block on an owner decision; reply to the phone card; tap Answer and resume. | The task blocks; the phone card shows the agent's blocker reason; the reply produces an answer card; the tap records one APPLIED receipt linked to one new run; the task finishes DONE using the answer. | S-L1-05 (T1, T3); S-L1-31 (T3, real Claude) | PASS (stubbed Telegram, stubbed start); T3 PASS 2026-09-15 (real Telegram, test bot) | PASS - 2026-09-14, see evidence below; live satisfied 2026-09-16 by T3 plus the phone look check |
@@ -235,11 +240,11 @@ Rows must not include bot tokens, API hashes, session strings, bot usernames, bo
 
 | ID | Case | Steps | Expected result | Script | Automated status | Live status |
 | --- | --- | --- | --- | --- | --- | --- |
-| H-TM-LT1 | Two bots in a group | 2026-09-16: ran `e2e/scripts/lt1-two-bots-group.ts` with the existing harness test bot, the second throwaway bot from `~/.config/ai-workstation/e2e-live.env`, and a temporary private group created by the signed-in test user. The script added both bots, promoted both as administrators with pin and invite rights, verified `getMe`, `getChatMember`, pinning, one-use invite creation and rejoin, then sent a plain `/status`, addressed commands to each bot, replies to each bot's own message and an unanchored discussion message. | Record exactly which updates each bot receives so the fake can copy Telegram. | `node --import tsx e2e/scripts/lt1-two-bots-group.ts` | PASS. Both bots reported `can_read_all_group_messages=false`; both were administrators with pin and invite rights; both could pin; the one-use invite was created and used by leaving and rejoining. Delivery: plain command reached both bots; addressed commands reached at least the named bot and also the other bot; replies to each bot's own message reached both bots; unanchored discussion reached both bots. After JD's decision, the script was updated and rerun with administrator-delivery assumptions; it exited 0 with all four corrected assumptions confirmed. | PASS - 2026-09-16. Original section 4.4 assumptions: plain command reaches both = confirmed; addressed command reaches at least named bot = confirmed; reply reaches only replied-to bot = disproved; unanchored discussion reaches neither = disproved. JD decided to update the design and fake to model administrator delivery; section 4.4 and the Team-track plan now require that broad delivery plus local ownership filtering. |
-| H-TM-LG1 | Repository refs | 2026-09-17: jd approved the repository and disposable probe refs for the LG-1 script. Ran the script against that repository, then retried cleanup until both disposable probe refs were deleted. No repository URL, token or account identifier is recorded here. | Custom `refs/aw/*` refs are accepted, compare-and-swap works by rejecting a divergent non-fast-forward update, an `aw/handover/*` branch is accepted and no Actions run is triggered by the probes. | `node --import tsx e2e/scripts/lg1-repository-refs.ts` | PASS. Custom refs were accepted, the divergent non-fast-forward probe was rejected, the handover branch probe was accepted and both disposable refs were deleted. | PASS - 2026-09-17. This permits TM1 to use `refs/aw/team` compare-and-swap rather than falling back to ordinary branches. |
-| H-TM-LT3 | Join | Deferred by operator instruction on 2026-09-17. The fake TM1 join scenarios and roster tests are recorded in `tm1.md` and `implementation.md`; the real two-person jd/Yousef stopwatch check is parked until the full team build. | When it runs, Yousef's total setup time, both panels and the roster must show two people and two bots after jd manually adds Yousef's bot as administrator and sends the invite link. | Not run yet. | Scheduled/deferred; no automated substitute is counted as a live pass. | Scheduled/deferred until the full build. Do not mark PASS before the real jd/Yousef LT-3 run. |
-| H-TM-LT4 | Thread and grant | Deferred by operator instruction on 2026-09-18. The fake TM3 thread and grant scenarios are recorded in `tm1.md` and `implementation.md`; the real two-person jd/Yousef check is parked after the full Team build. | When it runs, one requester command creates one current action card, an authorized teammate can act once, and revoke, expiry or teammate removal makes the open card inert. An expired card is not renewed automatically; the requester must send the command again. | Not run yet. | Scheduled/deferred; TM-T1-4 and TM-T1-5 are automated evidence, not a live pass. | Scheduled/deferred after the full build. Do not mark PASS before the real jd/Yousef LT-4 run. |
-| H-TM-LT5 | Two-machine handover | **Deferred by jd 2026-09-27 to "a much later time"**, and recorded here rather than left absent, because LT-3 and LT-4 each have a deferral row and LT-5 had none (L-14). It is the two-**machine**, two-person handover smoke with Yousef, about 10 minutes. Confirmed as genuinely intended but unscheduled. | When it runs, a handover offered on one machine is accepted on a second **physical** machine, the work returns through the shared remote, and the requester applies it - with each side having to fetch to see the other's commits. | Needs a Yousef date; no script yet. | **P-A4 (2026-09-27) is the nearest automated evidence and is not a substitute**: instance B now has its own clone, so the Git exchange is observable between two clones **on one machine**. That was built as a real clone deliberately, as preparation for this row. | Scheduled/deferred, person-dependent. Optional in the brief and it stays optional. Do not mark PASS on the one-machine rig proof. |
+| H-TM-LT1 | Two bots in a group | 2026-09-16: ran `e2e/scripts/lt1-two-bots-group.ts` with the existing harness test bot, the second throwaway bot from `~/.config/ai-workstation/e2e-live.env`, and a temporary private group created by the signed-in test user. The script added both bots, promoted both as administrators with pin and invite rights, verified `getMe`, `getChatMember`, pinning, one-use invite creation and rejoin, then sent a plain `/status`, addressed commands to each bot, replies to each bot's own message and an unanchored discussion message. | Record exactly which updates each bot receives so the fake can copy Telegram. | `node --import tsx e2e/scripts/lt1-two-bots-group.ts` | PASS. Both bots reported `can_read_all_group_messages=false`; both were administrators with pin and invite rights; both could pin; the one-use invite was created and used by leaving and rejoining. Delivery: plain command reached both bots; addressed commands reached at least the named bot and also the other bot; replies to each bot's own message reached both bots; unanchored discussion reached both bots. After Requester's decision, the script was updated and rerun with administrator-delivery assumptions; it exited 0 with all four corrected assumptions confirmed. | PASS - 2026-09-16. Original section 4.4 assumptions: plain command reaches both = confirmed; addressed command reaches at least named bot = confirmed; reply reaches only replied-to bot = disproved; unanchored discussion reaches neither = disproved. Requester decided to update the design and fake to model administrator delivery; section 4.4 and the Team-track plan now require that broad delivery plus local ownership filtering. |
+| H-TM-LG1 | Repository refs | 2026-09-17: operator approved the repository and disposable probe refs for the LG-1 script. Ran the script against that repository, then retried cleanup until both disposable probe refs were deleted. No repository URL, token or account identifier is recorded here. | Custom `refs/aw/*` refs are accepted, compare-and-swap works by rejecting a divergent non-fast-forward update, an `aw/handover/*` branch is accepted and no Actions run is triggered by the probes. | `node --import tsx e2e/scripts/lg1-repository-refs.ts` | PASS. Custom refs were accepted, the divergent non-fast-forward probe was rejected, the handover branch probe was accepted and both disposable refs were deleted. | PASS - 2026-09-17. This permits TM1 to use `refs/aw/team` compare-and-swap rather than falling back to ordinary branches. |
+| H-TM-LT3 | Join | Deferred by operator instruction on 2026-09-17. The fake TM1 join scenarios and roster tests are recorded in `tm1.md` and `implementation.md`; the real two-person operator/<git-author> stopwatch check is parked until the full team build. | When it runs, <git-author>'s total setup time, both panels and the roster must show two people and two bots after operator manually adds <git-author>'s bot as administrator and sends the invite link. | Not run yet. | Scheduled/deferred; no automated substitute is counted as a live pass. | Scheduled/deferred until the full build. Do not mark PASS before the real operator/<git-author> LT-3 run. |
+| H-TM-LT4 | Thread and grant | Deferred by operator instruction on 2026-09-18. The fake TM3 thread and grant scenarios are recorded in `tm1.md` and `implementation.md`; the real two-person operator/<git-author> check is parked after the full Team build. | When it runs, one requester command creates one current action card, an authorized teammate can act once, and revoke, expiry or teammate removal makes the open card inert. An expired ordinary thread/grant card is not renewed automatically; the requester must send the command again. Persistent handover offer/Return cards are the later exception and renew the existing local refs in place. | Not run yet. | Scheduled/deferred; TM-T1-4 and TM-T1-5 are automated evidence, not a live pass. | Scheduled/deferred after the full build. Do not mark PASS before the real operator/<git-author> LT-4 run. |
+| H-TM-LT5 | Two-machine handover | **Deferred by operator 2026-09-27 to "a much later time"**, and recorded here rather than left absent, because LT-3 and LT-4 each have a deferral row and LT-5 had none (L-14). It is the two-**machine**, two-person handover smoke with <git-author>, about 10 minutes. Confirmed as genuinely intended but unscheduled. | When it runs, a handover offered on one machine is accepted on a second **physical** machine, the work returns through the shared remote, and the requester applies it - with each side having to fetch to see the other's commits. | Needs a <git-author> date; no script yet. | **P-A4 (2026-09-27) is the nearest automated evidence and is not a substitute**: instance B now has its own clone, so the Git exchange is observable between two clones **on one machine**. That was built as a real clone deliberately, as preparation for this row. | Scheduled/deferred, person-dependent. Optional in the brief and it stays optional. Do not mark PASS on the one-machine rig proof. |
 
 ## L3 personal Telegram surface checklist
 

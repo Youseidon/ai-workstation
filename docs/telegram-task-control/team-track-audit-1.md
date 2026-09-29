@@ -1,5 +1,8 @@
 # Team Track Final Audit 1
 
+> **Historical audit evidence.** PASS applies only to the audited commit/range
+> and the commands recorded below.
+
 Date: 2026-09-17
 Auditor: fresh independent audit agent for T01-T10 plus T10R/T10V/T10G/T10E
 Audited branch: `audit/team-track-audit-1-final`
@@ -32,7 +35,7 @@ used.
 | D5 messages imperative/no co-author | **PASS** | `git log --format='%B' 37236e0..HEAD` contains no co-author line. Task subjects are imperative, including `Add team roster model`, `Repair T10 audit verification`, `Complete TM1 Playwright coverage`, and `Gate Team features by default`. |
 | D6 cleanup | **PASS** | `git branch --list 'tm/*'` produced no output. `git worktree list` contains only main and this final audit worktree; no Team task worktree remains. |
 | D7 scenario-before-code | **PASS** | TM0 table `93c4e80` and skim `32fb000` precede T03/T04 product commits. TM1 table/defaults `7841848` precede T07-T09 and the T10V/T10G completion work. |
-| D8 jd stops/no worker escalation | **PASS** | The tracker records T01 setup and delivery decision, T02 skim, T03 remediation/direct authorization, T05 repository/probe approval, T06 defaults/skim, and LT-3 deferral. No evidence says a worker contacted jd/Yousef or spawned an agent. |
+| D8 operator stops/no worker escalation | **PASS** | The tracker records T01 setup and delivery decision, T02 skim, T03 remediation/direct authorization, T05 repository/probe approval, T06 defaults/skim, and LT-3 deferral. No evidence says a worker contacted operator/<git-author> or spawned an agent. |
 | D9 tracker agrees with git | **PASS** | Every task/remediation SHA named through T10E exists in the linear main-equivalent history. Product commits map to T01-T10, T10R, T10V or T10G; T10E maps to its documentation-only correction, and the remaining range commits are tracker, operator-decision and audit records. T03/T03F's shared remediation range is explicitly documented. |
 
 ## Acceptance
@@ -40,7 +43,7 @@ used.
 | Check | Result | Evidence |
 | --- | --- | --- |
 | A1 auditor re-verifies criteria | **PASS** | The auditor reran the current-tree automated criteria and inspected scenario ordering, settings/API/runtime/UI gates, H-TM records, token isolation, implementation evidence and Git discipline. Live LT-1/LG-1 records were inspected rather than rerun; live checks were prohibited for this audit. |
-| A2 typecheck/lint/full server/full T1 | **PASS** | `npm run typecheck`: all 4 workspaces passed. `npm run lint --workspace web`: 0 errors and 5 existing warnings. `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-final-server npm test --workspace server`: 241/241 passed. `npm run e2e --workspace e2e`: 117/117 passed in 19.5 minutes. |
+| A2 typecheck/lint/full server/full T1 | **PASS** | `npm run typecheck`: all 4 workspaces passed. `npm run lint --workspace web`: 0 errors and 5 existing warnings. `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-audit1-final-server npm test --workspace server`: 241/241 passed. `npm run e2e --workspace e2e`: 117/117 passed in 19.5 minutes. |
 | A3 three-repeat burn-in | **PASS** | Focused `S-L1-04` burn-in passed 3/3 in 59.8 seconds. Combined `tm1-team-default-off.spec.ts` plus `tm1-team-roster.spec.ts` burn-in passed 12/12 in 2.9 minutes, covering the default-off row and TM-T1-1/1a/1b three times each. |
 | A4 H-TM real-check records | **PASS** | `human-verification.md` records H-TM-LT1 PASS dated 2026-09-16, H-TM-LG1 PASS dated 2026-09-17, and H-TM-LT3 scheduled/deferred until the full build. LT-3 is not represented as PASS. |
 | A5 invariants/default-off/token isolation | **PASS** | `team.enabled` / `TEAM_ENABLED` has fallback `false`. The default-off browser row proves Team UI is absent, all 8 Team route/method combinations return stable `403 team_disabled` responses without mutation, and personal Telegram remains polling; it passed in the full T1 suite and 3/3 burn-in. Focused API/runtime/settings coverage passed 43/43. Direct runtime entry points and in-flight Team commands call the gate. Full T1 token-isolation rows passed, each harness disposed through its automatic sweep, and the tracked-file token-shape sweep found only the intentional redaction-test corpus fixture. |

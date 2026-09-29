@@ -1,13 +1,16 @@
-# V4 handover: the audits, and the three questions waiting on jd
+# V4 handover: the audits, and the three questions waiting on operator
+
+> **Archived session handoff.** Superseded by later V-series records and current
+> implementation evidence.
 
 > **CLOSED 2026-09-26. Superseded by [team-v5-handover.md](team-v5-handover.md).**
-> jd answered all three questions in section 5 on 2026-09-25 and 2026-09-26; audit 4 has since run and FAILed, and both audits are routed.
+> operator answered all three questions in section 5 on 2026-09-25 and 2026-09-26; audit 4 has since run and FAILed, and both audits are routed.
 > Figures in this file describe the tree before gaps C3 and C4 were closed: the T1 bar is now **134**, not 127, and the web bar **95**, not 94.
 > Read the V5 handover for current state; use this one only for the reasoning behind the three questions.
 
 Written 2026-09-25, by the orchestrator, for whoever picks this up in a fresh session.
 This session closed gaps **M-9** and **M-5** and ran **audit 3**, which FAILed.
-It ends with three decisions jd deferred to the next session, listed in section 5.
+It ends with three decisions operator deferred to the next session, listed in section 5.
 
 Read this first, then [team-burndown-tracker.md](team-burndown-tracker.md) and [team-gap-register.md](team-gap-register.md).
 [team-m9-handover.md](team-m9-handover.md) and [team-reconcile-handover.md](team-reconcile-handover.md) are the equivalent files for the two closed gaps; both carry a CLOSED banner and corrections.
@@ -16,7 +19,7 @@ Read this first, then [team-burndown-tracker.md](team-burndown-tracker.md) and [
 
 | Thing | Value |
 | --- | --- |
-| main | `/home/junaid/ai-workstation`, clean. **M9 landed at `250e085`**; documentation commits follow, and nothing after it touches a file outside `docs/` |
+| main | `<user-home>/ai-workstation`, clean. **M9 landed at `250e085`**; documentation commits follow, and nothing after it touches a file outside `docs/` |
 | main vs `origin/main` | **364 ahead, 0 behind**. Still **nothing pushed, ever**; `git branch -r --contains HEAD` is empty |
 | Worktrees | One, the checkout itself. No `fix/*` or `tm/*` branch remains. The two auditor worktrees were removed after their reports were harvested |
 | **Full T1 suite** | **127 of 127.** Green twice on two separate trees: 24.4 minutes by the orchestrator, 27.1 minutes by audit 3 independently |
@@ -26,9 +29,9 @@ Read this first, then [team-burndown-tracker.md](team-burndown-tracker.md) and [
 | Typecheck | Clean on all four workspaces |
 | Web lint | **19 problems, 17 errors and 2 warnings.** Identical on main and on the M9 branch |
 | Audit 3, F track | **FAIL** on D1, D9, A1, A2, A6. Committed as `team-track-audit-3.md` |
-| Audit 4, H track | **Not started.** jd deferred it to the next session |
+| Audit 4, H track | **Not started.** operator deferred it to the next session |
 
-The pilot checkout `/home/junaid/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, long since merged into main.
+The pilot checkout `<user-home>/ai-workstation-team-pilot` sits on `feature/team-telegram-pilot` at `dc3e9de`, long since merged into main.
 It is the test rig, not where product code goes.
 
 ## 2. What M-9 turned out to be, and why it matters beyond itself
@@ -46,7 +49,7 @@ Fixing that exposed two more defects of the same kind. All three were merge-intr
 
 The third is the one to carry forward. A work item waiting on a person has two spellings in the status model: `BLOCKED`, stored and labelled "Needs you", and `AWAITING_RESPONSE`, the live overlay the model itself documents as an alias of it.
 Ours returned the overlay; upstream's returns the stored name. **Neither is wrong**, which is exactly why a merge can swap them with nothing to complain, and the Telegram layer keyed on the overlay in two places.
-jd confirmed on 2026-09-25 that a blocked task's card reaching the phone is the intended purpose, so it was repaired rather than accepted.
+operator confirmed on 2026-09-25 that a blocked task's card reaching the phone is the intended purpose, so it was repaired rather than accepted.
 
 **The lesson the M-9 handover asked to be carried forward is now demonstrated rather than argued.** Structural checks cannot prove that what survived a merge is wired to a user surface. Only the end-to-end tier can. Do not let a green server suite stand in for it.
 
@@ -57,7 +60,7 @@ It reproduced the full T1 suite independently at 127 of 127 on its own worktree,
 
 | Check | Why it failed | Character |
 | --- | --- | --- |
-| **D1** | F00A, F01, F02 and F04 all record the id `orchestrator`, which repeats and is not a worker id; F00B records `one worker`, which is not an id at all | Record-keeping. jd's split-execution decision of 2026-09-20 authorises the orchestrator running F01 and F02, but not F00A or F04 by its letter, and nothing covers F00B |
+| **D1** | F00A, F01, F02 and F04 all record the id `orchestrator`, which repeats and is not a worker id; F00B records `one worker`, which is not an id at all | Record-keeping. operator's split-execution decision of 2026-09-20 authorises the orchestrator running F01 and F02, but not F00A or F04 by its letter, and nothing covers F00B |
 | **D9** | F04's row names no commit - its cell reads `` `(with this commit)` `` and the commit is `a94da5e`. And 17 commits of ours in the F window belong to no row: the G01/G02/G04 gate and handover-rules documentation | Record defect, documentation only. **Verified independently by the orchestrator** |
 | **A1** | Five criteria across five tasks are unmet or not re-verifiable. Section 4 below | The substantive one |
 | **A2** | Lint: 19 problems, 17 errors, exit 1 | Known, attributed, entirely upstream's files, and `origin/main` does not pass lint either |
@@ -72,17 +75,17 @@ It also raised seven findings no check names, of which three are worth acting on
 3. **F03 and F06.** Both "checked at both widths" criteria are unverifiable: no rig was committed for either. Register entry L-4 names only F03.
 4. **F00B.** Its proof criterion is three full server runs and three full T1 runs against one unchanged root. The auditor did the server half and ran T1 once, not three times, so the criterion is unproven rather than failed.
 
-## 5. The three questions jd deferred to the next session
+## 5. The three questions operator deferred to the next session
 
-jd was asked all three on 2026-09-25 and chose to pick them up fresh rather than answer at the end of a long session. **Do not decide any of them in a fixture or a document; put them to jd.**
+operator was asked all three on 2026-09-25 and chose to pick them up fresh rather than answer at the end of a long session. **Do not decide any of them in a fixture or a document; put them to operator.**
 
-1. **How to route audit 3's five FAILs.** The brief's own rule is that a FAIL is either fixed by a new task with its own worker, or waived by jd in writing in the tracker. The orchestrator's recommendation, offered and not yet accepted: fix **D9** and **A6** as documentation commits, since both are cheap and both will trip the next auditor, and put **D1**, **A2** and **A1**'s criteria to jd as waivers with each deviation recorded in the gap register.
+1. **How to route audit 3's five FAILs.** The brief's own rule is that a FAIL is either fixed by a new task with its own worker, or waived by operator in writing in the tracker. The orchestrator's recommendation, offered and not yet accepted: fix **D9** and **A6** as documentation commits, since both are cheap and both will trip the next auditor, and put **D1**, **A2** and **A1**'s criteria to operator as waivers with each deviation recorded in the gap register.
 2. **Whether to run audit 4 over the H track now or after the F-track failures are resolved.** Its worktree instructions are in section 6. The brief's letter says a FAIL blocks the next task; the practical argument is that audit 4 covers a different track and having both results in hand makes one ruling possible instead of two.
 3. **What to do about F05's missing harness case**, item 1 of section 4: register it as a deviation and retire the invented `TM-T1-8` id, build the fake's group-upgrade capability as a new task, or fold the evidence into V5's live run.
 
 **Still stopping points, unchanged**: before V5, before any push, and on any audit FAIL.
 
-## 6. Running audit 4, when jd rules on it
+## 6. Running audit 4, when operator rules on it
 
 Launch a fresh agent with no part in the build. Give it section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) **unchanged**, the **H track** (H01 to H07), the range starting at `dc3e9de`, and this tracker. It writes `team-track-audit-4.md`, and the orchestrator commits it.
 
@@ -97,7 +100,7 @@ Tell it the harness is exclusive - **never two harness runs at once** - and that
 
 ## 7. Things about the rig that will save the next session time
 
-- **Budget about 25 minutes for a green T1 pass and about 45 for a red one.** A red run is *slower*, because a failing card scenario spends 30 seconds timing out. This session killed a healthy full run at twenty minutes on an estimate extrapolated from the first five tests, which happen to be the slow two-environment Team specs while the remaining hundred-odd are seconds each. jd challenged the estimate and was right. **Do not extrapolate from the first file.**
+- **Budget about 25 minutes for a green T1 pass and about 45 for a red one.** A red run is *slower*, because a failing card scenario spends 30 seconds timing out. This session killed a healthy full run at twenty minutes on an estimate extrapolated from the first five tests, which happen to be the slow two-environment Team specs while the remaining hundred-odd are seconds each. operator challenged the estimate and was right. **Do not extrapolate from the first file.**
 - **Run T1 from the `e2e` directory.** From the repository root it fails with `Project(s) "t1" not found`.
 - **A fresh worktree needs `npm install`** (about 20 seconds) and will have the system npm rewrite `package-lock.json`. Restore it before committing: that churn is not yours.
 - **The console ends the provider the moment a terminal status lands**, so a fake cannot log anything after its own final post. The T1 fake logs every launcher call *before* making it for exactly this reason.
@@ -107,16 +110,16 @@ Tell it the harness is exclusive - **never two harness runs at once** - and that
 
 ## 8. Standing constraints, unchanged
 
-No push and no remote write without jd's explicit approval, shown first.
+No push and no remote write without operator's explicit approval, shown first.
 No paid provider, no live Telegram credential.
 Never two harness runs at once.
 `team.enabled` and `team.handoverEnabled` both stay false by default.
 Lint exists in the `web` workspace only.
-Commit messages are imperative and carry **no co-author line of any kind**, which is both jd's standing rule and audit check D5.
+Commit messages are imperative and carry **no co-author line of any kind**, which is both operator's standing rule and audit check D5.
 
 ## 9. What is left after the three questions
 
-**V5**, the solo LT-4 re-run of cases 2, 3, 11 and 12 from [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md). **Stop and ask jd before starting it**: it needs the pilot rig with real Telegram bots, which collides with the standing no-live-credential rule.
+**V5**, the solo LT-4 re-run of cases 2, 3, 11 and 12 from [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md). **Stop and ask operator before starting it**: it needs the pilot rig with real Telegram bots, which collides with the standing no-live-credential rule.
 
 Open afterwards and not part of completion: M-1 the two-person runs, M-6, M-7, L-1 to L-11, the 17 upstream lint errors, and whether anything is ever pushed.
-jd's "keep it local" ruling of 2026-09-22 still stands.
+operator's "keep it local" ruling of 2026-09-22 still stands.

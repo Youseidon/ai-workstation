@@ -1,5 +1,10 @@
 # Solo two-account Team thread and grant check (LT-4 by yourself)
 
+> **Historical one-machine pilot runbook and evidence record.** Bot names,
+> labels, ports, paths and dates below belong to that rig. They are not general
+> setup values. Use the [Team and Telegram user guide](../team-and-telegram-user-guide.md)
+> for current product instructions.
+
 Run this after [solo-team-join-check.md](solo-team-join-check.md) has passed and
 the roster holds both people and both bots.
 This is the LT-4 scope from [tm3.md](../e2e-scenarios/tm3.md): a real item
@@ -11,23 +16,21 @@ The design gives the remote three machine records
 ([teammate-design.md](teammate-design.md), section 8.3): the roster
 `refs/aw/team`, the item control record `refs/aw/items/<item>/control`, and the
 handover branch `aw/handover/<item>`.
-Only the roster exists in the code today, and it is genuinely remote-mediated:
+At the time this LT-4 runbook was written, only the roster portion was in its
+scope, and it was genuinely remote-mediated:
 each instance keeps its own bare mirror at `.agent-console/team/remote.git` and
 compare-and-swap pushes with `--force-with-lease`
 ([teamRoster.ts:213-236](../../server/src/teamRoster.ts#L213-L236)), so case 1
 does exercise a real round trip through GitHub.
-`refs/aw/items` and `aw/handover` are referenced nowhere in `server/src`, and
-`item_link.control_head` is never written; they belong to TM4 and are checked by
-LT-5, not here.
-So no case below touches Git, and the absence of a handover test in this document
-is scope rather than an omission.
-When LT-5 eventually runs, instance B will need its own clone first, since both
-instances currently share one working tree (B19). That is a property of this rig
-only, not of the product.
+The later TM4 implementation added per-item control refs, handover branches,
+capture, receiver execution, return and requester apply. No case below proves
+those later paths; the absence of a handover test is this runbook's historical
+scope, not current product status. The dated two-workstation evidence is indexed
+from [README.md](README.md).
 
-Roles: account A is the owner (workstation label `Jj`, bot `@aiws_helper_bot`,
-instance A on ports 3100/4100), account B is the teammate (label `Junaid`, bot
-`@ai_test_pilot_1_bot`, instance B on ports 3200/4200).
+Roles: account A is the owner (workstation label `Requester operator`, bot `<requester-bot-username>`,
+instance A on ports 3100/4100), account B is the teammate (label `Requester operator`, bot
+`<receiver-bot-username>`, instance B on ports 3200/4200).
 
 ## Command surface
 
@@ -57,7 +60,11 @@ Grant capabilities are `context`, `answer` and `resume`; `all` is input
 shorthand and is never stored as a capability.
 Save answer needs `answer`; Answer and resume needs both `answer` and `resume`.
 The owner never needs a grant on their own item.
-Team action buttons expire after 10 minutes and are never renewed automatically.
+Ordinary Team thread/grant action buttons expire after 10 minutes and are not
+renewed automatically; issue the command again. Persistent handover offer and
+Return-work reminders are a later exception: their existing local action refs
+renew in place while the shared decision remains open, without another Telegram
+post.
 
 ## Case 0a - turn on notifications and remote actions (precondition)
 
@@ -92,7 +99,7 @@ human decision, for example:
 yourself; stop and ask the human which one to use."
 
 Pass: the Tasks view shows the task as Awaiting response, and account A's
-private chat with `@aiws_helper_bot` receives the personal question card.
+private chat with `<requester-bot-username>` receives the personal question card.
 
 `AWAITING_RESPONSE` is a derived operational state, not a stored one.
 The prompts API reports `status: "BLOCKED"`, and
@@ -129,7 +136,7 @@ curl -s -X POST http://127.0.0.1:4100/api/task-control/team/items \
 ```
 
 Pass: the group receives a pinned anchor card for the item, plus an access
-message reading `Item access / Jj: owner / Junaid: read only / #item_<id>`.
+message reading `Item access / Requester operator: owner / Requester operator: read only / #item_<id>`.
 The response carries the `awi1_...` item id; keep it for the view commands.
 
 ## Case 3 - read-only views for the teammate
@@ -145,7 +152,7 @@ Instance B stays silent, and no receipt or state change is recorded.
 From account B, reply to the anchor with `/resume`.
 
 Pass: exactly one refusal naming the missing capability and the owner, in the
-shape `Ask Jj to grant resume on this item.`
+shape `Ask Requester operator to grant resume on this item.`
 No action card appears and nothing starts.
 
 ## Case 5 - grant answer
@@ -154,7 +161,7 @@ From account A, reply to the anchor with `/grant answer`, then tap the grant
 card that the owner's own bot posts.
 
 Pass: the existing access message is **edited in place** to
-`Junaid: answer` - a second access message is a failure.
+`Requester operator: answer` - a second access message is a failure.
 `/access` from either account then shows the same single capability.
 
 ## Case 6 - teammate answers
@@ -173,7 +180,7 @@ From account A, reply to the anchor with `/grant resume`.
 From account B, reply with `/resume`.
 
 Pass: the card names the owner's allowance, in the shape
-`Uses Jj's <provider> allowance.`
+`Uses Requester operator's <provider> allowance.`
 Tapping it starts exactly one run **on instance A**, with the task's last
 provider and model, under the owner's settings.
 Instance B starts nothing.
@@ -197,13 +204,13 @@ Account B must send the command again to get a new card.
 
 ## Case 10 - cross-owner thread request (SKIPPED, see B15)
 
-Skipped on 2026-09-19 by jd's decision, and kept here because it becomes live
+Skipped on 2026-09-19 by operator's decision, and kept here because it becomes live
 again if cross-member task visibility is ever built.
 The command needs the owner's numeric prompt id, which no teammate can obtain,
 and the owner cannot run it against their own item.
 The item that cases 8, 9 and 11 use was opened with the case 2 curl instead.
 
-From account B, send `/discuss @aiws_helper_bot <promptId>` for a different
+From account B, send `/discuss <requester-bot-username> <promptId>` for a different
 owner-side task.
 
 Pass: account A receives an owner-bound confirmation card before any task
@@ -241,12 +248,12 @@ rather than from the transcript.
 | 4 ungranted command refused | PASS | 2026-09-19 | `/resume` and `/context` both refused, naming the capability. |
 | 5 grant answer | PASS | 2026-09-19 | Access message edited in place (outbox 35 edits 14); wrong-actor tap rejected. |
 | 6 teammate answers | PASS | 2026-09-19 | One card bound to account B, Save answer only; one APPLIED receipt, response 16; second tap replayed as `Already applied.` with no second answer. |
-| 7 grant resume and start the run | PASS | 2026-09-19 | Card read `Uses Jj's claude allowance.`; one run `run_e4aaae9b` on instance A, claude, model null; instance B started nothing. The run completed the task, which auto-closed the item: see B13, B14. |
-| 8 revoke beats an open card | PASS | 2026-09-20 | Run off the `Answer and resume` button on card outbox 148, since `/resume` is refused while no answer is saved. `resume` revoked 02:27:05Z; access message edited in place (outbox 151 edits 80) to `Junaid: answer`. Late tap of `tc_Hk3mHo-sHcs70SyInPet8zD2` at 02:27:51Z REJECTED `grant_required`, `Ask Jj to grant resume on this item.`, `started` 0 and `run_id` null; prompt 4 stayed BLOCKED with no new run. One `resume` row keeping `granted_at` 02:07:12Z with `revoked_at` 02:27:05Z, no second active row. |
+| 7 grant resume and start the run | PASS | 2026-09-19 | Card read `Uses Requester operator's claude allowance.`; one run `<redacted-run-id>` on instance A, claude, model null; instance B started nothing. The run completed the task, which auto-closed the item: see B13, B14. |
+| 8 revoke beats an open card | PASS | 2026-09-20 | Run off the `Answer and resume` button on card outbox 148, since `/resume` is refused while no answer is saved. `resume` revoked 02:27:05Z; access message edited in place (outbox 151 edits 80) to `Requester operator: answer`. Late tap of `tc_Hk3mHo-sHcs70SyInPet8zD2` at 02:27:51Z REJECTED `grant_required`, `Ask Requester operator to grant resume on this item.`, `started` 0 and `run_id` null; prompt 4 stayed BLOCKED with no new run. One `resume` row keeping `granted_at` 02:07:12Z with `revoked_at` 02:27:05Z, no second active row. |
 | 9 expiry is not renewed | PASS | 2026-09-20 | Card outbox 145 minted 02:13:03Z with both `save_human_response` and `answer_and_resume`; `Save answer` tapped at 02:24:16Z, REJECTED `action_expired`, `response_id` null, `started` 0, `run_id` null. Prompt 4 stayed BLOCKED with no HUMAN_RESPONSE remark and no hold row. No replacement card appeared in the 11 minutes of waiting: the only outbox row was 146, an anchor age edit (B11). Refusal posted as outbox 147 with no actions attached. |
 | 10 cross-owner thread request | SKIPPED | 2026-09-19 | Not a real scenario: a teammate can never learn the owner's prompt id, and the owner cannot `/discuss` their own item. See B15. Item for cases 8, 9 and 11 opened by curl instead, the case 2 route. |
-| 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Jj to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
-| 12 default-off regression | DEFERRED | 2026-09-20 | jd's decision: folded into the LT-4 re-run that F01 to F03 require, rather than run on its own. Baseline captured while Team was on: `/api/task-control/team` 200 with the roster, `/api/task-control/team/refresh` 405. With Team off both must answer 403 `team_disabled`, and the 405 becoming a 403 is the check that the gate sits in front of method routing ([workspaceApi.ts:63](../../server/src/workspaceApi.ts#L63)). |
+| 11 close the thread | PARTIAL, see B17 | 2026-09-20 | Two of three criteria hold. `/close` from account B refused as owner-only (outbox 153, no card); after account A closed at 02:30:34Z the grants ended and `/answer` from B was refused with `Ask Requester operator to grant answer on this item.` (outbox 157). But the thread did not close: `telegram_thread` 10 stayed `ACTIVE` with `status_message_id` 79, the anchor stayed pinned and churning, and `/task` from B still returned the whole item at 02:37Z. |
+| 12 default-off regression | DEFERRED | 2026-09-20 | operator's decision: folded into the LT-4 re-run that F01 to F03 require, rather than run on its own. Baseline captured while Team was on: `/api/task-control/team` 200 with the roster, `/api/task-control/team/refresh` 405. With Team off both must answer 403 `team_disabled`, and the 405 becoming a 403 is the check that the gate sits in front of method routing ([workspaceApi.ts:63](../../server/src/workspaceApi.ts#L63)). |
 
 ### Re-run for V5, 2026-09-26
 
@@ -255,7 +262,7 @@ audits 1 to 4 cite them.
 This table is the **re-run** the F01 to F03 rows and section 8's "LT-4's re-run rows are
 recorded" clause ask for.
 It was run against the live rig described in [team-v6-handover.md](team-v6-handover.md)
-section 2, with **live Telegram credentials**, authorised by jd on 2026-09-26.
+section 2, with **live Telegram credentials**, authorised by operator on 2026-09-26.
 
 V5's scope is cases 2, 3, 11 and 12.
 Cases 4 to 9 are recorded here as out of that scope rather than left blank, so that no
@@ -264,10 +271,10 @@ later reader mistakes a blank for an untried case.
 | Case | Result | Date | Note |
 | --- | --- | --- | --- |
 | 0a notifications and remote actions | PASS | 2026-09-26 | Both on via `PUT /api/settings`, persisted to `.agent-console/settings.json`. Precondition, not part of V5's scope. |
-| 0b task waiting on a question | PASS | 2026-09-26 | Run `run_2636609e` on `claude-sonnet-4-5`. Prompt 1 `WI_TC01` `BLOCKED`; card posted unprompted as outbox 3, `kind: personal_question`, both buttons, options parsed. |
+| 0b task waiting on a question | PASS | 2026-09-26 | Run `<redacted-run-id>` on `claude-sonnet-4-5`. Prompt 1 `WI_TC01` `BLOCKED`; card posted unprompted as outbox 3, `kind: personal_question`, both buttons, options parsed. |
 | 1 roster on both sides | PASS | 2026-09-26 | Two people, two bots, on both instances. `refs/aw/team` moved to `4255c668…`, confirmed by `git ls-remote` against the pilot remote itself, so the GitHub round trip is real. |
-| 2 open item thread | **PASS** | 2026-09-26 | `POST /api/task-control/team/items {"promptId":1}` on 4100 answered `201` with `{"item":{"itemId":"awi1_63460787e23fa7d635890376"}}`. Anchor posted as outbox 8, Telegram message **85**, `kind: view`, `anchor=1`; access message as outbox 9, Telegram message **87**, `kind: team_item_access`, text exactly `Item access / Jj: owner / Junaid: read only / #item_63460787e23fa7d635890376`. New `telegram_thread` 4, `subject_kind: item`, `ACTIVE`. `item_link` row with `role: requester`, `epoch: 1`, no grants. **The pin was verified against Telegram, not from the local `anchor` flag**: `getChat` reports `pinned_message.message_id = 85`, from `aiws_helper_bot`, carrying the item tag. |
-| 3 read-only views | **PASS** | 2026-09-27 | Run by jd from account B, 01:15Z to 01:20Z. **All five sends were genuine replies to the anchor**, `replyToMessageId: 85` on every inbox row, not bare commands resolving to the only open item. `/task`, `/access`, `/status`, `/help@aiws_helper_bot` and `/help` were each answered **exactly once** by `@aiws_helper_bot`: outbox 21, 22, 23, 24, 25 as Telegram messages 89, 91, 93, 95, 97. **Instance B received all five group updates (507364399 to 507364403) and emitted nothing into the group.** That is the case's real assertion, and it holds against a bot that was listening rather than one that was absent. **No state change on either side**: zero receipts, zero grants, zero new actions, prompt 1 still `BLOCKED`, `item_link` not closed, thread 4 still `ACTIVE`. Two findings beyond the criterion, both good. **`/help` is capability-derived and proved so**: [teamItemViews.ts:192-202](../../server/src/teamItemViews.ts#L192-L202) answers for the asking member, read-only commands plus whatever their grants unlock plus the owner's own set if they are the owner, so a teammate holding no grants correctly sees exactly the four view commands. **This is positive evidence that B12's fix by F01 works**, and it retires the orchestrator's own warning that B12 might bite here. And the `@botname` mention form, `/help@aiws_helper_bot`, is handled identically to the bare form. One thing to read correctly: instance B did send one message, at 01:15:17 in **its own private chat** with `@ai_test_pilot_1_bot`, answering a stray `/task` with the generic command list. **It disclosed nothing** - B holds zero prompts and zero item links - and it is B's personal control surface rather than the team thread, so it is outside this case, which is about the group. |
+| 2 open item thread | **PASS** | 2026-09-26 | `POST /api/task-control/team/items {"promptId":1}` on 4100 answered `201` with `{"item":{"itemId":"<redacted-item-id>"}}`. Anchor posted as outbox 8, Telegram message **85**, `kind: view`, `anchor=1`; access message as outbox 9, Telegram message **87**, `kind: team_item_access`, text exactly `Item access / Requester operator: owner / Requester operator: read only / #item_63460787e23fa7d635890376`. New `telegram_thread` 4, `subject_kind: item`, `ACTIVE`. `item_link` row with `role: requester`, `epoch: 1`, no grants. **The pin was verified against Telegram, not from the local `anchor` flag**: `getChat` reports `pinned_message.message_id = 85`, from `aiws_helper_bot`, carrying the item tag. |
+| 3 read-only views | **PASS** | 2026-09-27 | Run by operator from account B, 01:15Z to 01:20Z. **All five sends were genuine replies to the anchor**, `replyToMessageId: 85` on every inbox row, not bare commands resolving to the only open item. `/task`, `/access`, `/status`, `/help<requester-bot-username>` and `/help` were each answered **exactly once** by `<requester-bot-username>`: outbox 21, 22, 23, 24, 25 as Telegram messages 89, 91, 93, 95, 97. **Instance B received all five group updates (<redacted-update-id-range>) and emitted nothing into the group.** That is the case's real assertion, and it holds against a bot that was listening rather than one that was absent. **No state change on either side**: zero receipts, zero grants, zero new actions, prompt 1 still `BLOCKED`, `item_link` not closed, thread 4 still `ACTIVE`. Two findings beyond the criterion, both good. **`/help` is capability-derived and proved so**: [teamItemViews.ts:192-202](../../server/src/teamItemViews.ts#L192-L202) answers for the asking member, read-only commands plus whatever their grants unlock plus the owner's own set if they are the owner, so a teammate holding no grants correctly sees exactly the four view commands. **This is positive evidence that B12's fix by F01 works**, and it retires the orchestrator's own warning that B12 might bite here. And the `@botname` mention form, `/help<requester-bot-username>`, is handled identically to the bare form. One thing to read correctly: instance B did send one message, at 01:15:17 in **its own private chat** with `<receiver-bot-username>`, answering a stray `/task` with the generic command list. **It disclosed nothing** - B holds zero prompts and zero item links - and it is B's personal control surface rather than the team thread, so it is outside this case, which is about the group. |
 | 4 ungranted command refused | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
 | 5 grant answer | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
 | 6 teammate answers | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
@@ -275,8 +282,8 @@ later reader mistakes a blank for an untried case.
 | 8 revoke beats an open card | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
 | 9 expiry is not renewed | not re-run | 2026-09-26 | Outside V5's scope. September's row stands. |
 | 10 cross-owner thread request | SKIPPED | 2026-09-26 | Still not a real scenario. See B15. |
-| 11 close the thread | **PARTIAL, B17 reproduces. See M-15** | 2026-09-27 | Run by jd, 01:22Z to 01:24Z. **Two of three criteria hold.** `/close` from account B **refused as owner-only**, outbox 26 message 99, no card. `/close` from account A produced a confirmation card (outbox 27, message 101) and then `Done: Thread closed; grants ended.` (outbox 28, message 102), and **`item_link.closed_at` is set** to `01:23:09.401Z` with its `closed_command_id`, which is F02's fix working. The access message was **edited in place**, outbox 29 editing outbox 9, not reposted. **But the thread did not close, for the second time.** `/task` from account B **one minute later returned the entire item** - blocked-on text, both options, `State: blocked`, `History: first run` - with nothing saying the thread is closed. `telegram_thread` 4 is still `ACTIVE` and its `updated_at` was never touched, and message 85 is still pinned. **The cause is now known and it is not what September recorded**, which is why this is registered as **M-15** rather than left as a repeat: `closedAt` gates granted commands and **not** view commands, because `handleTeamItemMessage` falls through to the view renderer with no check. And `telegramItemThreadForMessage` filters on `state <> 'ANCHOR_GONE'` only, so **closing the thread row would not fix it**. The `ACTIVE` row is cosmetic here. The pinned anchor is **M-11**'s accepted trade under jd's waiver. **This re-run is weaker than September's on one criterion and says so**: no grants ever existed on this item, so `grants ended` was vacuous and the "account B's granted commands stop working" criterion was **not exercised**. September's run did exercise it, with real grants that ended. |
-| 12 default-off regression | **PASS, all three halves** | 2026-09-27 | **API half**: Team on, `/api/task-control/team` `200` and `team/refresh` `405`; Team off, `team` `403 team_disabled`, `team/refresh` **`403`** and `team/items` `403`. The `405` becoming a `403` and then **back to `405`** when Team was restored is the assertion, in both directions: the gate sits in front of method routing. `team.enabled` also disappears from `.agent-console/settings.json` entirely rather than being stored as `false`. **Browser half**: Playwright against the live web on 3100. `Team status`, `Join team` and the create panel on `/agents`, and `Team thread` on the `WI_TC01` detail, all present with Team on, all gone with Team off **after a reload**, all restored when it goes back on. Defect **L-16** found and registered: without a reload none of them go. **Phone half, run by jd 01:32Z to 01:42Z with Team off, and it went further than the criterion asks.** Reads first: `/status` (outbox 31, message 35) and `/blocked` (outbox 32, message 38) answered normally in the private chat, and **both payloads were checked for leakage and contain no `awi1_`, no `#item_`, and no grant or access language**. Then the whole personal write-and-apply path: a reply of `Integer cents is fine` at 01:42:01 minted a **fresh card with live buttons** carrying the draft (outbox 33, message 40), and a **real `callback` update, 30443623**, applied it at 01:42:29, giving the receipt `Done: Answer saved; task remains waiting.` (outbox 34, message 41) and a new card showing the saved answer (outbox 35, message 42). **The tap was genuine, not an auto-submit** - that was checked, because M-13's canned-answer defect is exactly this shape on the web surface, and this surface is clean. One state change, and it is **by design, not a defect**: prompt 1 moved `BLOCKED` to `TODO` with a `human_response_hold` row, because `respondToBlockedPrompt` is called with `hold: true` and `promptOptions` computes `ready: !humanResponseHeld && status === "TODO"`, so the answer is held rather than ready. `started: false`, `run_id: null`, and `agent_run` stayed at 1, so **no run started**. **Consequence for the rig**: prompt 1 is no longer `BLOCKED` and its question is answered and held, so the state cases 2, 3 and 11 ran against is consumed. All three were finished first. |
+| 11 close the thread | **PARTIAL, B17 reproduces. See M-15** | 2026-09-27 | Run by operator, 01:22Z to 01:24Z. **Two of three criteria hold.** `/close` from account B **refused as owner-only**, outbox 26 message 99, no card. `/close` from account A produced a confirmation card (outbox 27, message 101) and then `Done: Thread closed; grants ended.` (outbox 28, message 102), and **`item_link.closed_at` is set** to `01:23:09.401Z` with its `closed_command_id`, which is F02's fix working. The access message was **edited in place**, outbox 29 editing outbox 9, not reposted. **But the thread did not close, for the second time.** `/task` from account B **one minute later returned the entire item** - blocked-on text, both options, `State: blocked`, `History: first run` - with nothing saying the thread is closed. `telegram_thread` 4 is still `ACTIVE` and its `updated_at` was never touched, and message 85 is still pinned. **The cause is now known and it is not what September recorded**, which is why this is registered as **M-15** rather than left as a repeat: `closedAt` gates granted commands and **not** view commands, because `handleTeamItemMessage` falls through to the view renderer with no check. And `telegramItemThreadForMessage` filters on `state <> 'ANCHOR_GONE'` only, so **closing the thread row would not fix it**. The `ACTIVE` row is cosmetic here. The pinned anchor is **M-11**'s accepted trade under operator's waiver. **This re-run is weaker than September's on one criterion and says so**: no grants ever existed on this item, so `grants ended` was vacuous and the "account B's granted commands stop working" criterion was **not exercised**. September's run did exercise it, with real grants that ended. |
+| 12 default-off regression | **PASS, all three halves** | 2026-09-27 | **API half**: Team on, `/api/task-control/team` `200` and `team/refresh` `405`; Team off, `team` `403 team_disabled`, `team/refresh` **`403`** and `team/items` `403`. The `405` becoming a `403` and then **back to `405`** when Team was restored is the assertion, in both directions: the gate sits in front of method routing. `team.enabled` also disappears from `.agent-console/settings.json` entirely rather than being stored as `false`. **Browser half**: Playwright against the live web on 3100. `Team status`, `Join team` and the create panel on `/agents`, and `Team thread` on the `WI_TC01` detail, all present with Team on, all gone with Team off **after a reload**, all restored when it goes back on. Defect **L-16** found and registered: without a reload none of them go. **Phone half, run by operator 01:32Z to 01:42Z with Team off, and it went further than the criterion asks.** Reads first: `/status` (outbox 31, message 35) and `/blocked` (outbox 32, message 38) answered normally in the private chat, and **both payloads were checked for leakage and contain no `awi1_`, no `#item_`, and no grant or access language**. Then the whole personal write-and-apply path: a reply of `Integer cents is fine` at 01:42:01 minted a **fresh card with live buttons** carrying the draft (outbox 33, message 40), and a **real `callback` update, <redacted-update-id>**, applied it at 01:42:29, giving the receipt `Done: Answer saved; task remains waiting.` (outbox 34, message 41) and a new card showing the saved answer (outbox 35, message 42). **The tap was genuine, not an auto-submit** - that was checked, because M-13's canned-answer defect is exactly this shape on the web surface, and this surface is clean. One state change, and it is **by design, not a defect**: prompt 1 moved `BLOCKED` to `TODO` with a `human_response_hold` row, because `respondToBlockedPrompt` is called with `hold: true` and `promptOptions` computes `ready: !humanResponseHeld && status === "TODO"`, so the answer is held rather than ready. `started: false`, `run_id: null`, and `agent_run` stayed at 1, so **no run started**. **Consequence for the rig**: prompt 1 is no longer `BLOCKED` and its question is answered and held, so the state cases 2, 3 and 11 ran against is consumed. All three were finished first. |
 
 **Case 12 is complete and passes on all three halves.**
 Its browser half passes the criterion as written, which says the panels disappear
@@ -308,20 +315,20 @@ State as of 2026-09-20 02:45Z, for reference:
 - **Both instances are running**, restarted at 01:59:53Z after the box slept
   overnight. If nothing is listening on 4100 or 4200, start them before anything
   else
-- team `awt1_56yd-5bP1U7ZhGkh`, supergroup `-1004359741812`
-- owner `Jj` / `@aiws_helper_bot` on ports 3100/4100; teammate `Junaid` /
-  `@ai_test_pilot_1_bot` on 3200/4200
+- team `<redacted-team-id>`, supergroup `<telegram-group-id>`
+- owner `Requester operator` / `<requester-bot-username>` on ports 3100/4100; teammate `Requester operator` /
+  `<receiver-bot-username>` on 3200/4200
 - workspace 1 (`Team pilot workspace`), suite 1 (`Suite_TC1`)
 - prompts: 2 `WI_TC01` DONE, 3 `WI_TC02` DONE, **4 `WI_TC03` still BLOCKED after
   cases 8, 9 and 11, with no answer ever saved and no new run**, 5 `WI_TC04` TODO
   and held as a spare
 - prompt 4 asks UTC versus local timezone for run log timestamps; run
-  `run_b0a39ccc` DONE, personal question card outbox 78, its buttons long
+  `<redacted-run-id>` DONE, personal question card outbox 78, its buttons long
   expired
 - prompt 5 is deliberately unrun, so a completed prompt 4 does not strand the
   session the way prompt 3 did (B7)
-- items: `awi1_3a86f4766dba6fff0acb5b47` (prompt 3), DONE and closed, and
-  **`awi1_70e8584ed9e957f9fd198dd8` (prompt 4), open**, anchor outbox 79 and
+- items: `<redacted-item-id>` (prompt 3), DONE and closed, and
+  **`<redacted-item-id>` (prompt 4), open**, anchor outbox 79 and
   access message outbox 80, opened by curl at 13:54Z on 2026-09-19
 - the item was closed by `/close` at 02:30:34Z, which ended its grants but did
   not close it in any other sense (B17), so it is still `ACTIVE` with its anchor
@@ -348,7 +355,7 @@ step is the re-grant and then case 8.
 Case 10 is skipped (B15).
 Everything below is a phone action unless it says otherwise.
 
-The live thread is `awi1_70e8584ed9e957f9fd198dd8`, tagged
+The live thread is `<redacted-item-id>`, tagged
 `#item_70e8584ed9e957f9fd198dd8` in the group, anchored by outbox 79 with the
 access message at outbox 80.
 

@@ -1,6 +1,9 @@
 # V5 phone script: cases 3, 11 and case 12's phone half
 
-Written 2026-09-26 for jd, by the orchestrator.
+> **Archived one-off phone script.** Bot names, ports, paths and live-rig state
+> below are historical evidence, not reusable setup instructions.
+
+Written 2026-09-26 for operator, by the orchestrator.
 These are the only V5 cases a bot token cannot run, because they need a second
 human account typing in the group.
 Everything else in V5 is done; see [team-v6-handover.md](team-v6-handover.md)
@@ -13,13 +16,13 @@ Part B closes the item thread, so part A has to happen first.
 
 | Thing | Value |
 | --- | --- |
-| Group | `AI_WS`, supergroup `-1004359741812` |
+| Group | `<telegram-group-name>`, supergroup `<telegram-group-id>` |
 | **The anchor to reply to** | Telegram message **85**, the pinned one, first line `#item_63460787e23fa7d635890376` |
-| Access message | Telegram message **87**, `Item access / Jj: owner / Junaid: read only` |
-| Item | `awi1_63460787e23fa7d635890376`, prompt 1, `WI_TC01`, `BLOCKED` |
+| Access message | Telegram message **87**, `Item access / Requester operator: owner / Requester operator: read only` |
+| Item | `<redacted-item-id>`, prompt 1, `WI_TC01`, `BLOCKED` |
 | Grants on it | **none**, which is what these two cases want |
-| Account A, owner | `Jj` / `jshay96` / `8973262519`, paired to `@aiws_helper_bot` |
-| Account B, teammate | `Junaid` / `6525517234`, paired to `@ai_test_pilot_1_bot` |
+| Account A, owner | `Requester operator` / `<requester-username>` / `<requester-user-id>`, paired to `<requester-bot-username>` |
+| Account B, teammate | `Requester operator` / `<receiver-user-id>`, paired to `<receiver-bot-username>` |
 
 Both bots are administrators with **Pin messages**, checked through the Bot API
 from both tokens, so that step is done and needs nothing from you.
@@ -46,8 +49,8 @@ at a time, waiting for each answer before sending the next:
 What should happen, and what I will check afterwards:
 
 - each command is answered **exactly once**
-- every answer comes from **`@aiws_helper_bot`**, the owner's bot
-- **`@ai_test_pilot_1_bot` says nothing at all** - this is the real assertion of
+- every answer comes from **`<requester-bot-username>`**, the owner's bot
+- **`<receiver-bot-username>` says nothing at all** - this is the real assertion of
   the case, and it is worth something because that bot is confirmed live: its
   process holds two open long-poll connections to `api.telegram.org` right now
 - nothing is recorded as a receipt and no state changes
@@ -70,7 +73,7 @@ re-run table in [solo-team-thread-grant-check.md](solo-team-thread-grant-check.m
 /close
 ```
 
-Expect a refusal naming close as owner-only, posted by `@aiws_helper_bot`, with
+Expect a refusal naming close as owner-only, posted by `<requester-bot-username>`, with
 no card attached.
 
 **Then, as account A**, reply to message 85 with:
@@ -103,7 +106,7 @@ message 33 expired at `2026-09-26T13:20:29Z`, ten minutes after it was posted, a
 that is B6's accepted trade rather than a Team-off symptom. Tapping them would be
 refused as `action_expired` whether Team were on or off, so it tests nothing here.
 
-With Team **off**, in your **private** chat with `@aiws_helper_bot`:
+With Team **off**, in your **private** chat with `<requester-bot-username>`:
 
 1. `/status` - should answer normally
 2. `/blocked` - should still list `WI_TC01`

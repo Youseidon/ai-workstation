@@ -1,5 +1,14 @@
 # Implementation plan and release evidence
 
+> **Historical implementation ledger.** This file records phased work and the
+> evidence available at each checkpoint. Earlier “not implemented” and “still
+> required” statements are true only for their dated checkpoint. Current code
+> implements live personal Telegram, Team roster/item/grant flows, Git-backed
+> handover, the receiver inbox, return, requester review/apply/request-changes,
+> and UI-managed local bot credentials. Use the
+> [user guide](../team-and-telegram-user-guide.md) for current instructions and
+> the [documentation index](README.md) for current versus historical sources.
+
 Parent: [Design baseline](README.md). Contracts: [User flows](user-flows.md) and
 [Protocol](protocol.md). Do not start a broad refactor to implement these modules.
 The design itself grants no permission to deploy, push branches, configure live
@@ -7,7 +16,14 @@ bots, send messages or run another person's subscription.
 
 ## 0. Current implementation status
 
-Team track TM1 defaults accepted by jd, 2026-09-17:
+As of the current checkout, the main user path is implemented behind default-off
+settings: **Agents → Set up Telegram** validates and stores a bot credential,
+personal notifications/actions can be paired, and **Enable Team** plus **Enable
+handover** expose create/join, item threads/grants and the full handover surface.
+The chronological entries below intentionally preserve older status claims as
+dated evidence.
+
+Team track TM1 defaults accepted by operator, 2026-09-17:
 
 - Team action cards expire after 10 minutes.
 - An item grant lasts until it is revoked, the item thread closes or handover starts.
@@ -16,7 +32,7 @@ Team track TM1 defaults accepted by jd, 2026-09-17:
 
 The corresponding implementation scenarios are in
 [`tm1.md`](../e2e-scenarios/tm1.md). LT-3, the real two-person join check, is
-parked until the full team build at jd's direction.
+parked until the full team build at operator's direction.
 
 Team track TM0/TM1 close-out before audit 1, 2026-09-17:
 
@@ -30,7 +46,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     and unanchored discussion. The fake and design were corrected to model this
     broad administrator delivery.
   - T02 `git diff --check main...tm/T02-tm0-scenario-table`: passed; `npm run
-    typecheck`: passed; `docs/e2e-scenarios/tm0.md` has jd skim approval.
+    typecheck`: passed; `docs/e2e-scenarios/tm0.md` has operator skim approval.
   - T03F `node --import tsx --test --test-concurrency=1
     e2e/src/tm0.selftest.test.ts`: passed. `npm run typecheck`: passed.
     `npx playwright test e2e/src/h2-fake-provider-inline.spec.ts`: 4/4 passed
@@ -43,14 +59,14 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     workspace typecheck also passed.
 - TM1 automated and live evidence from the tracker:
   - T05 `node --import tsx e2e/scripts/lg1-repository-refs.ts`: H-TM-LG1 PASS
-    against the repository jd approved for disposable probes. Custom
+    against the repository operator approved for disposable probes. Custom
     `refs/aw/*` refs were accepted, a divergent non-fast-forward update was
     rejected, an `aw/handover/*` branch was accepted and both probe refs were
     deleted.
-  - T06 `git diff --check`: passed. `docs/e2e-scenarios/tm1.md` records jd's
+  - T06 `git diff --check`: passed. `docs/e2e-scenarios/tm1.md` records operator's
     skim approval, the four defaults above and LT-3 deferred until the full
     build.
-  - T07 `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t07-verify node --import
+  - T07 `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t07-verify node --import
     tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`: focused T0
     roster suite passed 4/4 at the time; `npm test --workspace server` passed
     237/237; `npm run typecheck`: passed.
@@ -60,27 +76,27 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     local-confirmation and temporary bare-remote roster path. Full server suite
     passed 237/237; `npm run typecheck --workspace server` and `npm run
     typecheck --workspace web` passed.
-  - T09 sandboxed rerun of `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t09-verify
+  - T09 sandboxed rerun of `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t09-verify
     node --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
     failed with `spawnSync git EPERM`; the unsandboxed rerun
-    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t09-verify-escalated node
+    `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t09-verify-escalated node
     --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
     passed 5/5. `npm run typecheck --workspace server`: passed. `npm run
     typecheck --workspace web`: passed.
 - T10 reruns in this worktree:
   - This worktree was created without dependencies. Initial `npm run typecheck
     --workspace server`, `npm run typecheck --workspace web` and
-    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster node --import tsx
+    `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10-roster node --import tsx
     --test --test-concurrency=1 server/src/teamRoster.test.ts` failed before or
     at dependency loading because `tsc`/`tsx` and type packages were absent.
   - After linking the already-installed local dependency tree with `ln -s
-    /home/junaid/ai-workstation/node_modules node_modules` (no network install),
+    <user-home>/ai-workstation/node_modules node_modules` (no network install),
     `npm run typecheck --workspace server`: passed; `npm run typecheck
     --workspace web`: passed.
-  - Sandboxed `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster node
+  - Sandboxed `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10-roster node
     --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
     exited `ERR_TEST_FAILURE` with no subtest detail. Unsandboxed
-    `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10-roster-unsandboxed node
+    `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10-roster-unsandboxed node
     --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts`
     passed 5/5: TM-T0-3 join-code round trip/tamper/expiry, TM-T0-4 in-memory
     compare-and-swap, TM-T0-4 Git compare-and-swap to `refs/aw/team`,
@@ -102,7 +118,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: passed 1/1 in 48.7s.
     `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
     tests/t1/l1-phone-authorization.spec.ts -g S-L1-04`: passed 3/3 in 31.3s.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10r-roster node --import tsx
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10r-roster node --import tsx
     --test --test-concurrency=1 server/src/teamRoster.test.ts`: passed 5/5.
     `node --import tsx --test --test-concurrency=1
     --test-name-pattern=TM-T1-1a server/src/telegramLiveRuntime.test.ts`:
@@ -127,7 +143,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     passed 3/3 in 20.0 seconds. The required burn-in, `npx playwright test
     tests/t1/tm1-team-roster.spec.ts --project=t1 --repeat-each=3
     --max-failures=1`, passed 9/9 in 2.0 minutes.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10v-server-escalated node
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10v-server-escalated node
     --import tsx --test --test-concurrency=1 server/src/teamRoster.test.ts
     server/src/telegramLiveRuntime.test.ts` passed 28/28: roster 5/5 and runtime
     23/23. Server, web and e2e workspace typechecks passed.
@@ -142,7 +158,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     e2e).
   - `npm run lint --workspace web`: passed with 0 errors and 5 existing
     warnings.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-rerun-server npm test
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-audit1-rerun-server npm test
     --workspace server`: passed 239/239.
   - `npm run e2e --workspace e2e`: passed 116/116.
   - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
@@ -167,7 +183,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
   - `npm run e2e:burn-in --workspace e2e -- --project=t1 --repeat=3
     tests/t1/tm1-team-default-off.spec.ts
     tests/t1/tm1-team-roster.spec.ts`: passed 12/12 in 1.3 minutes.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t10g-relevant-escalated node
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t10g-relevant-escalated node
     --import tsx --test --test-concurrency=1
     server/src/telegramLiveRuntime.test.ts server/src/telegramSummary.test.ts`:
     passed 43/43. The sandboxed attempt could not run the runtime file's child
@@ -175,7 +191,7 @@ Team track TM0/TM1 close-out before audit 1, 2026-09-17:
     rerun supplied the valid subtest result.
   - Final gated-tree audit verification: `npm run typecheck` passed all 4/4
     workspaces; `npm run lint --workspace web` passed with 0 errors and 5
-    existing warnings; `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit1-final-server
+    existing warnings; `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-audit1-final-server
     npm test --workspace server` passed 241/241; and `npm run e2e --workspace
     e2e` passed 117/117. These final counts replace the pre-T10G 239/239 and
     116/116 counts above as close-out evidence without changing that historical
@@ -192,7 +208,7 @@ Team track TM2 close-out, 2026-09-18:
   corrections are recorded in the Team tracker.
 - Final verification on the merged TM2 tree:
   - `npm run typecheck` passed all 4/4 workspaces: shared, server, web and e2e.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t16-full-server npm test
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t16-full-server npm test
     --workspace server` passed 264/264.
   - `npm run e2e --workspace e2e` passed the full T1 suite 121/121 in 23.9
     minutes.
@@ -221,7 +237,7 @@ Team track TM3 close-out, 2026-09-18:
   - `npm run typecheck` passed all 4/4 workspaces: shared, server, web and e2e.
   - `npm run lint --workspace web` passed with 0 errors and the 5 existing
     `PipelineHeader.tsx` warnings.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-t20-full-server npm test
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-t20-full-server npm test
     --workspace server` passed 274/274.
   - `npm run e2e --workspace e2e` passed the full T1 suite 123/123 in 22.0
     minutes.
@@ -295,7 +311,7 @@ callback routes, enroll real devices, publish Git records, start teammate
 execution, certify provider delegation or prove runtime secret isolation. The
 fake service is a local test boundary only.
 
-Verification on 2026-09-13 in `/tmp/ai-workstation-task-control-check`, copied
+Verification on 2026-09-13 in `${TMPDIR:-/tmp}/ai-workstation-task-control-check`, copied
 from the repo with `.agent-console` excluded and local `node_modules` symlinked:
 
 - `node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/humanInput.test.ts` passed. Covered default-off capability status, fake outbox failure, wrong actor rejection, stale revision rejection, Save answer, reissued Answer and resume, and duplicate callback idempotency.
@@ -332,7 +348,7 @@ real Telegram callback routes, topic rendering, production setup UI, shared Git
 records or teammate execution. Setting `taskControl.transport=telegram` is only a
 reserved value until a live adapter is implemented and explicitly authorized.
 
-Verification on 2026-09-13 in `/tmp/ai-workstation-task-control-settings-lSERl5`,
+Verification on 2026-09-13 in `${TMPDIR:-/tmp}/ai-workstation-task-control-settings-lSERl5`,
 copied from the repo with `.agent-console` excluded and local `node_modules`
 symlinked:
 
@@ -378,7 +394,7 @@ adapter, real Bot API polling, real setup/pairing UX, teammate transfer, Git
 publication, provider subscription delegation and enterprise release claims remain
 default-off or blocked by G01-G04.
 
-Verification on 2026-09-13 in `/tmp/ai-workstation-m1-finish-ZwINsb`, copied
+Verification on 2026-09-13 in `${TMPDIR:-/tmp}/ai-workstation-m1-finish-ZwINsb`, copied
 from the repo with `.agent-console` excluded and local `node_modules` symlinked:
 
 - `node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts server/src/telegramAdapter.test.ts server/src/humanInput.test.ts` passed. Covered M1 fake E2E, pairing replay/expiry/context mismatch, wrong actor/bot/topic, stale revision rejection, sanitized phone payloads, durable inbox/outbox, duplicate updates and resume-once behavior.
@@ -430,8 +446,8 @@ external integrations. Unfinished integrations remain default-off.
 
 Verification on 2026-09-13 in isolated roots under `/tmp`:
 
-- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts` passed. Covered reservation-before-provider source order, aliased effective-directory ownership, restart reconciliation to `START_UNKNOWN`, fake Telegram resume-path ownership, and quota advisor freshness/dedupe/threshold behavior.
-- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m2-full npm test --workspace server` passed all 15 server test files without using the live console DB.
+- `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2-test node --import tsx --test --test-concurrency=1 server/src/runService.test.ts server/src/startIntent.test.ts server/src/quotaAdvisor.test.ts server/src/consult.test.ts` passed. Covered reservation-before-provider source order, aliased effective-directory ownership, restart reconciliation to `START_UNKNOWN`, fake Telegram resume-path ownership, and quota advisor freshness/dedupe/threshold behavior.
+- `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m2-full npm test --workspace server` passed all 15 server test files without using the live console DB.
 - `npm run typecheck --workspace shared` passed.
 - `npm run typecheck --workspace server` passed.
 - `npm run typecheck --workspace web` passed.
@@ -499,7 +515,7 @@ integrations remain default-off.
 
 Verification on 2026-09-13:
 
-- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m3-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts` passed. Covered quota advisor freshness/dedupe/thresholds, fake Telegram quota-warning outbox/action/state invariants and ownership classification edge cases.
+- `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m3-server node --import tsx --test --test-concurrency=1 server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts server/src/startIntent.test.ts` passed. Covered quota advisor freshness/dedupe/thresholds, fake Telegram quota-warning outbox/action/state invariants and ownership classification edge cases.
 - `npm run test:quota-ui --workspace web` passed. Covered scripted React-render checks for the Agents quota warning display.
 - `npm run typecheck --workspace shared` passed.
 - `npm run typecheck --workspace server` passed.
@@ -563,7 +579,7 @@ integrations remain default-off.
 
 Verification on 2026-09-13 in isolated roots under `/tmp`:
 
-- `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-m4-start-unknown node --import tsx --test --test-concurrency=1 server/src/startIntent.test.ts server/src/operationalState.test.ts server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts` passed. Covered START_UNKNOWN API/DTO/recovery behavior, known-stopped recovery reclassification, operational visibility, existing quota advisor invariants and fake Telegram advisory-only warning delivery.
+- `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-m4-start-unknown node --import tsx --test --test-concurrency=1 server/src/startIntent.test.ts server/src/operationalState.test.ts server/src/quotaAdvisor.test.ts server/src/taskControl.test.ts` passed. Covered START_UNKNOWN API/DTO/recovery behavior, known-stopped recovery reclassification, operational visibility, existing quota advisor invariants and fake Telegram advisory-only warning delivery.
 - `npm run test:quota-ui --workspace web` passed. Covered healthy/no warning, fresh 5% warning, stale/unavailable/missing no-warning cases, duplicate provider/window/reset dedupe, display-only quota choices, START_UNKNOWN required copy, no blind release/recovery action and narrow/wide overflow guard markup.
 - `npm run typecheck --workspace shared` passed.
 - `npm run typecheck --workspace server` passed.
@@ -678,9 +694,10 @@ Implemented ninth slice (L1 live personal Telegram control, RTC-17 to RTC-19, wi
   There is no webhook.
   Errors are classified as rate limited (Telegram `retry_after`), transient, unauthorized, conflict or rejected, and every thrown error is rebuilt from a token-redacted message without the raw fetch error or its cause.
 - Raw updates are normalized before persistence to task-related fields only (callback reference, sender, chat, message, reply target, text).
-- `credentials.ts` reads `TELEGRAM_BOT_TOKEN` once at boot and deletes it from `process.env`, so spawned agent processes do not inherit it.
+- `credentials.ts` deletes any boot-time `TELEGRAM_BOT_TOKEN` from `process.env`, so spawned agent processes do not inherit it. The Agents-page setup may instead validate and persist a token in the owner-only local credential file and replace the live runtime credential without a restart.
   The token object redacts itself under string conversion, JSON serialization and inspection.
-  The token is not in settings, the database, API responses, DTOs or the UI.
+  The token is not in settings, the database, API responses or DTOs; the setup
+  form holds it only while submitting and clears it after validation.
 - `runtime.ts` supervises the live transport from server startup and on every settings change.
   It runs only when task control is enabled, the transport is `telegram` and a token was supplied; otherwise it makes no network call.
   It provides long polling with backoff, a durable outbox sender with per-row retry schedules and a bot-wide pause on 429, a notifier that posts each waiting task once per question revision, local-confirmed pairing, and status for the Agents panel.
@@ -717,13 +734,13 @@ Known gaps:
   The task activity UI renders Telegram-sourced human responses as `Telegram · HUMAN_RESPONSE`.
   Evidence:
   - `npx -y npm@11 install` completed: added 496 packages, audited 501 packages, 0 vulnerabilities.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-l1d1-human-input-final node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/telegramAdapter.test.ts` passed: 2 tests, 2 pass, 0 fail.
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-l1d1-human-input-final node --import tsx --test --test-concurrency=1 server/src/humanInput.test.ts server/src/telegramAdapter.test.ts` passed: 2 tests, 2 pass, 0 fail.
   - `npm exec --workspace web -- node --import tsx --test components/recovery.test.tsx` passed: 1 test, 1 pass, 0 fail.
   - `npm run typecheck --workspace shared` passed.
   - `npm run typecheck --workspace server` passed.
   - `npm run typecheck --workspace web` passed.
   - `npm run lint --workspace web` passed with 0 errors and 5 pre-existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
-- The bot token in `.env` is readable by any process running as the same user; this is the G02 isolation limit and is not addressed by L1.
+- The bot token in the local credential file (or `.env` on an existing deployment) is readable by any process running as the same user; this is the G02 isolation limit and is not addressed by L1.
 
 Rollback/default-off behavior:
 
@@ -917,16 +934,16 @@ L1D2 precondition cleanup (Agents header negative-zero display), 2026-09-16:
 - The Agents header `available` stat continues to pass its provider count through `CountUp`, so page-load and transition renders cannot produce `-0 AVAILABLE`.
 - Pre-fix failure probe: `node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal((-0).toLocaleString(), '0');"` failed with `AssertionError [ERR_ASSERTION]: '-0' !== '0'`.
 - Focused tests: `npm run test:quota-ui --workspace web` passed 3 test files, 3 of 3 subtests, including the new `CountUp` negative-zero regression.
-- Web checks: `npm run typecheck --workspace web -- --tsBuildInfoFile /tmp/l1d2-web.tsbuildinfo` passed; `npm run lint --workspace web` passed with 0 errors and 5 existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
+- Web checks: `npm run typecheck --workspace web -- --tsBuildInfoFile ${TMPDIR:-/tmp}/l1d2-web.tsbuildinfo` passed; `npm run lint --workspace web` passed with 0 errors and 5 existing warnings in `web/components/pipeline/PipelineHeader.tsx`.
 
 L1D4 precondition cleanup (Telegram configured-without-token badge), 2026-09-16:
 
-- Current code already applies the live token state from commit b39ae1c: when Task Control settings use live Telegram but no boot-time token was loaded, `withLiveTokenState` reports setup `telegram_missing_token` with a `TELEGRAM_BOT_TOKEN` reason instead of leaving the settings-derived `telegram_configured` value.
+- When Task Control settings use live Telegram but no boot-time or UI-managed token was loaded, `withLiveTokenState` reports setup `telegram_missing_token` and points to the Telegram setup screen instead of leaving the settings-derived `telegram_configured` value.
 - The Agents badge map renders `telegram_missing_token` as "Telegram token missing"; "Telegram configured" remains only the label for the true configured setup.
 - Added a minimal UI regression test for the badge map; no product behaviour changed.
 - Verification:
   - `npx -y npm@11 install` completed in the L1D4 worktree after one sandboxed DNS failure; the approved rerun added 496 packages, audited 501 packages, 0 vulnerabilities.
-  - `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-l1d4-token-badge-rerun node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts` passed: 1 test file, 1 of 1 pass, 0 fail.
+  - `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-l1d4-token-badge-rerun node --import tsx --test --test-concurrency=1 server/src/taskControl.test.ts` passed: 1 test file, 1 of 1 pass, 0 fail.
   - `npm run test:quota-ui --workspace web` passed: 4 test files, 4 of 4 pass, 0 fail, including `components/agents/badge.test.tsx`.
   - `npm run typecheck --workspace server` passed.
   - `npm run typecheck --workspace web` passed.
@@ -1082,7 +1099,7 @@ more servers. The baseline remains one trusted team and local execution.
 
 ## 6b. G01 record: teammate execution on the receiver's own subscription
 
-Recorded 2026-09-20 on jd's decision. This is the record the
+Recorded 2026-09-20 on operator's decision. This is the record the
 [engineering plan](engineering-plan.md) requires before handover may be enabled
 (TM4, plan section 3b and the definition of done for R-A).
 
@@ -1112,15 +1129,15 @@ and re-opens if any is removed:
 What this record does not cover: G02 still gates enabling handover, because it
 asks a different question, whether provider, bot, Git and signing credentials are
 isolated on each machine, and the known L1 limit recorded earlier in this document
-stands: the bot token in `.env` is readable by any process running as the same
+stands: the bot token in the local credential file (or `.env` on an existing deployment) is readable by any process running as the same
 user. G03 applies to the control record and is supported by
-the LG-1 pass of 2026-09-17. G04 remains jd's one-time governance note.
+the LG-1 pass of 2026-09-17. G04 remains operator's one-time governance note.
 
 ## 6c. G02 record: secret isolation for team execution
 
-**Recorded 2026-09-20. Confirmed by jd as drafted, on the same day it was drafted.**
+**Recorded 2026-09-20. Confirmed by operator as drafted, on the same day it was drafted.**
 Gate G02 asks for tested isolation of provider, bot, Git and signing credentials for team execution, and warns that same-user file modes or prompt rules are insufficient evidence.
-This draft separates what the product can evidence from what only jd can decide.
+This draft separates what the product can evidence from what only operator can decide.
 
 **What handover actually adds.**
 Nothing of the requester's credentials travels: each workstation runs its own agent under its own provider login, its own bot token and its own Git credentials, which is the finding G01 rests on.
@@ -1136,10 +1153,10 @@ That is the risk G02 exists to make explicit, and it is sharper than the file-mo
 
 **Residual limits, recorded rather than hidden.**
 
-- The bot token in `.env` is readable by any process running as the same user. This is the known L1 limit and it is unchanged by handover.
+- The bot token in the local credential file (or `.env` on an existing deployment) is readable by any process running as the same user. This is the known L1 limit and it is unchanged by handover.
 - Accepting a handover means executing another member's code with your own credentials in the environment. No sandbox in this product prevents a determined malicious teammate from reading them.
 
-**The decision jd recorded.**
+**The decision operator recorded.**
 That the roster is the trust boundary: both members are trusted parties, a malicious roster member is out of scope, and the residual limits above are accepted for a two-person personal team.
 With that confirmed, points 1 to 4 are the tested isolation G02 asks for, and the gate closes when RTC-12's tests pass in TM4.
 So G02 is decided but not yet closed: the decision half is done here, and the evidence half is produced by RTC-12 inside H04.
@@ -1148,14 +1165,14 @@ So G02 is decided but not yet closed: the decision half is done here, and the ev
 
 ## 6d. G04 record: governance
 
-**Recorded 2026-09-20. Confirmed by jd, who changed items 3 and 4 from what was drafted.**
+**Recorded 2026-09-20. Confirmed by operator, who changed items 3 and 4 from what was drafted.**
 G04 asks for Telegram audience, Git host and storage location, retention, operational owner and enterprise data policy.
-Items 1, 2 and 5 write down what is already true. Items 3 and 4 were the genuine choices, and jd did not take the drafted option for either.
+Items 1, 2 and 5 write down what is already true. Items 3 and 4 were the genuine choices, and operator did not take the drafted option for either.
 
 1. **Audience.** The team group contains exactly the roster's members and their bots. Group members who are not on the roster are ignored (R-G). Telegram carries human messaging and cards only; the repository carries files and the three machine records.
 2. **Git host and storage.** GitHub, in the private repository recorded as the roster's remote. It holds `refs/aw/team`, `refs/aw/items/<item>/control` and `aw/handover/<item>` branches. LG-1 confirmed on 2026-09-17 that this host accepts custom refs and rejects a divergent non-fast-forward update.
-3. **Retention.** jd's ruling: **keep the records, delete the branches.** The `aw/handover/<item>` branch is deleted by the requester once the item is applied or cancelled, because it is bulk that has served its purpose. `refs/aw/items/<item>/control` and its `events/<command id>.json` files are kept indefinitely as the audit trail of who held the item and when, because they are small and are the only durable account of a handover. The draft proposed deleting both together; jd separated them on 2026-09-20, so the trail survives the cleanup. Local databases are retained on each workstation indefinitely and are never shared. Telegram message history follows Telegram's own retention, which neither workstation controls.
-4. **Operational owner.** jd, **with a named fallback**, which is jd's amendment of 2026-09-20 to the drafted single-owner line. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members. The fallback matters because roster updates are signed by the owner and a revocation needs a fresh roster, so an unavailable owner means no member can be removed and no new member admitted. The fallback is Yousef, the only other roster member, and what he can do is deliberately narrower than ownership: he can reach the repository and read the records, but he cannot sign a roster update unless the owner's signing key has been handed over out of band as a separate, deliberate act. Until that happens the honest statement is that owner absence blocks roster changes and nothing else; threads, grants, personal control and an in-flight handover all continue. **CONFIRMED BY jd 2026-09-27: the fallback is Yousef.** This closes `L-2`. The orchestrator had assumed it as the only candidate in a two-person team, and said so; the confirmation makes it a decision rather than an assumption, which is the difference G04 asks for. The naming is a formality in a two-person team - he is the only candidate - and it changes nothing about what he can do: the narrower scope in the sentences above still holds, and owner absence still blocks roster changes and nothing else until the signing key is handed over as a separate deliberate act.
+3. **Retention.** operator's ruling: **keep the records, delete the branches.** The `aw/handover/<item>` branch is deleted by the requester once the item is applied or cancelled, because it is bulk that has served its purpose. `refs/aw/items/<item>/control` and its `events/<command id>.json` files are kept indefinitely as the audit trail of who held the item and when, because they are small and are the only durable account of a handover. The draft proposed deleting both together; operator separated them on 2026-09-20, so the trail survives the cleanup. Local databases are retained on each workstation indefinitely and are never shared. Telegram message history follows Telegram's own retention, which neither workstation controls.
+4. **Operational owner.** operator, **with a named fallback**, which is operator's amendment of 2026-09-20 to the drafted single-owner line. The owner holds the roster, owns the repository, issues and revokes join codes, and removes members. The fallback matters because roster updates are signed by the owner and a revocation needs a fresh roster, so an unavailable owner means no member can be removed and no new member admitted. The fallback is <git-author>, the only other roster member, and what he can do is deliberately narrower than ownership: he can reach the repository and read the records, but he cannot sign a roster update unless the owner's signing key has been handed over out of band as a separate, deliberate act. Until that happens the honest statement is that owner absence blocks roster changes and nothing else; threads, grants, personal control and an in-flight handover all continue. **CONFIRMED BY operator 2026-09-27: the fallback is <git-author>.** This closes `L-2`. The orchestrator had assumed it as the only candidate in a two-person team, and said so; the confirmation makes it a decision rather than an assumption, which is the difference G04 asks for. The naming is a formality in a two-person team - he is the only candidate - and it changes nothing about what he can do: the narrower scope in the sentences above still holds, and owner absence still blocks roster changes and nothing else until the signing key is handed over as a separate deliberate act.
 5. **Enterprise data policy.** None applies. This is personal use by a two-person trusted team, and no customer or third-party data is expected in handed-over work. If that ever changes, retention and audience are the two items to revisit first.
 
 ## 6e. F track close-out: the burn-down of the pilot's defects
@@ -1175,7 +1192,7 @@ Every task landed on main from its own branch by fast-forward, and every branch 
 | F01 | B12, `/help` and `/access` showing only current capabilities | `fix/F01-help-capabilities` | `506ea0a..7cca9cd` |
 | F02 | B14, and B17 apart from its pinned anchor. Owns the migration that adds `closed_at` and `closed_command_id` to `item_link` | `fix/F02-close-the-thread` | `32ce63c..cfb9d55` |
 | F03 | B2 and B7, opening a Team thread from the work item | `fix/F03-open-team-thread` | `fc01a2c..730fcde` |
-| F04 | B15, by decision: R-B amended to owner-initiated in the wording jd approved on 2026-09-20. Documentation only | none, applied on main | `a94da5e` |
+| F04 | B15, by decision: R-B amended to owner-initiated in the wording operator approved on 2026-09-20. Documentation only | none, applied on main | `a94da5e` |
 | F05 | B8, the supergroup upgrade and the local chat-id rewrite | `fix/F05-supergroup-upgrade` | `deb63fc..70c0cab` |
 | F06 | B1, reissuing a join code | `fix/F06-reissue-join-code` | `b43899c..b1b1143` |
 | F07 | B9, B11 and B16, bounding the anchor writes | `fix/F07-bound-anchor-writes` | `a5331a5..46b2522` |
@@ -1211,7 +1228,7 @@ The workspace test script derives a database path from the shell pid, so three p
 The lint tier is the one red, it is exit 1, and it is **not this track's**.
 All 17 errors are in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's.
 `origin/main` does not pass lint either.
-Audit 3 recorded this as A2 FAIL on the lint tier, and jd waived it on 2026-09-25; the waiver and its reasoning are in the tracker.
+Audit 3 recorded this as A2 FAIL on the lint tier, and operator waived it on 2026-09-25; the waiver and its reasoning are in the tracker.
 
 ### What this evidence does not establish
 
@@ -1237,18 +1254,18 @@ Audit 4 confirmed the H span is strictly linear: `git log --merges 5b00ebe~1..1f
 
 | Slice | Delivered | Branch | Commits on main |
 | --- | --- | --- | --- |
-| H01 | `tm4.md`, the TM4 scenario table, skimmed by jd on 2026-09-21 | `tm/H01-tm4-scenarios` | `5b00ebe` |
-| H01b | jd's four rulings of 2026-09-21 folded into `tm4.md`. Documentation only | `tm/H01b-tm4-rulings` | `59a19a7` |
+| H01 | `tm4.md`, the TM4 scenario table, skimmed by operator on 2026-09-21 | `tm/H01-tm4-scenarios` | `5b00ebe` |
+| H01b | operator's four rulings of 2026-09-21 folded into `tm4.md`. Documentation only | `tm/H01b-tm4-rulings` | `59a19a7` |
 | H02 | The item control record at `refs/aw/items/<item>/control`, and its migration | `tm/H02-control-record` | `013fec5..24c257d` |
 | H03 | Capture, preview and the open-call offer | `tm/H03-capture-and-offer` | `7d3fc6f..d5a528e` |
 | H04 | Discovery, accept, claim and the receiver's run under their own provider and policy | `tm/H04-accept-claim-run` | `1ad7dcc..bb77210` |
 | H05 | Return, review and apply, including the complete-baseline gate | `tm/H05-return-and-apply` | `123920e..a68ae98` |
 | H06 | **Closes gap C1**: the handover surface, six HTTP routes and the Telegram tap handler. Until this, no person could reach the engine | `tm/H06-handover-surface` | `2926149..04dca86` |
-| H07 | **Closes M-4 rule 4.5** by jd's ruling 7 of 2026-09-22: `/close` is refused while a handover is live | `tm/H07-refuse-close-while-live` | `d300b05..1f01acd` |
+| H07 | **Closes M-4 rule 4.5** by operator's ruling 7 of 2026-09-22: `/close` is refused while a handover is live | `tm/H07-refuse-close-while-live` | `d300b05..1f01acd` |
 
-**H01b, H06 and H07 have no card in the brief**, which is audit 4's A1 finding and is structural rather than sloppiness: H01b folded rulings jd made after the brief was written, H06 was opened mid-flight for gap C1 when H04 and H05 each independently found that nothing reached a user, and H07 exists because of a ruling made on 2026-09-22.
+**H01b, H06 and H07 have no card in the brief**, which is audit 4's A1 finding and is structural rather than sloppiness: H01b folded rulings operator made after the brief was written, H06 was opened mid-flight for gap C1 when H04 and H05 each independently found that nothing reached a user, and H07 exists because of a ruling made on 2026-09-22.
 Their acceptance criteria therefore live in the same tracker row that is also their evidence, which is what check A1 forbids.
-jd waived that half of A1 on 2026-09-26; the waiver is in the tracker.
+operator waived that half of A1 on 2026-09-26; the waiver is in the tracker.
 
 ### Final verification on main
 
@@ -1268,7 +1285,7 @@ Every command and count below was run by the audit 4 auditor on its own worktree
 
 The lint tier is the one red and it is not this track's.
 The auditor re-derived the attribution per file from `git log` rather than accepting it: all seven files carrying errors are upstream's, and no H-track file produces one.
-Registered as **L-12** and waived by jd; see the tracker.
+Registered as **L-12** and waived by operator; see the tracker.
 
 ### What this evidence does not establish
 
@@ -1283,6 +1300,12 @@ The H track's greens cover less than they appear to, and audit 4 was explicit ab
 No live Telegram credential, paid provider, remote write or push was used anywhere in the H track, and `team.enabled` and `team.handoverEnabled` both remain off by default.
 
 ## 7. Evidence still required
+
+> **Superseded checkpoint notice:** the next paragraph describes the state when
+> this section was first written. Live bot support and the peer handover protocol
+> were subsequently implemented. It remains useful evidence that no live bot,
+> remote write or security certification was claimed at that earlier checkpoint;
+> it is not the status of the current product.
 
 At this implementation checkpoint, no Telegram bot has been connected, no peer
 handoff protocol has been implemented, no remote deployment has been configured,

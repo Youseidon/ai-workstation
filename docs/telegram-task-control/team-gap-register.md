@@ -1,11 +1,15 @@
 # Team feature gap register
 
-Created 2026-09-21, at jd's instruction, when implementation finished and the open items needed one place to live.
+> **Historical gap ledger.** It preserves how defects were discovered, scoped
+> and closed. Headings and prose from earlier checkpoints are not the current
+> backlog unless a current report explicitly reopens them.
+
+Created 2026-09-21, at operator's instruction, when implementation finished and the open items needed one place to live.
 
 Every gap found during the F and H tracks is here, whether or not anyone is working on it.
 The [burn-down tracker](team-burndown-tracker.md) says what happened; this says what has not.
 
-jd's ruling of 2026-09-21: **work the critical items, then the high ones. The medium and low items are decided after those land.**
+operator's ruling of 2026-09-21: **work the critical items, then the high ones. The medium and low items are decided after those land.**
 
 | Band | Meaning |
 | --- | --- |
@@ -37,7 +41,7 @@ It was in no card at all, which is the process failure worth naming: the H track
 
 ### C2. Nothing has been run against the full test suite
 
-**CLOSED 2026-09-27. V1 through V5 are all done.** V4 closed 2026-09-25 and 2026-09-26 with both audits run, both FAILed and both routed by jd; V5 closed 2026-09-27 with six cases PASS, one PARTIAL and one SKIPPED.
+**CLOSED 2026-09-27. V1 through V5 are all done.** V4 closed 2026-09-25 and 2026-09-26 with both audits run, both FAILed and both routed by operator; V5 closed 2026-09-27 with six cases PASS, one PARTIAL and one SKIPPED.
 
 The bars as they stand, each re-run by the orchestrator on 2026-09-26 except T1: server **618 of 618** in 133s, shared **91 of 91**, web **95 of 95**, four typechecks exit 0, web lint **19 problems exit 1** and red by waiver (L-12). Full T1 is **140 of 140** in 26.4 minutes, **not re-run for the close** because the harness is exclusive and the live rig would have had to be stopped for it.
 
@@ -65,7 +69,7 @@ The table is kept because audits 1 to 4 cite it.
 Stated precisely, because the distinction matters to audit 3: the orchestrator re-ran the server suite three times itself, but confirmed only one of the three T1 passes itself.
 
 The 5 lint warnings are all `@typescript-eslint/no-unused-vars` on underscore-prefixed parameters in `web/components/pipeline/PipelineHeader.tsx`.
-That is Yousef's pipeline code, not Team code, and they are warnings rather than errors.
+That is <git-author>'s pipeline code, not Team code, and they are warnings rather than errors.
 Silencing them means adding an `argsIgnorePattern` to `web/eslint.config.mjs`, which is a config change inside the diverged area of gap M-2, so it was flagged rather than taken.
 The burn-ins, audit 3, audit 4 and the LT-4 re-run are all still outstanding.
 
@@ -75,12 +79,12 @@ So **a T1 burn-in cannot prove cross-run root pollution**: every repeat starts o
 What it does cover is intra-file pollution, because the harness is shared across tests within a spec file at `workers: 1`, plus `dispose()`'s `realDatabaseHarnessRows` assertion that no harness row reached the real database.
 V3 must be worded to that and no further. The server suite is the half where holding one root constant is meaningful, and F00B did that.
 
-By jd's instruction of 2026-09-20, testing was parked while implementing.
+By operator's instruction of 2026-09-20, testing was parked while implementing.
 Every task from F03 onward ran only its own narrow tests plus a composition set.
 
 Not run once since: the full server suite, the full T1 suite, every burn-in, audit 3, audit 4 and the LT-4 re-run.
 
-The risk jd accepted, restated: a regression introduced early is not found until Phase V, with later tasks stacked on top of it.
+The risk operator accepted, restated: a regression introduced early is not found until Phase V, with later tasks stacked on top of it.
 The mitigation is real - every task merged from its own branch by fast-forward, so Phase V can bisect by task - but until Phase V runs, **done means done by a task's own evidence, not proven harmless to everything else**.
 
 ### C3. Two Team surfaces still compare `operationalState` to `AWAITING_RESPONSE` by hand, and the merge moved that value
@@ -127,10 +131,10 @@ So the full server suite at 618/618, the full T1 suite at 127/127, the web suite
 
 **What is not yet done**: neither has been reproduced end to end, which is the standard this track holds itself to and the reason M-9's defects were believed rather than argued.
 Doing that needs a T1 case driving a blocked-without-handoff Team item, which no scenario currently does.
-Whether to take that as a task, and whether the fix is `awaitsResponse` at these two sites plus a sweep of the remaining hand-written comparisons (`web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11`, `web/components/pipeline/status.ts:161`, the last being upstream's), is jd's call.
+Whether to take that as a task, and whether the fix is `awaitsResponse` at these two sites plus a sweep of the remaining hand-written comparisons (`web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11`, `web/components/pipeline/status.ts:161`, the last being upstream's), is operator's call.
 
 
-**The task, carded 2026-09-26 on jd's ruling. Its own worker, its own branch, red at T1 first.**
+**The task, carded 2026-09-26 on operator's ruling. Its own worker, its own branch, red at T1 first.**
 
 | # | Acceptance criterion |
 | --- | --- |
@@ -140,7 +144,7 @@ Whether to take that as a task, and whether the fix is `awaitsResponse` at these
 | 4 | Both sites ask `awaitsResponse` rather than comparing a state by hand: `server/src/teamItemViews.ts:169` and `web/components/tasks/TeamThreadPanel.tsx:25`. `awaitsResponse` already exists and already carries the comment explaining why; no second predicate is introduced. |
 | 5 | **The hole that hid it is closed, not just the defect.** `web/components/tasks/teamThread.test.tsx`'s negative list is derived from `OPERATIONAL_STATES` rather than hand-written, so a state added or moved in the status model cannot again be absent from both the positive case and the negative list. |
 | 6 | The full server suite and the full T1 suite are green at the end, with counts, and the T1 case from criterion 1 is among them. |
-| 7 | The remaining hand-written comparisons are **listed in the report and not changed**: `web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11` and `web/components/pipeline/status.ts:161`. The first three are personal-control surfaces, which invariant A5 says this track leaves unchanged, and the fourth is upstream's. Whether they are defects too is jd's call, and the report gives jd what it needs to make it. |
+| 7 | The remaining hand-written comparisons are **listed in the report and not changed**: `web/components/tasks/WorkItemDetail.tsx:245-249`, `web/components/HumanInputDialog.tsx:55`, `web/lib/humanInput.ts:7,11` and `web/components/pipeline/status.ts:161`. The first three are personal-control surfaces, which invariant A5 says this track leaves unchanged, and the fourth is upstream's. Whether they are defects too is operator's call, and the report gives operator what it needs to make it. |
 
 Scope note for whoever takes it: criterion 1 is the whole point of the task. The fix itself is two lines. If the T1 case cannot be made to fail before the fix, **stop and say so** rather than fixing on the strength of the code reading - that would be the same mistake as trusting a structural check.
 
@@ -154,7 +158,7 @@ Four T1 rows drive one real two-workstation handover through all three live stag
 
 The history below is kept because it is the reasoning that opened it.
 
-H07 closed M-4's rule 4.5 by jd's ruling 7: `/close` is refused while a handover is live, so an owner cannot destroy a receiver's unreturned work.
+H07 closed M-4's rule 4.5 by operator's ruling 7: `/close` is refused while a handover is live, so an owner cannot destroy a receiver's unreturned work.
 That is the **data-loss** shape, and it is the only one of the seven rulings that needed a task rather than a document.
 
 It has no end-to-end row. `grep -rn handover_live e2e/` is empty.
@@ -178,7 +182,7 @@ Note first that this is a **deferred item coming due, not an oversight**. H07 ju
 | 2 | **The row is proven load-bearing by mutation**, which is this track's substitute for red-first when the code is already correct: disable the guard alone, show the new row goes red, restore it and show it green, and put both outputs in the commit message. F00B did this for its fixture fix and it is the reason that fix was believed. **A new test that has never failed proves nothing.** |
 | 3 | **Both `/close` paths are covered.** H07 recorded that the **text** command still mints its card and refuses on the tap rather than instead of the card, because refusing earlier meant turning two handlers async, and it chose one unbypassable guard over two that can diverge. That is a deliberate design, not a defect: assert what it actually does on both paths rather than asserting the tidier behaviour. |
 | 4 | Full server suite and full T1 green at the end, with counts, the new row among them. |
-| 5 | **Do not change the guard.** If driving it end to end reveals a behaviour difference from the server-tier tests, **report it and stop** - that is a finding, and deciding what the app should do is jd's. The one thing this task must not do is adjust product behaviour to make a new test pass. |
+| 5 | **Do not change the guard.** If driving it end to end reveals a behaviour difference from the server-tier tests, **report it and stop** - that is a finding, and deciding what the app should do is operator's. The one thing this task must not do is adjust product behaviour to make a new test pass. |
 
 ### C5. The requester's web handover surface has no end-to-end proof it is wired
 
@@ -186,7 +190,7 @@ Note first that this is a **deferred item coming due, not an oversight**. H07 ju
 The row is `C5 (T1)` in `e2e/tests/t1/c5-web-handover-control.spec.ts`, and it is proven load-bearing by mutation rather than by having passed.
 The orchestrator re-ran it on the rebased tree before it landed: `1 passed (1.1m)`, the test itself 3.7s.
 
-**Registered 2026-09-26 from audit 4. Its own task, by jd's ruling of 2026-09-26.**
+**Registered 2026-09-26 from audit 4. Its own task, by operator's ruling of 2026-09-26.**
 
 The TM4 end-to-end spec proves the **Telegram** surface and only that surface.
 `e2e/tests/t1/tm4-handover.spec.ts` publishes over HTTP and then drives real taps, but it **never opens a browser**: `grep -nE "page\.|browser|goto|locator"` on the spec returns nothing.
@@ -208,7 +212,7 @@ The task: a T1 row that drives the requester's handover from the real page.
 | 3 | **Proven load-bearing by mutation**, as C4: break the control's wiring to its route alone, show the row goes red, restore and show green, both outputs in the commit message. This is the whole point of the task - C1 was "present but not wired", and only a test that fails when the wiring breaks can tell those apart. |
 | 4 | Full server suite and full T1 green at the end, with counts. |
 | 5 | **Report what is still not covered when you are done.** Driving one page does not make the web surface proven; say plainly which paths remain evidenced only by props-rendered tests and the two-width rig, so the next reader does not over-read this row the way `9 passed` on the TM4 burn-in can be over-read. |
-| 6 | If this turns out to need more than one row, or the harness cannot drive the page without new fixtures, **say so and stop** rather than growing the task silently. The size was flagged at carding and a bigger shape is jd's call. |
+| 6 | If this turns out to need more than one row, or the harness cannot drive the page without new fixtures, **say so and stop** rather than growing the task silently. The size was flagged at carding and a bigger shape is operator's call. |
 
 ## High
 
@@ -231,7 +235,7 @@ The unverified list is long and specific and is recorded in the tracker: deliver
 
 **CLOSED 2026-09-22 by V3. See the closed section at the foot of this file.**
 
-**Consequence nobody drew until 2026-09-27**: this closure is what made the standing constraint `team.handoverEnabled stays false` obsolete, and it was not lifted. It kept being copied into handovers for five days, and jd had to ask why handover was off to surface it. **Closing a gate is not the same as opening the thing it gated** - a closure should name the constraint it releases.
+**Consequence nobody drew until 2026-09-27**: this closure is what made the standing constraint `team.handoverEnabled stays false` obsolete, and it was not lifted. It kept being copied into handovers for five days, and operator had to ask why handover was off to surface it. **Closing a gate is not the same as opening the thing it gated** - a closure should name the constraint it releases.
 
 ### H-4. The Team pilot's database isolation was broken on main, and the guard's suggested fix made it worse. Fixed 2026-09-27 by P-A2
 
@@ -247,7 +251,7 @@ So on main the documented setup path produces two instances that resolve to **on
 
 ```
 Refusing to run the watch server against the live database
-(/home/junaid/.local/state/agent-console/console.sqlite). Use `npm run serve` for a live
+(<user-home>/.local/state/agent-console/console.sqlite). Use `npm run serve` for a live
 pipeline, or `npm run dev:sandbox` to develop against a copy. Set
 AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.
 ```
@@ -256,19 +260,19 @@ AGENT_CONSOLE_ALLOW_DEV_ON_LIVE=1 if you really mean this one.
 
 Precision, because the first reading here was too strong: `~/.local/state/agent-console/console.sqlite` **does not currently exist**. The guard refuses the default path whether or not a file is there, so no existing data was at risk - but the shared-database outcome is real as soon as two instances run without a pin.
 
-Worked around rather than fixed at the time: each pilot `.env` carries an `AGENT_CONSOLE_DB` pinned to its own checkout, with a comment saying why. Both instances verified on main with separate fresh databases, `workspaces 0` each, connected as `@aiws_helper_bot` and `@ai_test_pilot_1_bot`.
+Worked around rather than fixed at the time: each pilot `.env` carries an `AGENT_CONSOLE_DB` pinned to its own checkout, with a comment saying why. Both instances verified on main with separate fresh databases, `workspaces 0` each, connected as `<requester-bot-username>` and `<receiver-bot-username>`.
 
-**FIXED 2026-09-27 by P-A2**, on jd's ruling that both halves are in scope. `pilotEnv()` takes the checkout root and emits `AGENT_CONSOLE_DB` pinned to it, and the guard now recommends pinning rather than the escape hatch.
+**FIXED 2026-09-27 by P-A2**, on operator's ruling that both halves are in scope. `pilotEnv()` takes the checkout root and emits `AGENT_CONSOLE_DB` pinned to it, and the guard now recommends pinning rather than the escape hatch.
 
 Reproduced before fixing, on two fresh checkouts set up the documented way, with `XDG_STATE_HOME` pointed at a temp directory so the shared path was disposable and the live database was never opened:
 
 ```
-checkout        /tmp/pa2-checkout-A-JLghYQ
+checkout        ${TMPDIR:-/tmp}/pa2-checkout-A-JLghYQ
 AGENT_CONSOLE_DB  (absent)
-resolves to       /tmp/pa2-xdg-QDlE40/agent-console/console.sqlite
-checkout        /tmp/pa2-checkout-B-hnLmu1
+resolves to       ${TMPDIR:-/tmp}/pa2-xdg-QDlE40/agent-console/console.sqlite
+checkout        ${TMPDIR:-/tmp}/pa2-checkout-B-hnLmu1
 AGENT_CONSOLE_DB  (absent)
-resolves to       /tmp/pa2-xdg-QDlE40/agent-console/console.sqlite
+resolves to       ${TMPDIR:-/tmp}/pa2-xdg-QDlE40/agent-console/console.sqlite
 distinct database paths: 1 of 2
 FAIL: both checkouts share one database
 ```
@@ -292,23 +296,23 @@ The roster mirror is **not** affected: `runtime.ts` still resolves it to `config
 
 ## Medium
 
-### M-1. The two-person runs with Yousef have never happened
+### M-1. The two-person runs with <git-author> have never happened
 
 `H-TM-LT3` and `H-TM-LT4` need two people on two machines.
 The solo pilot is explicitly not a substitute, so **TM3 is not honestly done** whatever the test counts say.
-Outstanding since before this session; needs Yousef's time, not code.
+Outstanding since before this session; needs <git-author>'s time, not code.
 
 ### M-2. main and origin/main have genuinely diverged
 
 **CLOSED 2026-09-22 by the reconcile `a641b0c`.** main is now 331 ahead of `origin/main` and **0 behind**.
 The divergence is gone; what it left behind is **M-8**.
-Still nothing pushed, and `git branch -r --contains HEAD` is still empty, so the no-remote-write constraint is untouched - jd's "keep it local" ruling of 2026-09-22 covered pushing, and reconciling locally does not reverse it.
+Still nothing pushed, and `git branch -r --contains HEAD` is still empty, so the no-remote-write constraint is untouched - operator's "keep it local" ruling of 2026-09-22 covered pushing, and reconciling locally does not reverse it.
 
 **Precision correction, 2026-09-27.** `git branch -r --contains HEAD` is still empty and none of this track's work is on any remote - verified by checking six of its merge commits (`04dca86`, `581aafd`, `1f01acd`, `a109232`, `395fa16`, and `dc3e9de`'s descendants), every one on no remote ref. **199 commits in `HEAD` are reachable from no remote ref at all**, and `origin/main` is still `4fd0e65`, **415 behind**.
 
 But the blanket sentence "nothing has ever been pushed", repeated in several handovers, is **not literally true** and should stop being written. `git reflog` records exactly one push ever: `origin/feature/team-telegram-pilot` to `5018409`, dated **2026-09-18**, which **predates this track** - `5018409` is an ancestor of `dc3e9de`, the pilot merge that begins it, and that branch still exists on GitHub. It contains no burndown work.
 
-A second remote-tracking ref, `refs/remotes/pilot/feature-team-telegram-pilot` at `dc3e9de`, looks like a second remote and is not one: `git remote -v` lists only `origin`, and that ref's reflog shows it came from a **fetch out of the local rig directory** `/home/junaid/ai-workstation-team-pilot`. Nothing left the machine through it.
+A second remote-tracking ref, `refs/remotes/pilot/feature-team-telegram-pilot` at `dc3e9de`, looks like a second remote and is not one: `git remote -v` lists only `origin`, and that ref's reflog shows it came from a **fetch out of the local rig directory** `<user-home>/ai-workstation-team-pilot`. Nothing left the machine through it.
 
 **Why this is recorded rather than shrugged at**: the standing constraint is a push constraint, so a blanket claim about pushing is load-bearing, and a false one invites either a wrong assumption that the work is safe on a remote or a wrong assumption that no branch of this repository is public. Both are wrong.
 
@@ -316,33 +320,33 @@ The history below is kept because the audits cite it.
 
 **Superseded ruling of 2026-09-22: keep it local. No push.**
 
-jd's ruling: the Team work stays on this machine for now and `origin/main` is left untouched.
+operator's ruling: the Team work stays on this machine for now and `origin/main` is left untouched.
 The standing no-push constraint therefore continues to hold, and the divergence remains a decision to revisit later rather than an open question.
 
-The facts as verified on 2026-09-22: main holds **325** commits that have never left this machine, `origin/main` is at `4fd0e65` with 29 of Yousef's pipeline commits that main does not have, and `git branch -r --contains HEAD` returns **0**, so no commit of ours is reachable from any remote ref.
+The facts as verified on 2026-09-22: main holds **325** commits that have never left this machine, `origin/main` is at `4fd0e65` with 29 of <git-author>'s pipeline commits that main does not have, and `git branch -r --contains HEAD` returns **0**, so no commit of ours is reachable from any remote ref.
 
-Recorded risk jd is accepting: the gap grows with every task, and a later reconcile gets harder the longer it waits.
+Recorded risk operator is accepting: the gap grows with every task, and a later reconcile gets harder the longer it waits.
 
 ### M-3. Audit check D3 will fail for the wrong reason
 
 **DECIDED 2026-09-22: the auditors record both readings and the checklist is not edited.**
 
-jd's ruling: V4's auditors run section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) **unchanged**, and for D3 record **both** results:
+operator's ruling: V4's auditors run section 4 of [team-track-dev-brief.md](team-track-dev-brief.md) **unchanged**, and for D3 record **both** results:
 
 - the **literal** check, `origin/main` still at the commit the tracker recorded: **FAIL**, because `origin/main` moved from `44ad588` to `4fd0e65` when a worker ran `git fetch --all` while the real remote had moved on.
 - the **honest** check, that no commit of ours is reachable from any remote ref: **PASS**, `git branch -r --contains HEAD` returns 0.
 
-Two further checks are known to mismatch how jd chose to run the work, and the auditors record the deviation rather than failing the work for it:
+Two further checks are known to mismatch how operator chose to run the work, and the auditors record the deviation rather than failing the work for it:
 
-- **D1** requires every task to have its own worker agent id with no repeats. F00A, F04 and V2 were done by the orchestrator, by jd's own execution-model decision of 2026-09-20.
-- **A4** requires LT-4 recorded with a date and outcome. LT-4 is deferred by operator instruction of 2026-09-18 pending Yousef (gap M-1), and V5's re-run is sequenced after V4 in any case.
+- **D1** requires every task to have its own worker agent id with no repeats. F00A, F04 and V2 were done by the orchestrator, by operator's own execution-model decision of 2026-09-20.
+- **A4** requires LT-4 recorded with a date and outcome. LT-4 is deferred by operator instruction of 2026-09-18 pending <git-author> (gap M-1), and V5's re-run is sequenced after V4 in any case.
 
-The instrument stays the auditor's and jd's. Nothing in it was edited.
+The instrument stays the auditor's and operator's. Nothing in it was edited.
 
-Three further mismatches are consequences of jd's 2026-09-22 decision to reconcile before auditing, and are recorded rather than failed:
+Three further mismatches are consequences of operator's 2026-09-22 decision to reconcile before auditing, and are recorded rather than failed:
 
-- **D2** is no longer "is the range linear". `git log --merges dc3e9de..main` returns **three** commits, not the one jd anticipated: the reconcile `a641b0c`, plus `b855ec2` and `fa92586`, which are Yousef's own pull-request merges and arrived inside his 29 commits. Record the honest reading: **no merge commit is a task landing**, every task still landed by fast-forward.
-- **D9** must account for **29 commits owned by no tracker row**. They are Yousef's, were never claimed by this track, and are out of range rather than unexplained. The check that still bites is that no commit *of ours* in the range lacks a row.
+- **D2** is no longer "is the range linear". `git log --merges dc3e9de..main` returns **three** commits, not the one operator anticipated: the reconcile `a641b0c`, plus `b855ec2` and `fa92586`, which are <git-author>'s own pull-request merges and arrived inside his 29 commits. Record the honest reading: **no merge commit is a task landing**, every task still landed by fast-forward.
+- **D9** must account for **29 commits owned by no tracker row**. They are <git-author>'s, were never claimed by this track, and are out of range rather than unexplained. The check that still bites is that no commit *of ours* in the range lacks a row.
 - **A2 and A3** must cite the post-merge numbers. ~~server 486/617 ... 17 errors and 11 warnings ... V4 is blocked on M-8~~ **All three superseded; corrected 2026-09-26 after audit 4 found this entry still carrying them.** M-8 is closed, the server bar is **618**, lint is **17 errors and 2 warnings**, and every tier A2 names is green on main except lint. The attribution of the errors to upstream stands unchanged.
 
 Also for the auditors: H07's close guard has **server-tier proof only and no T1 row**, so treat it as a known end-to-end coverage gap rather than as covered.
@@ -351,14 +355,14 @@ Also for the auditors: H07's close guard has **server-tier proof only and no T1 
 
 ### M-4. Two handover rules are still unruled
 
-**CLOSED 2026-09-22. Both halves ruled by jd; 4.3 by documentation and 4.5 by task H07.**
+**CLOSED 2026-09-22. Both halves ruled by operator; 4.3 by documentation and 4.5 by task H07.**
 
-- **4.3, the decline outcome. Closed.** jd confirmed the **open-call reading**: a decline is recorded, the offer stays `OFFERED` for the rest of the roster, and a per-person decline is never expressed as a record transition. This matches the surface H04 already built, so it was a documentation correction. Recorded as ruling 6 in section 8 of [handover-rules.md](handover-rules.md).
-- **4.5, closing an item while a handover is live. CLOSED 2026-09-22 by H07**, commits `d300b05..1f01acd`. jd ruled **refuse the close**. While a receiver holds the item, or has returned work that has not been applied, `/close` is rejected with a reason naming the live handover, and the owner must cancel the handover or apply the return first. Recorded as ruling 7. **This is the only ruling of the seven that requires a product change to already-shipped code**, on the close path F02 owns. Built and merged; see the closed section at the foot of this file.
+- **4.3, the decline outcome. Closed.** operator confirmed the **open-call reading**: a decline is recorded, the offer stays `OFFERED` for the rest of the roster, and a per-person decline is never expressed as a record transition. This matches the surface H04 already built, so it was a documentation correction. Recorded as ruling 6 in section 8 of [handover-rules.md](handover-rules.md).
+- **4.5, closing an item while a handover is live. CLOSED 2026-09-22 by H07**, commits `d300b05..1f01acd`. operator ruled **refuse the close**. While a receiver holds the item, or has returned work that has not been applied, `/close` is rejected with a reason naming the live handover, and the owner must cancel the handover or apply the return first. Recorded as ruling 7. **This is the only ruling of the seven that requires a product change to already-shipped code**, on the close path F02 owns. Built and merged; see the closed section at the foot of this file.
 
 ### M-5. No npm script runs the Team web unit tests
 
-**CLOSED 2026-09-25 by task M9, commit `b943650`, on jd's decision to widen it now rather than after V4.**
+**CLOSED 2026-09-25 by task M9, commit `b943650`, on operator's decision to widen it now rather than after V4.**
 `npm run test --workspace web` covers both trees, 65 tests to **94**, and `test:web-ui` names the component tests alone. `test:quota-ui` keeps its four files exactly as `human-verification.md` cites them, so no recorded PASS row changes meaning.
 Widening found one red, **red since the merge and in `test:quota-ui`, the script the verification rows cite as passing**: it was 13 of 14. The tasks detail gained the definition-of-done panel, which raises toasts, so rendering it outside a `ToastProvider` throws where the app always supplies one at `app/layout.tsx:46`. A stale test, not a defect: it renders in the app's context now, with no assertion changed.
 
@@ -371,7 +375,7 @@ Phase V should add a `test:web-ui` covering every `*.test.tsx`.
 
 The assertions exist and nothing routine runs them, which is the brief's own section 7 trap one level up.
 
-### M-6. Fixtures leak rows into the shared root, and one product lookup depended on row order. The lookup is fixed 2026-09-27 by the Phase 3 tiebreak; the leaks stay by jd's ruling
+### M-6. Fixtures leak rows into the shared root, and one product lookup depended on row order. The lookup is fixed 2026-09-27 by the Phase 3 tiebreak; the leaks stay by operator's ruling
 
 Found by F00B's row-count leak profile, which snapshots `COUNT(*)` per table between every server test file against one accumulating root.
 None of these causes a failure today, proven by three per-file runs and three full-suite runs against one root, so none is a non-deterministic fixture **yet**.
@@ -390,7 +394,7 @@ Leaked rosters sharing a `botId` are shadowed by the newest row today, but a sam
 That is the same mechanism as the bug F00B fixed, one step removed, and it is in **product** code rather than test code.
 
 F00B correctly did not expand scope to it: the fixtures it repaired could produce a false red, these cannot today.
-Needs jd's decision on whether to take a follow-up task, because the honest fix is likely a tiebreak in the product lookup rather than more fixture cleanup.
+Needs operator's decision on whether to take a follow-up task, because the honest fix is likely a tiebreak in the product lookup rather than more fixture cleanup.
 
 ### M-7. H04's `closeAfterHandover` contradicted ruling 7. Ruled and fixed 2026-09-27 by P-C5
 
@@ -408,12 +412,12 @@ H07 reverted the attempt entirely rather than weaken that assertion, which was t
 
 The real question is which reading is right, and it is a design question rather than a bug: does an acknowledged stop end the handover (H04), or is a stopped-but-unreturned item still held (ruling 7)? There is work on the branch in both readings.
 
-**RULED 2026-09-27 by jd: ruling 7 wins. A stopped-but-unreturned item is still held.**
+**RULED 2026-09-27 by operator: ruling 7 wins. A stopped-but-unreturned item is still held.**
 `isLiveHandoverState` is authoritative, and `closeAfterHandover` is ignoring the predicate that already encodes the rule - all four states it permits (`OFFERED`, `WAITING_INPUT`, `PAUSED`, `RETURNED`) are in `LIVE_HANDOVER_STATES`.
 
 The work: apply `isLiveHandoverState` to `closeAfterHandover`, and **rewrite** `teamHandoverRun.test.ts:955` to assert that an acknowledged stop does **not** end the handover.
 That is a deliberate change to a passing assertion, so it gets its own commit citing this ruling rather than being folded into the fix.
-The deciding argument jd accepted was the asymmetry: if ruling 7 is right and H04 is chosen someone loses work, whereas if H04 is right and ruling 7 is chosen someone takes one extra explicit step.
+The deciding argument operator accepted was the asymmetry: if ruling 7 is right and H04 is chosen someone loses work, whereas if H04 is right and ruling 7 is chosen someone takes one extra explicit step.
 
 The wider model question this exposed is **M-16**.
 
@@ -422,8 +426,8 @@ The wider model question this exposed is **M-16**.
 **CLOSED 2026-09-25 by task M8, landed on main at `094542e`.**
 The server suite is **617 of 617**, run three times against one unchanged root, and all four workspaces typecheck.
 Every one of the ten remaining failures was classified as a stale fixture, a stale assertion or a real defect, with the reasoning in the tracker's log and in each commit message.
-Four merge-introduced product defects were fixed under jd's ruling of 2026-09-25: the Telegram card's flowchart position, the dropped `terminalStatusApplyFailure` reason, the deleted Task Control section on the Agents page, and `AWAITING_RESPONSE` carrying no precedence.
-**The Resume button was investigated to jd's instruction and is not broken**; the two end-to-end fixtures described a rail the app can no longer build, and the detail is in the tracker's log of 2026-09-25.
+Four merge-introduced product defects were fixed under operator's ruling of 2026-09-25: the Telegram card's flowchart position, the dropped `terminalStatusApplyFailure` reason, the deleted Task Control section on the Agents page, and `AWAITING_RESPONSE` carrying no precedence.
+**The Resume button was investigated to operator's instruction and is not broken**; the two end-to-end fixtures described a rail the app can no longer build, and the detail is in the tracker's log of 2026-09-25.
 What M-8 did **not** close is the end-to-end tier, which is now **M-9**.
 
 The history below is kept because the audits cite it.
@@ -431,7 +435,7 @@ The history below is kept because the audits cite it.
 Found by the reconcile `a641b0c`, and the reason the server suite is **486 of 617** on the merged tree.
 
 This is not a merge resolution error, and it is worth being precise about that.
-Yousef deliberately changed what happens when a run ends without posting a status.
+<git-author> deliberately changed what happens when a run ends without posting a status.
 `applyEndOfRunStatus` now writes `to: decision.to ?? "UNREPORTED"`, where this side wrote `BLOCKED`, and every status write goes through a `writeStatus` choke point with a `recoverableBlocker` refusal in front of it.
 His reasoning is recorded in his own comments and is sound: a bare fall-through to `FAILED` meant nothing ever *decided* an item had failed, and "the run said nothing" was indistinguishable from "the process failed".
 
@@ -441,10 +445,10 @@ Posting the block explicitly took that file from 0 of 11 to 3 of 11, which confi
 
 The 131 failures by file: `telegramLiveRuntime` 26, `teamHandoverRun` 23, `telegramSummary` 17, `pipelineScheduler` 11, `teamResultApply` 10, `humanInput` 8, `taskControl` 5, `teamControlRecord` 4, `teamHandoverSurface` 3, `teamHandoverCapture` 3, `runService` 3, `agentProgressTools` 3, `workspaceApi` 2, `teamItems` 2, and single failures elsewhere.
 
-**Why this is not merge work.** Resolving it means deciding, case by case, whether the Team assertion or Yousef's new lifecycle is correct, across F01 to F09 and H01 to H07 - the exact behaviour Phase V certified at 421/421.
-That is re-verification of the Team track against a changed platform, and doing it inline would quietly rewrite evidence jd has already signed off.
+**Why this is not merge work.** Resolving it means deciding, case by case, whether the Team assertion or <git-author>'s new lifecycle is correct, across F01 to F09 and H01 to H07 - the exact behaviour Phase V certified at 421/421.
+That is re-verification of the Team track against a changed platform, and doing it inline would quietly rewrite evidence operator has already signed off.
 
-**jd's decision of 2026-09-22**: scope it as its own task with its own worker and branch, red-first, with evidence per case, rather than have the orchestrator make 128 semantic calls unreviewed.
+**operator's decision of 2026-09-22**: scope it as its own task with its own worker and branch, red-first, with evidence per case, rather than have the orchestrator make 128 semantic calls unreviewed.
 **V4 and V5 are blocked on it**, because an audit is worth what the tree it audits is worth.
 
 ### M-9. The end-to-end tier has never been reconciled with upstream's agent prompt
@@ -464,7 +468,7 @@ Three product defects, all merge-introduced, all invisible to every tier but T1:
 | The launcher dropped the `options` a BLOCKED status carries | The phone's decision card offered nothing to choose between, and nothing downstream invents them | `agent-step blocked --options-file` |
 | `BLOCKED` stopped reading as awaiting a response | **No blocked task's question card reached the phone at all, and no blocked task appeared in any list.** The feature's primary path | `operationalState.ts`, now `awaitsResponse` |
 
-The third is the one to remember. A work item waiting on a person has two spellings in the status model - `BLOCKED`, stored and labelled "Needs you", and `AWAITING_RESPONSE`, the live overlay the model documents as an alias of it. Ours returned the overlay; upstream's returns the stored name. Neither is wrong, which is exactly why a merge could swap them silently, and the Telegram layer keyed on the overlay in two places. jd confirmed on 2026-09-25 that a blocked task's card reaching the phone is the intended purpose, so it was repaired rather than accepted.
+The third is the one to remember. A work item waiting on a person has two spellings in the status model - `BLOCKED`, stored and labelled "Needs you", and `AWAITING_RESPONSE`, the live overlay the model documents as an alias of it. Ours returned the overlay; upstream's returns the stored name. Neither is wrong, which is exactly why a merge could swap them silently, and the Telegram layer keyed on the overlay in two places. operator confirmed on 2026-09-25 that a blocked task's card reaching the phone is the intended purpose, so it was repaired rather than accepted.
 
 Four stale fixtures and one set of stale assertions, each classified rather than adjusted until green:
 
@@ -476,7 +480,7 @@ Four stale fixtures and one set of stale assertions, each classified rather than
 | `S-L3-B-02` counted one spelling of blocked, expecting 0 from a card that correctly said 1 | Stale fixture |
 | A failed run is FAILED and a silent one UNREPORTED, not BLOCKED: `S-H2-06`, `S-H2-09`, `S-H2-10`, `S-H2-12` and their scenario rows | Stale assertion |
 
-**What the H2 scenarios now assert, by jd's decision of 2026-09-25.**
+**What the H2 scenarios now assert, by operator's decision of 2026-09-25.**
 `S-H2-04` asserted a context fetch and "HTTP to 4100 only" from a curl the product gives nobody, and the launcher makes that call from a child process. It now asserts what is honestly observable: the launcher was minted for this run, the fake ran it for the remark and for DONE and called nothing itself, and the console's record for the run is exactly those two calls. The fake logs each call before making it, because the console ends the provider the moment a terminal status lands - a fake that logged only results had no record of the one call that mattered. `S-H2-07` keeps its claim, which the restored offline channel makes literally true: no launcher, no token, nothing run and nothing called.
 
 **Two findings worth carrying**, neither a T1 failure:
@@ -503,7 +507,7 @@ It is a second reconciliation of comparable size against a different surface, an
 The fake has to be taught the new shape, and the H2 scenarios have to be re-decided rather than re-pointed: "makes no HTTP call" and "posts DONE over HTTP to 4100 only" describe a `curl` the product no longer tells any agent to use, and the shim makes that call from a child process instead.
 That is a judgement about what those scenarios are for, which is the kind of call that belongs in a task with its own card.
 
-**jd's decision of 2026-09-25**: land M-8 on the server tier's evidence and register this separately, rather than bundle the two.
+**operator's decision of 2026-09-25**: land M-8 on the server tier's evidence and register this separately, rather than bundle the two.
 
 **V4 is blocked on M-9**, for the reason V4 was blocked on M-8: an audit is worth what the tree it audits is worth, and check A2 requires the full T1 suite to pass.
 
@@ -527,8 +531,8 @@ So the pinned anchor stays in the group indefinitely, showing a state the task l
 Meanwhile `e47becc`'s commit message and the tracker both say "B1 to B19 are now all closed, deferred or pointed elsewhere", which is the sentence a later reader would trust.
 
 **Both halves were measured against the live rig on 2026-09-27, not just read.**
-The anchor on item `awi1_63460787e23fa7d635890376` was edited **once an hour, on the hour, for eleven consecutive hours** while the item was open, outbox 10 to 20, every one `SENT`.
-`/close` landed at `01:23:09Z`, and the next hourly slot, `01:52:50Z`, produced **no edit at all**; the only outbox rows after the close were replies to jd's own commands.
+The anchor on item `<redacted-item-id>` was edited **once an hour, on the hour, for eleven consecutive hours** while the item was open, outbox 10 to 20, every one `SENT`.
+`/close` landed at `01:23:09Z`, and the next hourly slot, `01:52:50Z`, produced **no edit at all**; the only outbox rows after the close were replies to operator's own commands.
 So the first half of this entry is **confirmed**: `syncTeamItem` does return early on a closed link and the churn stops.
 The second half is confirmed too: message 85 is **still pinned**, and `getChat` still returns it.
 
@@ -537,11 +541,11 @@ That is the trade working exactly as recorded - no unbounded edit loop, and a st
 **What this needs is a decision, not obviously a fix.**
 Either a task owns the unpin and settles what a closed-but-blocked thread should look like, or this entry stands as the accepted trade with the bug log's reason.
 Note that **M-15** is the sharper half of the same area: the pinned anchor is at least visibly stale, whereas a closed item's view commands actively present it as live.
-jd waived audit 3's A1 on 2026-09-25 with this recorded; the waiver is in the tracker.
+operator waived audit 3's A1 on 2026-09-25 with this recorded; the waiver is in the tracker.
 
 ### M-10. F05's supergroup upgrade had no harness case, and had two invented scenario ids. Closed 2026-09-27 by P-C3
 
-**Registered 2026-09-25 on jd's ruling, closing the F05 half of audit 3's A1.**
+**Registered 2026-09-25 on operator's ruling, closing the F05 half of audit 3's A1.**
 
 F05's third acceptance criterion reads: *"A harness case upgrades a group mid-test and shows the next anchor delivered to the new id with no manual repair."*
 It was not delivered, and it cannot be delivered without new work: **the e2e fake cannot upgrade a group at all.**
@@ -563,7 +567,7 @@ Audit 3 ranked it first of A1's five criteria for product risk, and the risk is 
 
 **What is still open**, and is the decision this entry holds: whether to teach the e2e fake to upgrade a group and write the real T1 case.
 The brief sized that as large ("needs the fake to model a supergroup upgrade mid-test, which no scenario does yet").
-jd's ruling of 2026-09-25 was to register the deviation and retire the ids now, not to build it.
+operator's ruling of 2026-09-25 was to register the deviation and retire the ids now, not to build it.
 Until it is built, **F05's third criterion is unmet and recorded as unmet**, rather than covered by a test that was named as though it were.
 
 ### M-12. The requester's review and apply half had no web surface at all. Built 2026-09-27 by P-B1
@@ -577,14 +581,14 @@ Verified by grepping the whole `web/` tree for each name: every one appears exac
 So the requester can *start* a handover from the web app - that is what C5 just proved wired - and then cannot review, apply or request changes there.
 That half is driven from the phone, by `TM-T1-H3` in `tm4-handover.spec.ts`, so **the feature works and this is not a broken path**.
 
-It is banded Medium rather than Critical for exactly that reason: the band is "real, not blocking, and needs a decision rather than only work", and the decision is jd's - whether the web app is supposed to carry the review and apply half at all, or whether returning work is deliberately a phone action.
+It is banded Medium rather than Critical for exactly that reason: the band is "real, not blocking, and needs a decision rather than only work", and the decision is operator's - whether the web app is supposed to carry the review and apply half at all, or whether returning work is deliberately a phone action.
 
 Worth naming precisely, because it is the C1 and C5 claim shape one step further down the flow and each step has been a smaller claim than the last.
 C1 was "the engine reaches no surface". C5 was "the surface is present but unproven as wired". M-12 is **"the client method is present and has no caller"** - which is the cheapest of the three to find and the one most likely to read as covered, since a source-grep assertion in a test file does mention all three names.
 
 ### M-13. Two personal-control surfaces use C3's mechanism. Both halves are now reproduced
 
-**Registered 2026-09-26. jd's ruling the same day: prove first, then decide. A worker reproduces and reports; no product change, so invariant A5 stays intact and the decision to waive it stays jd's.**
+**Registered 2026-09-26. operator's ruling the same day: prove first, then decide. A worker reproduces and reports; no product change, so invariant A5 stays intact and the decision to waive it stays operator's.**
 
 `operationalState` can return **either** spelling, which is what makes this testable rather than theoretical:
 `server/src/operationalState.ts:30` returns `AWAITING_RESPONSE` when a human question or a held response exists, and **line 42** returns `BLOCKED` for a stored `BLOCKED` prompt that reached neither. C3 established that an agent posting `BLOCKED` with options writes no handoff, so it falls through to line 42 - and that is the feature's primary path, not a corner.
@@ -665,7 +669,7 @@ runs before / after: 1 / 1
 
 **So the load-bearing question has an answer: the run consumes neither, because there is no run.** No answer is overwritten, no provider budget is spent, and nothing on the record changes.
 
-**And the rig was never in the state the entry described.** A `human_response_hold` makes `prompt.humanResponseHeld` true, which [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes to `AWAITING_RESPONSE`. So the rig's prompt 1 - `TODO` with the hold on response 4, jd's own `Integer cents is fine` - takes the banner's **first** branch and reads **"Needs your input" / "Review and respond"**. The "Continue with saved answer" label appears only where **no** answer is held. The two labels are the wrong way round relative to the product's own model of a saved answer.
+**And the rig was never in the state the entry described.** A `human_response_hold` makes `prompt.humanResponseHeld` true, which [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes to `AWAITING_RESPONSE`. So the rig's prompt 1 - `TODO` with the hold on response 4, operator's own `Integer cents is fine` - takes the banner's **first** branch and reads **"Needs your input" / "Review and respond"**. The "Continue with saved answer" label appears only where **no** answer is held. The two labels are the wrong way round relative to the product's own model of a saved answer.
 
 **What is left of this half, and it is real but much smaller: a dead button on a personal-control surface.**
 
@@ -680,7 +684,7 @@ runs before / after: 1 / 1
 
 **Provenance, checked rather than assumed: this is probably not ours.** The line 245 banner gate was introduced by `ded5c20 feat: add shared human input and course correction panel`, whose commit-message convention is upstream's rather than this track's, and the last commit to touch the file is the reconcile `a641b0c`. So the canned-retry path most likely predates the Team work rather than being a fifth M-9 regression. Stated as probable: the introducing commit was identified, every intermediate state was not.
 
-**What is now jd's to decide**, which is what "prove first" was for:
+**What is now operator's to decide**, which is what "prove first" was for:
 
 1. Whether to waive A5 and fix any of this, given it is a personal-control surface and probably upstream's defect rather than this track's.
 2. Whether the row's missing `AWAITING_RESPONSE` branch and the unreachable `HumanInputDialog` are one fix or two.
@@ -690,7 +694,7 @@ runs before / after: 1 / 1
 
 **Registered 2026-09-26, found on the live rig during V5 rather than in any suite.**
 
-The V5 rebuild wiped both pilot databases and left the roster on the real remote untouched. Both instances are still *named* in that roster, because the identities are derived rather than stored locally: `workstationId` is `telegram-<botId>` and `personId` is the Telegram user id, and neither changed across the wipe. Verified against the September record: `telegram-8262291110` / `8973262519` for A and `telegram-8998251911` / `6525517234` for B.
+The V5 rebuild wiped both pilot databases and left the roster on the real remote untouched. Both instances are still *named* in that roster, because the identities are derived rather than stored locally: `workstationId` is `telegram-<botId>` and `personId` is the Telegram user id, and neither changed across the wipe. Verified against the September record: `telegram-<requester-bot-id>` / `<requester-user-id>` for A and `telegram-<receiver-bot-id>` / `<receiver-user-id>` for B.
 
 Yet neither instance can get back in.
 
@@ -702,13 +706,13 @@ So the roster on the remote is reachable, correct and names you, and there is no
 
 **Not a defect of the designed flow**, which is create once and join by code, and is why this is Medium rather than higher: losing a workstation database is a recovery scenario the design never claimed to cover. What makes it worth a register line is that the failure is silent about the real remedy and the error message actively suggests something impossible.
 
-Worth pairing with the observation that the identities *are* stable and derived. That is what makes a rejoin path cheap to build if jd wants one: the roster already contains everything needed to recognise the returning workstation.
+Worth pairing with the observation that the identities *are* stable and derived. That is what makes a rejoin path cheap to build if operator wants one: the roster already contains everything needed to recognise the returning workstation.
 
 ### M-15. A closed item thread answered its view commands as though it were open. Fixed 2026-09-27 by P-B2
 
 **Found 2026-09-27 by V5 case 11, the second reproduction of B17. It is the reason that case is PARTIAL twice.**
 
-One minute after `/close` succeeded, `/task` from the teammate returned the **entire** item: the blocked-on text, both options with pros and cons, `State: blocked · Owner: Jj`, and `History: first run, no previous answers`.
+One minute after `/close` succeeded, `/task` from the teammate returned the **entire** item: the blocked-on text, both options with pros and cons, `State: blocked · Owner: Requester operator`, and `History: first run, no previous answers`.
 Nothing in that output says the thread is closed.
 
 **The cause is a missing check on one path, and it is not the one September blamed.**
@@ -724,7 +728,7 @@ It does not compare against `ACTIVE` or `CLOSED`, so **setting the thread row to
 Closing the row is cosmetic; the missing view-path check is the defect.
 
 **What is genuinely fine, and was checked rather than assumed**: `item_link.closed_at` is set, `/close` from the teammate is refused as owner-only, the access message is edited in place rather than reposted, and the anchor churn stops because `syncTeamItem` returns early on a closed link ([runtime.ts:1274](../../server/src/integrations/telegram/runtime.ts#L1274)).
-The pinned anchor staying is **M-11**'s accepted trade, with jd's waiver, and is not this entry.
+The pinned anchor staying is **M-11**'s accepted trade, with operator's waiver, and is not this entry.
 
 **What this needs is a decision, like M-11.**
 Reading a closed thread's history is arguably correct behaviour, in which case the fix is one line of output saying so, not a refusal.
@@ -732,7 +736,7 @@ What is not defensible is a teammate being shown a live-looking, actionable item
 
 ### M-17. While a teammate held a handed-over item, the owner's own surfaces offered to answer, run and complete it - and they worked. Guarded 2026-09-28 by P-A5
 
-**Registered 2026-09-28, reproduced before it was written, after jd asked whether P-B5 was really needed. It is, and the honest answer is that this is worse than M-16 records.**
+**Registered 2026-09-28, reproduced before it was written, after operator asked whether P-B5 was really needed. It is, and the honest answer is that this is worse than M-16 records.**
 
 **High.** It is a live work-loss path on a trust boundary, not a labelling problem.
 
@@ -767,7 +771,7 @@ env B execute runs:                1
 
 **One path to this was made easier by P-A3, and that is recorded rather than buried.** P-A3 added "Retry with existing context" to the `BLOCKED` branch, enabled whenever the item can start. "Respond and resume" needs an answer typed; that button needs **one click and no typing**, so on a handed-over item it is a one-click competing run. P-A3 did not create the hazard - every one of these buttons was already live - but it did add the cheapest route to it, and it could not have known, because nothing on that surface can see a handover.
 
-**FIXED 2026-09-28 by P-A5**, the narrow half, which jd chose. `assertNoLiveHandover` refuses answering, marking complete, recovering, the dialog's own save-and-resume and the person-initiated run start, naming the item, its state and either who holds it or that the offer is still open.
+**FIXED 2026-09-28 by P-A5**, the narrow half, which operator chose. `assertNoLiveHandover` refuses answering, marking complete, recovering, the dialog's own save-and-resume and the person-initiated run start, naming the item, its state and either who holds it or that the offer is still open.
 
 Four decisions in it, each checked rather than assumed:
 
@@ -782,23 +786,23 @@ Proof: `M-17 (T1)` red first at `Expected: 409, Received: 201` on the answer tha
 
 **M-16 / P-B5 is still owed**, and this is why the two were never alternatives:
 
-**The two fixes, and they are different sizes.** This was the choice put to jd:
+**The two fixes, and they are different sizes.** This was the choice put to operator:
 
 1. **A narrow guard**, refusing a local start, respond, retry and complete while `isLiveHandoverState` holds for this item's link, with the refusal naming the executor. Small, server-side, testable at T1, and it closes the work-loss path without touching `operationalState`.
 2. **P-B5 / M-16 in full**, which makes the state readable so every surface stops offering what it cannot support, rather than each one being individually refused.
 
 They are complements, not alternatives: 1 stops the loss, 2 stops the class. **1 does not need 2 and is much cheaper.**
 
-**jd chose 1, done 2026-09-28.** What 2 still buys, stated so it is not lost: the owner's surfaces continue to *say* "Needs you", to sit on the attention list, and to *offer* buttons that are now refused. The work-loss is closed; the lying is not. Every one of those buttons is now a dead button of exactly the shape M-13 was, and `M-16` is what removes them rather than refusing them one at a time.
+**operator chose 1, done 2026-09-28.** What 2 still buys, stated so it is not lost: the owner's surfaces continue to *say* "Needs you", to sit on the attention list, and to *offer* buttons that are now refused. The work-loss is closed; the lying is not. Every one of those buttons is now a dead button of exactly the shape M-13 was, and `M-16` is what removes them rather than refusing them one at a time.
 
-Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix jd chooses.
+Reproduced by a throwaway probe built from `m12-web-handover-review.spec.ts`'s crossing, stopped while the receiver still held the item. **Not committed as a row**: it asserts nothing, it only observes, and a row belongs with whichever fix operator chooses.
 
 ### M-16. The owner's surfaces cannot see a live handover, which is the root of C3, M-13, M-15 and M-17. **Re-scoped 2026-09-28: alignment, not an overhaul. Closed 2026-09-28 by P-B5**
 
-**Registered 2026-09-27 on jd's design observation, which re-derived a model the code already half has.**
+**Registered 2026-09-27 on operator's design observation, which re-derived a model the code already half has.**
 
 `server/src/teamControlRecord.ts` already makes a handover a **first-class, decoupled record**: fourteen `CONTROL_STATES` from `LOCAL` through `COMPLETED`, a transition table checking from-state, event, authorized actors and condition before anything is written, stored outside the prompt in a git control record that `item_link.control_head` points at, versioned by `epoch`.
-`LIVE_HANDOVER_STATES` and `isLiveHandoverState()` already express "this handover is outstanding", and the region jd described as one "pending return" flag is already three states: `RETURNED`, `APPLYING` and `COMPLETED`.
+`LIVE_HANDOVER_STATES` and `isLiveHandoverState()` already express "this handover is outstanding", and the region operator described as one "pending return" flag is already three states: `RETURNED`, `APPLYING` and `COMPLETED`.
 
 **What is missing is the other direction.** `operationalState` knows nothing about control states, so there is no task-level "awaiting return handover", and every surface therefore infers whether a person is waiting from **prompt status**, by hand.
 
@@ -814,9 +818,9 @@ Each was fixed or registered individually. **None of them is a coincidence**: th
 
 **Why this is its own task rather than part of any of them.** `operationalState` is read by every surface, and the reconcile moving it is precisely what caused C3, so changing it carries a risk already realised once on this track. It needs designing, not appending.
 
-**jd's ruling, 2026-09-27**: settle M-7 now against `isLiveHandoverState`, and raise this as a separate, properly sized task rather than doing it inside a bug fix.
+**operator's ruling, 2026-09-27**: settle M-7 now against `isLiveHandoverState`, and raise this as a separate, properly sized task rather than doing it inside a bug fix.
 
-**jd's ruling, 2026-09-28, after two questions that both found over-reach in the orchestrator's design: do the alignment, drop the overhaul.**
+**operator's ruling, 2026-09-28, after two questions that both found over-reach in the orchestrator's design: do the alignment, drop the overhaul.**
 
 The first design added a display status to a closed set 26 files read, a catalog entry with its own precedence and rollup semantics, a schema column with a migration to cache the control state, and a change to `operationalState`. Two facts checked on 2026-09-28 dismantled the reason for all of it: the `/api/operations` **route is already async** even though the snapshot builder is not, and the cache existed for a cost that is not real - only a link carrying a `control_head` needs a read, the read is of the **local** bare clone, and the live rig has **zero** such links. **The cache was designed before the uncached cost was measured.**
 
@@ -832,18 +836,18 @@ What replaces it: **one DTO field** carrying the live handover, filled in that a
 
 | Id | Gap | Note |
 | --- | --- | --- |
-| L-1 | **F10, the pilot rig**: B3 wrong port silently, B4 credentials inherited from the shell, B10 the launcher cannot be stopped by script, B19 the two instances share one working tree | Rig only, no product code. Needed before LT-5 and nothing else. **Widened 2026-09-26 with a fourth trap, now registered separately as L-17**: `scripts/team-pilot-state.mjs` takes the database path as an optional argument and defaults to the *calling checkout's* `.agent-console/console.sqlite`. Run the way [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documents it, from the repo root, it reads `main`'s own leftover fixture database and prints `team-7`, `group-7`, `jd-laptop` and `yousef-desktop` - a complete, plausible, entirely fake team, with no warning that it is not the rig. It must be given an explicit path to one of the two pilot checkouts. **This is worse than a wrong port**, which B3 already covers, because the output looks like a successful reading rather than like a failure. |
-| L-2 | **G04's named fallback owner** | The orchestrator recorded Yousef as the only candidate in a two-person team and flagged it. jd has not confirmed the name. **CLOSED 2026-09-27 by P-D3's pass: jd confirmed the fallback is Yousef**, recorded in [implementation.md](implementation.md) section 6d item 4, where the assumption had been flagged for confirmation. The naming is a formality in a two-person team and changes nothing about his narrower scope. |
+| L-1 | **F10, the pilot rig**: B3 wrong port silently, B4 credentials inherited from the shell, B10 the launcher cannot be stopped by script, B19 the two instances share one working tree | Rig only, no product code. Needed before LT-5 and nothing else. **Widened 2026-09-26 with a fourth trap, now registered separately as L-17**: `scripts/team-pilot-state.mjs` takes the database path as an optional argument and defaults to the *calling checkout's* `.agent-console/console.sqlite`. Run the way [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documents it, from the repo root, it reads `main`'s own leftover fixture database and prints `team-7`, `group-7`, `operator-laptop` and `receiver-workstation` - a complete, plausible, entirely fake team, with no warning that it is not the rig. It must be given an explicit path to one of the two pilot checkouts. **This is worse than a wrong port**, which B3 already covers, because the output looks like a successful reading rather than like a failure. |
+| L-2 | **G04's named fallback owner** | The orchestrator recorded <git-author> as the only candidate in a two-person team and flagged it. operator has not confirmed the name. **CLOSED 2026-09-27 by P-D3's pass: operator confirmed the fallback is <git-author>**, recorded in [implementation.md](implementation.md) section 6d item 4, where the assumption had been flagged for confirmation. The naming is a formality in a two-person team and changes nothing about his narrower scope. |
 | L-3 | **Opening the same item twice mints a second item** | `createItemLink` is called again on a repeat open. Found by F03, not in B1 to B19, left alone as out of scope. Worth its own entry if it is real. |
-| L-4 | **F03's and F06's two-width UI checks cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. Neither F03's control nor F06's has a committed rig. **Widened 2026-09-25 to name F06**, which audit 3 found has the identical unreproducible criterion while only F03 was recorded; the only committed width rigs are `scripts/verify-m4-browser.mjs` and `scripts/verify-handover-browser.mjs`, both at 390px and 1280px, and neither touches `TeamStatusPanel`. Both halves are covered by jd's waiver of audit 3's A1, 2026-09-25. |
+| L-4 | **F03's and F06's two-width UI checks cannot be re-run** | **Narrowed 2026-09-21 by H06**, which committed its own rig as `scripts/verify-handover-browser.mjs` with an npm script, so the practice is fixed going forward. Neither F03's control nor F06's has a committed rig. **Widened 2026-09-25 to name F06**, which audit 3 found has the identical unreproducible criterion while only F03 was recorded; the only committed width rigs are `scripts/verify-m4-browser.mjs` and `scripts/verify-handover-browser.mjs`, both at 390px and 1280px, and neither touches `TeamStatusPanel`. Both halves are covered by operator's waiver of audit 3's A1, 2026-09-25. |
 | L-5 | **F03's `409 prompt_already_complete` is untested at the HTTP tier, and its UI is stricter than its API** | The test drives the runtime directly and relies on the generic `WorkspaceError` handler every other route already uses. **Second half added 2026-09-25**, found by audit 3's finding 7: F03's row records both limits but only the first was registered. The panel enables the control on `AWAITING_RESPONSE` alone (`web/components/tasks/TeamThreadPanel.tsx:25`) while the route refuses only `DONE` and `SKIPPED`, so the UI forbids openings the API would allow. **This stopped being harmless at the reconcile and is now gap C3**, because `operationalState` no longer returns `AWAITING_RESPONSE` for a stored `BLOCKED` item. |
-| L-6 | **F08's accepted trade** | An execute run that never ends leaves the anchor pinned and live rather than frozen and wrong. Judged the better failure and reversible if jd wants a bound. |
+| L-6 | **F08's accepted trade** | An execute run that never ends leaves the anchor pinned and live rather than frozen and wrong. Judged the better failure and reversible if operator wants a bound. |
 | L-7 | **H03 chose the handover context file path** | `.agent-console/handover.json`, inside the snapshot tree only, never in the developer's worktree. The worker's choice, not the design's. |
 | L-8 | **H05's clean non-fast-forward merge is unreachable in one round** | Because the baseline gate is strict, an undiverged checkout always fast-forwards. The path exists and the merge probe exercises it; no fixture was contrived to reach it end to end. |
 | L-9 | **`special_file` is a fourth capture refusal** | Implemented from protocol.md section 9; tm4's matrix names only three. Recorded rather than added to the table. |
 | L-10 | **`h6-route-proxy.spec.ts:21` still cuts its call log by timestamp** | Same `call.at >= cutAt` shape F00B repaired in `l3F1.ts`. Left alone deliberately: the card records this file as already repaired under T20A, and re-cutting another task's repair with no failing symptom is churn. Residual risk flagged, not acted on. |
 | L-11 | **F00B's `l3F1.ts` change is shared with T3 and was validated only on the T1 path** | `e2e/tests/t3/l3-f1-edits-live.spec.ts` imports the same helper and could not be run here, because T3 needs live Telegram credentials which are forbidden. The change is backend-agnostic (`telegramCalls()` returns an append-only array under both T1 and T3, so an index cut behaves identically), but it is untested on T3. |
-| L-12 | **main carries `origin/main`'s 17 lint errors** | The `web` workspace lints at **19 problems, 17 errors and 2 warnings**, exit 1, and every error is in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's. `origin/main` does not pass lint either, and the F-track files lint clean on their own (`npx eslint components/tasks/TeamThreadPanel.tsx components/agents/TeamStatusPanel.tsx components/tasks/WorkItemDetail.tsx lib/workspacesApi.ts` is exit 0, no output). This is what audit 3 recorded as A2 FAIL on the lint tier, and **jd waived it on 2026-09-25**; nothing in the Team track can close it. Registered here so that no later claim of a green lint tier can be made by omission. **Re-verified 2026-09-28 and briefly broken by this track, then repaired.** A full lint run after P-B5 read **20 problems**, and the twentieth was **ours**: `lib/useSettings.ts:101`, `Calling setState synchronously within an effect can trigger cascading renders`, introduced by P-C2, which mirrored the broadcast settings snapshot into state inside an effect. That broke the waiver's own basis - *every error is in upstream's files* - so it was fixed rather than waived: the snapshot is now **derived** (`broadcast ?? snapshot`) instead of copied, which is also correct rather than merely cheaper, because every settings mutation broadcasts (`index.ts:370` and `:396`) so an arrived broadcast is never staler than the copy fetched on mount. Back to **19 problems, 17 errors**, `useSettings` absent from the output, and every remaining error in upstream's files. Web 100 of 100 and the `L-16 (T1)` row still green, which is the behaviour P-C2 existed for. **The lesson is the count**: 19 was quoted from a document for two days while the real number had moved, and nothing was watching it. |
+| L-12 | **main carries `origin/main`'s 17 lint errors** | The `web` workspace lints at **19 problems, 17 errors and 2 warnings**, exit 1, and every error is in upstream's own files: 1 under `components/activity/`, 13 under `components/pipeline/` and 3 in `components/programs/ProgramDraftPanel.tsx`, whose only two commits are upstream's. `origin/main` does not pass lint either, and the F-track files lint clean on their own (`npx eslint components/tasks/TeamThreadPanel.tsx components/agents/TeamStatusPanel.tsx components/tasks/WorkItemDetail.tsx lib/workspacesApi.ts` is exit 0, no output). This is what audit 3 recorded as A2 FAIL on the lint tier, and **operator waived it on 2026-09-25**; nothing in the Team track can close it. Registered here so that no later claim of a green lint tier can be made by omission. **Re-verified 2026-09-28 and briefly broken by this track, then repaired.** A full lint run after P-B5 read **20 problems**, and the twentieth was **ours**: `lib/useSettings.ts:101`, `Calling setState synchronously within an effect can trigger cascading renders`, introduced by P-C2, which mirrored the broadcast settings snapshot into state inside an effect. That broke the waiver's own basis - *every error is in upstream's files* - so it was fixed rather than waived: the snapshot is now **derived** (`broadcast ?? snapshot`) instead of copied, which is also correct rather than merely cheaper, because every settings mutation broadcasts (`index.ts:370` and `:396`) so an arrived broadcast is never staler than the copy fetched on mount. Back to **19 problems, 17 errors**, `useSettings` absent from the output, and every remaining error in upstream's files. Web 100 of 100 and the `L-16 (T1)` row still green, which is the behaviour P-C2 existed for. **The lesson is the count**: 19 was quoted from a document for two days while the real number had moved, and nothing was watching it. |
 | L-13 | **The `e2e` workspace's own test suite is in no tier any check names, and showed one failure nobody could name** | `npm run test --workspace e2e` is not in the root `npm test` and is not among the tiers A2 lists, so nothing routine runs it. Audit 4 saw it give `# pass 46 # fail 1` on a first invocation and 47/47 on seven consecutive re-runs, and could not recover the failing test's name because that run's output was filtered to summary lines. **Recorded as unverifiable rather than passed or failed**, which was the right call. These files are harness self-tests that start real servers, so a real failure here would be a failure of the instrument the whole track's evidence rests on. Registered 2026-09-26. **Seen a second time the same day, by the C3 worker, independently and on a different tree**: one failure on a first invocation, then 47/47 on three consecutive re-runs, and it also lost the failing test's name. **Two independent sightings is no longer a one-off.** Neither observer could name the test, and both lost it the same way - a first run filtered to summary lines - which is itself the lesson: capture full output on a first run of an unfamiliar suite. The C3 worker's guess was a port left in `TIME_WAIT` by a T1 run that finished about two minutes earlier, since these selftests boot harness environments on fixed ports; it offered that as a guess and did not claim it, and it is not confirmed. **What makes this worth a task rather than a note**: it is intermittent, it is in the instrument rather than the product, and nothing routine runs it, so its failure rate is unmeasured.
 
 **MEASURED AND FIXED 2026-09-27 by P-B4. It was never intermittent.**
@@ -856,18 +860,18 @@ What replaces it: **one DTO field** carrying the live handover, filled in that a
 
 Fixed by gating the check on the run having reached the build, rather than removing it: a run whose build vanished has still proven nothing. Measured four times: **46/47 with the defect on a clean cache, then 47/47 three times** - a warm repeat and **two further clean-cache runs**, which is the case that used to fail. About 4.5 minutes.
 
-**Now in a tier of its own, `npm run test:harness`.** Deliberately *not* in root `npm test`: it builds the web app, which would roughly triple that tier's runtime, and a tier people stop running is worse than a named one they run on purpose. That trade is jd's to overturn. |
-| L-14 | **Two record leftovers audit 4 found** | TM4's `LT-5` has no row in [human-verification.md](human-verification.md) at all - not even one recording that it is blocked on F10 - while `LT-3` and `LT-4` each got a deferral row. Separately, H02's migration is **52** after the reconcile renumbered it, but the table it rebuilds is still named `task_control_action_v29` (`server/src/workspaces.ts:1763`) and its error string still reads "Migration 29" (`:1797`). Both are cosmetic - the internal temp-table name is invisible to users and the migration runs correctly - but the second will read as a contradiction to the next person who greps for migration numbers. Registered 2026-09-26.. **FIXED 2026-09-27 by P-D2**, both halves. `LT-5` has a deferral row in [human-verification.md](human-verification.md) as `H-TM-LT5`, which records jd's deferral, what the row would check, and that **P-A4's one-machine clone proof is not a substitute** - it is preparation. The temp table and its error string are renamed from `task_control_action_v29` / "Migration 29" to **52**, which is what the migration became after the reconcile renumbered it. Three references and one string. Upstream's own migration 29, referenced in a comment above the `handoff` recreation, is a different migration and is deliberately untouched. Server 622 of 622. |
+**Now in a tier of its own, `npm run test:harness`.** Deliberately *not* in root `npm test`: it builds the web app, which would roughly triple that tier's runtime, and a tier people stop running is worse than a named one they run on purpose. That trade is operator's to overturn. |
+| L-14 | **Two record leftovers audit 4 found** | TM4's `LT-5` has no row in [human-verification.md](human-verification.md) at all - not even one recording that it is blocked on F10 - while `LT-3` and `LT-4` each got a deferral row. Separately, H02's migration is **52** after the reconcile renumbered it, but the table it rebuilds is still named `task_control_action_v29` (`server/src/workspaces.ts:1763`) and its error string still reads "Migration 29" (`:1797`). Both are cosmetic - the internal temp-table name is invisible to users and the migration runs correctly - but the second will read as a contradiction to the next person who greps for migration numbers. Registered 2026-09-26.. **FIXED 2026-09-27 by P-D2**, both halves. `LT-5` has a deferral row in [human-verification.md](human-verification.md) as `H-TM-LT5`, which records operator's deferral, what the row would check, and that **P-A4's one-machine clone proof is not a substitute** - it is preparation. The temp table and its error string are renamed from `task_control_action_v29` / "Migration 29" to **52**, which is what the migration became after the reconcile renumbered it. Three references and one string. Upstream's own migration 29, referenced in a comment above the `handoff` recreation, is a different migration and is deliberately untouched. Server 622 of 622. |
 | L-15 | **A stray control byte in `server/test/telegramViews.test.ts`** | Line 119 holds a raw `0x01`, so `file` reports the source as `data`. **It is hygiene, not a visibility trap, and the difference was checked rather than assumed**: `grep -rn` returns that file's hits normally, including lines past the byte, because GNU grep's binary detection keys on NUL and this byte is not one. `views.ts` had an actual NUL and was genuinely invisible, which is the case this was mistaken for. Node runs the file and its tests are inside the 618. Registered 2026-09-26. |
-| L-16 | **Turning Team off left every Team panel on screen until the page was reloaded. Fixed 2026-09-27 by P-C2** | Found 2026-09-26 by V5 case 12's browser half, driven with Playwright against the live rig on 3100. With `team.enabled` set to `false` by `PUT /api/settings` and **no reload**, `/agents` keeps `Team status`, `Join team` and the create panel, and the `WI_TC01` detail keeps its `Team thread` panel with the `Open Team thread` button still **enabled**. After a reload all four are gone from both surfaces, which is what case 12 asks for, so the case passes as written. **The cause is precise and was read rather than guessed**: the server does broadcast the change - `broadcastSettingsChange` ([server/src/index.ts:106](../../server/src/index.ts#L106)) - but the `settings_updated` message carries **only `providers`**, and the web reducer applies only `providers` ([web/lib/agentConsole.tsx:201](../../web/lib/agentConsole.tsx#L201)), whose own comment says "re-detected providers without a reload". The settings snapshot that holds `team.enabled`, and that gates the Agents Team section at [AgentsView.tsx:351](../../web/components/agents/AgentsView.tsx#L351), is never re-read. The server's comment at `index.ts:102` claiming "every open tab is told to re-read both" **overstates what the message carries**. Kept low, and **not fixed, deliberately**: the API gate holds, so the stale button cannot act - clicking it was driven and returns `403` with `Enable Team in Agents settings before using Team features.`, which names the real cause - and V5 is a verification phase, so jd's prove-first instruction of 2026-09-26 applies. Registered 2026-09-26. **FIXED 2026-09-27 by P-C2**: `settings_updated` now carries the whole settings snapshot, the web reducer applies it, and `useSettings` prefers it over the copy it fetched on mount - so the server comment claiming every tab re-reads "both" is true rather than edited. Proved by `L-16 (T1)`, which turns Team off **by the API from outside the page**, exactly as the defect was found, and asserts the panels go and come back with **no reload anywhere in the test**. Red first on unchanged code, `Expected: 0, Received: 1`. Web 95 of 95, server 622 of 622, shared 91 of 91, typecheck exit 0 on four workspaces. One thing the row had to get right: `Team status` returns null until a team exists, so asserting it in a harness with no team would have asserted the absence of a team rather than the state of the gate. |
-| L-17 | **The state printer defaults to the wrong database and prints a plausible, wholly fake team** | `scripts/team-pilot-state.mjs` takes the database path as an optional argument and falls back to the calling checkout's own `.agent-console/console.sqlite`. Run the way [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documented it, from the repo root, it reads `main`'s leftover fixture database and prints `team-7`, `group-7`, `jd-laptop` and `yousef-desktop` - a complete, believable team, none of which exists - and signs off with `!! 2 FAILED outbox rows`, inviting an investigation into two fixture rows months old. **Worse than L-1's wrong port, which fails visibly; this succeeds plausibly**, and the only thing in the output that gives it away is the header line echoing the path it opened. The documented command block now passes the path for both instances. Registered 2026-09-26. **Renumbered from a bug-log `B20` on 2026-09-27**: that id was already taken by the design documents' own B series, where B20 is "ownership transfer needs confirmed release", cited by ruling 4 and by `teamControlRecord.ts`. The mistake is recorded rather than quietly corrected, because it was made one message after warning jd about this exact hazard, and because the two overlapping B series are a standing trap rather than a one-off slip.. **FIXED 2026-09-27 by P-D1**: the path is now required, and the script refuses with a usage message naming this defect rather than reading anything. A path that does not exist is also refused, because an empty report reads exactly like a quiet team. The header line still echoes the resolved path first, since that was the only thing in the whole output that gave the lie away. Verified in all three cases: no argument exits 2 with the usage, a missing file exits 2 naming the path, and the live rig's own database still prints its real team. |
-| L-18 | **The saved-answer banner's condition is too broad and its two labels are the wrong way round** | Found by P-A0's reproduction on 2026-09-27 and **deliberately left** by P-A3, because changing either is a change to a personal-control surface `A5` covers beyond what jd's P-A3 ruling names. Two parts. **The condition**: the banner at [WorkItemDetail.tsx:245](../../web/components/tasks/WorkItemDetail.tsx#L245) fires on `prompt.status === "TODO"` plus *any* `HUMAN_RESPONSE` remark, so every item that was ever blocked and answered carries it forever - including one reported plainly `READY` with nothing pending, which is what P-A0's row observes. **The labels**: `human_response_hold` is the product's own record of a saved answer, and [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes a held answer to `AWAITING_RESPONSE`, so the state that *has* a saved answer reads "Needs your input" and the state that has none reads "Answer saved". `HumanInputDialog`'s own `Modal` title is a third instance: it is hardcoded to "Needs your input" while the panel inside reads "Your answer is recorded". Not severe after P-A3 - every one of these labels now opens a dialog that describes the state correctly and offers the right action - so this is wording and a gate, not a broken path. **`M-16` is the real answer to all three**: each is a surface inferring person-waiting state from prompt status by hand. Registered 2026-09-27. **jd ruled the same day: fold into P-B5.** It stays unfixed until then rather than being taken separately, because `M-16` is the answer to all three instances and doing the labels twice is worse than doing them once in the right place. **Not closed and not waived** - it is scheduled. **CLOSED 2026-09-28**, as its own task rather than inside P-B5: the fold ruling never reached the P-B5 brief, P-B5 shipped without it, and jd confirmed on 2026-09-28 to take it separately. All three instances are fixed and the two T1 rows that recorded them are inverted. The full entry is in "Closed while this register was open" below. |
+| L-16 | **Turning Team off left every Team panel on screen until the page was reloaded. Fixed 2026-09-27 by P-C2** | Found 2026-09-26 by V5 case 12's browser half, driven with Playwright against the live rig on 3100. With `team.enabled` set to `false` by `PUT /api/settings` and **no reload**, `/agents` keeps `Team status`, `Join team` and the create panel, and the `WI_TC01` detail keeps its `Team thread` panel with the `Open Team thread` button still **enabled**. After a reload all four are gone from both surfaces, which is what case 12 asks for, so the case passes as written. **The cause is precise and was read rather than guessed**: the server does broadcast the change - `broadcastSettingsChange` ([server/src/index.ts:106](../../server/src/index.ts#L106)) - but the `settings_updated` message carries **only `providers`**, and the web reducer applies only `providers` ([web/lib/agentConsole.tsx:201](../../web/lib/agentConsole.tsx#L201)), whose own comment says "re-detected providers without a reload". The settings snapshot that holds `team.enabled`, and that gates the Agents Team section at [AgentsView.tsx:351](../../web/components/agents/AgentsView.tsx#L351), is never re-read. The server's comment at `index.ts:102` claiming "every open tab is told to re-read both" **overstates what the message carries**. Kept low, and **not fixed, deliberately**: the API gate holds, so the stale button cannot act - clicking it was driven and returns `403` with `Enable Team in Agents settings before using Team features.`, which names the real cause - and V5 is a verification phase, so operator's prove-first instruction of 2026-09-26 applies. Registered 2026-09-26. **FIXED 2026-09-27 by P-C2**: `settings_updated` now carries the whole settings snapshot, the web reducer applies it, and `useSettings` prefers it over the copy it fetched on mount - so the server comment claiming every tab re-reads "both" is true rather than edited. Proved by `L-16 (T1)`, which turns Team off **by the API from outside the page**, exactly as the defect was found, and asserts the panels go and come back with **no reload anywhere in the test**. Red first on unchanged code, `Expected: 0, Received: 1`. Web 95 of 95, server 622 of 622, shared 91 of 91, typecheck exit 0 on four workspaces. One thing the row had to get right: `Team status` returns null until a team exists, so asserting it in a harness with no team would have asserted the absence of a team rather than the state of the gate. |
+| L-17 | **The state printer defaults to the wrong database and prints a plausible, wholly fake team** | `scripts/team-pilot-state.mjs` takes the database path as an optional argument and falls back to the calling checkout's own `.agent-console/console.sqlite`. Run the way [solo-team-thread-grant-check.md](solo-team-thread-grant-check.md) documented it, from the repo root, it reads `main`'s leftover fixture database and prints `team-7`, `group-7`, `operator-laptop` and `receiver-workstation` - a complete, believable team, none of which exists - and signs off with `!! 2 FAILED outbox rows`, inviting an investigation into two fixture rows months old. **Worse than L-1's wrong port, which fails visibly; this succeeds plausibly**, and the only thing in the output that gives it away is the header line echoing the path it opened. The documented command block now passes the path for both instances. Registered 2026-09-26. **Renumbered from a bug-log `B20` on 2026-09-27**: that id was already taken by the design documents' own B series, where B20 is "ownership transfer needs confirmed release", cited by ruling 4 and by `teamControlRecord.ts`. The mistake is recorded rather than quietly corrected, because it was made one message after warning operator about this exact hazard, and because the two overlapping B series are a standing trap rather than a one-off slip.. **FIXED 2026-09-27 by P-D1**: the path is now required, and the script refuses with a usage message naming this defect rather than reading anything. A path that does not exist is also refused, because an empty report reads exactly like a quiet team. The header line still echoes the resolved path first, since that was the only thing in the whole output that gave the lie away. Verified in all three cases: no argument exits 2 with the usage, a missing file exits 2 naming the path, and the live rig's own database still prints its real team. |
+| L-18 | **The saved-answer banner's condition is too broad and its two labels are the wrong way round** | Found by P-A0's reproduction on 2026-09-27 and **deliberately left** by P-A3, because changing either is a change to a personal-control surface `A5` covers beyond what operator's P-A3 ruling names. Two parts. **The condition**: the banner at [WorkItemDetail.tsx:245](../../web/components/tasks/WorkItemDetail.tsx#L245) fires on `prompt.status === "TODO"` plus *any* `HUMAN_RESPONSE` remark, so every item that was ever blocked and answered carries it forever - including one reported plainly `READY` with nothing pending, which is what P-A0's row observes. **The labels**: `human_response_hold` is the product's own record of a saved answer, and [operationalState.ts:30](../../server/src/operationalState.ts#L30) promotes a held answer to `AWAITING_RESPONSE`, so the state that *has* a saved answer reads "Needs your input" and the state that has none reads "Answer saved". `HumanInputDialog`'s own `Modal` title is a third instance: it is hardcoded to "Needs your input" while the panel inside reads "Your answer is recorded". Not severe after P-A3 - every one of these labels now opens a dialog that describes the state correctly and offers the right action - so this is wording and a gate, not a broken path. **`M-16` is the real answer to all three**: each is a surface inferring person-waiting state from prompt status by hand. Registered 2026-09-27. **operator ruled the same day: fold into P-B5.** It stays unfixed until then rather than being taken separately, because `M-16` is the answer to all three instances and doing the labels twice is worse than doing them once in the right place. **Not closed and not waived** - it is scheduled. **CLOSED 2026-09-28**, as its own task rather than inside P-B5: the fold ruling never reached the P-B5 brief, P-B5 shipped without it, and operator confirmed on 2026-09-28 to take it separately. All three instances are fixed and the two T1 rows that recorded them are inverted. The full entry is in "Closed while this register was open" below. |
 
 ## Closed while this register was open
 
 ### L-18, the saved-answer banner's condition and its inverted labels. Closed 2026-09-28, as its own task.
 
-**Why it was not closed by P-B5, which jd's ruling of 2026-09-27 folded it into.** The fold ruling was never carried into the P-B5 brief, so P-B5 shipped without it - the brief's own omission, recorded by the worker who wrote it rather than charged to P-B5. jd confirmed on 2026-09-28 to take it separately, which is also what M-16 turning out to be a small DTO change rather than a `operationalState` overhaul made cheap: there was no longer a structural fix to wait for.
+**Why it was not closed by P-B5, which operator's ruling of 2026-09-27 folded it into.** The fold ruling was never carried into the P-B5 brief, so P-B5 shipped without it - the brief's own omission, recorded by the worker who wrote it rather than charged to P-B5. operator confirmed on 2026-09-28 to take it separately, which is also what M-16 turning out to be a small DTO change rather than a `operationalState` overhaul made cheap: there was no longer a structural fix to wait for.
 
 **All three instances were one mistake**: a surface deciding "a person is waiting" from something that is not that fact.
 
@@ -877,17 +881,17 @@ Fixed by gating the check on the run having reached the build, rather than remov
 
 **A fourth thing the second arm was doing, found while removing it**: it read `activity.remarks` with no check that the fetched activity belonged to the item on screen. The three other readers in that file each carried their own copy of that guard; it is now one named value, `itemActivity`, that all four share.
 
-**Two T1 rows were inverted, in their own commit citing jd's ruling**, and that was the point of the task rather than a repair. Row 6 asserted the banner present reading "Answer saved" / "Continue with saved answer" on an item reported plainly `READY`; it now asserts no banner and the `READY` branch's own "Run work item", which that item already offered beside the wrong banner. Row 7 asserted "Needs your input" / "Review and respond" on the one state that does have a saved answer; it now asserts "Answer saved" / "Continue with saved answer". Both were correct records of the defect when P-A0 wrote them.
+**Two T1 rows were inverted, in their own commit citing operator's ruling**, and that was the point of the task rather than a repair. Row 6 asserted the banner present reading "Answer saved" / "Continue with saved answer" on an item reported plainly `READY`; it now asserts no banner and the `READY` branch's own "Run work item", which that item already offered beside the wrong banner. Row 7 asserted "Needs your input" / "Review and respond" on the one state that does have a saved answer; it now asserts "Answer saved" / "Continue with saved answer". Both were correct records of the defect when P-A0 wrote them.
 
 Row 6's press assertions went with the button it pressed, and what they proved is kept without a press: the owner's answer is still the only answer on the record, the item is still `TODO` / `READY`, and looking at the page starts no run. Row 7 gained one assertion nothing had made before - that no heading inside the dialog contradicts the panel's "Your answer is recorded" - which is the only T1 coverage the third instance has ever had.
 
 **Proof.** `m13-personal-surfaces.spec.ts` red on exactly those two rows against unchanged product code, 5 passed and 2 failed, on `a READY item has nothing pending, so it carries no saved-answer banner / Expected: false / Received: true` and `Expected: "Answer saved" / Received: "Needs your input"`; then 7 of 7 after the fix. `m16-handover-surfaces.spec.ts` and `m17-handover-hold.spec.ts`, which read the same detail surface, green and undisturbed. Web 102 of 102, server 634 of 634, typecheck exit 0 on four workspaces, and web lint unchanged at **19 problems, 17 errors**, all still in upstream's files as L-12 requires.
 
-**Left deliberately, and registered rather than fixed**: the work-item **row** for a held answer still reads `Awaiting response` with a `Respond` button, because `WorkItemList` keys on `operationalState` the way the banner used to. It is the same mistake on a fourth surface, it is outside the three instances this task was scoped to, and it needs jd's call on whether a held answer should offer "Continue" on the row as well.
+**Left deliberately, and registered rather than fixed**: the work-item **row** for a held answer still reads `Awaiting response` with a `Respond` button, because `WorkItemList` keys on `operationalState` the way the banner used to. It is the same mistake on a fourth surface, it is outside the three instances this task was scoped to, and it needs operator's call on whether a held answer should offer "Continue" on the row as well.
 
-### M-16, the owner's surfaces and the live handover. Closed 2026-09-28 by P-B5, as the alignment jd re-scoped it to.
+### M-16, the owner's surfaces and the live handover. Closed 2026-09-28 by P-B5, as the alignment operator re-scoped it to.
 
-One DTO field, filled in one already-async route, read by three surfaces. **No new display status, no schema column, no migration, and nothing touched in `operationalState`** - which is what jd's re-scope of 2026-09-28 asked for, and all of which the first design had proposed.
+One DTO field, filled in one already-async route, read by three surfaces. **No new display status, no schema column, no migration, and nothing touched in `operationalState`** - which is what operator's re-scope of 2026-09-28 asked for, and all of which the first design had proposed.
 
 `OperationsPrompt.heldByTeammate` carries `{ itemId, state, executor }` or null. The snapshot builder sets it null, because it is synchronous and reading a control record is git I/O; the `/api/operations` route fills it by awaiting **P-A5's own `liveHandoverHolding`**, unchanged, and forces `attention` to false on the prompts that are held. `operationalState` still returns `BLOCKED`, which is true: the item is blocked *and* handed over, and the second fact now has somewhere to live.
 
@@ -912,7 +916,7 @@ The wording is P-A5's own, from `assertNoLiveHandover`, in one small module the 
 
 Proof:
 
-- **Server 633 of 633** (625 before, plus 8 new rows in `operationsHandoverHold.test.ts`), run twice with no failures. Red first: all seven of those rows failed against unchanged product code on the missing field, `+ undefined - null` and `+ undefined - { executor: 'yousef', itemId: ..., state: 'RUNNING' }`, not on setup.
+- **Server 633 of 633** (625 before, plus 8 new rows in `operationsHandoverHold.test.ts`), run twice with no failures. Red first: all seven of those rows failed against unchanged product code on the missing field, `+ undefined - null` and `+ undefined - { executor: 'receiver', itemId: ..., state: 'RUNNING' }`, not on setup.
 - **Web 100 of 100** (95 before, plus 5 in `handoverHold.test.tsx`). Red first on all five: `the badge names the holder`, `expected: false / actual: true` for the Respond button, `expected: true / actual: false` for the disabled buttons and for Prepare handover.
 - **Shared 91 of 91. Typecheck exit 0** on shared, server, web and e2e.
 - **`M-16 (T1)`** in `m16-handover-surfaces.spec.ts`, **1 passed in 1.8m**, three phases on two booted workstations: the owner's row before any handover, the same row while env B genuinely holds the item after accepting through its own Telegram card, and the same row after a real apply ends the handover.
@@ -929,18 +933,21 @@ Proof:
 - **No schema column and no migration.** Measured rather than assumed: only a link carrying a `control_head` needs a read at all, and the read is local.
 - **No change to `operationalState`.** The reconcile that moved it is what caused C3.
 - **No audit of the 30 hand-keyed comparisons.** Every one is correct; the item really is `BLOCKED`.
-- **`L-18` is NOT closed by this.** The P-B5 card folds it in, and it was not done: the banner's over-broad condition at `WorkItemDetail.tsx`, its two inverted labels and `HumanInputDialog`'s hardcoded modal title are all about the *saved-answer* state, not about a handover, and none of them is a read of `heldByTeammate`. Doing them here would have been a second, unrelated change to the same surfaces inside a task jd had just narrowed. **L-18 stays open and still scheduled.**
+- **`L-18` is NOT closed by this.** The P-B5 card folds it in, and it was not done: the banner's over-broad condition at `WorkItemDetail.tsx`, its two inverted labels and `HumanInputDialog`'s hardcoded modal title are all about the *saved-answer* state, not about a handover, and none of them is a read of `heldByTeammate`. Doing them here would have been a second, unrelated change to the same surfaces inside a task operator had just narrowed. **L-18 stays open and still scheduled.**
 - **No timeout or escalation** for a receiver who goes quiet, as the design says: `RETURNED` already raises the review card.
 - **No T1 assertion that Respond comes back** on a still-blocked item nobody holds. A finished apply completes the work item, and there is no cancel route - `begin`, `preview`, `publish`, `review`, `apply` and `request-changes` are the whole set - so a blocked-and-unheld item is not reachable at the end of a crossing. The row's first phase carries that half instead, asserting "Needs you" and `Respond` on the same row before any handover exists.
 - **Nothing about the receiver's own surfaces at T1.** The executor-link case - the one that breaks handover if it is wrong - is covered at the server tier, where it costs one fixture instead of a third workstation.
 
-**Still owed by jd, and unanswered as of 2026-09-28**: m16-design.md section 4, the label. The badge reads `Held by 6525517234`, the person id the control record carries, because the record stores ids and not display labels. Resolving it to a roster display label is a second lookup on a surface that has no roster today. It is implemented as the person-id version in one function, `heldByTeammateBadge`, so swapping it is a one-line change.
+**Resolved later on 2026-09-28**: operator answered m16-design.md section 4 by
+choosing the roster display label. The operations route now supplies
+`executorLabel`; `heldByTeammateBadge` renders it and falls back to the person id
+only when an older roster has no label. This obligation is no longer open.
 
 **Noted while fixing**: web lint is **20 problems** both with and without this change, so it adds none. The L-12 waiver and the state of record both say 19, which is one stale - drift from a commit since 2026-09-27, not from this task.
 
 ### M-13, both personal-control surfaces. Closed 2026-09-27 by P-A0 and P-A3.
 
-Reproduced first, on jd's ruling, and the reproduction is what made the fix small and the entry honest. P-A0 added two rows and falsified the widened half's severity; P-A3 fixed both halves.
+Reproduced first, on operator's ruling, and the reproduction is what made the fix small and the entry honest. P-A0 added two rows and falsified the widened half's severity; P-A3 fixed both halves.
 
 One line was the whole defect: `respond()` sent `response.trim() || "<canned retry text>"`, and `response` is bound to the box that renders only in the `BLOCKED` branch at `:407`. Every caller without a box submitted that text as though the owner had written it. That is why the banner and the blank box were the same bug from two sides - and the red run is what showed the second side, which had not been predicted.
 
@@ -951,15 +958,15 @@ What landed:
 - Both banner states open `HumanInputDialog`, which was mounted and opened by nothing. It already handled both: it offers "Resume with saved answer" through `/respond-and-continue` with the owner's own `responseId`, the route that accepts an answered `TODO` item.
 - `RowAction` branches on the shared `awaitsResponse` predicate rather than the single spelling `BLOCKED`. Hand-keying one of that predicate's two states is what C3 was.
 
-Proof: `m13-personal-surfaces.spec.ts` at **7 of 7**, after **4 failed / 3 passed** and then **5 failed / 2 passed** on the same rows against unchanged product code. Web **95 of 95**, web typecheck exit 0. Assertion changes were two commits of their own, each citing jd's ruling of 2026-09-27. The live rig was stopped by port for every harness run, and no live credential was used.
+Proof: `m13-personal-surfaces.spec.ts` at **7 of 7**, after **4 failed / 3 passed** and then **5 failed / 2 passed** on the same rows against unchanged product code. Web **95 of 95**, web typecheck exit 0. Assertion changes were two commits of their own, each citing operator's ruling of 2026-09-27. The live rig was stopped by port for every harness run, and no live credential was used.
 
-**Left deliberately, as `L-18`**: the banner's over-broad condition and its inverted labels. Both are changes beyond what jd's ruling names, and `M-16` is the structural answer to them.
+**Left deliberately, as `L-18`**: the banner's over-broad condition and its inverted labels. Both are changes beyond what operator's ruling names, and `M-16` is the structural answer to them.
 
 **Noted while fixing**: `PipelineBoard.tsx:1456` already disabled its submit on an empty box. The correct pattern was one file away the whole time.
 
 ### M-15, the closed item thread. Closed 2026-09-27 by P-B2.
 
-jd's ruling: answer the view, say it is closed, and write the thread row to `CLOSED` too. All three landed.
+operator's ruling: answer the view, say it is closed, and write the thread row to `CLOSED` too. All three landed.
 
 `TeamItemViewState.threadClosed` is **required, not optional**, because an optional flag is how the next view forgets the same way. Two construction sites, so it cost nothing and the compiler caught the test fixture.
 
@@ -981,7 +988,7 @@ Proof: server **621 of 621**, typecheck exit 0 on four workspaces, `tm3-grants.s
 
 ### M-11, the closed item's pinned anchor. Closed 2026-09-27 by P-C1.
 
-Retired and unpinned on close, after P-B2, exactly as jd ruled. The F02 criterion that was deliberately skipped is now met.
+Retired and unpinned on close, after P-B2, exactly as operator ruled. The F02 criterion that was deliberately skipped is now met.
 
 Neither existing pass could reach it: `syncTeamItem` returns for a closed link, and `finishCompletedTeamItems` only ever reaches a `DONE` or `SKIPPED` prompt. So a closed-but-blocked item needed a pass of its own, `retireClosedTeamItemAnchors`.
 
@@ -993,7 +1000,7 @@ Proof: `tm3-grants.spec.ts` **5 of 5** with the new `M-11 (T1)` row, **proved lo
 
 ### M-7, the unruled contradiction. Closed 2026-09-27 by P-C5.
 
-**jd ruled: ruling 7 wins.** A stopped-but-unreturned item is still held, and `isLiveHandoverState` is authoritative. The deciding argument was the asymmetry - choosing H04 wrongly loses another person's work, choosing ruling 7 wrongly costs one explicit step.
+**operator ruled: ruling 7 wins.** A stopped-but-unreturned item is still held, and `isLiveHandoverState` is authoritative. The deciding argument was the asymmetry - choosing H04 wrongly loses another person's work, choosing ruling 7 wrongly costs one explicit step.
 
 `closeAfterHandover` kept its own `ACKNOWLEDGED` list, four of whose members - `OFFERED`, `WAITING_INPUT`, `PAUSED`, `RETURNED` - are in `LIVE_HANDOVER_STATES`. It now asks the one predicate `/close` asks, so the question is "is the handover over" rather than "has the executor stopped".
 
@@ -1007,7 +1014,7 @@ One thing the rewrite taught, worth carrying: a state table that mutates shared 
 
 ### M-6's product half, the order-dependent lookup. Closed 2026-09-27.
 
-jd ruled: **product tiebreak only**. The six leaking fixture files stay as untidiness rather than risk, which is what they become once nothing depends on row order.
+operator ruled: **product tiebreak only**. The six leaking fixture files stay as untidiness rather than risk, which is what they become once nothing depends on row order.
 
 The tiebreak went into `teamRosters()` rather than into the one lookup the register named, because the order has **nine** consumers in `server/src` and **three of them take `[0]` outright**. So a same-millisecond tie did not merely make one `find` ambiguous - it decided which team the workstation believed it was in. `ORDER BY updated_at DESC, team_id ASC`: `team_id` is unique and never changes, so the answer is now a fact about the rows rather than about the query plan.
 
@@ -1017,7 +1024,7 @@ Proof: a new test writes three rosters, forces the tie on the rows through the s
 
 ### M-12, the requester's returned half. Built 2026-09-27 by P-B1. **Two of its three functions are end-to-end proven; the third is not, and that is stated rather than implied.**
 
-jd ruled to build it, against the recommendation to declare review-and-apply a deliberate phone action.
+operator ruled to build it, against the recommendation to declare review-and-apply a deliberate phone action.
 
 `HandoverReturnView` renders from props alone and `HandoverControl` calls the routes. Three decisions worth keeping:
 
@@ -1099,7 +1106,7 @@ Verified totals: server suite 417/417 three times against one unchanged root; T1
 
 ### H-3 and G02, the isolation evidence. Closed 2026-09-22 by V3.
 
-G02's decision half was confirmed by jd on 2026-09-20; the evidence half is what was missing, and H-3 required it at **3 repeats rather than once**.
+G02's decision half was confirmed by operator on 2026-09-20; the evidence half is what was missing, and H-3 required it at **3 repeats rather than once**.
 
 Both tiers now hold at three repeats:
 
@@ -1114,7 +1121,7 @@ It was mistaken only in believing the server tier had run once: V2's server suit
 The orchestrator did not rely on that inference and re-ran the four rows three times directly, plus the whole file at 34/34.
 
 So the honest statement is: the receiver's own policy decides, proven end to end at 3 repeats for the runnable path, and proven row by row at 3 repeats at the server tier.
-The two residual limits jd accepted on 2026-09-20 are unchanged and remain accepted: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment.
+The two residual limits operator accepted on 2026-09-20 are unchanged and remain accepted: the `.env` bot token is readable by any same-user process, and accepting a handover means another member's code runs with your own credentials in the environment.
 `TM-T1-H1:225-227` additionally asserts no credential reaches the transcript, which passed on all six repeats across the two burn-ins.
 
 ### M-4's rule 4.5, the close-path data loss. Closed 2026-09-22 by H07, commits `d300b05..1f01acd`.
@@ -1128,6 +1135,6 @@ Nine states refuse and five allow. `OFFERED` and `APPLYING` were the two judgeme
 
 Two limits recorded rather than hidden:
 
-- The `/close` **text** command still mints its card and refuses on the tap, rather than refusing instead of the card. H07 chose one unbypassable guard over two that can diverge; making the text path refuse earlier means turning two handlers async. Cosmetic, and a small follow-up if jd wants it.
+- The `/close` **text** command still mints its card and refuses on the tap, rather than refusing instead of the card. H07 chose one unbypassable guard over two that can diverge; making the text path refuse earlier means turning two handlers async. Cosmetic, and a small follow-up if operator wants it.
 - **No T1 row covers this yet.** H07 judged one belongs, the phone-side "`/close` on the anchor while a teammate holds the item", and left it to Phase V rather than writing it unasked. V4's auditors should see it as a known gap in end-to-end coverage, not as covered.
 - The guard is inert if `registerHandoverStateProbe` is never called. It is registered unconditionally in `startSession` beside the tap handler, which the orchestrator verified, so every real session has it; but it fails open rather than closed if a future path forgets.

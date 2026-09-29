@@ -1,5 +1,8 @@
 # Team Track Audit 2
 
+> **Historical audit evidence.** PASS applies only to the audited commit/range
+> and the commands recorded below.
+
 Date: 2026-09-18
 Auditor: fresh isolated direct audit under the controlling operator policy
 Audited range: T11-T20 plus the bounded T20A audit remediation
@@ -31,7 +34,7 @@ live passes.
 | D5 messages imperative/no co-author | **PASS** | `git log --format='%B' 3aff93e..HEAD` contains no co-author line. Product subjects are imperative, including `Define TM2 item-thread scenarios`, `Add Team item identities`, `Add Team item grant model` and `feat(team): add item grant commands`. |
 | D6 cleanup | **PASS** | `git branch --list 'tm/*'` produced no output. `git worktree list` contains only main and this audit worktree; no Team task worktree remains. |
 | D7 scenario-before-code | **PASS** | TM2 scenarios landed in `89104b4` before T12-T15 product commits. TM3 scenarios landed in `19e30ba` before T18-T19 product commits. The tracker records the authorized skims before implementation. |
-| D8 operator stops recorded | **PASS** | The tracker records the standing T11/T17 skim authorization, the T15 worker-limit continuation, direct T16-T20 execution, LT-3/LT-4 deferral and the operator's expired-button rule. No worker contacted jd or Yousef or spawned another agent. |
+| D8 operator stops recorded | **PASS** | The tracker records the standing T11/T17 skim authorization, the T15 worker-limit continuation, direct T16-T20 execution, LT-3/LT-4 deferral and the operator's expired-button rule. No worker contacted operator or <git-author> or spawned another agent. |
 | D9 tracker agrees with git | **PASS** | Every done T11-T20 row names a commit present in the linear history. The remaining range commits are task starts, worker/tracker records and the documented T20A audit remediation. |
 
 ## Acceptance
@@ -39,7 +42,7 @@ live passes.
 | Check | Result | Evidence |
 | --- | --- | --- |
 | A1 auditor re-verifies criteria | **PASS** | The audit reran current-tree type, lint, server, browser and burn-in gates and inspected task commits, scenario order, migrations, routing, grants, expiry behavior, settings, H-TM records and close-out evidence. T20A's only changed source was independently verified by its focused 3/3 run, E2E typecheck and the final full T1 run. |
-| A2 typecheck/lint/full server/full T1 | **PASS** | `npm run typecheck`: 4/4 workspaces passed. `npm run lint --workspace web`: 0 errors and 5 existing warnings. `AGENT_CONSOLE_REPO_ROOT=/tmp/agent-console-audit2-server npm test --workspace server`: 274/274 passed. After T20A, `npm run typecheck --workspace e2e` passed and `npm run e2e --workspace e2e` passed 123/123 in 23.0 minutes. |
+| A2 typecheck/lint/full server/full T1 | **PASS** | `npm run typecheck`: 4/4 workspaces passed. `npm run lint --workspace web`: 0 errors and 5 existing warnings. `AGENT_CONSOLE_REPO_ROOT=${TMPDIR:-/tmp}/agent-console-audit2-server npm test --workspace server`: 274/274 passed. After T20A, `npm run typecheck --workspace e2e` passed and `npm run e2e --workspace e2e` passed 123/123 in 23.0 minutes. |
 | A3 three-repeat burn-in | **PASS** | The combined TM2/TM3 burn-in passed 18/18 in 11.6 minutes. TM-T1-2, TM-T1-3, TM-T1-4, TM-T1-5, TM-T1-6 and TM-T1-7 each passed three times. |
 | A4 H-TM real-check records | **PASS** | `human-verification.md` records H-TM-LT4 dated 2026-09-18 as scheduled/deferred, with expected live observations and no identifiers. H-TM-LT3 also remains scheduled/deferred. Neither is represented as PASS. |
 | A5 invariants/default-off/token isolation | **PASS** | `team.enabled` / `TEAM_ENABLED` has fallback `false`. Full T1 proves personal control with Team off and on, owner routing, revision/receipt checks and token isolation. The tracked credential-shape scan found only the intentional redaction-test corpus value in `telegramSummary.test.ts`; no credential was found. Expired Team actions reject and require a new requester command. |
@@ -62,5 +65,5 @@ live passes.
 
 Audit 2 passes and closes the Team track brief. R-B is ready to enable for a
 two-person team, but `team.enabled` remains off by default. The remaining
-real-world action is the scheduled jd/Yousef H-TM-LT3 join check and H-TM-LT4
+real-world action is the scheduled operator/<git-author> H-TM-LT3 join check and H-TM-LT4
 thread/grant phone check; neither is required to keep the default-off build.
