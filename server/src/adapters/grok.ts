@@ -427,6 +427,7 @@ export class GrokAdapter extends SpawnAdapter {
     if (model !== null) args.push("-m", model);
     if (settings.grok.maxTurns !== null) args.push("--max-turns", String(settings.grok.maxTurns));
     args.push(...settings.grok.extraArgs);
+    args.push("--reasoning-effort", settings.reasoningEffortFor("grok"));
     // `-p` takes the prompt as its argument. Headless grok does not read stdin
     // into the prompt (unlike `codex exec -`).
     args.push("-p", prompt);

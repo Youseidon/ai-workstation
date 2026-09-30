@@ -72,12 +72,20 @@ export function StepConfigForm({
             const info = providers.find((entry) => entry.id === id);
             const theme = providerTheme[id];
             const active = rule.provider === id;
+            const inactiveSavedModel = active
+              && rule.model !== null
+              && info !== undefined
+              && (info.modelSelectionMode === "auto"
+                || (info.modelAccessTier !== "all" && !info.models.some((option) => option.id === rule.model)));
             return (
               <div key={id} className="relative">
                 <button
                   type="button"
                   onClick={() => {
-                    onChange({ provider: id, model: models.resolve(id) });
+                    // Clicking the active agent is only opening its model
+                    // picker; do not round-trip an unchanged rule and trigger
+                    // a live pipeline refresh underneath the popup.
+                    if (!active) onChange({ provider: id, model: models.resolve(id) });
                     setModelFor(modelFor === id ? null : id);
                   }}
                   className={cn(
@@ -87,14 +95,30 @@ export function StepConfigForm({
                 >
                   <AgentAvatar provider={id} size={16} activity={active ? "idle" : "offline"} />
                   {id}
-                  {active && rule.model !== null && (
-                    <span className="ml-1 opacity-70">{modelLabel(id, rule.model)}</span>
+                  {active && (info?.modelSelectionMode === "auto" ? info.model : rule.model) !== null && (
+                    <span className="ml-1 opacity-70">
+                      {modelLabel(id, info?.modelSelectionMode === "auto" ? info.model : rule.model, info?.models)}
+                    </span>
+                  )}
+                  {inactiveSavedModel && (
+                    <span className="ml-1 rounded bg-caution/15 px-1 text-[9px] uppercase tracking-wide text-caution">
+                      {info?.modelSelectionMode === "auto" ? "uses auto" : "uses tier default"}
+                    </span>
                   )}
                 </button>
                 {modelFor === id && info !== undefined && (
                   <ModelMenu
                     provider={id}
-                    selected={active ? rule.model : models.resolve(id)}
+                    options={info.models}
+                    accessTier={info.modelAccessTier}
+                    selectionMode={info.modelSelectionMode}
+                    recommended={info.tierDefaultModel}
+                    totalModels={info.totalModels}
+                    selected={info.modelSelectionMode === "auto"
+                      ? info.model
+                      : active && !inactiveSavedModel
+                        ? rule.model
+                        : models.resolve(id)}
                     configured={info.model}
                     pinned={models.isPinned(id)}
                     onSelect={(value) => {

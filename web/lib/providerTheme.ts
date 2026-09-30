@@ -66,4 +66,12 @@ export const providerTheme: Record<ProviderId, ProviderTheme> = {
     fill: "bg-agent-copilot",
     cssVar: "var(--agent-copilot)",
   },
+  kilocode: {
+    text: "text-agent-kilocode",
+    chip: "bg-agent-kilocode/10 text-agent-kilocode ring-agent-kilocode/30",
+    rule: "border-agent-kilocode/40",
+    active: "bg-agent-kilocode/15 text-agent-kilocode ring-agent-kilocode/40",
+    fill: "bg-agent-kilocode",
+    cssVar: "var(--agent-kilocode)",
+  },
 };

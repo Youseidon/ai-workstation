@@ -98,6 +98,8 @@ export interface ModelSelection {
   resolve(provider: ProviderId): string | null;
   /** True when the user has picked a model rather than inheriting settings. */
   isPinned(provider: ProviderId): boolean;
+  /** True when the server owns model selection and ignores manual choices. */
+  isAuto(provider: ProviderId): boolean;
   /** Pin a model (`null` pins "provider default"). */
   select(provider: ProviderId, model: string | null): void;
   /** Drop the pin so the provider follows its settings value again. */
@@ -114,17 +116,34 @@ export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
 
   const resolve = useCallback(
     (provider: ProviderId): string | null => {
-      if (provider in choices) return choices[provider] ?? null;
-      return providers.find((info) => info.id === provider)?.model ?? null;
+      const info = providers.find((entry) => entry.id === provider);
+      if (info?.modelSelectionMode === "auto") return info.model;
+      if (!(provider in choices)) return info?.model ?? null;
+      const requested = choices[provider] ?? null;
+      if (info === undefined || info.modelAccessTier === "all") return requested;
+      // Keep the pin in storage so changing back to All restores it, but never
+      // let a stale/out-of-tier browser preference escape the global policy.
+      return info.models.some((model) => model.id === requested) ? requested : info.model;
     },
     [choices, providers],
   );
 
-  const isPinned = useCallback((provider: ProviderId) => provider in choices, [choices]);
+  const isPinned = useCallback(
+    (provider: ProviderId) => providers.find((entry) => entry.id === provider)?.modelSelectionMode !== "auto" && provider in choices,
+    [choices, providers],
+  );
+
+  const isAuto = useCallback(
+    (provider: ProviderId) => providers.find((entry) => entry.id === provider)?.modelSelectionMode === "auto",
+    [providers],
+  );
 
   const select = useCallback(
-    (provider: ProviderId, model: string | null) => write({ ...choices, [provider]: model }),
-    [choices],
+    (provider: ProviderId, model: string | null) => {
+      if (providers.find((entry) => entry.id === provider)?.modelSelectionMode === "auto") return;
+      write({ ...choices, [provider]: model });
+    },
+    [choices, providers],
   );
 
   const clear = useCallback(
@@ -136,5 +155,5 @@ export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
     [choices],
   );
 
-  return { resolve, isPinned, select, clear };
+  return { resolve, isPinned, isAuto, select, clear };
 }

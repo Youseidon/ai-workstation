@@ -1,14 +1,14 @@
 # Multi-Agent Live Console
 
-A self-hosted web console that gives five local CLI coding agents — **Claude Code**,
-**Codex CLI**, **Cursor CLI**, **Grok CLI**, and **GitHub Copilot** — one shared browser UI. Type a prompt, pick a
+A self-hosted web console that gives six local CLI coding agents — **Claude Code**,
+**Codex CLI**, **Cursor CLI**, **Grok CLI**, **GitHub Copilot**, and **Kilo Code** — one shared browser UI. Type a prompt, pick a
 provider, and watch that agent work in real time: streamed assistant text,
 collapsible tool calls and results, a server-side elapsed clock, and live token
 counts, all rendered as a scrolling terminal-style log.
 
 ```
 ┌─ agent console ──────────────────────────────────────────────────────────┐
-│  ● Claude Code  ● Codex CLI  ○ Cursor CLI  ● Grok CLI  ● Copilot  clear │
+│  ● Claude Code  ● Codex CLI  ○ Cursor CLI  ● Grok CLI  ● Copilot  ○ Kilo │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ 11:44:02  CODEX   ❯ create hello.txt containing "it works"               │
 │ 11:44:06  CODEX   I'll write the file and verify it.                     │
@@ -127,6 +127,7 @@ never stashes, resets, or commits pre-existing operator changes.
 | Cursor CLI | `cursor-agent -p --output-format …` (spawned) | `cursor-agent` on `PATH` + `cursor-agent login` | not reliably — the stat is hidden rather than faked |
 | Grok CLI | `grok -p --output-format streaming-json` (spawned) | `grok` on `PATH` + `XAI_API_KEY` or `grok login` | yes |
 | GitHub Copilot | `copilot -p --output-format json` (spawned) | `copilot` on `PATH` + `copilot login`, `COPILOT_GITHUB_TOKEN`, or a Copilot-enabled `gh` login | yes |
+| Kilo Code | `kilo run --format json` (spawned) | `kilo` on `PATH` + `kilo auth login` | yes |
 
 ### How detection works
 
@@ -151,8 +152,8 @@ per provider. Nothing is hardcoded to an install path.
   satisfied by `XAI_API_KEY` or by `auth.json` under `$GROK_HOME` (default
   `~/.grok`). If that heuristic is wrong for your install, set
   `GROK_ASSUME_AUTHENTICATED=true`.
-- **Copilot** — same `$PATH` lookup for `COPILOT_BIN` (default `copilot`). Auth
-  is resolved in the CLI's own order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
+- **Copilot** — same `$PATH` lookup for `COPILOT_BIN` (default `copilot`). Auth is
+  resolved in the CLI's own order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
   `GITHUB_TOKEN`, a plaintext credential file under `$COPILOT_HOME` (default
   `~/.copilot`), then `gh auth token`. A `copilot login` normally stores its
   token in the **OS credential store**, which this server cannot read — if you
@@ -160,6 +161,11 @@ per provider. Nothing is hardcoded to an install path.
   `COPILOT_ASSUME_AUTHENTICATED=true`. Plan usage (the monthly premium-request
   or chat allowance and its reset date) comes from GitHub's own
   `copilot_internal/user` endpoint using that token.
+- **Kilo** — same `$PATH` lookup for `KILOCODE_BIN` (default `kilo`). Auth is
+  satisfied by `kilo auth login` (credentials under the `XDG_DATA_HOME`
+  -resolved `kilo/auth.json`), or set `KILOCODE_ASSUME_AUTHENTICATED=true`.
+  Models are refreshed from `kilo models`, whose lines are already valid `-m`
+  values; the `~`-prefixed ones are the Kilo Gateway's pooled aliases.
 
 Unavailable providers cannot be selected; hovering the button shows why
 (`codex not found on PATH`, `ANTHROPIC_API_KEY not set…`). The ↻ button re-runs
@@ -175,28 +181,54 @@ provider's model list. Two other ways to get there:
   current models; typing filters across every provider × model pair, so
   `@haiku`, `@5.6`, or `@claude:opus` each land in one go. `↑↓` moves, `⏎`/`tab`
   picks, `esc` dismisses. The `@token` is stripped and never reaches the agent.
-- The **custom model id** field at the bottom of the dropdown, for anything
-  newer than the bundled catalog.
+- The **custom model id** field at the bottom of the dropdown, available when
+  the global access tier is **All models**, for anything newer than the catalog.
 
-The catalog lives in `shared/src/index.ts` (`MODEL_CATALOG`) — the codex slugs
-come from that CLI's own model cache and the grok ones from `grok models`.
-Copilot is the exception: its model list is per-account, and `--model` rejects
-any id the plan's picker does not expose (a free plan exposes none, only
-`auto`), so only `default` and `auto` are listed and everything else goes
-through the custom-model field.
+At server startup, provider detection also refreshes the model picker. Cursor
+and Grok are queried through their model-list commands, Codex through its
+authenticated app-server (falling back to its local model cache), Claude
+through its account-scoped catalog cache, and Kilo through `kilo models`.
+`shared/src/index.ts`
+(`MODEL_CATALOG`) is the offline fallback, so a failed or timed-out refresh can
+never prevent the app from starting. Re-detecting providers refreshes models
+again. Copilot is the exception: its account-specific picker is only exposed
+inside an interactive session, so the stable `auto` route remains available
+and explicit ids can be entered through the custom-model field.
 
-**Precedence** for a run is: model picked in the header → the provider's `Model`
-setting → the provider's own default (nothing is passed). Picking a model in the
-header never rewrites the setting; it is remembered per provider in
-`localStorage` and applies to the next run. The model a run resolved to is
-stamped on every event it produces, so the log gutter shows `claude · opus 5`
-next to the timestamp and a transcript that mixes providers stays readable.
+The Agents page has one global **Model access** ceiling: **Free**, **Efficient**,
+**Professional**, **Frontier**, or **All models**. It applies server-side to
+every new console, task, workspace, pipeline, fallback, author, handoff, and
+reviewer run. Higher tiers include the lower-cost tiers. Unknown/custom model
+ids are All-only; a provider with no account-available model in the selected
+tier is unavailable until the tier changes.
+
+**Model choice** can be switched between **Manual** and **Auto Select**. Auto
+Select disables model pickers throughout the console and makes the server
+ignore model overrides from browsers, tasks, and saved pipeline rules. Kilo
+uses its native `kilo-auto/free`, `kilo-auto/efficient`, or
+`kilo-auto/frontier` route when that route matches the access tier; other
+providers resolve to the recommended concrete model in the selected tier.
+Saved manual choices are preserved and become active again when Manual is
+restored.
+
+**Reasoning effort** can be set globally to **Low**, **Medium**, or **High**
+beside Model choice. Each provider's **Model & settings** dialog can inherit
+that value or override it. The server translates the effective value to the
+provider's native interface for every new run (including pipeline, fallback,
+handoff, reviewer, and resumed runs).
+
+In Manual mode, **precedence** for a run is: allowed model picked in the UI → allowed provider
+`Model` setting → the provider's recommended model for the global tier. Under
+All models the final fallback is the provider's own default (nothing is passed).
+Out-of-tier saved pipeline choices and browser pins are preserved but inactive,
+so returning to All restores them; the effective tier default is what actually
+runs. The resolved model is stamped on every event it produces.
 
 ### ⚠️ CLI flags drift
 
-Codex's, Cursor's, Grok's, and Copilot's headless/JSON flags change between releases. The
+Codex's, Cursor's, Grok's, Copilot's, and Kilo's headless/JSON flags change between releases. The
 flags here were verified against **codex-cli 0.153.0**, **cursor-agent 2026.09.02**,
-**grok 1.0.13**, and **GitHub Copilot CLI 1.0.82**; the Cursor mapper was written
+**grok 1.0.13**, **GitHub Copilot CLI 1.0.82**, and **kilo 7.8.1**; the Cursor mapper was written
 against the documented `stream-json` shape and is deliberately tolerant of
 unknown event types.
 
@@ -214,7 +246,7 @@ code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 
 Everything in `.env` that is safe to change while the server is running is also
 editable from the **Agents** page — per-provider default model, permission/sandbox
-mode, binary name, extra CLI arguments, API keys, host access, run budgets,
+mode, reasoning effort, binary name, extra CLI arguments, API keys, host access, run budgets,
 pipeline policy, and transcript retention. (Day-to-day model switching happens in
 the header, not here; the `Model` field only supplies the fallback.) Changes are
 saved to `.agent-console/settings.json` (mode `0600`, gitignored) and survive
@@ -378,12 +410,13 @@ changed at any time from the Agents page:
 
 | Provider | Env var | Default | What it means |
 |---|---|---|---|
-| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`, Copilot `yolo`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
+| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`, Copilot `yolo`, Kilo `--auto`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
 | Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
 | Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
 | Cursor | `CURSOR_FORCE` | `true` | Cursor has no sandbox: `--force` means it will not stop to ask. Set `false` to keep approvals on (headless runs may then stall). |
 | Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to the selected workspace directory. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
 | Copilot | `COPILOT_PERMISSION_MODE` | `allow-all-tools` | A headless `copilot -p` run cannot show an approval prompt, so tool approval is always pre-granted (`--allow-all-tools`); this picks how far outside the workspace that reaches. File access stays inside the working directory (plus the system temp dir) by default. `plan` is read-only planning with the built-in write tools denied; `allow-all-paths` and `yolo` drop that containment. Copilot's own OS-level command sandbox is experimental and is not used — shell commands run with your user's access. |
+| Kilo | `KILOCODE_AUTO_APPROVE` | `true` | Adds `--auto`: permissions not explicitly denied in kilo's own config are pre-granted, because a headless run has nowhere to put an ask prompt. Reads stay inside the workspace unless kilo's own permission rules say otherwise. Off, permission asks fail and the model routes around them. Consult runs use kilo's read-only `plan` agent and never get `--auto`. |
 
 `CLAUDE_PERMISSION_MODE=default` and `GROK_PERMISSION_MODE=default` are a poor
 fit for a headless console: prompts have nowhere to go, so tool calls get denied
@@ -419,6 +452,7 @@ server/src/
     cursor.ts            cursor JSON → normalized events
     grok.ts              grok streaming-json → normalized events
     copilot.ts           copilot JSON envelopes → normalized events
+    kilocode.ts          kilo opencode-style JSONL → normalized events
     spawnAdapter.ts      shared spawn/JSONL/stderr/interrupt machinery
 web/
   lib/useAgentConsole.ts WebSocket client, reconnect, state reduction
@@ -503,8 +537,8 @@ rather not have them on disk in that form, leave those fields empty and use
 trusted network without adding authentication.**
 
 It has no auth system by design, and anyone who can reach the port can run
-arbitrary code and file operations in any configured workspace through five
-different agents with five different permission models — including modes that
+arbitrary code and file operations in any configured workspace through six
+different agents with six different permission models — including modes that
 disable sandboxing entirely. The settings endpoints are unauthenticated too:
 reaching the port is enough to disable a sandbox or read whether an API key is
 configured. The server binds `127.0.0.1` by default and rejects WebSocket

@@ -682,7 +682,7 @@ httpServer.listen(config.port, config.host, () => {
   void detectProviders(true).then((providers) => {
     for (const provider of providers) {
       const status = provider.available
-        ? `available${provider.version ? ` (${provider.version})` : ""}`
+        ? `available${provider.version ? ` (${provider.version})` : ""} · ${provider.models.length} models`
         : `unavailable — ${provider.reason ?? "unknown"}`;
       log.info(`provider ${provider.id.padEnd(7)} ${status}`);
     }

@@ -254,8 +254,11 @@ export function PipelineBoard({
     }
     const requestedSuite = activeSuiteId;
     const requestedPipeline = pipelineId;
-    setView(null);
-    setViewSuiteId(null);
+    // Keep the current flowchart mounted while a same-suite refresh is in
+    // flight. Clearing it here unmounted the station inspector on every rule
+    // save (the WebSocket revision triggers this effect), which also destroyed
+    // transient controls such as an open model picker. `viewSuiteId` already
+    // prevents a previous suite's data from rendering after navigation.
     let disposed = false;
     void workspaceApi
       .pipelineFlowchart(SERVER_URL, requestedPipeline, requestedSuite, showEditor)

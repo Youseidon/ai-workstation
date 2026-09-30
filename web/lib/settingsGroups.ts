@@ -20,6 +20,8 @@ export const GROUP_TITLE: Record<string, string> = { General: "Runtime" };
  * missing blurb is cosmetic, whereas a missing section hides a live setting.
  */
 export const GROUP_BLURB: Record<string, string> = {
+  "Model access":
+    "The global credit-use ceiling applied to every new run, including background handoffs and reviewers.",
   General: "Shared with every provider. Host access is required for docker compose and other host sockets.",
   "Run budgets":
     "Ceilings a single run cannot exceed. Reaching one earns a wrap-up turn and a continuation, not a lost run.",

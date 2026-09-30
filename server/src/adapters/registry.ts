@@ -1,5 +1,5 @@
 import type { ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
-import { PROVIDER_IDS } from "@agent-console/shared";
+import { automaticModel, eligibleModels, modelAllowedInTier, PROVIDER_IDS, recommendedModel } from "@agent-console/shared";
 import { settings } from "../settings.ts";
 import { providerUsageUnavailable } from "./accountUsage.ts";
 import { ClaudeAdapter } from "./claude.ts";
@@ -7,6 +7,7 @@ import { CodexAdapter } from "./codex.ts";
 import { CopilotAdapter } from "./copilot.ts";
 import { CursorAdapter } from "./cursor.ts";
 import { GrokAdapter } from "./grok.ts";
+import { KiloAdapter } from "./kilocode.ts";
 import { toProviderInfo, type AgentAdapter } from "./types.ts";
 
 /**
@@ -19,11 +20,13 @@ const adapters: Record<ProviderId, AgentAdapter> = {
   cursor: new CursorAdapter(),
   grok: new GrokAdapter(),
   copilot: new CopilotAdapter(),
+  kilocode: new KiloAdapter(),
 };
 
 const DETECTION_TTL_MS = 15_000;
 
 let cache: { at: number; providers: ProviderInfo[] } | null = null;
+let detectionInflight: Promise<ProviderInfo[]> | null = null;
 
 /**
  * Stand-in adapters, for tests that need a real run — real runner, real
@@ -47,20 +50,75 @@ export function getAdapter(id: ProviderId): AgentAdapter {
 
 /** Settings toggles override detection so a disabled agent never starts a run. */
 function applyEnabledGate(info: ProviderInfo): ProviderInfo {
+  const tier = settings.modelAccessTier;
+  const selectionMode = settings.modelSelectionMode;
+  const models = eligibleModels(info.id, info.models, tier);
+  const tierDefaultModel = recommendedModel(info.id, info.models, tier);
+  const autoModel = selectionMode === "auto" ? automaticModel(info.id, info.models, tier) : null;
+  const configuredModel = getAdapter(info.id).model;
+  const configuredAllowed = configuredModel !== null
+    && (tier === "all" || (
+      info.models.some((model) => model.id === configuredModel)
+      && modelAllowedInTier(info.id, configuredModel, tier)
+    ));
+  const model = selectionMode === "auto"
+    ? autoModel
+    : tier === "all"
+      ? configuredModel
+      : configuredAllowed
+        ? configuredModel
+        : tierDefaultModel;
+  const common = {
+    ...info,
+    configuredModel,
+    modelAccessTier: tier,
+    modelSelectionMode: selectionMode,
+    tierDefaultModel,
+    totalModels: info.models.length,
+    model,
+    models,
+  };
   if (!settings[info.id].enabled) {
-    return { ...info, available: false, reason: "Turned off on the Agents page" };
+    return { ...common, available: false, reason: "Turned off on the Agents page" };
   }
-  return info;
+  if ((selectionMode === "auto" && autoModel === null) || (selectionMode === "manual" && tier !== "all" && tierDefaultModel === null)) {
+    return {
+      ...common,
+      available: false,
+      reason: selectionMode === "auto"
+        ? `No models are available for Auto Select under ${tier}`
+        : `No ${tier} models are available for this account`,
+    };
+  }
+  return common;
+}
+
+/**
+ * Resolve a browser/API request against the already filtered account catalog.
+ * Restricted tiers never accept a custom or stale id; All models retains the
+ * old custom-id behaviour.
+ */
+export function resolveProviderModel(info: ProviderInfo, requested: string | null): string | null {
+  if (info.modelSelectionMode === "auto") return info.model;
+  if (requested === null) return info.model;
+  if (info.modelAccessTier === "all") return requested;
+  return info.models.some((model) => model.id === requested) ? requested : info.model;
 }
 
 export async function detectProviders(force = false): Promise<ProviderInfo[]> {
   if (!force && cache !== null && Date.now() - cache.at < DETECTION_TTL_MS) {
     return cache.providers.map(applyEnabledGate);
   }
-  const providers = await Promise.all(
+  if (detectionInflight !== null) return (await detectionInflight).map(applyEnabledGate);
+  detectionInflight = Promise.all(
     PROVIDER_IDS.map((id) => toProviderInfo(getAdapter(id))),
-  );
-  cache = { at: Date.now(), providers };
+  ).then((providers) => {
+    cache = { at: Date.now(), providers };
+    return providers;
+  }).finally(() => {
+    detectionInflight = null;
+  });
+  const providers = await detectionInflight;
   return providers.map(applyEnabledGate);
 }
 

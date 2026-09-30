@@ -466,6 +466,80 @@ function copilotPlanName(root: Record<string, unknown>): string | null {
   return plan ?? sku;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Kilo — api.kilo.ai /api/profile/balance + /api/trpc/kiloPass.getState        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Kilo Gateway has no rate-limit endpoint: the prepaid gateway balance is one
+ * number and the "Kilo Pass" subscription is a monthly credit allowance. The
+ * Pass maps to the monthly window (used = usage, limit = base credits, bonus
+ * credits stay out — the CLI shows them separately too). The balance maps to
+ * the credits line, same slot Grok's prepaid balance uses.
+ */
+export function parseKiloBalance(payload: unknown): number | null {
+  const root = asRecord(payload) ?? {};
+  const balance = asNumber(root.balance);
+  if (balance === null) return null;
+  return Math.max(0, balance);
+}
+
+export function parseKiloPassState(payload: unknown): {
+  baseCreditsUsd: number | null;
+  bonusCreditsUsd: number | null;
+  usedUsd: number | null;
+  nextBillingAt: string | null;
+} | null {
+  // tRPC batch envelope: `[{ result: { data: { json: { subscription } } } }]`,
+  // with older shapes putting `json`/`subscription` one level up.
+  const first = Array.isArray(payload) ? (payload[0] as unknown) : payload;
+  const result = asRecord(asRecord(first)?.result) ?? null;
+  const data = asRecord(result?.data) ?? asRecord(first) ?? {};
+  const inner = asRecord(data.json) ?? data;
+  const subscription = asRecord(inner.subscription) ?? null;
+  if (subscription === null) return null;
+  const base = asNumber(subscription.currentPeriodBaseCreditsUsd);
+  const used = asNumber(subscription.currentPeriodUsageUsd);
+  if (base === null && used === null) return null;
+  const status = typeof subscription.status === "string" ? subscription.status : null;
+  // Inactive passes carry stale figures; treat them as no pass at all.
+  if (status !== null && !["active", "past_due", "trialing"].includes(status)) return null;
+  const resetsAt = isoFromUnknown(subscription.nextBillingAt ?? subscription.nextRenewalAt);
+  return {
+    baseCreditsUsd: base,
+    bonusCreditsUsd: asNumber(subscription.currentPeriodBonusCreditsUsd),
+    usedUsd: used,
+    nextBillingAt: resetsAt,
+  };
+}
+
+/**
+ * Combine the two Kilo responses into one ProviderUsage: the Pass is the
+ * monthly window, the prepaid gateway balance is the credits line.
+ */
+export function parseKiloUsage(
+  balancePayload: unknown,
+  passPayload: unknown,
+): { plan: string | null; windows: ProviderUsageWindow[]; credits: ProviderUsageCredits | null } {
+  const balance = parseKiloBalance(balancePayload);
+  const pass = parseKiloPassState(passPayload);
+
+  const windows: ProviderUsageWindow[] = [];
+  if (pass !== null && (pass.baseCreditsUsd !== null || pass.usedUsd !== null)) {
+    let percent: number | null = null;
+    if (pass.usedUsd !== null && pass.baseCreditsUsd !== null && pass.baseCreditsUsd > 0) {
+      percent = clampPercent((pass.usedUsd / pass.baseCreditsUsd) * 100);
+    }
+    const next = windowOf("monthly", percent, pass.nextBillingAt, null);
+    if (next) windows.push(next);
+  }
+
+  const credits: ProviderUsageCredits | null =
+    balance !== null ? { balance, used: null, limit: null, currency: "USD", enabled: true } : null;
+  const plan = pass !== null ? "Kilo Pass" : null;
+  return { plan, windows, credits };
+}
+
 export function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });

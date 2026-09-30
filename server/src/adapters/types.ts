@@ -1,5 +1,7 @@
 import type { AdapterEvent, ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
+import { MODEL_CATALOG } from "@agent-console/shared";
 import type { Logger } from "../lib/logger.ts";
+import { discoverModels } from "./modelDiscovery.ts";
 
 /**
  * "consult" forces the provider's read-only sandbox and ignores Host access.
@@ -70,6 +72,9 @@ export interface AgentAdapter {
 
 export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInfo> {
   const report = await adapter.checkAvailability();
+  const models = report.available
+    ? await discoverModels(adapter.id, report.binary)
+    : MODEL_CATALOG[adapter.id];
   return {
     id: adapter.id,
     label: adapter.label,
@@ -82,5 +87,11 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     reportsTokens: adapter.reportsTokens,
     permissionMode: adapter.permissionMode,
     model: adapter.model,
+    configuredModel: adapter.model,
+    modelAccessTier: "all",
+    modelSelectionMode: "manual",
+    tierDefaultModel: null,
+    totalModels: models.length,
+    models,
   };
 }

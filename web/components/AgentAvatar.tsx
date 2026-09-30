@@ -46,6 +46,12 @@ const CORE: Record<ProviderId, React.ReactNode> = {
       <path d="M14 22.5c3-1.5 6.7-1.5 10 0 3.3-1.5 7-1.5 10 0v4a5 5 0 0 1-5 5h-2.6a3 3 0 0 1-2.4-1.2L24 29l-2.4 3.3A3 3 0 0 1 19 33h-2a5 5 0 0 1-5-5z" transform="translate(1 -2)" />
     </g>
   ),
+  // A lightning bolt, for Kilo.
+  kilocode: (
+    <g fill="currentColor">
+      <path d="M27.5 12.5 16.5 26h6l-2 9.5L31.5 22h-6z" />
+    </g>
+  ),
 };
 
 export interface AgentAvatarProps {

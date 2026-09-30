@@ -7,7 +7,7 @@ import type { PipelinePolicy } from "./pipelineRules";
  * leak into the transport layer or the frontend.
  */
 
-export const PROVIDER_IDS = ["claude", "codex", "cursor", "grok", "copilot"] as const;
+export const PROVIDER_IDS = ["claude", "codex", "cursor", "grok", "copilot", "kilocode"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export function isProviderId(value: unknown): value is ProviderId {
@@ -46,6 +46,226 @@ export interface ModelOption {
   pool?: ModelPool;
 }
 
+/** Global ceiling controlling which models may be used by any new run. */
+export const MODEL_ACCESS_TIERS = ["free", "efficient", "professional", "frontier", "all"] as const;
+export type ModelAccessTier = (typeof MODEL_ACCESS_TIERS)[number];
+export type ClassifiedModelTier = Exclude<ModelAccessTier, "all">;
+
+export const MODEL_SELECTION_MODES = ["manual", "auto"] as const;
+export type ModelSelectionMode = (typeof MODEL_SELECTION_MODES)[number];
+
+/** Provider-neutral reasoning levels supported by every adapter. */
+export const REASONING_EFFORTS = ["low", "medium", "high"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === "string" && (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+export function isModelSelectionMode(value: unknown): value is ModelSelectionMode {
+  return typeof value === "string" && (MODEL_SELECTION_MODES as readonly string[]).includes(value);
+}
+
+export interface ModelAccessTierInfo {
+  label: string;
+  shortLabel: string;
+  description: string;
+  creditUse: string;
+}
+
+export const MODEL_ACCESS_TIER_INFO: Record<ModelAccessTier, ModelAccessTierInfo> = {
+  free: {
+    label: "Free",
+    shortLabel: "Free",
+    description: "Only models explicitly identified as free or zero-credit.",
+    creditUse: "No paid credits",
+  },
+  efficient: {
+    label: "Efficient",
+    shortLabel: "Efficient",
+    description: "Fast, economical models for routine work.",
+    creditUse: "Low credit use",
+  },
+  professional: {
+    label: "Professional",
+    shortLabel: "Pro",
+    description: "Strong coding models for everyday production work.",
+    creditUse: "Balanced credit use",
+  },
+  frontier: {
+    label: "Frontier",
+    shortLabel: "Frontier",
+    description: "The strongest curated models, including high-reasoning variants.",
+    creditUse: "High credit use",
+  },
+  all: {
+    label: "All models",
+    shortLabel: "All",
+    description: "Every discovered model, provider defaults, and custom model IDs.",
+    creditUse: "No model limit",
+  },
+};
+
+export function isModelAccessTier(value: unknown): value is ModelAccessTier {
+  return typeof value === "string" && (MODEL_ACCESS_TIERS as readonly string[]).includes(value);
+}
+
+const MODEL_TIER_RANK: Record<ClassifiedModelTier, number> = {
+  free: 0,
+  efficient: 1,
+  professional: 2,
+  frontier: 3,
+};
+
+/**
+ * Conservative model classification used by both server enforcement and the
+ * UI. A model has to be recognised to enter a restricted tier; new/unknown
+ * ids remain reachable through All models without silently escaping a cap.
+ */
+export function classifyModel(provider: ProviderId, modelId: string | null): ClassifiedModelTier | null {
+  if (modelId === null) return null;
+  const id = modelId.toLowerCase();
+  // Kilo's tier routers are models in the CLI catalog, but their tier is
+  // carried by the path rather than a model-family name.
+  if (provider === "kilocode") {
+    if (id === "kilo-auto/free") return "free";
+    if (id === "kilo-auto/efficient") return "efficient";
+    if (id === "kilo-auto/frontier") return "frontier";
+  }
+  if (/(?:^|[-_/:.])free(?:$|[-_/:.])|zero[-_ ]?credit/.test(id)) return "free";
+
+  // Family comes before effort suffix: opus-low is still a frontier-priced
+  // family, not an efficient model merely because its reasoning is low.
+  if (/opus|fable|gpt[-_.]?sol|\bsol\b/.test(id)) return "frontier";
+  if (/haiku|gpt[-_.]?luna|\bluna\b|mini|flash|deepseek|\bglm\b|\bkimi\b|small|lite/.test(id)) {
+    return "efficient";
+  }
+  if (/sonnet|gpt[-_.]?terra|\bterra\b|composer|codex|gpt|gemini[-_/.:]?pro|grok|auto/.test(id)) {
+    if (/xhigh|extra[-_ ]?high|\bmax\b|thinking[-_/.:]?high/.test(id)) return "frontier";
+    return "professional";
+  }
+
+  // Provider-native ids with no family marker are intentionally conservative.
+  // A maintainer can classify them by extending the rules; until then All
+  // models is the explicit escape hatch.
+  void provider;
+  return null;
+}
+
+/** Stable family label for grouping very large provider catalogs. */
+export function modelFamily(modelId: string | null): string {
+  if (modelId === null) return "Provider default";
+  const id = modelId.toLowerCase();
+  if (/claude|anthropic|opus|sonnet|haiku|fable/.test(id)) return "Claude";
+  if (/composer|cursor-/.test(id)) return "Cursor";
+  if (/gpt|openai|codex|\bsol\b|\bterra\b|\bluna\b/.test(id)) return "GPT & Codex";
+  if (/gemini|google/.test(id)) return "Gemini";
+  if (/grok|x-ai/.test(id)) return "Grok";
+  if (/deepseek/.test(id)) return "DeepSeek";
+  if (/kimi|moonshot/.test(id)) return "Kimi";
+  if (/glm|z-ai/.test(id)) return "GLM";
+  return "Other";
+}
+
+export function modelAllowedInTier(provider: ProviderId, modelId: string | null, tier: ModelAccessTier): boolean {
+  if (tier === "all") return true;
+  const classified = classifyModel(provider, modelId);
+  return classified !== null && MODEL_TIER_RANK[classified] <= MODEL_TIER_RANK[tier];
+}
+
+export function eligibleModels(
+  provider: ProviderId,
+  models: readonly ModelOption[],
+  tier: ModelAccessTier,
+): ModelOption[] {
+  if (tier === "all") return [...models];
+  return models.filter((model) => model.id !== null && modelAllowedInTier(provider, model.id, tier));
+}
+
+const MODEL_DEFAULT_PREFERENCES: Record<ClassifiedModelTier, Record<ProviderId, RegExp[]>> = {
+  free: Object.fromEntries(PROVIDER_IDS.map((provider) => [provider, [/free|zero[-_ ]?credit/i]])) as Record<ProviderId, RegExp[]>,
+  efficient: {
+    claude: [/haiku/i],
+    codex: [/luna/i, /mini/i],
+    cursor: [/luna/i, /mini/i, /flash/i],
+    grok: [/mini|fast|light/i],
+    copilot: [/mini|flash|haiku|luna/i],
+    kilocode: [/luna/i, /mini/i, /flash/i, /haiku/i, /deepseek/i],
+  },
+  professional: {
+    claude: [/sonnet/i],
+    codex: [/terra/i, /5\.4(?!-mini)/i],
+    cursor: [/composer/i, /sonnet/i, /terra/i, /codex/i],
+    grok: [/grok/i],
+    copilot: [/^auto$/i, /sonnet|gpt/i],
+    kilocode: [/sonnet/i, /terra/i, /gemini[-_/.:]?pro/i, /grok/i],
+  },
+  frontier: {
+    claude: [/opus/i, /fable/i],
+    codex: [/sol/i, /5\.6/i, /5\.5/i],
+    cursor: [/opus/i, /sol.*(?:xhigh|max|high)/i, /fable/i],
+    grok: [/xhigh|max|high/i, /grok/i],
+    copilot: [/opus/i, /sol/i],
+    kilocode: [/opus/i, /sol/i, /fable/i],
+  },
+};
+
+/** Best discovered model for a provider under the selected ceiling. */
+export function recommendedModel(
+  provider: ProviderId,
+  models: readonly ModelOption[],
+  tier: ModelAccessTier,
+): string | null {
+  if (tier === "all") return null;
+  const allowed = eligibleModels(provider, models, tier).filter((model): model is ModelOption & { id: string } => model.id !== null);
+  if (allowed.length === 0) return null;
+  // Prefer the highest band the ceiling permits, then a provider-specific
+  // family. This makes Professional default to Sonnet/Terra rather than the
+  // first cheap entry while still falling back safely if an account lacks it.
+  const targetBands: ClassifiedModelTier[] = tier === "frontier"
+    ? ["frontier", "professional", "efficient", "free"]
+    : tier === "professional"
+      ? ["professional", "efficient", "free"]
+      : tier === "efficient"
+        ? ["efficient", "free"]
+        : ["free"];
+  for (const band of targetBands) {
+    const inBand = allowed.filter((model) => classifyModel(provider, model.id) === band);
+    if (inBand.length === 0) continue;
+    for (const preference of MODEL_DEFAULT_PREFERENCES[band][provider]) {
+      const match = inBand.find((model) => preference.test(`${model.id} ${model.label}`));
+      if (match !== undefined) return match.id;
+    }
+    return inBand[0]!.id;
+  }
+  return null;
+}
+
+/**
+ * Resolve the model used by the global Auto Select policy. Kilo can enforce
+ * matching tiers in its own router; every other provider gets the best
+ * concrete account model selected by the app. "All" has no spending ceiling,
+ * so automatic selection targets the frontier band.
+ */
+export function automaticModel(
+  provider: ProviderId,
+  models: readonly ModelOption[],
+  tier: ModelAccessTier,
+): string | null {
+  const has = (id: string): boolean => models.some((model) => model.id === id);
+  if (provider === "kilocode") {
+    const native = tier === "free"
+      ? "kilo-auto/free"
+      : tier === "efficient"
+        ? "kilo-auto/efficient"
+        : tier === "frontier" || tier === "all"
+          ? "kilo-auto/frontier"
+          : null;
+    if (native !== null && has(native)) return native;
+  }
+  return recommendedModel(provider, models, tier === "all" ? "frontier" : tier);
+}
+
 export const MODEL_POOLS = ["cursor", "vendor"] as const;
 export type ModelPool = (typeof MODEL_POOLS)[number];
 
@@ -56,12 +276,10 @@ export const MODEL_POOL_LABEL: Record<ModelPool, string> = {
 };
 
 /**
- * Curated per provider rather than probed at runtime: detection is on the hot
- * path for every provider refresh. `cursor` is generated offline from
- * `cursor-agent --list-models` (see scripts/sync-cursor-models.mjs); the rest
- * are hand-maintained because their CLIs expose no reliable list command.
- * Anything missing here can still be typed in as a custom id, so a model
- * released after this list was written is never unreachable.
+ * Bundled fallback used when runtime provider discovery is unavailable. The
+ * server refreshes account-scoped catalogs during provider detection; this
+ * snapshot keeps startup and model selection working while offline. Anything
+ * missing here can still be typed in as a custom id.
  */
 export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
   claude: [
@@ -319,15 +537,41 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: null, label: "default", hint: "whatever the copilot CLI picks" },
     { id: "auto", label: "auto", hint: "Copilot routes the request" },
   ],
+  // Ids are the Kilo CLI's own `-m` values, `provider/model` with the model id
+  // itself carrying a vendor path. `~`-prefixed ids are the Kilo Gateway's
+  // pooled aliases — stable across gateway churn, which is why they (and not
+  // the ~300 concrete ids `kilo models` lists) are the offline fallback.
+  kilocode: [
+    { id: null, label: "default", hint: "whatever the kilo CLI picks" },
+    { id: "kilo-auto/free", label: "Auto Free", hint: "Kilo routes to the best available free model" },
+    { id: "kilo-auto/efficient", label: "Auto Efficient", hint: "Kilo routes by task complexity and cost" },
+    { id: "kilo-auto/frontier", label: "Auto Frontier", hint: "Kilo routes to its most capable models" },
+    { id: "kilo/~anthropic/claude-opus-latest", label: "opus latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~anthropic/claude-sonnet-latest", label: "sonnet latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~anthropic/claude-haiku-latest", label: "haiku latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~openai/gpt-sol-latest", label: "gpt sol latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~openai/gpt-luna-latest", label: "gpt luna latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~openai/gpt-mini-latest", label: "gpt mini latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~google/gemini-pro-latest", label: "gemini pro latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~google/gemini-flash-latest", label: "gemini flash latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~x-ai/grok-latest", label: "grok latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~z-ai/glm-latest", label: "glm latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~moonshotai/kimi-latest", label: "kimi latest", hint: "Kilo Gateway pool" },
+    { id: "kilo/~deepseek/deepseek-pro-latest", label: "deepseek pro latest", hint: "Kilo Gateway pool" },
+  ],
 };
 
 /**
  * Display name for a model id: the catalog label when we know it, otherwise the
  * raw id (a custom entry the user typed in), and `null` when nothing is set.
  */
-export function modelLabel(provider: ProviderId, modelId: string | null): string | null {
+export function modelLabel(
+  provider: ProviderId,
+  modelId: string | null,
+  catalog: ModelOption[] = MODEL_CATALOG[provider],
+): string | null {
   if (modelId === null) return null;
-  const known = MODEL_CATALOG[provider].find((option) => option.id === modelId);
+  const known = catalog.find((option) => option.id === modelId);
   return known?.label ?? modelId;
 }
 
@@ -367,8 +611,24 @@ export interface ProviderInfo {
   reportsTokens: boolean;
   /** Effective permission/approval mode for this provider (from config). */
   permissionMode: string;
-  /** Effective model for this provider, when configured. */
+  /** Effective default after the global model-access policy is applied. */
   model: string | null;
+  /** Raw per-provider setting, retained so the UI can explain an inactive choice. */
+  configuredModel: string | null;
+  /** Global access ceiling applied to this provider and every run role. */
+  modelAccessTier: ModelAccessTier;
+  /** Whether callers may choose a model or the server always resolves one. */
+  modelSelectionMode: ModelSelectionMode;
+  /** Recommended account-available model at the current tier. */
+  tierDefaultModel: string | null;
+  /** Total discovered count before the access-tier filter. */
+  totalModels: number;
+  /**
+   * Models this account can currently select. Refreshed from the provider at
+   * server startup (and on provider re-detection), with the bundled catalog as
+   * a fallback when the provider cannot enumerate models while offline.
+   */
+  models: ModelOption[];
   /**
    * Set when the scheduler recently saw a transient failure from this provider
    * (capacity, quota, …). The header pill shows a small badge; the tooltip
@@ -500,6 +760,9 @@ const PROVIDER_DEFAULT_RATES: Record<ProviderId, TokenRates> = {
   grok: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 },
   // Copilot bills premium requests, not tokens; this is a spend signal only.
   copilot: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
+  // Kilo bills through its gateway at the routed vendor's rate; this is the
+  // generic mid-tier signal.
+  kilocode: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
 };
 
 /** Model-id substrings → rates. First match wins; order matters (more specific first). */
@@ -520,6 +783,11 @@ const MODEL_RATE_RULES: Array<{ provider?: ProviderId; match: RegExp; rates: Tok
   { provider: "copilot", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
   { provider: "copilot", match: /haiku|mini|flash|luna/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
   { provider: "copilot", match: /gpt|gemini|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
+  // Kilo routes to a vendor model the same way; match on the routed name.
+  { provider: "kilocode", match: /opus|fable/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
+  { provider: "kilocode", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
+  { provider: "kilocode", match: /haiku|mini|flash|luna|deepseek/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
+  { provider: "kilocode", match: /gpt|gemini|grok|glm|kimi/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
 ];
 
 export function ratesForModel(provider: string, modelId: string | null): { rates: TokenRates; source: "model" | "provider_default" } | null {

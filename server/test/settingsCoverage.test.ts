@@ -12,7 +12,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { GROUPS, groupsWithFields, snapshot } from "../src/settings.ts";
+import { PROVIDER_IDS } from "@agent-console/shared";
+import { GROUPS, groupsWithFields, resetSettings, settings, snapshot, updateSettings } from "../src/settings.ts";
 
 const AGENTS_VIEW = new URL("../../web/components/agents/AgentsView.tsx", import.meta.url);
 
@@ -76,5 +77,32 @@ test("retention group is present and env-prefixed", () => {
   assert.equal(fields.length, 3);
   for (const field of fields) {
     assert.match(field.envVar, /^RETENTION_/);
+  }
+});
+
+test("reasoning effort has a global default and one override per provider", () => {
+  const fields = snapshot().fields;
+  const global = fields.find((field) => field.key === "models.reasoningEffort");
+  assert.deepEqual(global?.options?.map((entry) => entry.value), ["low", "medium", "high"]);
+
+  for (const provider of PROVIDER_IDS) {
+    const field = fields.find((entry) => entry.key === `${provider}.reasoningEffort`);
+    assert.ok(field, `${provider} has no reasoning-effort setting`);
+    assert.deepEqual(field.options?.map((entry) => entry.value), ["", "low", "medium", "high"]);
+  }
+});
+
+test("provider effort overrides the global effort and invalid levels are rejected", () => {
+  const keys = ["models.reasoningEffort", "claude.reasoningEffort"];
+  resetSettings(keys);
+  try {
+    assert.equal(updateSettings({ "models.reasoningEffort": "low" }).ok, true);
+    assert.equal(settings.reasoningEffortFor("claude"), "low");
+    assert.equal(updateSettings({ "claude.reasoningEffort": "high" }).ok, true);
+    assert.equal(settings.reasoningEffortFor("claude"), "high");
+    assert.equal(updateSettings({ "claude.reasoningEffort": "maximum" }).ok, false);
+    assert.equal(settings.reasoningEffortFor("claude"), "high");
+  } finally {
+    resetSettings(keys);
   }
 });

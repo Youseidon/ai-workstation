@@ -307,6 +307,7 @@ export class CodexAdapter extends SpawnAdapter {
     const model = opts.model ?? settings.codex.model;
     if (model !== null) args.push("-m", model);
     args.push(...settings.codex.extraArgs);
+    args.push("-c", `model_reasoning_effort="${settings.reasoningEffortFor("codex")}"`);
     // `-` makes codex read the prompt from stdin, so no argv escaping worries.
     args.push("-");
     return { args, stdin: prompt, ...(resumeSessionId === null ? {} : { sessionId: resumeSessionId }) };

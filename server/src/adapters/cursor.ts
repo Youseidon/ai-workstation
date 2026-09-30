@@ -90,6 +90,21 @@ export function cursorAgentArgs(input: {
   return args;
 }
 
+/** Add or replace Cursor's bracketed model effort override. */
+export function cursorModelWithEffort(model: string | null, effort: "low" | "medium" | "high"): string {
+  const selected = model ?? "auto";
+  const open = selected.lastIndexOf("[");
+  if (open < 0 || !selected.endsWith("]")) return `${selected}[effort=${effort}]`;
+
+  const base = selected.slice(0, open);
+  const parameters = selected.slice(open + 1, -1)
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part !== "" && !part.startsWith("effort="));
+  parameters.push(`effort=${effort}`);
+  return `${base}[${parameters.join(",")}]`;
+}
+
 function toUsage(raw: Record<string, number> | null | undefined): TokenUsage | null {
   if (!raw) return null;
   const inputTokens = raw.input_tokens ?? raw.inputTokens ?? 0;
@@ -421,7 +436,7 @@ export class CursorAdapter extends SpawnAdapter {
         prompt,
         outputFormat: settings.cursor.outputFormat,
         force: effectiveCursorForce(),
-        model,
+        model: cursorModelWithEffort(model, settings.reasoningEffortFor("cursor")),
         extraArgs: settings.cursor.extraArgs,
         resumeSessionId,
       }),

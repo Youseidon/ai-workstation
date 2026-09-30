@@ -7,6 +7,9 @@ import {
   parseCursorPeriodUsage,
   parseCursorPlanName,
   parseGrokCredits,
+  parseKiloBalance,
+  parseKiloPassState,
+  parseKiloUsage,
 } from "../src/adapters/accountUsage.ts";
 
 test("classifyUsageWindow maps duration to the window the provider reported", () => {
@@ -172,4 +175,77 @@ test("parseCursorPeriodUsage does not invent daily or weekly windows", () => {
 test("parseCursorPlanName reads planInfo.planName", () => {
   assert.equal(parseCursorPlanName({ planInfo: { planName: "Pro", price: "$20/mo" } }), "Pro");
   assert.equal(parseCursorPlanName({}), null);
+});
+
+test("parseKiloBalance reads the prepaid gateway balance", () => {
+  assert.equal(parseKiloBalance({ balance: 18.44, isDepleted: false }), 18.44);
+  assert.equal(parseKiloBalance({}), null);
+  assert.equal(parseKiloBalance(null), null);
+});
+
+test("parseKiloPassState reads the monthly subscription from the tRPC envelope", () => {
+  const parsed = parseKiloPassState([
+    {
+      result: {
+        data: {
+          json: {
+            subscription: {
+              status: "active",
+              currentPeriodBaseCreditsUsd: 19,
+              currentPeriodUsageUsd: 0.6,
+              currentPeriodBonusCreditsUsd: 9.5,
+              nextBillingAt: "2026-10-30T00:30:22.000Z",
+            },
+          },
+        },
+      },
+    },
+  ]);
+  assert.equal(parsed?.baseCreditsUsd, 19);
+  assert.equal(parsed?.usedUsd, 0.6);
+  assert.equal(parsed?.bonusCreditsUsd, 9.5);
+  assert.equal(parsed?.nextBillingAt, "2026-10-30T00:30:22.000Z");
+});
+
+test("parseKiloPassState ignores cancelled subscriptions", () => {
+  assert.equal(
+    parseKiloPassState([{ result: { data: { json: { subscription: { status: "canceled", currentPeriodBaseCreditsUsd: 19, currentPeriodUsageUsd: 1 } } } } }]),
+    null,
+  );
+  assert.equal(parseKiloPassState([{ result: { data: { json: {} } } }]), null);
+});
+
+test("parseKiloUsage maps the Pass to a monthly window and the balance to credits", () => {
+  const parsed = parseKiloUsage(
+    { balance: 18.44, isDepleted: false },
+    [
+      {
+        result: {
+          data: {
+            json: {
+              subscription: {
+                status: "active",
+                currentPeriodBaseCreditsUsd: 19,
+                currentPeriodUsageUsd: 9.5,
+                currentPeriodBonusCreditsUsd: 0,
+                nextBillingAt: "2026-10-30T00:30:22.000Z",
+              },
+            },
+          },
+        },
+      },
+    ],
+  );
+  assert.equal(parsed.plan, "Kilo Pass");
+  assert.equal(parsed.windows.length, 1);
+  assert.equal(parsed.windows[0]?.kind, "monthly");
+  assert.equal(parsed.windows[0]?.usedPercent, 50);
+  assert.equal(parsed.windows[0]?.resetsAt, "2026-10-30T00:30:22.000Z");
+  assert.equal(parsed.credits?.balance, 18.44);
+});
+
+test("parseKiloUsage still reports the balance when there is no Pass", () => {
+  const parsed = parseKiloUsage({ balance: 5 }, [{ result: { data: { json: {} } } }]);
+  assert.equal(parsed.windows.length, 0);
+  assert.equal(parsed.credits?.balance, 5);
 });

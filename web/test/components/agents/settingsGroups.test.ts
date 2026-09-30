@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { GROUP_BLURB, GROUP_TITLE } from "../../../lib/settingsGroups";
 
 /** Mirrors AgentsView: provider groups render inside their agent's card. */
-const PROVIDER_GROUPS = ["Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"];
+const PROVIDER_GROUPS = ["Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"];
 
 /** Mirrors the server's exported GROUPS order. */
 const SERVER_GROUPS = [
@@ -22,6 +22,7 @@ const SERVER_GROUPS = [
   "Cursor CLI",
   "Grok CLI",
   "GitHub Copilot",
+  "Kilo Code",
 ];
 
 function sharedGroups(groups: string[]): string[] {

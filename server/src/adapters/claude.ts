@@ -250,6 +250,9 @@ export class ClaudeAdapter implements AgentAdapter {
       includePartialMessages: true,
       permissionMode: permission.permissionMode as Options["permissionMode"],
       settingSources: settings.claude.settingSources as Options["settingSources"],
+      // The SDK forwards unknown/current Claude CLI flags through this map.
+      // Keeping effort here also makes it apply to resumed sessions.
+      extraArgs: { effort: settings.reasoningEffortFor("claude") },
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
     };
     if (permission.allowDangerouslySkipPermissions) {

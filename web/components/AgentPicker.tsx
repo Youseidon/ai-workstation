@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
-import { MODEL_CATALOG, isCustomModel, modelLabel, PROVIDER_IDS } from "@agent-console/shared";
+import { classifyModel, MODEL_ACCESS_TIER_INFO, modelFamily, modelLabel, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { agentState, ACTIVITY_LABEL } from "@/lib/agentState";
 import { cn } from "@/lib/cn";
@@ -124,13 +124,18 @@ export function AgentPicker({
         aria-expanded={open}
         title="Choose agent (⌘K)"
         className={cn(
-          "flex items-center gap-2 rounded-md ring-1 ring-inset transition-colors",
+          "relative flex items-center gap-2 rounded-md ring-1 ring-inset transition-colors",
           compact ? "h-8 gap-1.5 px-2 text-xs" : "h-9 gap-2 px-2.5 text-sm",
           theme.chip,
-          busy && "animate-pulse-ring",
           disabled && "opacity-50",
         )}
       >
+        {busy && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-current animate-pulse-ring"
+          />
+        )}
         <AgentAvatar
           provider={selected}
           activity={selectedState?.activity ?? "idle"}
@@ -139,7 +144,7 @@ export function AgentPicker({
         />
         <span className="font-medium">{selectedInfo?.label ?? selected}</span>
         <span className={cn("truncate text-fg-dim", compact ? "max-w-[8ch] text-[10px]" : "max-w-[12ch] text-xs")}>
-          {modelLabel(selected, selectedModel) ?? "default"}
+          {modelLabel(selected, selectedModel, selectedInfo?.models) ?? "default"}
         </span>
         <span className="text-[10px] opacity-60" aria-hidden>
           ▾
@@ -309,7 +314,7 @@ function ProviderRow({
           title="Models"
           className="mt-1 shrink-0 rounded px-1.5 py-1 text-[10px] text-fg-dim ring-1 ring-inset ring-line hover:text-fg"
         >
-          {modelLabel(provider.id, model) ?? "default"}
+          {modelLabel(provider.id, model, provider.models) ?? "default"}
           {pinned ? "" : " ·"}
         </button>
       </div>
@@ -339,14 +344,66 @@ function ModelList({
   onSelect(model: string | null): void;
   onClear(): void;
 }) {
-  const [custom, setCustom] = useState(isCustomModel(provider.id, selected) ? (selected ?? "") : "");
+  const [custom, setCustom] = useState(
+    selected !== null && !provider.models.some((option) => option.id === selected) ? selected : "",
+  );
+  const [filter, setFilter] = useState("");
   const theme = providerTheme[provider.id];
-  const options = MODEL_CATALOG[provider.id];
+  const needle = filter.trim().toLowerCase();
+  const options = needle === ""
+    ? provider.models
+    : provider.models.filter((option) => `${option.id ?? ""} ${option.label} ${option.hint}`.toLowerCase().includes(needle));
+  const groups = options.reduce<Array<{ family: string; options: typeof options }>>((result, option) => {
+    const family = modelFamily(option.id);
+    const existing = result.find((group) => group.family === family);
+    if (existing === undefined) result.push({ family, options: [option] });
+    else existing.options.push(option);
+    return result;
+  }, []);
+
+  if (provider.modelSelectionMode === "auto") {
+    return (
+      <div className="border-t border-line bg-surface-0/40 px-2 py-2">
+        <div className="mb-1.5 flex items-center gap-2 text-[10px] text-fg-dim">
+          <span className="rounded bg-accent/10 px-1.5 py-0.5 font-medium text-accent">Auto Select</span>
+          <span>{MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}</span>
+        </div>
+        <div className={cn("rounded px-2 py-1.5 text-xs ring-1 ring-inset", theme.chip)}>
+          <span>{modelLabel(provider.id, provider.model, provider.models) ?? "No eligible model"}</span>
+          <p className="mt-1 text-[10px] leading-snug text-fg-dim">
+            Model selection is managed on the Agents page.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="border-t border-line bg-surface-0/40 px-2 py-2">
+      <div className="mb-1.5 flex items-center gap-2 text-[10px] text-fg-dim">
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
+          {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
+        </span>
+        <span>{provider.models.length}{provider.totalModels !== provider.models.length ? ` of ${provider.totalModels}` : ""} models</span>
+      </div>
+      {provider.models.length > 8 && (
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search model, family, or capability…"
+          spellCheck={false}
+          className="mb-1.5 w-full rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+        />
+      )}
       <div className="max-h-40 overflow-y-auto">
-        {options.map((option) => {
+        {groups.map((group) => (
+          <div key={group.family}>
+            {provider.models.length > 12 && (
+              <div className="sticky top-0 z-10 bg-surface-0 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-fg-dim">
+                {group.family} · {group.options.length}
+              </div>
+            )}
+            {group.options.map((option) => {
           const isSelected = option.id === selected;
           return (
             <button
@@ -359,11 +416,20 @@ function ModelList({
               )}
             >
               <span className="shrink-0">{option.label}</span>
-              <span className="ml-auto truncate text-[10px] text-fg-dim">{option.hint}</span>
+              {option.id === provider.tierDefaultModel && (
+                <span className="rounded bg-accent/10 px-1 text-[9px] uppercase tracking-wide text-accent">recommended</span>
+              )}
+              <span className="ml-auto truncate text-[10px] text-fg-dim">
+                {option.id === null ? option.hint : `${classifyModel(provider.id, option.id) ?? "other"} · ${option.hint}`}
+              </span>
             </button>
           );
-        })}
+            })}
+          </div>
+        ))}
+        {options.length === 0 && <p className="px-2 py-2 text-[11px] text-fg-dim">No matching models.</p>}
       </div>
+      {provider.modelAccessTier === "all" && (
       <div className="mt-1.5 flex gap-1.5">
         <input
           value={custom}
@@ -390,6 +456,12 @@ function ModelList({
           use
         </button>
       </div>
+      )}
+      {provider.modelAccessTier !== "all" && (
+        <p className="mt-1.5 text-[10px] leading-snug text-fg-dim">
+          Custom and out-of-tier models are hidden. Change Model access on Agents to unlock them.
+        </p>
+      )}
       {pinned && (
         <button
           type="button"

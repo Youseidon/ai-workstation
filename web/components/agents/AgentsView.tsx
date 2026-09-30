@@ -3,14 +3,22 @@
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import {
+  classifyModel,
   formatElapsed,
   formatTokens,
-  isCustomModel,
-  MODEL_CATALOG,
+  isModelAccessTier,
+  isModelSelectionMode,
+  isReasoningEffort,
+  MODEL_ACCESS_TIER_INFO,
+  MODEL_ACCESS_TIERS,
+  REASONING_EFFORTS,
   modelLabel,
+  type ModelAccessTier,
+  type ModelSelectionMode,
   type ProviderId,
   type ProviderInfo,
   type ProviderUsage,
+  type ReasoningEffort,
   type SettingField,
   type SettingValue,
 } from "@agent-console/shared";
@@ -54,6 +62,7 @@ const SETTINGS_GROUP: Record<ProviderId, string> = {
   cursor: "Cursor CLI",
   grok: "Grok CLI",
   copilot: "GitHub Copilot",
+  kilocode: "Kilo Code",
 };
 
 function fleetSummary(writing: number, asking: number): string {
@@ -118,8 +127,22 @@ export function AgentsView() {
    * alone, so a new group silently had nowhere to render.
    */
   const providerGroups = new Set(Object.values(SETTINGS_GROUP));
-  const sharedGroups = (snapshot?.groups ?? []).filter((group) => !providerGroups.has(group));
+  const sharedGroups = (snapshot?.groups ?? []).filter(
+    (group) => !providerGroups.has(group) && group !== "Model access",
+  );
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const modelAccessField = snapshot?.fields.find((field) => field.key === "models.accessTier");
+  const modelAccessTier: ModelAccessTier = isModelAccessTier(modelAccessField?.value)
+    ? modelAccessField.value
+    : "all";
+  const modelSelectionField = snapshot?.fields.find((field) => field.key === "models.selectionMode");
+  const modelSelectionMode: ModelSelectionMode = isModelSelectionMode(modelSelectionField?.value)
+    ? modelSelectionField.value
+    : "manual";
+  const reasoningEffortField = snapshot?.fields.find((field) => field.key === "models.reasoningEffort");
+  const reasoningEffort: ReasoningEffort = isReasoningEffort(reasoningEffortField?.value)
+    ? reasoningEffortField.value
+    : "medium";
 
   const saveDrafts = useCallback(
     async (keys: string[]) => {
@@ -212,6 +235,45 @@ export function AgentsView() {
             {notice !== null ? ` · ${notice}` : ""}
           </p>
         </header>
+
+        <ModelAccessPanel
+          tier={modelAccessTier}
+          selectionMode={modelSelectionMode}
+          reasoningEffort={reasoningEffort}
+          providers={providers}
+          saving={saving}
+          onSelect={async (tier) => {
+            setNotice(null);
+            const result = await save({ "models.accessTier": tier });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change model access.");
+              return;
+            }
+            await refreshProviders();
+            setNotice(`Model access changed to ${MODEL_ACCESS_TIER_INFO[tier].label}. New runs use this tier.`);
+          }}
+          onSelectMode={async (mode) => {
+            setNotice(null);
+            const result = await save({ "models.selectionMode": mode });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change model choice mode.");
+              return;
+            }
+            await refreshProviders();
+            setNotice(mode === "auto"
+              ? "Auto Select enabled. Manual model choices are locked and preserved for later."
+              : "Manual model selection enabled. Saved model choices are available again.");
+          }}
+          onSelectEffort={async (effort) => {
+            setNotice(null);
+            const result = await save({ "models.reasoningEffort": effort });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change reasoning effort.");
+              return;
+            }
+            setNotice(`Global reasoning effort changed to ${effort}. Provider overrides still take precedence.`);
+          }}
+        />
 
         {/* Shared settings open as dialogs rather than sitting inline, so the
             same form can be reached from the page each group actually governs. */}
@@ -322,6 +384,125 @@ export function AgentsView() {
   );
 }
 
+function ModelAccessPanel({
+  tier,
+  selectionMode,
+  reasoningEffort,
+  providers,
+  saving,
+  onSelect,
+  onSelectMode,
+  onSelectEffort,
+}: {
+  tier: ModelAccessTier;
+  selectionMode: ModelSelectionMode;
+  reasoningEffort: ReasoningEffort;
+  providers: ProviderInfo[];
+  saving: boolean;
+  onSelect(tier: ModelAccessTier): Promise<void>;
+  onSelectMode(mode: ModelSelectionMode): Promise<void>;
+  onSelectEffort(effort: ReasoningEffort): Promise<void>;
+}) {
+  const eligible = providers.reduce((total, provider) => total + provider.models.length, 0);
+  const available = providers.filter((provider) => provider.available).length;
+  return (
+    <section className="mb-4 rounded-panel border border-line bg-surface-1 p-3" aria-labelledby="model-access-heading">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 id="model-access-heading" className="text-sm font-semibold text-fg">Model access</h2>
+          <p className="mt-0.5 max-w-3xl text-[11px] leading-relaxed text-fg-dim">
+            One credit-use ceiling for every console, task, pipeline, workspace, fallback, handoff, and reviewer run.
+            Saved choices outside the tier stay saved but the provider&apos;s tier default runs instead.
+          </p>
+        </div>
+        <Badge tone="info">{available} providers · {eligible} models</Badge>
+      </div>
+      <div className="mb-3 grid gap-2 md:grid-cols-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
+          <div>
+            <div className="text-xs font-semibold text-fg">Model choice</div>
+            <p className="mt-0.5 text-[10px] leading-snug text-fg-dim">
+              Auto Select chooses within the access tier for every run.
+            </p>
+          </div>
+          <div className="flex rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line">
+            {(["auto", "manual"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                disabled={saving}
+                aria-pressed={selectionMode === mode}
+                onClick={() => void onSelectMode(mode)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-[11px] font-medium transition-colors disabled:opacity-50",
+                  selectionMode === mode ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
+                )}
+              >
+                {mode === "auto" ? "Auto Select" : "Manual"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
+          <div>
+            <div className="text-xs font-semibold text-fg">Reasoning effort</div>
+            <p className="mt-0.5 text-[10px] leading-snug text-fg-dim">
+              Default for every agent unless its settings override it.
+            </p>
+          </div>
+          <div className="flex rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line">
+            {REASONING_EFFORTS.map((effort) => (
+              <button
+                key={effort}
+                type="button"
+                disabled={saving}
+                aria-pressed={reasoningEffort === effort}
+                onClick={() => void onSelectEffort(effort)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-[11px] font-medium capitalize transition-colors disabled:opacity-50",
+                  reasoningEffort === effort ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
+                )}
+              >
+                {effort}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-5">
+        {MODEL_ACCESS_TIERS.map((value) => {
+          const info = MODEL_ACCESS_TIER_INFO[value];
+          const selected = value === tier;
+          return (
+            <button
+              key={value}
+              type="button"
+              disabled={saving}
+              aria-pressed={selected}
+              onClick={() => void onSelect(value)}
+              className={cn(
+                "rounded-md border p-2.5 text-left transition-colors disabled:opacity-50",
+                selected
+                  ? "border-accent bg-accent/10 text-fg"
+                  : "border-line bg-surface-0 text-fg-muted hover:border-line-strong hover:bg-surface-2",
+              )}
+            >
+              <span className="flex items-center justify-between gap-2 text-xs font-semibold">
+                {info.label}
+                {selected && <span className="text-accent">●</span>}
+              </span>
+              <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-fg-dim">
+                {info.creditUse}
+              </span>
+              <span className="mt-1.5 block text-[10px] leading-snug text-fg-dim">{info.description}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -396,7 +577,7 @@ function AgentCard({
 }) {
   const theme = providerTheme[agent.provider];
   const busy = agent.run !== null || agent.consultCount > 0;
-  const label = modelLabel(agent.provider, model);
+  const label = modelLabel(agent.provider, model, info.models);
 
   return (
     <li
@@ -688,12 +869,52 @@ function ModelRow({
   onSelect(model: string | null): void;
   onClear(): void;
 }) {
-  const [custom, setCustom] = useState(isCustomModel(provider.id, selected) ? (selected ?? "") : "");
+  const [custom, setCustom] = useState(
+    selected !== null && !provider.models.some((option) => option.id === selected) ? selected : "",
+  );
+  const [filter, setFilter] = useState("");
   const theme = providerTheme[provider.id];
-  const options = MODEL_CATALOG[provider.id];
+  const needle = filter.trim().toLowerCase();
+  const options = needle === ""
+    ? provider.models
+    : provider.models.filter((option) => `${option.id ?? ""} ${option.label} ${option.hint}`.toLowerCase().includes(needle));
+
+  if (provider.modelSelectionMode === "auto") {
+    return (
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-[10px] text-fg-dim">
+          <span className="rounded bg-accent/10 px-1.5 py-0.5 font-medium text-accent">Auto Select</span>
+          <span>{MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}</span>
+        </div>
+        <div className={cn("rounded-md px-2.5 py-2 text-[11px] ring-1 ring-inset", theme.chip)}>
+          <div className="font-medium">
+            {modelLabel(provider.id, provider.model, provider.models) ?? "No eligible model"}
+          </div>
+          <p className="mt-1 text-[10px] leading-snug text-fg-dim">
+            Selected automatically for this tier. Switch Model choice to Manual above to choose a model.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
+      <div className="mb-2 flex items-center gap-2 text-[10px] text-fg-dim">
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
+          {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
+        </span>
+        <span>{provider.models.length}{provider.totalModels !== provider.models.length ? ` of ${provider.totalModels}` : ""} models</span>
+      </div>
+      {provider.models.length > 8 && (
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search model, family, or capability…"
+          spellCheck={false}
+          className="mb-2 w-full rounded border border-line bg-surface-0 px-2 py-1.5 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+        />
+      )}
       <div className="flex flex-wrap gap-1">
         {options.map((option) => {
           const isSelected = option.id === selected;
@@ -701,7 +922,7 @@ function ModelRow({
             <button
               key={option.id ?? "__default__"}
               type="button"
-              title={option.hint}
+              title={`${option.id === null ? "provider default" : classifyModel(provider.id, option.id) ?? "unclassified"} · ${option.hint}`}
               onClick={() => onSelect(option.id)}
               className={cn(
                 "rounded-md px-2 py-1 text-[11px] transition-colors ring-1 ring-inset",
@@ -709,10 +930,13 @@ function ModelRow({
               )}
             >
               {option.label}
+              {option.id === provider.tierDefaultModel ? " · recommended" : ""}
             </button>
           );
         })}
+        {options.length === 0 && <p className="py-2 text-[11px] text-fg-dim">No matching models.</p>}
       </div>
+      {provider.modelAccessTier === "all" && (
       <div className="mt-1.5 flex gap-1.5">
         <input
           value={custom}
@@ -739,6 +963,12 @@ function ModelRow({
           use
         </button>
       </div>
+      )}
+      {provider.modelAccessTier !== "all" && (
+        <p className="mt-2 text-[10px] text-fg-dim">
+          {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].description} Custom IDs are available under All models.
+        </p>
+      )}
       {pinned && (
         <button
           type="button"

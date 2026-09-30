@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@agent-console/shared";
-import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { detectProviders, getAdapter, resolveProviderModel } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
 import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
 import { programBriefMarkdown, programConsultMarkdown } from "./programBrief.ts";
@@ -92,7 +92,6 @@ export class ProviderUnavailableError extends WorkspaceError {
 export async function startExecute(args: StartExecuteArgs): Promise<{ runId: string }> {
   const workspaceId = args.workspaceId;
   const providerId = args.provider;
-  const model = args.model;
   const mode = args.mode ?? "execute";
   const prompt = args.prompt;
   const promptId = args.promptId;
@@ -133,7 +132,9 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     );
   }
 
-  const provider = await requireAvailableProvider(providerId);
+  const providerInfo = await requireAvailableProvider(providerId);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
 
   let resolvedPrompt: string;
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
@@ -466,6 +467,7 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
     prompt,
     cwd: workspace.workDirectory,
     model: args.model,
+    preserveModel: true,
     role: "execute",
     // Same as an execute run. `agent-step` is a shell command talking to
     // 127.0.0.1, and a read-only sandbox blocks that outright on Codex — a
@@ -514,14 +516,15 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
 /**
  * Whether this provider can be told to continue its own session.
  *
- * All five installed CLIs can (`cursor-agent --resume=`, `codex exec resume`,
- * the Claude SDK's `resume`, `grok --resume=`, `copilot --resume=`), so this is
- * a list rather than a check — but it is a list so that a provider whose resume
- * flag disappears in an upgrade can be demoted to the fresh-session form in one
- * place instead of failing every wrap-up turn it is given.
+ * All six installed CLIs can (`cursor-agent --resume=`, `codex exec resume`,
+ * the Claude SDK's `resume`, `grok --resume=`, `copilot --resume=`,
+ * `kilo run --session`), so this is a list rather than a check — but it is a
+ * list so that a provider whose resume flag disappears in an upgrade can be
+ * demoted to the fresh-session form in one place instead of failing every
+ * wrap-up turn it is given.
  */
 function providerCanResume(provider: ProviderId): boolean {
-  return provider === "cursor" || provider === "codex" || provider === "claude" || provider === "grok" || provider === "copilot";
+  return provider === "cursor" || provider === "codex" || provider === "claude" || provider === "grok" || provider === "copilot" || provider === "kilocode";
 }
 
 /**
@@ -653,7 +656,9 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     );
   }
 
-  const provider = await requireAvailableProvider(args.provider);
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
   const workspace = workspaces.get(workspaceId);
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
@@ -693,7 +698,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
       workspaceId,
       promptId,
       provider,
-      model: args.model,
+      model,
       tokenHash: credential.tokenHash,
       expiresAt: credential.expiresAt,
       displayText: question,
@@ -721,7 +726,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     adapter: getAdapter(provider),
     prompt: resolvedPrompt,
     cwd: workspace.workDirectory,
-    model: args.model,
+    model,
     role: "consult",
     permissionOverride: "consult",
     onEvent: (event) => {
@@ -787,7 +792,9 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
       detail: "Stop the running agent before drafting a program in the same working directory.",
     });
   }
-  const provider = await requireAvailableProvider(args.provider);
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
 
   // The draft exists before the run does, so a run that dies in its first
   // second still leaves the operator something to re-run or delete, and so the
@@ -811,7 +818,7 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
       runId: plannedRunId,
       workspaceId: args.workspaceId,
       provider,
-      model: args.model,
+      model,
       tokenHash: credential.tokenHash,
       expiresAt: credential.expiresAt,
       displayText,
@@ -851,7 +858,7 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
     adapter: getAdapter(provider),
     prompt,
     cwd: workspace.workDirectory,
-    model: args.model,
+    model,
     role: "author",
     permissionOverride: "inherit",
     onEvent: (event) => {
@@ -909,7 +916,9 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
       detail: "Stop the running agent before changing an instruction file in the same working directory.",
     });
   }
-  const provider = await requireAvailableProvider(args.provider);
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
 
   const existing = args.proposalId === undefined ? null : workspaces.instructionProposal(args.proposalId);
   if (existing !== null && existing.workspaceId !== args.workspaceId) {
@@ -928,7 +937,7 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
       runId: plannedRunId,
       workspaceId: args.workspaceId,
       provider,
-      model: args.model,
+      model,
       tokenHash: credential.tokenHash,
       expiresAt: credential.expiresAt,
       displayText: `Change ${file}: ${proposal.goal}`,
@@ -970,7 +979,7 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
       adapter: getAdapter(provider),
       prompt,
       cwd: workspace.workDirectory,
-      model: args.model,
+      model,
       role: "author",
       permissionOverride: "inherit",
       onEvent: (event) => {
@@ -1008,7 +1017,9 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
  * the page that launched it.
  */
 export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ runId: string }> {
-  const provider = await requireAvailableProvider(args.provider);
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
   const plannedRunId = newId("run");
   const suite = workspaces.suiteHeader(args.suiteId);
   const workspace = workspaces.get(suite.workspaceId);
@@ -1025,7 +1036,7 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
     runId: plannedRunId,
     suiteId: args.suiteId,
     provider,
-    model: args.model,
+    model,
     stats: context.stats,
     scopePromptId: context.scopePromptId,
   });
@@ -1038,7 +1049,7 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
     adapter: getAdapter(provider),
     prompt: context.prompt,
     cwd: workspace.workDirectory,
-    model: args.model,
+    model,
     role: "execute",
     permissionOverride: "inherit",
     onEvent: (event) => {
@@ -1089,7 +1100,7 @@ export function consultContextText(workspaceId: number, promptId: number | null,
   return contextMarkdown(workspaces.agentContext(workspaceId, promptId), "consult", { liveWriter, question });
 }
 
-async function requireAvailableProvider(providerId: string): Promise<ProviderId> {
+async function requireAvailableProvider(providerId: string): Promise<ProviderInfo> {
   if (!isProviderId(providerId)) {
     throw new WorkspaceError(422, "unknown_provider", `Unknown provider "${providerId}".`);
   }
@@ -1098,5 +1109,5 @@ async function requireAvailableProvider(providerId: string): Promise<ProviderId>
   if (info === undefined || !info.available) {
     throw new ProviderUnavailableError(providerId, info?.reason ?? "detection failed", providers);
   }
-  return providerId;
+  return info;
 }

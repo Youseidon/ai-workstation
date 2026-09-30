@@ -8,7 +8,14 @@ import type {
   StatusPayload,
   TokenUsage,
 } from "@agent-console/shared";
-import { billableInputTokens, isMeaningfulUsage, mergeUsage } from "@agent-console/shared";
+import {
+  billableInputTokens,
+  isMeaningfulUsage,
+  mergeUsage,
+  MODEL_CATALOG,
+  modelAllowedInTier,
+  recommendedModel,
+} from "@agent-console/shared";
 import { permissionForRun, settings } from "./settings.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -111,6 +118,8 @@ export interface StartRunArgs {
   cwd: string;
   /** Model picked in the UI for this run; falls back to the adapter's setting. */
   model?: string | null;
+  /** Keep the source run's model when resuming that exact provider session. */
+  preserveModel?: boolean;
   role?: RunRole;
   permissionOverride?: PermissionOverride;
   /** Continue this provider session instead of opening a new one. */
@@ -139,7 +148,13 @@ export function startRun(args: StartRunArgs): RunHandle {
   const cwd = args.cwd;
   // Resolved once: settings could change mid-run, but a run reports the model
   // it actually started with from its first event to its last.
-  const model = args.model ?? adapter.model;
+  const requestedModel = args.model ?? adapter.model;
+  const model = args.preserveModel || settings.modelAccessTier === "all" || modelAllowedInTier(provider, requestedModel, settings.modelAccessTier)
+    ? requestedModel
+    : recommendedModel(provider, MODEL_CATALOG[provider], settings.modelAccessTier);
+  if (settings.modelAccessTier !== "all" && model === null) {
+    throw new Error(`No ${settings.modelAccessTier} model is available for ${provider}`);
+  }
   const role = args.role ?? "execute";
   const permissionOverride: PermissionOverride =
     role === "consult" ? "consult" : role === "handoff" ? "handoff" : (args.permissionOverride ?? "inherit");

@@ -379,9 +379,7 @@ export class CopilotAdapter extends SpawnAdapter {
     }
     const model = opts.model ?? settings.copilot.model;
     if (model !== null) args.push("--model", model);
-    if (settings.copilot.reasoningEffort !== null) {
-      args.push("--effort", settings.copilot.reasoningEffort);
-    }
+    args.push("--effort", settings.reasoningEffortFor("copilot"));
     if (settings.copilot.maxAiCredits !== null) {
       args.push("--max-ai-credits", String(settings.copilot.maxAiCredits));
     }

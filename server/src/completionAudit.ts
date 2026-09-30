@@ -1,5 +1,5 @@
 import { AUDIT_CHECK_RESULTS, COMPLETION_VERDICTS, isProviderId, type CompletionAuditCheck, type CompletionAuditReport, type CompletionVerdict, type ProviderId } from "@agent-console/shared";
-import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { detectProviders, getAdapter, getProviderInfo, resolveProviderModel } from "./adapters/registry.ts";
 import { recordReviewerVerdicts } from "./definitionOfDone.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -155,7 +155,8 @@ export async function scheduleCompletionAudit(args: ScheduleAuditArgs): Promise<
     log.warn(`no read-only provider available for audit prompt=${args.promptId}`);
     return { started: false, block: "provider_unavailable" };
   }
-  const model = args.auditModel ?? null;
+  const providerInfo = await getProviderInfo(provider);
+  const model = resolveProviderModel(providerInfo, args.auditModel ?? null);
   const id = newId("audit");
   const record = workspaces.createCompletionAudit({ id, workspaceId: args.workspaceId, promptId: args.promptId, sourceRunId: args.sourceRunId, provider, model });
 

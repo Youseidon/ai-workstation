@@ -1,5 +1,5 @@
 import type { ProviderId, ProviderInfo } from "@agent-console/shared";
-import { MODEL_CATALOG, modelLabel } from "@agent-console/shared";
+import { modelLabel } from "@agent-console/shared";
 import type { ModelSelection } from "./useModelSelection";
 
 /** One selectable provider+model pair in the `@` popover. */
@@ -23,7 +23,7 @@ function target(
   model: string | null,
   hint: string,
 ): MentionTarget {
-  const label = modelLabel(provider.id, model) ?? "default";
+  const label = modelLabel(provider.id, model, provider.models) ?? "default";
   return {
     provider: provider.id,
     model,
@@ -50,7 +50,9 @@ export function currentTargets(
 /** Every provider × every catalogued model — the pool an actual query filters. */
 export function allTargets(providers: ProviderInfo[]): MentionTarget[] {
   return providers.flatMap((provider) =>
-    MODEL_CATALOG[provider.id].map((option) => target(provider, option.id, option.hint)),
+    provider.modelSelectionMode === "auto"
+      ? [target(provider, provider.model, "Auto Select")]
+      : provider.models.map((option) => target(provider, option.id, option.hint)),
   );
 }
 

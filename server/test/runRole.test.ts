@@ -14,7 +14,7 @@ import {
   settings,
 } from "../src/settings.ts";
 import { claudePermissionConfig } from "../src/adapters/claude.ts";
-import { CursorAdapter, cursorAgentArgs } from "../src/adapters/cursor.ts";
+import { CursorAdapter, cursorAgentArgs, cursorModelWithEffort } from "../src/adapters/cursor.ts";
 import { createLogger } from "../src/lib/logger.ts";
 
 function withHostAccess<T>(enabled: boolean, fn: () => T): T {
@@ -212,4 +212,13 @@ test("cursor adapter uses the supported long model flag", () => {
   });
   assert.deepEqual(args, ["-p", "--output-format", "stream-json", "--model", "claude-sonnet-5", "do the work"]);
   assert.equal(args.includes("-m"), false);
+});
+
+test("cursor effort is added to default and parameterized models", () => {
+  assert.equal(cursorModelWithEffort(null, "medium"), "auto[effort=medium]");
+  assert.equal(cursorModelWithEffort("composer-2", "low"), "composer-2[effort=low]");
+  assert.equal(
+    cursorModelWithEffort("claude-opus[context=1m,effort=low,fast=false]", "high"),
+    "claude-opus[context=1m,fast=false,effort=high]",
+  );
 });

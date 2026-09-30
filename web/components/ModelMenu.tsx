@@ -1,12 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelOption, ModelPool, ProviderId } from "@agent-console/shared";
-import { MODEL_CATALOG, MODEL_POOLS, MODEL_POOL_LABEL, isCustomModel } from "@agent-console/shared";
+import type { ModelAccessTier, ModelOption, ModelSelectionMode, ProviderId } from "@agent-console/shared";
+import { classifyModel, MODEL_ACCESS_TIER_INFO, modelFamily, modelLabel } from "@agent-console/shared";
 import { providerTheme } from "@/lib/providerTheme";
 
 interface Props {
   provider: ProviderId;
+  /** Runtime catalog refreshed by the server for this provider. */
+  options: ModelOption[];
+  accessTier: ModelAccessTier;
+  selectionMode: ModelSelectionMode;
+  recommended: string | null;
+  totalModels: number;
   /** Currently selected model id; `null` is the provider's own default. */
   selected: string | null;
   /** The model configured in settings, shown as the inherited value. */
@@ -20,18 +26,17 @@ interface Props {
 }
 
 /**
- * Groups a catalog into its pools, preserving catalog order inside each. An
- * entry without a pool (every provider but cursor, plus the `default` row) goes
- * into the leading ungrouped section so single-pool providers render as a flat
- * list exactly as before.
+ * Small catalogs stay flat. Large runtime catalogs are grouped by model family
+ * so hundreds of provider-specific reasoning variants do not read as one wall.
  */
-function groupByPool(options: ModelOption[]): Array<{ pool: ModelPool | null; options: ModelOption[] }> {
-  const ungrouped = options.filter((option) => option.pool === undefined);
-  const sections: Array<{ pool: ModelPool | null; options: ModelOption[] }> = [];
-  if (ungrouped.length > 0) sections.push({ pool: null, options: ungrouped });
-  for (const pool of MODEL_POOLS) {
-    const group = options.filter((option) => option.pool === pool);
-    if (group.length > 0) sections.push({ pool, options: group });
+function groupByFamily(options: ModelOption[]): Array<{ family: string | null; options: ModelOption[] }> {
+  if (options.length <= 12) return [{ family: null, options }];
+  const sections: Array<{ family: string | null; options: ModelOption[] }> = [];
+  for (const option of options) {
+    const family = modelFamily(option.id);
+    const existing = sections.find((section) => section.family === family);
+    if (existing === undefined) sections.push({ family, options: [option] });
+    else existing.options.push(option);
   }
   return sections;
 }
@@ -46,6 +51,11 @@ function groupByPool(options: ModelOption[]): Array<{ pool: ModelPool | null; op
  */
 export function ModelMenu({
   provider,
+  options,
+  accessTier,
+  selectionMode,
+  recommended,
+  totalModels,
   selected,
   configured,
   pinned,
@@ -53,11 +63,11 @@ export function ModelMenu({
   onClear,
   onClose,
 }: Props) {
-  const [custom, setCustom] = useState(isCustomModel(provider, selected) ? (selected ?? "") : "");
+  const isCustom = selected !== null && !options.some((option) => option.id === selected);
+  const [custom, setCustom] = useState(isCustom ? (selected ?? "") : "");
   const [filter, setFilter] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const theme = providerTheme[provider];
-  const options = MODEL_CATALOG[provider];
 
   // Matched against id, label and hint together: "opus thinking" and "1M" and
   // "grok" all have to find the same row.
@@ -68,7 +78,7 @@ export function ModelMenu({
       : options.filter((option) =>
           `${option.id ?? ""} ${option.label} ${option.hint}`.toLowerCase().includes(needle),
         );
-    return groupByPool(matched);
+    return groupByFamily(matched);
   }, [options, filter]);
 
   const matchCount = sections.reduce((total, section) => total + section.options.length, 0);
@@ -96,6 +106,26 @@ export function ModelMenu({
     onSelect(value);
   };
 
+  if (selectionMode === "auto") {
+    return (
+      <div
+        ref={containerRef}
+        className="absolute left-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-md border border-line bg-surface-1 p-2.5 shadow-xl shadow-black/50"
+      >
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fg-dim">
+          <span>{provider} model</span>
+          <span className="rounded bg-accent/10 px-1.5 py-0.5 normal-case tracking-normal text-accent">Auto Select</span>
+        </div>
+        <div className={`mt-2 rounded px-2 py-1.5 text-xs ${theme.chip}`}>
+          {modelLabel(provider, selected, options) ?? "No eligible model"}
+        </div>
+        <p className="mt-2 text-[10px] leading-snug text-fg-dim">
+          The server selects the model within the {MODEL_ACCESS_TIER_INFO[accessTier].label} tier. Switch to Manual on Agents to override it.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -105,7 +135,12 @@ export function ModelMenu({
     >
       <div className="flex items-baseline gap-2 border-b border-line px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-fg-dim">
         <span>{provider} model</span>
-        <span className="ml-auto normal-case tracking-normal">{options.length} available</span>
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 normal-case tracking-normal text-fg-muted">
+          {MODEL_ACCESS_TIER_INFO[accessTier].shortLabel}
+        </span>
+        <span className="ml-auto normal-case tracking-normal">
+          {options.length}{totalModels !== options.length ? ` of ${totalModels}` : ""} available
+        </span>
       </div>
 
       {filterable && (
@@ -127,10 +162,10 @@ export function ModelMenu({
           </div>
         )}
         {sections.map((section) => (
-          <div key={section.pool ?? "__ungrouped__"}>
-            {section.pool !== null && (
+          <div key={section.family ?? "__ungrouped__"}>
+            {section.family !== null && (
               <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-wider text-fg-dim">
-                <span>{MODEL_POOL_LABEL[section.pool]}</span>
+                <span>{section.family}</span>
                 <span className="ml-auto normal-case tracking-normal">{section.options.length}</span>
               </div>
             )}
@@ -151,8 +186,17 @@ export function ModelMenu({
                 >
                   <span className={isSelected ? "" : "text-fg-dim"}>{isSelected ? "●" : "○"}</span>
                   <span className="shrink-0 truncate">{option.label}</span>
+                  {option.id === recommended && (
+                    <span className="shrink-0 rounded bg-accent/10 px-1 text-[9px] uppercase tracking-wide text-accent">
+                      recommended
+                    </span>
+                  )}
                   <span className="ml-auto shrink-0 truncate pl-2 text-right text-[10px] text-fg-dim">
-                    {isConfigured && !isSelected ? "from settings" : option.hint}
+                    {isConfigured && !isSelected
+                      ? "from settings"
+                      : option.id === null
+                        ? option.hint
+                        : `${classifyModel(provider, option.id) ?? "unclassified"} · ${option.hint}`}
                   </span>
                 </button>
               );
@@ -160,7 +204,7 @@ export function ModelMenu({
           </div>
         ))}
 
-        {isCustomModel(provider, selected) && (
+        {isCustom && (
           <div className={`mx-2 my-1 rounded px-1.5 py-1 text-[10px] ${theme.chip}`}>
             custom · {selected}
           </div>
@@ -168,6 +212,12 @@ export function ModelMenu({
       </div>
 
       <div className="border-t border-line p-2">
+        {accessTier !== "all" && (
+          <p className="mb-1.5 text-[10px] leading-snug text-fg-dim">
+            Showing models allowed by {MODEL_ACCESS_TIER_INFO[accessTier].label}. Change the global tier on Agents to see more.
+          </p>
+        )}
+        {accessTier === "all" && (
         <div className="flex gap-1.5">
           <input
             value={custom}
@@ -190,6 +240,7 @@ export function ModelMenu({
             use
           </button>
         </div>
+        )}
         {pinned && (
           <button
             type="button"

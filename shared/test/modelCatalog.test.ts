@@ -2,12 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MODEL_CATALOG,
+  automaticModel,
+  classifyModel,
+  eligibleModels,
+  modelAllowedInTier,
   MODEL_POOLS,
   MODEL_POOL_LABEL,
   PROVIDER_IDS,
   isCustomModel,
   modelLabel,
   modelPool,
+  recommendedModel,
 } from "../src/index";
 
 test("every catalog entry is displayable", () => {
@@ -86,4 +91,47 @@ test("a catalog id resolves to its label and pool; anything else is custom", () 
   assert.equal(isCustomModel("cursor", "cursor-grok-4.5-medium"), true);
   assert.equal(modelPool("cursor", "cursor-grok-4.5-medium"), null);
   assert.equal(modelLabel("cursor", "cursor-grok-4.5-medium"), "cursor-grok-4.5-medium");
+});
+
+test("model access tiers are cumulative spending ceilings", () => {
+  assert.equal(classifyModel("claude", "claude-haiku-4-5"), "efficient");
+  assert.equal(classifyModel("claude", "claude-sonnet-5"), "professional");
+  assert.equal(classifyModel("claude", "claude-opus-5"), "frontier");
+  assert.equal(classifyModel("kilocode", "openrouter/example:free"), "free");
+  assert.equal(classifyModel("kilocode", "kilo-auto/free"), "free");
+  assert.equal(classifyModel("kilocode", "kilo-auto/efficient"), "efficient");
+  assert.equal(classifyModel("kilocode", "kilo-auto/frontier"), "frontier");
+  assert.equal(classifyModel("codex", "future-unknown-model"), null);
+
+  assert.equal(modelAllowedInTier("claude", "claude-haiku-4-5", "efficient"), true);
+  assert.equal(modelAllowedInTier("claude", "claude-haiku-4-5", "professional"), true);
+  assert.equal(modelAllowedInTier("claude", "claude-opus-5", "professional"), false);
+  assert.equal(modelAllowedInTier("claude", "future-unknown-model", "frontier"), false);
+  assert.equal(modelAllowedInTier("claude", "future-unknown-model", "all"), true);
+});
+
+test("automatic selection uses Kilo routers and concrete models elsewhere", () => {
+  assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "free"), "kilo-auto/free");
+  assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "efficient"), "kilo-auto/efficient");
+  assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "frontier"), "kilo-auto/frontier");
+  assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "all"), "kilo-auto/frontier");
+  assert.match(automaticModel("claude", MODEL_CATALOG.claude, "efficient") ?? "", /haiku/i);
+  assert.match(automaticModel("claude", MODEL_CATALOG.claude, "all") ?? "", /opus|fable/i);
+});
+
+test("restricted catalogs remove provider defaults and unknown custom ids", () => {
+  const catalog = [
+    { id: null, label: "default", hint: "provider route" },
+    { id: "vendor/model:free", label: "free", hint: "free" },
+    { id: "claude-haiku", label: "haiku", hint: "cheap" },
+    { id: "claude-sonnet", label: "sonnet", hint: "balanced" },
+    { id: "mystery", label: "mystery", hint: "unknown" },
+  ];
+  assert.deepEqual(
+    eligibleModels("claude", catalog, "efficient").map((model) => model.id),
+    ["vendor/model:free", "claude-haiku"],
+  );
+  assert.equal(recommendedModel("claude", catalog, "free"), "vendor/model:free");
+  assert.equal(recommendedModel("claude", catalog, "professional"), "claude-sonnet");
+  assert.equal(recommendedModel("claude", catalog, "frontier"), "claude-sonnet");
 });

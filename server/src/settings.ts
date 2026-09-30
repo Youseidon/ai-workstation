@@ -5,11 +5,17 @@ import {
   isDodEnforcement,
   isOnDoneAction,
   isOnUnfinishedAction,
+  isModelAccessTier,
+  isModelSelectionMode,
+  isReasoningEffort,
   isProviderId,
   isRestartPolicy,
   type PipelinePolicy,
   type PauseMode,
+  type ModelAccessTier,
+  type ModelSelectionMode,
   type ProviderId,
+  type ReasoningEffort,
 } from "@agent-console/shared";
 import type {
   SettingField,
@@ -52,9 +58,55 @@ function option(value: string, label: string, hint: string | null, danger = fals
   return { value, label, hint, danger };
 }
 
-export const GROUPS = ["General", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot"] as const;
+export const GROUPS = ["Model access", "General", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"] as const;
 
 const FIELDS: FieldDef[] = [
+  {
+    key: "models.selectionMode",
+    label: "Model choice",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_SELECTION_MODE",
+    fallback: "manual",
+    description:
+      "Auto Select locks manual model controls and resolves every run to the best model allowed by the access tier. Kilo uses its native tier router when available.",
+    options: [
+      option("auto", "Auto Select", "Choose the model automatically within the selected access tier"),
+      option("manual", "Manual", "Allow users to choose an eligible model per provider and run"),
+    ],
+  },
+  {
+    key: "models.accessTier",
+    label: "Model access tier",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_ACCESS_TIER",
+    fallback: "all",
+    description:
+      "A global credit-use ceiling for every new run: console, tasks, workspace requests, pipelines, fallbacks, authors, handoffs, and reviewers. Saved out-of-tier choices are preserved but the tier default runs instead.",
+    options: [
+      option("free", "Free", "Only models explicitly identified as free or zero-credit"),
+      option("efficient", "Efficient", "Fast, economical models for routine work"),
+      option("professional", "Professional", "Strong coding models for production work"),
+      option("frontier", "Frontier", "The strongest curated models and reasoning variants"),
+      option("all", "All models", "Every discovered model, provider default, and custom model id"),
+    ],
+  },
+  {
+    key: "models.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_REASONING_EFFORT",
+    fallback: "medium",
+    description:
+      "Default reasoning effort for every provider. A provider-specific choice overrides it for that agent.",
+    options: [
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
   {
     key: "budget.maxToolResultBytes",
     label: "Max tool result size (bytes)",
@@ -336,6 +388,21 @@ const FIELDS: FieldDef[] = [
       "Default model when no model is picked in the header. The header dropdown overrides this per run without changing it.",
   },
   {
+    key: "claude.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Claude Code",
+    type: "select",
+    envVar: "CLAUDE_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Claude Code.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
     key: "claude.permissionMode",
     label: "Permission mode",
     group: "Claude Code",
@@ -416,6 +483,21 @@ const FIELDS: FieldDef[] = [
       "Default model when no model is picked in the header, passed as `-m` to `codex exec`. The header dropdown overrides this per run.",
   },
   {
+    key: "codex.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Codex CLI",
+    type: "select",
+    envVar: "CODEX_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Codex CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
     key: "codex.sandboxMode",
     label: "Sandbox mode",
     group: "Codex CLI",
@@ -480,6 +562,21 @@ const FIELDS: FieldDef[] = [
     placeholder: "leave empty for the cursor default",
     description:
       "Default model when no model is picked in the header, passed as `-m` to cursor-agent. The header dropdown overrides this per run.",
+  },
+  {
+    key: "cursor.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Cursor CLI",
+    type: "select",
+    envVar: "CURSOR_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Cursor CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
   },
   {
     key: "cursor.outputFormat",
@@ -564,6 +661,21 @@ const FIELDS: FieldDef[] = [
     placeholder: "leave empty for the grok default",
     description:
       "Default model when no model is picked in the header, passed as `-m` to `grok -p`. The header dropdown overrides this per run.",
+  },
+  {
+    key: "grok.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Grok CLI",
+    type: "select",
+    envVar: "GROK_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Grok CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
   },
   {
     key: "grok.permissionMode",
@@ -694,16 +806,12 @@ const FIELDS: FieldDef[] = [
     type: "select",
     envVar: "COPILOT_REASONING_EFFORT",
     fallback: "",
-    description: "Passed as `--effort`. Leave on default to let the model decide.",
+    description: "Overrides the global reasoning effort for GitHub Copilot.",
     options: [
-      option("", "default", "Whatever the model picks"),
-      option("none", "none", null),
-      option("minimal", "minimal", null),
-      option("low", "low", null),
-      option("medium", "medium", null),
-      option("high", "high", null),
-      option("xhigh", "xhigh", null),
-      option("max", "max", "Slowest and priciest"),
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
     ],
   },
   {
@@ -753,6 +861,90 @@ const FIELDS: FieldDef[] = [
     envVar: "COPILOT_EXTRA_ARGS",
     fallback: "",
     description: "Appended verbatim to the copilot invocation. Quoted tokens are respected.",
+  },
+
+  {
+    key: "kilocode.enabled",
+    label: "Enabled",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_ENABLED",
+    fallback: true,
+    description: "When off, Kilo Code is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "kilocode.binary",
+    label: "Binary",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_BIN",
+    fallback: "kilo",
+    placeholder: "kilo",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "kilocode.model",
+    label: "Model",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the kilo default",
+    description:
+      "Default model when no model is picked in the header, passed as `-m provider/model` (e.g. kilo/~anthropic/claude-sonnet-latest). The header dropdown overrides this per run.",
+  },
+  {
+    key: "kilocode.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Kilo Code",
+    type: "select",
+    envVar: "KILOCODE_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Kilo Code.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "kilocode.autoApprove",
+    label: "Auto-approve permissions",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_AUTO_APPROVE",
+    fallback: true,
+    description:
+      "Adds --auto so headless runs are not stalled by an approval prompt: permissions not explicitly denied in kilo's own config are granted. Off means permission asks fail and the model routes around them.",
+  },
+  {
+    key: "kilocode.variant",
+    label: "Reasoning variant",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_VARIANT",
+    fallback: "",
+    placeholder: "leave empty for the model default",
+    description: "Passed as `--variant` (model-specific reasoning effort, e.g. high, max, minimal).",
+  },
+  {
+    key: "kilocode.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description: "Skip the login check if detection misfires but you know you are logged in.",
+  },
+  {
+    key: "kilocode.extraArgs",
+    label: "Extra arguments",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the kilo invocation. Quoted tokens are respected.",
   },
 ];
 
@@ -895,6 +1087,28 @@ function argvList(key: string): string[] {
 /* -------------------------------------------------------------------------- */
 
 export const settings = {
+  get modelSelectionMode(): ModelSelectionMode {
+    const value = text("models.selectionMode");
+    return isModelSelectionMode(value) ? value : "manual";
+  },
+  get modelAccessTier(): ModelAccessTier {
+    const value = text("models.accessTier");
+    return isModelAccessTier(value) ? value : "all";
+  },
+  get reasoningEffort(): ReasoningEffort {
+    const value = text("models.reasoningEffort");
+    return isReasoningEffort(value) ? value : "medium";
+  },
+  reasoningEffortFor(provider: ProviderId): ReasoningEffort {
+    const configured = settings[provider].reasoningEffort;
+    if (configured !== null) return configured;
+    // Kilo exposed its provider-specific --variant setting before the common
+    // effort control existed. Honour low/medium/high values already saved there.
+    if (provider === "kilocode" && isReasoningEffort(settings.kilocode.variant)) {
+      return settings.kilocode.variant;
+    }
+    return settings.reasoningEffort;
+  },
   get statusIntervalMs(): number {
     return count("statusIntervalMs") || 1000;
   },
@@ -996,6 +1210,10 @@ export const settings = {
     get model(): string | null {
       return optionalText("claude.model");
     },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("claude.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
     get permissionMode(): string {
       return text("claude.permissionMode");
     },
@@ -1020,6 +1238,10 @@ export const settings = {
     get model(): string | null {
       return optionalText("codex.model");
     },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("codex.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
     get sandboxMode(): string {
       return text("codex.sandboxMode");
     },
@@ -1040,6 +1262,10 @@ export const settings = {
     },
     get model(): string | null {
       return optionalText("cursor.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("cursor.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
     },
     get outputFormat(): string {
       return text("cursor.outputFormat");
@@ -1067,6 +1293,10 @@ export const settings = {
     },
     get model(): string | null {
       return optionalText("grok.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("grok.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
     },
     get permissionMode(): string {
       return text("grok.permissionMode");
@@ -1101,8 +1331,9 @@ export const settings = {
     get permissionMode(): string {
       return text("copilot.permissionMode");
     },
-    get reasoningEffort(): string | null {
-      return optionalText("copilot.reasoningEffort");
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("copilot.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
     },
     get maxAiCredits(): number | null {
       return count("copilot.maxAiCredits") || null;
@@ -1118,6 +1349,34 @@ export const settings = {
     },
     get extraArgs(): string[] {
       return argvList("copilot.extraArgs");
+    },
+  },
+
+  kilocode: {
+    get enabled(): boolean {
+      return flag("kilocode.enabled");
+    },
+    get binary(): string {
+      return text("kilocode.binary") || "kilo";
+    },
+    get model(): string | null {
+      return optionalText("kilocode.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("kilocode.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get autoApprove(): boolean {
+      return flag("kilocode.autoApprove");
+    },
+    get variant(): string | null {
+      return optionalText("kilocode.variant");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("kilocode.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("kilocode.extraArgs");
     },
   },
 };
@@ -1291,6 +1550,15 @@ export function effectiveCopilotPermissionMode(): string {
   return settings.hostAccess ? "yolo" : settings.copilot.permissionMode;
 }
 
+/** Effective Kilo approval behaviour after the host-access overlay. */
+export function effectiveKilocodePermissionMode(): string {
+  // Host access means the run may need real commands (docker compose, …) and
+  // has nowhere to put an ask prompt, so approvals are pre-granted like the
+  // other providers' bypass modes. The plan-agent consult ignores this.
+  if (settings.hostAccess) return "auto";
+  return settings.kilocode.autoApprove ? "auto" : "kilos own permission rules";
+}
+
 /** Effective Cursor --force after the host-access overlay. */
 export function effectiveCursorForce(): boolean {
   return settings.hostAccess ? true : settings.cursor.force;
@@ -1322,6 +1590,8 @@ export function permissionForRun(
         return { mode: "read-only-not-supported", hostAccessApplied: false };
       case "copilot":
         return { mode: "plan", hostAccessApplied: false };
+      case "kilocode":
+        return { mode: "plan agent (read-only)", hostAccessApplied: false };
     }
   }
   switch (provider) {
@@ -1341,6 +1611,8 @@ export function permissionForRun(
       };
     case "copilot":
       return { mode: effectiveCopilotPermissionMode(), hostAccessApplied: settings.hostAccess };
+    case "kilocode":
+      return { mode: effectiveKilocodePermissionMode(), hostAccessApplied: settings.hostAccess };
   }
 }
 
