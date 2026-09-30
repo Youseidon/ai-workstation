@@ -13,6 +13,7 @@ import {
   type AgentSession,
   type ProviderId,
   type RunRole,
+  type RunChangeSummary,
   type RunSource,
   type TokenUsage,
 } from "@agent-console/shared";
@@ -54,6 +55,7 @@ interface ActivityRow {
   suiteName: string;
   events: AgentSession["events"];
   run: RunStatus | null;
+  changes: RunChangeSummary | null;
 }
 
 function normalizeState(state: string): string {
@@ -152,6 +154,7 @@ function rowFromSession(session: AgentSession, run: RunStatus | null): ActivityR
     suiteName: session.suiteName,
     events: session.events,
     run,
+    changes: session.changes,
   };
 }
 
@@ -186,6 +189,7 @@ function rowFromLiveRun(run: RunStatus): ActivityRow {
           : "",
     events: [],
     run,
+    changes: null,
   };
 }
 
@@ -268,7 +272,10 @@ export function ActivityView() {
 
     const historical = (sessions ?? [])
       .filter((session) => !liveIds.has(session.id))
-      .map((session) => rowFromSession(detailById[session.id] ?? session, null));
+      .map((session) => {
+        const detail=detailById[session.id];
+        return rowFromSession(detail===undefined?session:{...detail,changes:session.changes}, null);
+      });
 
     return [...liveRows, ...historical];
   }, [sessions, runs, detailById]);
@@ -430,6 +437,9 @@ export function ActivityView() {
                       )}
                       <Badge tone={stateTone(row.state)}>{normalizeState(row.state).toLowerCase()}</Badge>
                       <Badge tone="neutral">{row.role}</Badge>
+                      {row.changes !== null && row.changes.state === "COMMITTED" && (
+                        <Badge tone="success">{row.changes.filesChanged} files</Badge>
+                      )}
                       {sessionEndReason(row.state, row.events) !== null && (
                         <Badge tone="neutral">{sessionEndReason(row.state, row.events)}</Badge>
                       )}
@@ -486,6 +496,14 @@ export function ActivityView() {
                   </p>
                 </div>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
+                  {selected.changes !== null && (
+                    <Link
+                      href={`/changes/${encodeURIComponent(selected.id)}`}
+                      className="rounded-md bg-accent px-3 py-1.5 text-xs text-white transition-colors hover:opacity-90"
+                    >
+                      Review changes
+                    </Link>
+                  )}
                   {href !== null && (
                     <Link
                       href={href}

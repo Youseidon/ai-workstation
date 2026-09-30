@@ -776,7 +776,7 @@ interface EventBase {
 export interface DbAccessPayload {
   /** Whether this read the app's state or changed it. */
   direction: "read" | "write";
-  operation: "context" | "state" | "remarks" | "status" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program";
+  operation: "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program";
   method: string;
   /** Accepted, refused, or replayed from the idempotency ledger. */
   outcome: "accepted" | "rejected" | "replayed";
@@ -1055,6 +1055,56 @@ export interface HumanInputRequest {
 
 export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
 export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
+
+export const RUN_CHANGE_STATES = ["PENDING", "UNCHANGED", "COMMITTED", "NEEDS_COMMIT", "UNAVAILABLE"] as const;
+export type RunChangeState = (typeof RUN_CHANGE_STATES)[number];
+
+export interface RunChangeSummary {
+  runId:string;
+  workspaceId:number;
+  repositoryRoot:string;
+  branch:string|null;
+  baseCommit:string;
+  headCommit:string|null;
+  state:RunChangeState;
+  filesChanged:number;
+  additions:number;
+  deletions:number;
+  commitCount:number;
+  message:string|null;
+  capturedAt:string;
+  updatedAt:string;
+}
+
+export interface RunCommit {
+  sha:string;
+  subject:string;
+  author:string;
+  authoredAt:string;
+}
+
+export interface RunChangedFile {
+  path:string;
+  previousPath:string|null;
+  status:"added"|"modified"|"deleted"|"renamed"|"copied"|"type-changed"|"unknown";
+  additions:number|null;
+  deletions:number|null;
+  binary:boolean;
+}
+
+export interface RunChangeDetail extends RunChangeSummary {
+  commits:RunCommit[];
+  files:RunChangedFile[];
+}
+
+export interface RunFileDiff {
+  runId:string;
+  path:string;
+  previousPath:string|null;
+  patch:string;
+  truncated:boolean;
+}
+
 export interface AgentSession extends AgentRunActivity {
   workspaceId:number;
   workspaceName:string;
@@ -1067,6 +1117,8 @@ export interface AgentSession extends AgentRunActivity {
   suiteName:string;
   /** Chat-box / consult instruction. Null for saved work items and older rows. */
   displayText:string|null;
+  /** Git-backed changes attributed to this run. Null for legacy/read-only runs. */
+  changes:RunChangeSummary|null;
 }
 
 /**

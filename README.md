@@ -94,6 +94,21 @@ Run the two halves separately if you prefer: `npm run dev:server` /
 `npm run dev:web`, or `npm run serve:server` / `npm run serve:web`.
 `npm run build` typechecks the server and builds the frontend.
 
+### Agent commits and code review
+
+Writable work-item runs start only from a clean Git working tree. The run records
+that starting commit, and agents use `agent-step checkpoint --message "Short summary"`
+before posting `done`, `continue`, `blocked`, or `decompose`. A terminal post is
+refused while tracked or untracked workspace changes remain uncommitted. Budget
+and manual stops receive the same short finalization turn so partial work is
+checkpointed before another writer inherits the repository.
+
+Open **Changes** to browse the resulting per-run change capsules. Each capsule
+shows its base and head commit, commits, file totals, and lazy-loaded unified or
+side-by-side patches. Activity and work-item sessions link directly to the same
+review. Read-only consults remain available when a repository is dirty; the app
+never stashes, resets, or commits pre-existing operator changes.
+
 ### Requirements
 
 - Node.js ≥ 20.10 (developed on 24.x)

@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync,
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { INSTRUCTION_CONTENT_MAX, INSTRUCTION_FILE_NAMES, isInstructionField, type InstructionProposalOrigin, type InstructionProposalRecord, type InstructionProposalState, type WorkspaceInstructionField } from "@agent-console/shared";
-import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -1353,6 +1353,35 @@ if (afterThirtyFive < 36) {
   });
   migrate36();
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(36,?)").run(new Date().toISOString());
+}
+const afterThirtySix = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtySix < 37) {
+  // One durable capsule per writable run. The Git repository remains the
+  // source of patch content; these columns make history cheap to list and keep
+  // the run-to-commit attribution after the process has gone away.
+  const migrate37 = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE run_change_set (
+        run_id TEXT PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        repository_root TEXT NOT NULL,
+        branch TEXT,
+        base_commit TEXT NOT NULL,
+        head_commit TEXT,
+        state TEXT NOT NULL CHECK(state IN ('PENDING','UNCHANGED','COMMITTED','NEEDS_COMMIT','UNAVAILABLE')),
+        files_changed INTEGER NOT NULL DEFAULT 0,
+        additions INTEGER NOT NULL DEFAULT 0,
+        deletions INTEGER NOT NULL DEFAULT 0,
+        commit_count INTEGER NOT NULL DEFAULT 0,
+        message TEXT,
+        captured_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX run_change_set_workspace_idx ON run_change_set(workspace_id, updated_at DESC);
+    `);
+  });
+  migrate37();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(37,?)").run(new Date().toISOString());
 }
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -3158,19 +3187,41 @@ function sessionPromptTitle(savedTitle:string|null, displayText:string|null, rol
   return role==="consult"?"(research)":"(custom)";
 }
 
-type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"> & { savedTitle:string|null };
+type ChangeSetRow = {
+  runId:string; workspaceId:number; repositoryRoot:string; branch:string|null;
+  baseCommit:string; headCommit:string|null; state:RunChangeState;
+  filesChanged:number; additions:number; deletions:number; commitCount:number;
+  message:string|null; capturedAt:string; updatedAt:string;
+};
+
+function changeSetDto(row:ChangeSetRow):RunChangeSummary {
+  return {...row};
+}
+
+type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"|"changes"> & {
+  savedTitle:string|null;
+  changeRunId:string|null; changeWorkspaceId:number|null; repositoryRoot:string|null;
+  changeBranch:string|null; baseCommit:string|null; headCommit:string|null; changeState:RunChangeState|null;
+  filesChanged:number|null; additions:number|null; deletions:number|null; commitCount:number|null;
+  changeMessage:string|null; capturedAt:string|null; changeUpdatedAt:string|null;
+};
 
 function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSession {
-  const {savedTitle, displayText, ...rest}=row;
+  const {savedTitle, displayText, changeRunId, changeWorkspaceId, repositoryRoot, changeBranch, baseCommit, headCommit, changeState, filesChanged, additions, deletions, commitCount, changeMessage, capturedAt, changeUpdatedAt, ...rest}=row;
   return {
     ...rest,
     displayText: displayText ?? null,
     promptTitle: sessionPromptTitle(savedTitle, displayText, rest.role),
     events,
+    changes:changeRunId===null?null:{
+      runId:changeRunId,workspaceId:changeWorkspaceId!,repositoryRoot:repositoryRoot!,branch:changeBranch,
+      baseCommit:baseCommit!,headCommit,state:changeState!,filesChanged:filesChanged??0,additions:additions??0,
+      deletions:deletions??0,commitCount:commitCount??0,message:changeMessage,capturedAt:capturedAt!,updatedAt:changeUpdatedAt!,
+    },
   };
 }
 
-const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id`;
+const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id`;
 
 export const workspaces = {
   databasePath,
@@ -3930,6 +3981,27 @@ export const workspaces = {
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
   beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
   beginCustomExecuteRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string}):void { sqliteGuard(()=>beginCustomExecuteTransaction(args)); },
+  beginRunChangeSet(args:{runId:string;workspaceId:number;repositoryRoot:string;branch:string|null;baseCommit:string}):RunChangeSummary {
+    const now=new Date().toISOString();
+    db.prepare("INSERT INTO run_change_set(run_id,workspace_id,repository_root,branch,base_commit,state,captured_at,updated_at) VALUES(?,?,?,?,?,'PENDING',?,?)")
+      .run(args.runId,args.workspaceId,args.repositoryRoot,args.branch,args.baseCommit,now,now);
+    return this.runChangeSet(args.runId)!;
+  },
+  runChangeSet(runId:string):RunChangeSummary|null {
+    const row=db.prepare(`SELECT run_id runId,workspace_id workspaceId,repository_root repositoryRoot,branch,base_commit baseCommit,head_commit headCommit,state,files_changed filesChanged,additions,deletions,commit_count commitCount,message,captured_at capturedAt,updated_at updatedAt FROM run_change_set WHERE run_id=?`).get(runId) as ChangeSetRow|undefined;
+    return row===undefined?null:changeSetDto(row);
+  },
+  runChangeSets(workspaceId:number):RunChangeSummary[] {
+    this.get(workspaceId);
+    return (db.prepare(`SELECT run_id runId,workspace_id workspaceId,repository_root repositoryRoot,branch,base_commit baseCommit,head_commit headCommit,state,files_changed filesChanged,additions,deletions,commit_count commitCount,message,captured_at capturedAt,updated_at updatedAt FROM run_change_set WHERE workspace_id=? ORDER BY updated_at DESC`).all(workspaceId) as ChangeSetRow[]).map(changeSetDto);
+  },
+  updateRunChangeSet(runId:string,patch:{headCommit:string|null;state:RunChangeState;filesChanged:number;additions:number;deletions:number;commitCount:number;message:string|null}):RunChangeSummary {
+    const now=new Date().toISOString();
+    const result=db.prepare("UPDATE run_change_set SET head_commit=?,state=?,files_changed=?,additions=?,deletions=?,commit_count=?,message=?,updated_at=? WHERE run_id=?")
+      .run(patch.headCommit,patch.state,patch.filesChanged,patch.additions,patch.deletions,patch.commitCount,patch.message,now,runId);
+    if(result.changes===0)throw new WorkspaceError(404,"change_set_not_found","This run has no change capture record");
+    return this.runChangeSet(runId)!;
+  },
   beginHandoffAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string}):void { sqliteGuard(()=>{
     const now=new Date().toISOString();
     db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,'handoff')")
@@ -3953,6 +4025,7 @@ export const workspaces = {
   }); },
   /** The provider session a run had, for a wrap-up turn to resume. */
   runSessionId(runId:string):string|null { const row=db.prepare("SELECT session_id sessionId FROM agent_run WHERE id=?").get(runId) as {sessionId:string|null}|undefined;return row?.sessionId??null; },
+  agentRunActive(runId:string):boolean { return db.prepare("SELECT 1 FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId)!==undefined; },
   /** The run a wrap-up turn is speaking for, or null for an ordinary run. */
   wrapupSourceRunId(runId:string):string|null { const row=db.prepare("SELECT wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {wrapupOf:string|null}|undefined;return row?.wrapupOf??null; },
   /**

@@ -7,6 +7,7 @@ import { runHub } from "./runHub.ts";
 import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDraftPreview, type AgentRequest, type ProviderId } from "@agent-console/shared";
 import { startConsult, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
+import { runChangeDetail, runFileDiff } from "./gitChanges.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 /** A whole instruction file, as a proposal edit PATCHes it. Two 64k fields' worth with headroom for escaping. */
@@ -81,6 +82,7 @@ export function isWorkspaceApiPath(pathname: string): boolean {
     || pathname.startsWith("/api/sessions/")
     || pathname === "/api/operations"
     || pathname === "/api/report"
+    || pathname === "/api/changes"
     || pathname === "/api/pipelines"
     || pathname === "/api/statuses"
     || pathname === "/api/triggers"
@@ -422,6 +424,19 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
         json(res,200,{report:workspaces.usageReport(workspaceId)});
       }else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
+    }
+    if(url.pathname==="/api/changes"){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {const value=url.searchParams.get("workspace");if(value===null)throw new WorkspaceError(422,"validation_error","Choose a workspace");json(res,200,{changes:workspaces.runChangeSets(id(value))});}
+      return true;
+    }
+    {
+      const changeMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/changes$/);
+      if(changeMatch){
+        if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+        else {const path=url.searchParams.get("path");json(res,200,path===null?{changes:runChangeDetail(changeMatch[1]!)}:{file:runFileDiff(changeMatch[1]!,path)});}
+        return true;
+      }
     }
     if(url.pathname==="/api/prompts/human-input"){
       if(method==="GET")json(res,200,{requests:workspaces.humanInputRequests()});

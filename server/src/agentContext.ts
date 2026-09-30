@@ -87,12 +87,12 @@ is refused with their output if any fails. \`continue\` records what remains and
 item on this working tree — keep posting it until \`done\` passes, or until a real human question
 needs \`blocked\`. The rail does not stop for \`continue\`.
 \`blocked\` is only for action only a human can take (credentials, undelegated decisions, external
-systems); remaining work is never a blocker. Reconcile stale saved scope from repository evidence;
-never ask the user to edit the tracker or choose a speculative mapping.
+systems); remaining work is never a blocker.
 ${decompose}
-Bank progress with \`remark --kind PROGRESS\` after each verified piece; if this run is stopped by
-its budget you get a short wrap-up turn on the same session to record what remains. Do not look
-for or edit a tracker file; the database is the tracker.
+Bank verified pieces with \`remark --kind PROGRESS\`. A budget stop gets a short wrap-up turn.
+The database is the tracker; do not find or edit a tracker file.
+Before an outcome, checkpoint workspace changes with a short imperative message.
+The server refuses terminal outcomes while changes are uncommitted.
 `;
 }
 
@@ -310,6 +310,7 @@ export function progressApiMarkdown(args: ProgressApiArgs): string {
 ${cmd}
 
 ${cmd} remark --kind PROGRESS --text "What changed or was verified"
+${cmd} checkpoint --message "Short imperative summary"
 ${cmd} done --verification "Commands run and observable results"
 ${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
@@ -330,6 +331,7 @@ function curlProgressApiMarkdown(args: ProgressApiArgs): string {
 Post through the Progress API (no launcher available for this provider):
 
 curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"…"}'
+curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Short imperative summary"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
 curl -fsS -X POST ${auth} ${base}/repair-verify -d '{"requestId":"unique-repair-id","oldCommand":"exact failing command","newCommand":"corrected command","reason":"why the recipe itself is wrong"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'

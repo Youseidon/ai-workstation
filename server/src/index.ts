@@ -24,6 +24,7 @@ import { programDraftStateMarkdown, programRevisionStateMarkdown } from "./progr
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { scheduleRetentionSweep } from "./retention.ts";
 import { settings } from "./settings.ts";
+import { assertRunChangesCommitted, checkpointRun } from "./gitChanges.ts";
 
 const log = createLogger("server");
 
@@ -147,7 +148,7 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|decompose|repair-verify|propose-program|propose-suite|revise-program)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
@@ -207,10 +208,25 @@ const httpServer = createServer((req, res) => {
         recordDbAccess(runId,describeRead({operation:"state",summary:`read ${(history.events as unknown[]).length} status events and ${(history.remarks as unknown[]).length} remarks`,durationMs:Date.now()-startedAt}));
         return;
       }
+      if(operation==="checkpoint"&&req.method==="POST"){
+        if(persisted.role!=="execute"&&persisted.role!=="author")throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot create commits.");
+        void readJsonBody(req,MAX_BODY_BYTES).then(body=>{
+          const run=workspaces.runSummary(runId);
+          sendJson(res,200,{changes:checkpointRun(runId,body.message,run.provider,run.model)});
+          recordDbAccess(runId,describeAcceptedWrite({operation:"checkpoint",before:null,after:null,requestId:typeof body.requestId==="string"?body.requestId:null,durationMs:Date.now()-startedAt}));
+          runHub.operationsChanged();
+        }).catch(error=>{
+          const status=error instanceof WorkspaceError?error.status:400;
+          sendJson(res,status,{error:{code:error instanceof WorkspaceError?error.code:"invalid_request",message:error instanceof Error?error.message:String(error),...(error instanceof WorkspaceError&&error.details?error.details:{})}});
+          recordDbAccess(runId,describeRejectedWrite({operation:"checkpoint",httpStatus:status,errorCode:error instanceof WorkspaceError?error.code:"invalid_request",message:error instanceof Error?error.message:String(error),requestId:null,durationMs:Date.now()-startedAt}));
+        });
+        return;
+      }
       if((operation==="remarks"||operation==="status"||operation==="decompose"||operation==="repair-verify"||authoring)&&req.method==="POST"){
         void readJsonBody(req,authoring?MAX_AUTHOR_BODY_BYTES:MAX_BODY_BYTES).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
+          if(operation==="status"||operation==="decompose")assertRunChangesCommitted(runId);
           // An agent claiming DONE is the moment the definition-of-done commands
           // are worth running: the gate that reads their results is a synchronous
           // database read, so the evidence has to exist before it looks. Awaited

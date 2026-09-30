@@ -13,6 +13,7 @@
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,6 +108,8 @@ function scriptedProvider(turns: Turn[]): AgentAdapter & { seen: Started[] } {
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "wrap-up-"));
+  execFileSync("git",["init","-q"],{cwd:dir});
+  execFileSync("git",["-c","user.name=Fixture","-c","user.email=fixture@example.test","commit","--allow-empty","-qm","Initial"],{cwd:dir});
   const workspace = workspaces.create({ name: unique("ws"), description: "", workDirectory: dir });
   const program = workspaces.createChild("program", workspace.id, { name: unique("prog"), overview: "" }) as ProgramRecord;
   const suite = workspaces.createChild("suite", program.id, { name: unique("suite"), overview: "" }) as SuiteRecord;

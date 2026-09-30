@@ -437,8 +437,13 @@ export function WorkItemDetail({
 
             {selectedSession !== null && (
               <section>
-                <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">
-                  Session log · {selectedSession.provider} · {selectedSession.state.toLowerCase()}
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs uppercase tracking-wider text-fg-dim">
+                  <span>Session log · {selectedSession.provider} · {selectedSession.state.toLowerCase()}</span>
+                  {selectedSession.changes !== null && (
+                    <Link href={`/changes/${encodeURIComponent(selectedSession.id)}`} className="normal-case tracking-normal text-accent hover:underline">
+                      Review {selectedSession.changes.filesChanged} changed {selectedSession.changes.filesChanged===1?"file":"files"}
+                    </Link>
+                  )}
                 </div>
                 {logs.length === 0 ? (
                   <p className="rounded-panel border border-line p-4 text-sm text-fg-dim">

@@ -10,7 +10,7 @@ import { WorkspaceBeacon } from "./WorkspaceBeacon";
 
 const STORAGE_KEY = "agent-console.sidebar-collapsed";
 
-type NavId = "chat" | "tasks" | "pipeline" | "activity" | "report" | "agents" | "workspaces";
+type NavId = "chat" | "tasks" | "pipeline" | "activity" | "changes" | "report" | "agents" | "workspaces";
 
 const LINKS: Array<{
   id: NavId;
@@ -71,6 +71,19 @@ const LINKS: Array<{
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
         <path d="M4 19V5M4 19h16" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
         <path d="M8 15v-3M12 15V8M16 15v-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "changes",
+    href: "/changes",
+    label: "Changes",
+    match: (pathname) => pathname.startsWith("/changes"),
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path d="M7 4v16M17 4v16M7 8h5a3 3 0 0 1 3 3v2a3 3 0 0 0 3 3h1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        <circle cx="7" cy="4" r="2" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="7" cy="20" r="2" stroke="currentColor" strokeWidth="1.5" />
       </svg>
     ),
   },

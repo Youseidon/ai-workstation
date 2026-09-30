@@ -18,6 +18,7 @@ import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstruc
 import { instructionAuthorPrompt } from "./instructionAuthor.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
+import { prepareChangeCapture, refreshChangeCapture, releaseChangeCapture } from "./gitChanges.ts";
 
 const CONSULT_LIMIT = 3;
 
@@ -139,6 +140,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let customDisplay = "";
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
+  let executeShimPath: string | null = null;
   const plannedRunId = newId("run");
 
   const workspace = workspaces.get(workspaceId);
@@ -177,7 +179,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       // curl the model has to assemble. Per-run rather than per-process: the
       // Claude adapter runs in this process, so credentials on process.env
       // would be shared by every concurrent run.
-      const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+      executeShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
       // The context is inlined rather than fetched. Handing it over as a tool
       // result cost a turn before any work started, put it where it could not
       // serve as a cached prompt prefix, and led agents to fetch it more than
@@ -192,7 +194,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         "",
         contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
         "",
-        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, shimPath }),
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, shimPath:executeShimPath }),
       ].join("\n");
     }
   } else {
@@ -216,6 +218,11 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       throw error;
     }
     activeContextRunId = plannedRunId;
+    executeShimPath=createAgentShim({runId:plannedRunId,token:credential.token,port:config.port});
+    const checkpoint=executeShimPath===null
+      ? `git add -A && git commit -m "Short imperative summary"`
+      : `${JSON.stringify(executeShimPath)} checkpoint --message "Short imperative summary"`;
+    resolvedPrompt += `\n\n## Git checkpoint\n\nBefore you finish, commit every workspace change with a meaningful imperative subject of 72 characters or fewer:\n\n\`\`\`bash\n${checkpoint}\n\`\`\`\n\nDo not reset or rewrite existing history. The run's code review is built from commits after its starting revision.`;
   }
 
   let clarificationAnswer = "";
@@ -223,6 +230,18 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   // The provider CLI reads these off disk before it reads anything we send, so
   // they have to be in place before the process starts.
   materialize(workspace);
+  if (activeContextRunId !== null) {
+    try {
+      const capture=prepareChangeCapture(workspace.workDirectory,activeContextRunId);
+      workspaces.beginRunChangeSet({runId:activeContextRunId,workspaceId:workspace.id,...capture});
+    } catch (error) {
+      releaseChangeCapture(activeContextRunId);
+      workspaces.finishAgentRun(activeContextRunId,"error");
+      runContexts.revoke(activeContextRunId);
+      removeAgentShim(activeContextRunId);
+      throw error;
+    }
+  }
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),
@@ -246,6 +265,11 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     onEnd: (runId, state, metrics) => {
       const endedPromptId = savedPrompt?.id ?? promptId;
       const endedWorkspaceId = workspace.id;
+      let changesNeedCommit=false;
+      if(activeContextRunId!==null){
+        try { changesNeedCommit=refreshChangeCapture(activeContextRunId).state==="NEEDS_COMMIT"; }
+        catch(error){log.warn(`could not finalize changes for ${activeContextRunId}`,error);}
+      }
       // A budget stop is not a verdict on the work, and the agent that just hit
       // it is the only cheap source of "what is done and what remains". Before
       // anything concludes anything, it gets a short turn to say so — on the
@@ -258,10 +282,9 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         mode === "execute" &&
         activeContextRunId !== null &&
         endedPromptId !== undefined &&
-        typeof metrics.stopReason === "string" &&
-        metrics.stopReason.startsWith("budget_") &&
+        (changesNeedCommit||(typeof metrics.stopReason === "string"&&metrics.stopReason.startsWith("budget_"))) &&
         workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
-          ? { promptId: endedPromptId, stopReason: metrics.stopReason, sessionId: metrics.sessionId }
+          ? { promptId: endedPromptId, stopReason: metrics.stopReason??"uncommitted_changes", sessionId: metrics.sessionId }
           : null;
       if (activeContextRunId !== null) {
         workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null });
@@ -272,6 +295,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         removeAgentShim(activeContextRunId);
         activeContextRunId = null;
       }
+      if(wrapUp===null)releaseChangeCapture(runId);
       if (clarificationId !== null) {
         workspaces.finishClarification(
           clarificationId,
@@ -464,6 +488,7 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
       runContexts.complete(runId);
       removeAgentShim(runId);
       runHub.end(runId, state);
+      releaseChangeCapture(args.sourceRunId);
     },
   });
   workspaces.markAgentRunRunning(handle.runId);
@@ -552,6 +577,9 @@ function wrapUpPrompt(args: {
   const remark = step === null
     ? `curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"wrapup-progress","kind":"PROGRESS","content":"…"}'`
     : `${step} remark --kind PROGRESS --text "…"`;
+  const checkpoint = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Checkpoint work before continuation"}'`
+    : `${step} checkpoint --message "Checkpoint work before continuation"`;
   const done = step === null
     ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'`
     : `${step} done --verification "…"`;
@@ -586,11 +614,13 @@ function wrapUpPrompt(args: {
     "",
     "**Do not edit files or run build/test commands.** Do exactly this, in order:",
     "",
-    `1. \`\`\`bash\n${remark}\n\`\`\``,
+    `1. If the working tree has changes, commit them:\n\n   \`\`\`bash\n${checkpoint}\n\`\`\``,
+    "",
+    `2. \`\`\`bash\n${remark}\n\`\`\``,
     "   — what is verified (with the command and result), what is partly done (file paths), and",
     "   any decision you made that the next run must know.",
     "",
-    "2. Then exactly one of:",
+    "3. Then exactly one of:",
     "",
     `   - \`\`\`bash\n${done}\n\`\`\``,
     "     only if every acceptance criterion is already verified; or",

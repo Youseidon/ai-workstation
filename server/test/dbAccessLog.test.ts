@@ -10,10 +10,10 @@ import {
 } from "../src/dbAccessLog.ts";
 import type { DbOperation } from "../src/dbAccessLog.ts";
 
-const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"];
+const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"];
 
 test("reads and writes are told apart, and only writes name tables", () => {
-  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"]);
+  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"]);
   for (const operation of OPERATIONS) {
     // A read that claimed to have changed a table would be the worst kind of
     // wrong here: the log exists precisely so the operator does not have to
@@ -89,7 +89,7 @@ test("every agent endpoint is instrumented", () => {
   assert.deepEqual(route[1]!.split("|").sort(), [...OPERATIONS].sort());
 
   const handler = source.slice(source.indexOf("const agentMatch"), source.indexOf('url.pathname === "/api/sessions"'));
-  // Six call sites: the two reads on a work item are separate branches, an
+  // Eight call sites: the two reads on a work item are separate branches, an
   // author run's context read is a third, the writes share one POST branch that
   // records accepted and generic refused outcomes, and a Verify refusal on
   // `done` records its own rejected write before returning 409 (so it never
@@ -99,5 +99,5 @@ test("every agent endpoint is instrumented", () => {
   assert.match(handler, /describeAcceptedWrite\(/, "accepted writes are not logged");
   assert.match(handler, /describeRejectedWrite\(/, "refused writes are not logged");
   assert.match(handler, /verification_failed/, "Verify refusals are not logged");
-  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 6);
+  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 8);
 });

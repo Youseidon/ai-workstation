@@ -30,6 +30,7 @@ const USAGE = `agent-step — record progress and status for this work item.
                                             (--full: uncapped remarks and clarifications)
   agent-step state                          Everything recorded against it so far
   agent-step remark --kind KIND --text "…"  Bank what you just verified
+  agent-step checkpoint --message "…"       Commit this run's workspace changes
   agent-step done --verification "…"        Finish: what you ran and what you observed
   agent-step repair-verify --file repair.json
                                             Replace one demonstrably broken Verify
@@ -123,6 +124,8 @@ const ADVICE = {
   consult_read_only: "This is a read-only run. It cannot post remarks or status.",
   verification_failed: "The server ran this item's Verify commands and at least one failed. Fix the implementation and post done again. If the command itself is defective, use 'agent-step repair-verify --file repair.json'.",
   recoverable_blocker: "This is work the pipeline can perform. Repair the Verify command, fix the workspace, or post continue; do not ask a human to do it.",
+  git_commit_required: "Run 'agent-step checkpoint --message \"Short imperative summary\"', then post the status again.",
+  checkpoint_message_invalid: "Use one meaningful subject line, no longer than 72 characters.",
   decompose_title_conflict: "Rename the conflicting titles and post again; existing sub-steps are kept.",
   decompose_depth_exceeded: "Finish this sub-step, or post continue with what remains.",
   author_only: "This run works a work item; it cannot propose a program.",
@@ -238,6 +241,12 @@ switch (command) {
     const text = args.text ?? args.content;
     if (typeof text !== "string" || text.trim() === "") fail("agent-step remark needs --text \"what changed or was discovered\"");
     await post("/remarks", { kind: typeof args.kind === "string" ? args.kind.toUpperCase() : "PROGRESS", content: text });
+    break;
+  }
+  case "checkpoint": {
+    const message = args.message;
+    if (typeof message !== "string" || message.trim() === "") fail("agent-step checkpoint needs --message \"Short imperative summary\"");
+    await post("/checkpoint", { message });
     break;
   }
   case "done": {

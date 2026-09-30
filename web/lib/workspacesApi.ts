@@ -1,7 +1,7 @@
 import type {
   AgentRequest, InstructionProposalRecord,
   ProgramDraftBody, ProgramDraftRecord, ProgramDraftPreview,
-  StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+  StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, RunChangeDetail, RunChangeSummary, RunFileDiff, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -31,6 +31,9 @@ export interface ProgramRevisionApplied { added:number; updated:number; removed:
 export const workspaceApi = {
   async sessions(serverUrl:string){return (await request<{sessions:AgentSession[]}>(serverUrl,"/api/sessions")).sessions;},
   async session(serverUrl:string,runId:string){return (await request<{session:AgentSession}>(serverUrl,`/api/sessions/${encodeURIComponent(runId)}`)).session;},
+  async changes(serverUrl:string,workspaceId:number){return (await request<{changes:RunChangeSummary[]}>(serverUrl,`/api/changes?workspace=${workspaceId}`)).changes;},
+  async runChanges(serverUrl:string,runId:string){return (await request<{changes:RunChangeDetail}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/changes`)).changes;},
+  async runFileDiff(serverUrl:string,runId:string,path:string){return (await request<{file:RunFileDiff}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/changes?path=${encodeURIComponent(path)}`)).file;},
   async report(serverUrl:string,workspaceId?:number){return (await request<{report:UsageReport}>(serverUrl,`/api/report${workspaceId===undefined?"":`?workspace=${workspaceId}`}`)).report;},
   /** The status catalog and the trigger sentences, for the rules screen. */
   statuses(serverUrl:string){return request<{statuses:StatusDefinition[];triggers:Record<string,string>}>(serverUrl,"/api/statuses");},
