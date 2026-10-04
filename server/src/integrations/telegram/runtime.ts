@@ -43,6 +43,7 @@ import { TelegramAdapter, type TelegramDelivery } from "./adapter.ts";
 import { TelegramApiError, redactBotToken, type LiveTelegramBotApi, type TelegramMessagePayload } from "./botApi.ts";
 import { anchorAgeInstant } from "./card.ts";
 import { bootTelegramCredential, BotToken, persistTelegramCredential, type TelegramCredential } from "./credentials.ts";
+import { filePairedChatStore, type PairedChatStore } from "./pairedChats.ts";
 import { HttpTelegramBotApi, TELEGRAM_POLL_TIMEOUT_SECONDS } from "./httpBotApi.ts";
 import type { TelegramTextPayload } from "./liveFormat.ts";
 import { COMMANDS, decodeNav, parseCommand, renderView, type ViewContext, type ViewRequest } from "./views.ts";
@@ -64,6 +65,12 @@ export interface TelegramRuntimeOptions {
   createApi?: (token: BotToken, contentForRef: (ref: string) => string | null) => LiveTelegramBotApi;
   /** Persists a token only after Telegram has accepted it. Tests keep this in memory. */
   persistCredential?: (token: BotToken) => void;
+  /**
+   * Where paired chats are remembered outside the database. With it, a start
+   * puts them back and opens a pairing when there are none; without it, a start
+   * does neither, which is what the tests and the harness rely on.
+   */
+  pairedChats?: PairedChatStore;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   logger?: Logger;
@@ -785,6 +792,7 @@ export class TelegramLiveRuntime {
     if (pairing === null || typeof code !== "string" || !sameSecret(code, pairing.code)) throw new WorkspaceError(404, "pairing_not_found", "No active pairing matches this code. Start pairing again.");
     if (pairing.observed === null || pairing.challenge === null) throw new WorkspaceError(409, "pairing_not_observed", "Send the code to the bot from Telegram before confirming.");
     const actor = session.control.confirmPairing({ challenge: pairing.challenge, transportUserId: pairing.observed.transportUserId, chatId: pairing.observed.chatId, topicId: null });
+    this.rememberPairedChats(session.botId);
     this.enqueueText(session, pairing.observed.chatId, null, "Paired with this workstation. Task questions will arrive in this chat.");
     this.pairing = null;
     return actor;
@@ -794,6 +802,9 @@ export class TelegramLiveRuntime {
     const actor = workspaces.taskControlActorById(actorId);
     if (!actor || actor.transport !== "telegram" || actor.enabled !== 1) throw new WorkspaceError(404, "actor_not_found", "No enrolled Telegram actor has this id.");
     workspaces.disableTaskControlActor(actorId);
+    // An unpaired chat must stay unpaired across a restart.
+    const botId = this.botRecordId();
+    if (botId !== null) this.rememberPairedChats(botId);
     if (this.session !== null) {
       workspaces.dropQueuedTelegramEdits(this.session.botId, actor.chat_id);
       this.enqueueText(this.session, actor.chat_id, actor.topic_id, "This chat was unpaired from the workstation. Its buttons no longer work.");
@@ -922,6 +933,67 @@ export class TelegramLiveRuntime {
     }
   }
 
+  /** The private chats paired with this workstation; a Team group's actors are not pairings. */
+  private pairedActors() {
+    return workspaces.taskControlActors("telegram").filter(actor => actor.topic_id !== TEAM_GROUP_TOPIC_SENTINEL);
+  }
+
+  /**
+   * Puts the phone back at start, or asks for one.
+   *
+   * Pairing is a row in the database, so a new or different database used to
+   * start with nobody paired and say nothing: the bot polled, the notifier found
+   * no chat and returned, and a pipeline that stopped told no one. A chat
+   * remembered beside the token is enrolled again here, and every paired chat is
+   * told the workstation is up, which is also how the operator learns the link
+   * still works. With no chat at all a pairing is opened and its link logged, so
+   * the next step is on the screen that just started the server.
+   */
+  private connectPairedChats(session: Session): void {
+    const store = this.options.pairedChats;
+    if (store === undefined) return;
+    const enrolled = new Set(this.pairedActors().map(actor => actor.id));
+    const actorId = (chat: { transportUserId: string; chatId: string; topicId: string | null }) => `telegram-${chat.transportUserId}-${chat.chatId}-${chat.topicId ?? "main"}`;
+    const remembered = store.read();
+    if (remembered !== null && remembered.botId === session.botId) {
+      let restored = 0;
+      for (const chat of remembered.chats) {
+        const id = actorId(chat);
+        if (enrolled.has(id)) continue;
+        workspaces.upsertTaskControlActor({ id, transport: "telegram", transportUserId: chat.transportUserId, chatId: chat.chatId, topicId: chat.topicId, label: chat.label });
+        restored += 1;
+      }
+      if (restored > 0) this.log.info(`reconnected ${restored} paired chat(s) this database did not have`);
+    }
+    const actors = this.pairedActors();
+    if (actors.length === 0) {
+      const pairing = this.startPairing();
+      this.log.warn(
+        "No phone is paired with this workstation, so task questions have nowhere to go. "
+        + `Open ${pairing.deepLink ?? `a chat with the bot and send /start ${pairing.code}`} on your phone, then confirm the pairing in the web app. `
+        + `The link works until ${pairing.expiresAt}.`,
+      );
+      return;
+    }
+    // Also covers a chat paired before anything was remembered.
+    this.rememberPairedChats(session.botId);
+    if (!this.settings().notificationsEnabled) return;
+    for (const actor of actors) {
+      this.enqueueText(session, actor.chat_id, actor.topic_id, "This workstation has started and this chat is connected. Task questions will arrive here.");
+    }
+  }
+
+  private rememberPairedChats(botId: string): void {
+    const store = this.options.pairedChats;
+    if (store === undefined) return;
+    try {
+      store.write(botId, this.pairedActors().map(actor => ({ transportUserId: actor.transport_user_id, chatId: actor.chat_id, topicId: actor.topic_id, label: actor.label })));
+    } catch (error) {
+      // Pairing itself succeeded; only the copy that survives a new database did not.
+      this.log.warn(this.safe(`could not save the paired chats: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  }
+
   private expirePairing(): void {
     if (this.pairing !== null && this.pairing.expiresAt <= this.now()) this.pairing = null;
   }
@@ -958,6 +1030,7 @@ export class TelegramLiveRuntime {
     this.nextRetryAt = null;
     this.setState("polling", `Long polling Telegram (${this.pollTimeoutSeconds}s window).`);
     this.log.info(`connected as @${this.bot?.username ?? "unknown"}`);
+    this.connectPairedChats(session);
     // The command menu is cosmetic: commands typed without it still answer, so a failure only logs.
     void session.api.setMyCommands(COMMANDS).catch(error => this.log.warn(this.safe(`setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`)));
     await Promise.all([this.pollLoop(session), this.deliverLoop(session), this.controlRecordLoop(session)]);
@@ -1939,5 +2012,7 @@ export const telegramRuntime = new TelegramLiveRuntime({
       }),
   ...(harnessSeams.telegramPollTimeoutSeconds === null ? {} : { pollTimeoutSeconds: harnessSeams.telegramPollTimeoutSeconds }),
   ...(harnessSeams.pairingTtlMs === null ? {} : { pairingTtlMs: harnessSeams.pairingTtlMs }),
+  // The harness pairs through the UI and counts every message; it must start with neither.
+  ...(isHarnessMode() ? {} : { pairedChats: filePairedChatStore() }),
   ...(isHarnessMode() ? { assertBot: (botId: string) => assertHarnessBot(botId, { forbidden: harnessSeams.forbiddenBotIds ?? undefined, testBots: harnessSeams.testBotIds ?? undefined }) } : {}),
 });

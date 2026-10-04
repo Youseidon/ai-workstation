@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { config } from "../src/config.ts";
 import { settings as appSettings } from "../src/settings.ts";
 import { BotToken } from "../src/integrations/telegram/credentials.ts";
 import { HttpTelegramBotApi } from "../src/integrations/telegram/httpBotApi.ts";
+import { filePairedChatStore, type PairedChatStore } from "../src/integrations/telegram/pairedChats.ts";
 import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "../src/integrations/telegram/runtime.ts";
 import { runDefinitionOfDoneCommands } from "../src/definitionOfDone.ts";
 import { setPipelineStationStarter } from "../src/pipelineScheduler.ts";
@@ -175,8 +176,11 @@ function harness(options: {
   token?: "stub" | "none";
   now?: () => number;
   persistCredential?: (token: BotToken) => void;
+  pairedChats?: PairedChatStore;
+  /** The same bot across two harnesses is the same install started twice. */
+  botUserId?: number;
 } = {}) {
-  const stub = new StubTelegram(7_000_000_000 + Math.floor(Math.random() * 1_000_000));
+  const stub = new StubTelegram(options.botUserId ?? 7_000_000_000 + Math.floor(Math.random() * 1_000_000));
   const settings: TelegramRuntimeSettings = { enabled: true, teamEnabled: true, handoverEnabled: false, notificationsEnabled: true, remoteActionsEnabled: true, transport: "telegram", ...options.settings };
   const logs: string[] = [];
   const sleeps: number[] = [];
@@ -187,6 +191,7 @@ function harness(options: {
     credential: { token: options.token === "none" ? null : BotToken.parse(stub.rawToken), problem: null },
     createApi: (token, contentForRef) => new HttpTelegramBotApi({ token, contentForRef, fetch: stub.fetch }),
     persistCredential: options.persistCredential ?? (token => { persisted.push(token.reveal()); }),
+    ...(options.pairedChats === undefined ? {} : { pairedChats: options.pairedChats }),
     // Record the requested backoff but do not actually wait for it.
     sleep: (ms, signal) => {
       sleeps.push(ms);
@@ -662,6 +667,67 @@ test("a station stopped with no remark to quote gets a sentence for its own reas
   } finally {
     workspaces.remove(workspace.id);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a start with nobody paired opens a pairing, and a chat paired once is put back on a database that never saw it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "telegram-paired-"));
+  const store = filePairedChatStore(join(dir, "telegram-paired-chats.json"));
+  const botUserId = 7_100_000_000 + Math.floor(Math.random() * 1_000_000);
+  assert.deepEqual(workspaces.taskControlActors("telegram"), [], "sanity: no chat is paired before this test");
+  try {
+    // First start: nobody to talk to, so the server asks, on the screen that started it.
+    const first = harness({ pairedChats: store, botUserId });
+    try {
+      await first.runtime.reconcile();
+      const opened = await waitFor(() => first.runtime.status().pairing, "a pairing opened at start");
+      assert.equal(opened.deepLink, `https://t.me/l1_stub_bot?start=${opened.code}`);
+      assert.equal(first.logs.some(line => line.startsWith("warn ") && line.includes(opened.deepLink!)), true, "the link is in the server log");
+      first.stub.send(operator, operatorChat, `/start ${opened.code}`);
+      await waitFor(() => first.runtime.status().pairing?.observed, "pairing observation");
+      first.runtime.confirmPairing(opened.code);
+      assert.deepEqual(store.read(), { botId: first.botId, chats: [{ transportUserId: String(operator.id), chatId: String(operator.id), topicId: null, label: "Operator" }] });
+      assert.equal(statSync(join(dir, "telegram-paired-chats.json")).mode & 0o777, 0o600, "the file is readable by its owner only");
+    } finally {
+      // Deletes the actor rows without unpairing: what a new database looks like.
+      await first.cleanup();
+    }
+    assert.deepEqual(workspaces.taskControlActors("telegram"), []);
+
+    // Second start of the same bot: the chat is back and is told so.
+    const second = harness({ pairedChats: store, botUserId });
+    try {
+      await second.runtime.reconcile();
+      const hello = await waitFor(() => second.stub.messages.find(message => message.text.startsWith("This workstation has started")), "the started message");
+      assert.equal(hello.chatId, String(operator.id));
+      assert.equal(second.runtime.status().pairing, null, "no pairing is opened when a chat is connected");
+      const [actor] = second.runtime.status().actors;
+      assert.equal(actor?.chatId, String(operator.id));
+
+      // Unpairing is remembered too, or the next start would undo it.
+      second.runtime.removeActor(actor!.id);
+      assert.deepEqual(store.read(), { botId: second.botId, chats: [] });
+    } finally {
+      await second.cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a paired-chat file that cannot be written does not fail the pairing", async () => {
+  assert.deepEqual(workspaces.taskControlActors("telegram"), [], "sanity: no chat is paired before this test");
+  const h = harness({ pairedChats: { read: () => null, write: () => { throw new Error("disk full"); } } });
+  try {
+    await h.runtime.reconcile();
+    const opened = await waitFor(() => h.runtime.status().pairing, "a pairing opened at start");
+    h.stub.send(operator, operatorChat, `/start ${opened.code}`);
+    await waitFor(() => h.runtime.status().pairing?.observed, "pairing observation");
+    h.runtime.confirmPairing(opened.code);
+    assert.equal(h.runtime.status().actors.length, 1, "the chat is paired all the same");
+    assert.equal(h.logs.some(line => line.startsWith("warn ") && line.includes("could not save the paired chats: disk full")), true);
+  } finally {
+    await h.cleanup();
   }
 });
 
