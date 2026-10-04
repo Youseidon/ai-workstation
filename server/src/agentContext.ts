@@ -38,26 +38,32 @@ export interface ContextExtras {
   full?: boolean;
   /**
    * The tool names of a run that reports through bound tools. Such a run has no
-   * `agent-step`, so the protocol section has to name what it can actually call.
+   * `agent-step`, so the protocol section and the truncation notice have to name
+   * what it can actually call.
    */
-  progressTools?: { postRemark: string; postStatus: string };
+  progressTools?: { getContext: string; postRemark: string; postStatus: string };
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
 
-/** Cap a section body to `maxBytes`, appending the standard truncation notice. */
-export function cappedSection(text: string, maxBytes: number): string {
+/** The same notice for a run whose way to the full context is a tool. */
+export function toolsTruncationNotice(getContext: string): string {
+  return `…(truncated; call \`${getContext}\` with \`full: true\` for everything)`;
+}
+
+/** Cap a section body to `maxBytes`, appending the truncation notice. */
+export function cappedSection(text: string, maxBytes: number, truncationNotice: string = CONTEXT_TRUNCATION_NOTICE): string {
   const body = text.trim();
   if (body === "") return body;
   if (Buffer.byteLength(body) <= maxBytes) return body;
-  const notice = `\n${CONTEXT_TRUNCATION_NOTICE}`;
+  const notice = `\n${truncationNotice}`;
   const budget = Math.max(0, maxBytes - Buffer.byteLength(notice));
-  if (budget === 0) return CONTEXT_TRUNCATION_NOTICE;
+  if (budget === 0) return truncationNotice;
   let cut = body;
   while (Buffer.byteLength(cut) > budget) {
     const next = Math.max(0, Math.floor(cut.length * (budget / Buffer.byteLength(cut))));
     cut = cut.slice(0, Math.max(0, next - 1));
-    if (cut.length === 0) return CONTEXT_TRUNCATION_NOTICE;
+    if (cut.length === 0) return truncationNotice;
   }
   return `${cut.trimEnd()}${notice}`;
 }
@@ -138,7 +144,8 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
   const full = extras?.full === true;
   const key = context.prompt.externalKey ?? String(context.prompt.id);
   const canDecompose = (extras?.depth ?? 0) < (extras?.maxDepth ?? 2);
-  const cap = (text: string, max: number) => (full ? text.trim() : cappedSection(text, max));
+  const truncationNotice = extras?.progressTools === undefined ? CONTEXT_TRUNCATION_NOTICE : toolsTruncationNotice(extras.progressTools.getContext);
+  const cap = (text: string, max: number) => (full ? text.trim() : cappedSection(text, max, truncationNotice));
 
   const workspaceBlock = [
     `Name: ${context.workspace.name}`,

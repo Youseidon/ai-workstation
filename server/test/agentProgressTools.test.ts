@@ -6,16 +6,16 @@ import test from "node:test";
 import { z } from "zod";
 import type { ProgramRecord, PromptRecord, SuiteRecord } from "@agent-console/shared";
 import { claudePermissionConfig, claudeQueryOptions } from "../src/adapters/claude.ts";
-import { progressApiMarkdown } from "../src/agentContext.ts";
+import { contextMarkdown, progressApiMarkdown } from "../src/agentContext.ts";
 import { createLogger } from "../src/lib/logger.ts";
 import { claudeProgressToolDefinitions } from "../src/adapters/claudeProgressTools.ts";
 import { getAdapter } from "../src/adapters/registry.ts";
 import { bindAgentProgressTools, progressToolsMarkdown, readAgentContext } from "../src/agentProgressApi.ts";
 import { buildCanUseTool } from "../src/lib/claudePermissions.ts";
 import { runContexts } from "../src/runContext.ts";
-import { agentApiReachabilityProblem, executeChannel, savedTaskExecutePrompt } from "../src/runService.ts";
+import { agentApiReachabilityProblem, executeChannel, executeContextExtras, savedTaskExecutePrompt } from "../src/runService.ts";
 import { settings } from "../src/settings.ts";
-import { workspaces } from "../src/workspaces.ts";
+import { DECOMPOSE_MAX_DEPTH, workspaces } from "../src/workspaces.ts";
 
 // Scenario IDs refer to docs/telegram-task-control/scenarios/claude-sdk-tools.md.
 
@@ -195,6 +195,43 @@ test("every trip a run makes through the tools is in the access log, refusals in
     const summaries = workspaces.runEvents(run.runId).filter((event) => event.type === "db_access").map((event) => event.payload.summary);
     assert.equal(summaries[1], "+1 FINDING remark");
     assert.equal(summaries[3], "IN_PROGRESS → TODO");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a cut section tells each run how it can get the rest, and a run that cannot ask is given everything", async () => {
+  // The notice named `agent-step context --full` for every run. A tools run has
+  // no launcher and an offline run can call nothing at all, so for both the
+  // rest of a long section was simply out of reach.
+  const f = fixture();
+  try {
+    const program = workspaces.createChild("program", f.workspace.id, { name: unique("long"), overview: `${"y".repeat(3000)} TAIL-OF-THE-OVERVIEW` }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: unique("suite"), overview: "" }) as SuiteRecord;
+    const prompt = workspaces.createChild("prompt", suite.id, { title: unique("task"), content: "Write the release note." }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, prompt.id);
+    const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+
+    const capped = await callTool(tools, "get_context", {});
+    assert.ok(!capped.schemaRejected && !capped.isError);
+    assert.match(capped.text, /truncated; call `get_context` with `full: true` for everything/);
+    assert.doesNotMatch(capped.text, /agent-step context --full|TAIL-OF-THE-OVERVIEW/);
+    const full = await callTool(tools, "get_context", { full: true });
+    assert.ok(!full.schemaRejected && !full.isError);
+    assert.match(full.text, /TAIL-OF-THE-OVERVIEW/);
+    assert.doesNotMatch(full.text, /truncated/);
+    assert.match(progressToolsMarkdown(), /call it with `full: true` for everything/);
+
+    // A run with the launcher is told what it always was.
+    assert.match(readAgentContext(run.runId, run.token, "http").markdown, /truncated; run `agent-step context --full` for everything/);
+
+    assert.deepEqual(executeContextExtras("shim", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH });
+    assert.deepEqual(executeContextExtras("tools", 1), { depth: 1, maxDepth: DECOMPOSE_MAX_DEPTH, progressTools: { getContext: "get_context", postRemark: "post_remark", postStatus: "post_status", repairVerify: "repair_verify" } });
+    const offline = executeContextExtras("offline", 0);
+    assert.deepEqual(offline, { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, full: true });
+    const inlined = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id, { full: true }), "execute", offline);
+    assert.match(inlined, /TAIL-OF-THE-OVERVIEW/);
+    assert.doesNotMatch(inlined, /truncated/, "nothing in an offline run's context points at a command it cannot run");
   } finally {
     f.cleanup();
   }

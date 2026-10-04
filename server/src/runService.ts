@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
-import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
+import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown, type ContextExtras } from "./agentContext.ts";
 import type { AgentProgressTools } from "./adapters/types.ts";
 import { PROGRESS_TOOL_NAMES, agentApiUrl, bindAgentProgressTools, progressToolsMarkdown } from "./agentProgressApi.ts";
 import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
@@ -50,6 +50,24 @@ export type ExecuteChannel = "tools" | "shim" | "offline";
 export function executeChannel(provider: ProviderId, reachabilityProblem: string | null): ExecuteChannel {
   if (getAdapter(provider).supportsProgressTools) return "tools";
   return reachabilityProblem === null ? "shim" : "offline";
+}
+
+/**
+ * How the inlined context is shaped for the channel the run reports through.
+ *
+ * A capped section ends in a notice saying how to get the rest, so the notice
+ * has to name something this run can call: the launcher by default, the tool
+ * for a tools run. An offline run can call nothing, so it is given everything
+ * up front; a cut it could never undo would make "authoritative and complete"
+ * untrue for exactly the run that has no second chance to read.
+ */
+export function executeContextExtras(channel: ExecuteChannel, depth: number): ContextExtras {
+  return {
+    depth,
+    maxDepth: DECOMPOSE_MAX_DEPTH,
+    ...(channel === "tools" ? { progressTools: PROGRESS_TOOL_NAMES } : {}),
+    ...(channel === "offline" ? { full: true } : {}),
+  };
 }
 
 const EXECUTE_PREAMBLE_LIVE = "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit \u2014 this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.";
@@ -351,9 +369,10 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         // that can carry its outcome out is the text of its final message.
         contract = offlineCompletionProtocol(reachabilityProblem ?? "The local Progress API is not reachable from this provider sandbox.");
       }
+      const extras = executeContextExtras(channel, depth);
       resolvedPrompt = savedTaskExecutePrompt({
         taskLabel,
-        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH, ...(channel === "tools" ? { progressTools: PROGRESS_TOOL_NAMES } : {}) }),
+        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId, { full: extras.full === true }), "execute", extras),
         channel,
         contract,
       });

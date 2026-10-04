@@ -51,8 +51,10 @@ export function claudeProgressToolDefinitions(tools: AgentProgressTools) {
     tool(
       "get_context",
       "Returns this run's authoritative work item context: the task, its dependencies, remark history and human answers. Call it before doing anything else.",
-      {},
-      async () => guarded(() => tools.getContext()),
+      {
+        full: z.boolean().optional().describe("true returns the whole context: every remark and clarification, and no section cut short. Ask for it when a section says it was truncated."),
+      },
+      async (args) => guarded(() => tools.getContext(args)),
     ),
     tool(
       "post_remark",

@@ -43,7 +43,7 @@ export interface RunOptions {
  * refusal; results are JSON-serializable.
  */
 export interface AgentProgressTools {
-  getContext(): string;
+  getContext(input?: Record<string, unknown>): string;
   postRemark(input: Record<string, unknown>): unknown;
   postStatus(input: Record<string, unknown>): unknown;
   repairVerify(input: Record<string, unknown>): unknown;

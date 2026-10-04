@@ -100,16 +100,18 @@ export type AgentContextResult =
 /**
  * The run's authoritative context. `progress` chooses how the appended
  * instructions tell the agent to report: HTTP calls, or the bound tools.
+ * `full` lifts the section caps for a tools run, which has no
+ * `agent-step context --full` to ask with.
  */
-export function readAgentContext(runId: string, token: string, progress: "http" | "tools"): AgentContextResult {
+export function readAgentContext(runId: string, token: string, progress: "http" | "tools", full = false): AgentContextResult {
   const run = authorizeAgentCredential(runId, token);
   if (run.role === "consult") return { purpose: "consult", markdown: consultContextText(run.workspaceId, run.promptId, run.question) };
   if (run.promptId === null) throw new WorkspaceError(409, "run_not_active", "Run is not attached to a work item");
-  const context = workspaces.agentContext(run.workspaceId, run.promptId);
+  const context = workspaces.agentContext(run.workspaceId, run.promptId, { full });
   // Tool callers already received the reporting contract in their run prompt, so
   // their context carries no second copy of it, only the work item and how the
   // run ends, in the names of the tools they have.
-  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context, "execute", { progressTools: PROGRESS_TOOL_NAMES });
+  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context, "execute", { progressTools: PROGRESS_TOOL_NAMES, full });
   return { purpose: "execute", context, markdown };
 }
 
@@ -234,9 +236,9 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
     return result;
   };
   return {
-    getContext: () => {
+    getContext: (input) => {
       const startedAt = Date.now();
-      const result = readAgentContext(runId, token, "tools");
+      const result = readAgentContext(runId, token, "tools", input?.full === true);
       const summary = result.purpose === "execute" ? `read work item ${result.context.prompt.externalKey ?? result.context.prompt.title}` : "read the consult context";
       recordDbAccess(runId, { ...describeRead({ operation: "context", summary, durationMs: Date.now() - startedAt }), method: "TOOL" });
       return result.markdown;
@@ -260,6 +262,7 @@ export function progressToolsMarkdown(): string {
 
 This run is already marked IN_PROGRESS. Record progress only through these tools; never open or modify SQLite directly, and do not call the local HTTP API.
 
+- \`${PROGRESS_TOOL_NAMES.getContext}\` returns this work item's context again. Where a section says it was truncated, call it with \`full: true\` for everything.
 - \`${PROGRESS_TOOL_NAMES.postRemark}\` records a remark: \`requestId\` (unique for this run), \`kind\` (PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION or COMPLETION) and \`content\`.
 - \`${PROGRESS_TOOL_NAMES.postStatus}\` records exactly one terminal status before you finish: \`requestId\`, \`expectedStatus\` "IN_PROGRESS", \`status\` DONE, CONTINUE or BLOCKED, \`reason\`, \`verificationSummary\` and, for BLOCKED, an optional \`options\` list.
 
