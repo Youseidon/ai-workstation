@@ -81,6 +81,17 @@ export function claudeProgressToolDefinitions(tools: AgentProgressTools) {
       },
       async (args) => guarded(() => tools.postStatus(args)),
     ),
+    tool(
+      "repair_verify",
+      "Replaces a Verify command that is itself wrong, after a refused DONE showed it failing, then runs the Verify commands again and returns what still fails.",
+      {
+        requestId: REQUEST_ID,
+        oldCommand: z.string().min(1).describe("The failing command, exactly as the refusal printed it."),
+        newCommand: z.string().min(1).describe("The corrected command."),
+        reason: z.string().min(1).max(2000).describe("Why the command itself is wrong, as opposed to the work."),
+      },
+      async (args) => guarded(() => tools.repairVerify(args)),
+    ),
   ];
 }
 

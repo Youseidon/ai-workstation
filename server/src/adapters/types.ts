@@ -46,6 +46,7 @@ export interface AgentProgressTools {
   getContext(): string;
   postRemark(input: Record<string, unknown>): unknown;
   postStatus(input: Record<string, unknown>): unknown;
+  repairVerify(input: Record<string, unknown>): unknown;
 }
 
 export interface AvailabilityReport {

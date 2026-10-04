@@ -119,10 +119,29 @@ export async function postAgentStatus(runId: string, token: string, body: Record
     if (failures !== null) {
       workspaces.recordVerificationFailureRemark(run.promptId, runId, failures);
       const detail = failures.map((failure) => `$ ${failure.command}\nexit ${failure.exitCode ?? "none"}: ${failure.evidence}\n${failure.output.trim()}`).join("\n\n").slice(0, 6000);
-      throw new WorkspaceError(409, "verification_failed", `Fix this and post \`done\` again. If it cannot be fixed in this run, post \`continue\` with what remains.\n\n${detail}`);
+      throw new WorkspaceError(409, "verification_failed", `Fix this and post \`done\` again. If the command itself is wrong, repair it with \`${PROGRESS_TOOL_NAMES.repairVerify}\`. If it cannot be fixed in this run, post \`continue\` with what remains.\n\n${detail}`);
     }
   }
   const result = workspaces.updateAgentStatus(runId, body);
+  runHub.operationsChanged();
+  return result;
+}
+
+/**
+ * Replaces a Verify command the server has seen fail, then runs the commands
+ * again and returns what still fails, as the HTTP route does.
+ *
+ * A check can be wrong where the work is right. Without this a run on the tool
+ * path could only post a done that the same broken command refused every time.
+ */
+export async function repairAgentVerify(runId: string, token: string, body: Record<string, unknown>): Promise<unknown> {
+  const run = authorizeAgentCredential(runId, token);
+  requireMutatingRole(run);
+  const result = workspaces.repairAgentVerifyCommand(runId, body);
+  if (run.promptId !== null) {
+    await runDefinitionOfDoneCommands(run.promptId, runId);
+    result.failures = workspaces.agentDoneVerificationFailures(run.promptId) ?? [];
+  }
   runHub.operationsChanged();
   return result;
 }
@@ -133,6 +152,7 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
     getContext: () => readAgentContext(runId, token, "tools").markdown,
     postRemark: (input) => postAgentRemark(runId, token, input),
     postStatus: (input) => postAgentStatus(runId, token, input),
+    repairVerify: (input) => repairAgentVerify(runId, token, input),
   };
 }
 
@@ -140,6 +160,7 @@ export const PROGRESS_TOOL_NAMES = {
   getContext: "get_context",
   postRemark: "post_remark",
   postStatus: "post_status",
+  repairVerify: "repair_verify",
 } as const;
 
 /** The reporting contract for tool callers; it belongs in the trusted run prompt. */
@@ -152,6 +173,8 @@ This run is already marked IN_PROGRESS. Record progress only through these tools
 - \`${PROGRESS_TOOL_NAMES.postStatus}\` records exactly one terminal status before you finish: \`requestId\`, \`expectedStatus\` "IN_PROGRESS", \`status\` DONE, CONTINUE or BLOCKED, \`reason\`, \`verificationSummary\` and, for BLOCKED, an optional \`options\` list.
 
 For DONE, \`verificationSummary\` lists the commands run and their observable results. The server then runs the work item's Verify commands; if one fails, the DONE is refused with its output and nothing is recorded. Fix the work and post DONE again.
+
+- \`${PROGRESS_TOOL_NAMES.repairVerify}\` replaces a Verify command that is itself wrong: \`requestId\`, \`oldCommand\` (exactly as the refusal printed it), \`newCommand\` and \`reason\`. It only works on a command a refused DONE has just shown failing, and it returns what still fails. Use it when the check is defective, never to make failing work pass.
 
 CONTINUE is for work that cannot finish in this run: put what remains in \`reason\`, as concrete instructions for the run that resumes this item on this working tree, and what you verified in \`verificationSummary\`.
 

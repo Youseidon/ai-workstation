@@ -4081,7 +4081,7 @@ export const workspaces = {
       "",
       ...blocks,
       "",
-      "Fix the implementation and post `done` again. If the command itself is defective, use `agent-step repair-verify --file repair.json`. If the work cannot finish in this run, post `continue` with what remains.",
+      "Fix the implementation and post `done` again. If the command itself is defective, repair the Verify command. If the work cannot finish in this run, post `continue` with what remains.",
     ].join("\n").slice(0, 20000);
     const now = new Date().toISOString();
     sqliteGuard(() => {

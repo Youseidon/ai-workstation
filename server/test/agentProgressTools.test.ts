@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -128,7 +128,47 @@ test("a done reported through the tools runs the item's Verify commands, as a do
   }
 });
 
-test("S-CLT-01/24: Claude takes the tool path and exposes exactly the three progress tools", () => {
+test("a Verify command that is itself wrong can be repaired through the tools, and the done then lands", async () => {
+  // The work is right and the check is not: the file holds what it should, and
+  // the command greps for a word that was never asked for. Without a repair the
+  // same command refused every done this run could post.
+  const f = fixture();
+  try {
+    writeFileSync(join(f.workspace.workDirectory, "note.json"), "{}\n");
+    const wrong = "test -f note.json && grep -q released note.json";
+    const right = "test -f note.json && grep -q '{' note.json";
+    const prompt = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("repair"), content: `Write it.\n\n## Verify\n\n\`\`\`sh\n${wrong}\n\`\`\`\n` }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, prompt.id);
+    const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+    const repair = { requestId: "repair-verify-1", oldCommand: wrong, newCommand: right, reason: "The note is JSON and was never meant to contain that word." };
+
+    const early = await callTool(tools, "repair_verify", { ...repair, requestId: "repair-verify-0" });
+    assert.ok(!early.schemaRejected && early.isError);
+    assert.match(early.text, /^verify_not_failed: /, "only a command the server has seen fail can be replaced");
+
+    const refused = await callTool(tools, "post_status", DONE);
+    assert.ok(!refused.schemaRejected && refused.isError);
+    assert.match(refused.text, /^verification_failed: /);
+    assert.match(refused.text, /`repair_verify`/, "the refusal names the tool that repairs a wrong command");
+
+    const weakened = await callTool(tools, "repair_verify", { ...repair, requestId: "repair-verify-2", newCommand: "test -f note.json && true" });
+    assert.ok(!weakened.schemaRejected && weakened.isError);
+    assert.match(weakened.text, /^unsafe_verify_repair: /, "a repair cannot be a way to stop checking");
+
+    const repaired = await callTool(tools, "repair_verify", repair);
+    assert.ok(!repaired.schemaRejected && !repaired.isError, repaired.text);
+    assert.deepEqual((JSON.parse(repaired.text) as { failures: unknown[] }).failures, [], "the commands were run again and none fails");
+    assert.match(workspaces.promptActivity(prompt.id).item.prompt.content, /grep -q '\{' note\.json/);
+
+    const done = await callTool(tools, "post_status", { ...DONE, requestId: "status-done-2" });
+    assert.ok(!done.schemaRejected && !done.isError, done.text);
+    assert.equal(workspaces.promptOutcome(prompt.id).status, "DONE");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-CLT-01/24: Claude takes the tool path and exposes exactly the four progress tools", () => {
   assert.equal(getAdapter("claude").supportsProgressTools, true);
   for (const provider of ["codex", "grok", "cursor"] as const) assert.equal(getAdapter(provider).supportsProgressTools, false);
   withHostAccess(false, () => {
@@ -136,7 +176,7 @@ test("S-CLT-01/24: Claude takes the tool path and exposes exactly the three prog
     assert.match(agentApiReachabilityProblem("codex") ?? "", /cannot reach the saved-prompt context/);
   });
   const names = claudeProgressToolDefinitions(bindAgentProgressTools("run_none", "none")).map((item) => item.name).sort();
-  assert.deepEqual(names, ["get_context", "post_remark", "post_status"]);
+  assert.deepEqual(names, ["get_context", "post_remark", "post_status", "repair_verify"]);
 });
 
 test("S-CLT-01/09/26: only runs given progress tools get the in-process server; permissions are otherwise identical", () => {
