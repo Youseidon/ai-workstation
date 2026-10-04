@@ -141,6 +141,54 @@ db.exec(`
   );
 `);
 
+/*
+ * A database from before the reconcile with upstream records the wrong history.
+ *
+ * Both sides numbered on from 13 independently. Team's migrations were 14-29
+ * until the reconcile moved them to 37-52, and upstream's are 14-36. A database
+ * that last ran on the old Team numbering therefore says "14-27 applied" and
+ * means the Team tables, while the block below reads the same rows as upstream's
+ * 14-27 and resumes at 28 - which alters `pipeline_step`, a table upstream's 14
+ * would have created. That is the `no such table: pipeline_step` crash at start.
+ *
+ * The signature is exact: upstream's 14 creates `pipeline_step` and nothing ever
+ * drops it, so a recorded 14 with no such table can only be Team's 14.
+ *
+ * Renumbering the rows in place is not enough. Upstream's block gates on
+ * MAX(version), so rows at 37 and above would switch all of 14-36 off. The rows
+ * are moved aside instead, into a table rather than memory so that a process
+ * killed halfway through upstream's block resumes correctly, and put back at
+ * +23 once that block has run (see `schema_migration_team_legacy` below).
+ */
+{
+  const hasTable = (name: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) !== undefined;
+  const teamNumbered = db.prepare("SELECT 1 FROM schema_migration WHERE version=14").get() !== undefined && !hasTable("pipeline_step");
+  if (teamNumbered && !hasTable("schema_migration_team_legacy")) {
+    const highest = (db.prepare("SELECT MAX(version) AS version FROM schema_migration").get() as { version: number }).version;
+    if (highest > 29) throw new Error(`Cannot reconcile migration history: version ${highest} is recorded but upstream's migration 14 never ran`);
+    // Upstream's 22 and 34 rebuild `agent_run` and its 29 drops tables, so the
+    // file is copied first. VACUUM INTO cannot run inside a transaction.
+    const backupPath = `${databasePath}.pre-reconcile-${new Date().toISOString().replaceAll(":", "-")}.bak`;
+    db.prepare("VACUUM INTO ?").run(backupPath);
+    chmodSync(backupPath, 0o600);
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE schema_migration_team_legacy (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migration_team_legacy(version,applied_at)
+          SELECT version + 23, applied_at FROM schema_migration WHERE version >= 14;
+        DELETE FROM schema_migration WHERE version >= 14;
+      `);
+    })();
+    createLogger("server").warn(
+      `Database ${databasePath} was last migrated on the pre-reconcile Team numbering (14-${highest}). `
+      + `Applying upstream's migrations 14-36 and recording Team's as ${14 + 23}-${highest + 23}. Backup: ${backupPath}`,
+    );
+  }
+}
+
 const migrate = db.transaction(() => {
   const version = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
   if (version < 1) {
@@ -1368,6 +1416,20 @@ if (afterThirtyFive < 36) {
   });
   migrate36();
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(36,?)").run(new Date().toISOString());
+}
+
+// Upstream's block is done, so the Team rows moved aside above can come back
+// under the numbers the block below gates on.
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration_team_legacy'").get() !== undefined) {
+  db.transaction(() => {
+    db.exec(`
+      INSERT INTO schema_migration(version,applied_at) SELECT version, applied_at FROM schema_migration_team_legacy;
+      DELETE FROM schema_migration_team_legacy;
+    `);
+  })();
+  // Emptied above, so a boot killed before this line finds nothing to put back
+  // twice and only has the drop left to do.
+  db.exec("DROP TABLE schema_migration_team_legacy;");
 }
 
 db.transaction(() => {
