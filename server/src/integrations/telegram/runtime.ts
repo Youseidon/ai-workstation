@@ -1242,6 +1242,7 @@ export class TelegramLiveRuntime {
           return null;
         }
       },
+      stuck: promptId => workspaces.pipelineStuckOn(promptId) !== null,
       usage: cachedAccountUsage(),
       now: new Date(this.now()),
       workstation: appSettings.taskControl.workstationLabel || "workstation",

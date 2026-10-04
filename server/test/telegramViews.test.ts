@@ -58,6 +58,19 @@ test("S-L3-B-01: every view is deterministic, within the limit, uses only nv_ bu
   assert.match(renderView({ view: "quota" }, empty).text, /No quota figures yet/);
 });
 
+test("a task its pipeline gave up on is listed as blocked, and in no other list", () => {
+  // Task 4 is FAILED and its pipeline is stuck on it. The operator was sent a
+  // card for it, so /blocked has to show it or the two disagree.
+  const base = fixture();
+  const ctx = { ...base, stuck: (promptId: number) => promptId === 4 };
+  assert.match(renderView({ view: "status" }, ctx).text, /Running 1 · Blocked 3 · Needs recovery 1 · Failed 0 · Ready 2/);
+  const listed = (filter: (typeof TASK_FILTERS)[number]) => renderView({ view: "tasks", filter, page: 0 }, ctx).buttons.flat().filter((button) => button.data.startsWith("nv_k")).map((button) => Number(/^nv_k(\d+)/.exec(button.data)![1]));
+  assert.deepEqual(listed("blocked"), [2, 4, 20]);
+  assert.deepEqual(listed("failed"), []);
+  const everyListed = TASK_FILTERS.flatMap(listed);
+  assert.equal(new Set(everyListed).size, everyListed.length, "a task is in at most one list");
+});
+
 test("S-L3-B-02/04/05: counts and lists follow the filter mapping; waiting-on-dependency and skipped tasks are in no list", () => {
   const ctx = fixture();
   const status = renderView({ view: "status" }, ctx).text;

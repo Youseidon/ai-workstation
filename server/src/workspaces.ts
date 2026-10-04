@@ -4964,13 +4964,49 @@ export const workspaces = {
     return db.prepare("SELECT id,transport,transport_user_id,chat_id,topic_id,label,enabled,created_at FROM task_control_actor WHERE transport=? AND enabled=1 ORDER BY created_at")
       .all(transport) as TaskControlActorRow[];
   },
+  /**
+   * Why a pipeline is stuck on this work item with nobody but the operator able
+   * to move it, or null when it is not.
+   *
+   * A station is waiting on a person in two ways. Its agent asked a question,
+   * which is the item's own status (BLOCKED) and has always reached the phone.
+   * Or the pipeline gave up on it: the continuations ran out, a station rule
+   * said wait, no provider could run it, it could not be started, or it ended in
+   * a status the scheduler does not know. None of those is a status of the item,
+   * which is left as it was (NEEDS_REVIEW, UNREPORTED, FAILED, even TODO), so a
+   * check of the item alone never saw them and the operator was told nothing.
+   *
+   * It has to be the run and not the status. An item is NEEDS_REVIEW between two
+   * automatic retries as well, for seconds or minutes, with the pipeline still
+   * PLAYING; asking the operator then would be asking about work that is about
+   * to carry on by itself.
+   *
+   * `review_running` is left out because a reviewer settles it without anyone,
+   * and the stops an operator or a station rule asked for are not surprises.
+   *
+   * A restart relabels every open run INTERRUPTED by `server_restart` and keeps
+   * the reason it was parked. The boot-time resume cannot move such a run, since
+   * its station is not ready, so it is as stuck as it was and counts the same.
+   * A run the restart caught mid-flight has no park reason and is not this.
+   */
+  pipelineStuckOn(promptId: number): string | null {
+    const run = db.prepare(`SELECT r.state, r.wait_reason waitReason, r.stop_reason stopReason, r.current_prompt_id currentPromptId
+      FROM suite_pipeline_run r JOIN prompt p ON p.suite_id = r.suite_id
+      WHERE p.id = ? AND p.status NOT IN ('DONE','SKIPPED')
+      ORDER BY r.started_at DESC LIMIT 1`).get(promptId) as { state: string; waitReason: string | null; stopReason: string | null; currentPromptId: number | null } | undefined;
+    if (run === undefined || run.currentPromptId !== promptId) return null;
+    const parked = run.state === "WAITING_HUMAN" || (run.state === "INTERRUPTED" && run.stopReason === "server_restart");
+    if (parked && run.waitReason !== null && ["continuations_exhausted", "station_rule_wait", "no_provider_available"].includes(run.waitReason)) return run.waitReason;
+    if (run.state === "STOPPED" && run.stopReason !== null && (run.stopReason === "start_failed" || run.stopReason === "no_provider" || run.stopReason.startsWith("unexpected_status"))) return run.stopReason;
+    return null;
+  },
   /** Saved tasks in the same attention state the operations view shows as awaiting a response. */
   promptsAwaitingResponse(): PromptOption[] {
     const awaiting: PromptOption[] = [];
     for (const workspace of db.prepare("SELECT id FROM workspace ORDER BY id").all() as Array<{ id: number }>) {
       for (const prompt of this.promptOptions(workspace.id)) {
         if (prompt.status === "DONE" || prompt.status === "SKIPPED") continue;
-        if (awaitsResponse(operationalState(prompt, this.pendingHumanQuestion(prompt.id) !== null))) awaiting.push(prompt);
+        if (awaitsResponse(operationalState(prompt, this.pendingHumanQuestion(prompt.id) !== null)) || this.pipelineStuckOn(prompt.id) !== null) awaiting.push(prompt);
       }
     }
     return awaiting;
@@ -6140,7 +6176,7 @@ export const workspaces = {
     this.assertHumanInputRevision(promptId, input.expectedRevision);
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
-    if(prompt.status!=="BLOCKED"&&this.pendingHumanQuestion(promptId)===null)throw new WorkspaceError(409,"prompt_not_blocked","Prompt no longer needs human input");
+    if(prompt.status!=="BLOCKED"&&this.pendingHumanQuestion(promptId)===null&&this.pipelineStuckOn(promptId)===null)throw new WorkspaceError(409,"prompt_not_blocked","Prompt no longer needs human input");
     const content=requireText(input.content,"content",20000);const now=new Date().toISOString();
     const remarkId=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'HUMAN_RESPONSE',?,'USER',?)").run(promptId,content,now).lastInsertRowid);
     writeStatus({promptId,to:"TODO",trigger:"operator_override",actor:"USER",reason:"You answered the question, so it is ready to resume.",result:""});

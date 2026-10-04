@@ -32,6 +32,16 @@ export function sanitizeTelegramText(value: string): string {
   return redactPhoneText(value).replace(/\s+/g, " ").trim().slice(0, 1200);
 }
 
+/** Why the pipeline stopped on a station, for a card that has no remark to quote. */
+function stuckSentence(reason: string): string {
+  if (reason === "continuations_exhausted") return "The pipeline retried this task until its allowance ran out and it is still not finished. Reply with what the next run should do.";
+  if (reason === "station_rule_wait") return "This task did not finish and its station rule is to wait for you. Reply with what the next run should do.";
+  if (reason === "no_provider_available") return "No provider could run this task: each one is unavailable or cooling down. Reply to try again.";
+  if (reason === "no_provider") return "This task has no provider to run on. Reply to try again once one is set.";
+  if (reason === "start_failed") return "The agent for this task could not be started. Reply to try again.";
+  return "The pipeline stopped on this task in a state it does not recognise. Reply with what the next run should do.";
+}
+
 export function renderPersonalQuestion(promptId: number, actions: Array<Pick<TaskControlActionReference, "ref" | "action">>): RenderedTaskControlQuestion {
   const activity = workspaces.promptActivity(promptId);
   const run = activity.sessions.find(session => session.role === "execute" && ["STARTING", "RUNNING"].includes(session.state));
@@ -43,11 +53,15 @@ export function renderPersonalQuestion(promptId: number, actions: Array<Pick<Tas
   // writes the BLOCKER remark saying so, and gating on BLOCKED alone sent the
   // phone a bare "This task needs your input." while the real reason sat one
   // row away - the generic prompt this renderer exists to avoid.
-  const blocker = ["BLOCKED", "UNREPORTED"].includes(activity.item.prompt.status)
+  //
+  // A station its pipeline gave up on is here for the same reason, whatever its
+  // status: the remark a failed check or a failed run left is why it stopped.
+  const stuck = workspaces.pipelineStuckOn(promptId);
+  const blocker = ["BLOCKED", "UNREPORTED"].includes(activity.item.prompt.status) || stuck !== null
     ? activity.remarks.filter(remark => remark.kind === "BLOCKER" || remark.kind === "DECISION_NEEDED").sort((a, b) => b.id - a.id)[0]?.content ?? null
     : null;
   const question = workspaces.pendingHumanQuestion(promptId)
-    ?? (saved ? "An answer is saved. Choose whether to resume with the saved answer." : blocker ?? "This task needs your input.");
+    ?? (saved ? "An answer is saved. Choose whether to resume with the saved answer." : blocker ?? (stuck !== null ? stuckSentence(stuck) : "This task needs your input."));
   return {
     kind: "personal_question",
     promptId,

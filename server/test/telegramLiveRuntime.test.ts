@@ -12,6 +12,7 @@ import { settings as appSettings } from "../src/settings.ts";
 import { BotToken } from "../src/integrations/telegram/credentials.ts";
 import { HttpTelegramBotApi } from "../src/integrations/telegram/httpBotApi.ts";
 import { TelegramLiveRuntime, type TelegramRuntimeSettings } from "../src/integrations/telegram/runtime.ts";
+import { runDefinitionOfDoneCommands } from "../src/definitionOfDone.ts";
 import { setPipelineStationStarter } from "../src/pipelineScheduler.ts";
 import { renderPersonalQuestion } from "../src/taskControlRenderer.ts";
 import { itemTag } from "../src/teamItems.ts";
@@ -467,6 +468,200 @@ test("live E2E over the stubbed Bot API: pair, post a question, reply, Save answ
     setPipelineStationStarter(null);
     await h.cleanup();
     f.cleanup();
+  }
+});
+
+/**
+ * A station its pipeline stopped on without the agent asking anything.
+ *
+ * The item is where a failing `## Verify` command leaves it, NEEDS_REVIEW, which
+ * is also where it sits between two automatic retries. What tells the two apart
+ * is the pipeline run, so the run's state is the fixture's argument.
+ */
+async function stuckFixture(run: { state: "PLAYING" | "WAITING_HUMAN" | "STOPPED" | "INTERRUPTED"; waitReason?: string; stopReason?: string }) {
+  const dir = mkdtempSync(join(tmpdir(), "telegram-stuck-"));
+  const workspace = workspaces.create({ name: dir, workDirectory: dir });
+  const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+  const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+  const title = `Assess the vendor sample ${workspace.id}`;
+  const prompt = workspaces.createChild("prompt", suite.id, { title, content: "Assess it.\n\n## Verify\n\n```sh\nexit 1\n```\n" }) as PromptRecord;
+  const runId = `tg-stuck-run-${workspace.id}`;
+  workspaces.beginAgentRun({ runId, workspaceId: workspace.id, promptId: prompt.id, provider: "claude", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60000).toISOString(), role: "execute" });
+  workspaces.finishAgentRun(runId, "done");
+  await runDefinitionOfDoneCommands(prompt.id, null);
+  workspaces.completePrompt(prompt.id, "SYSTEM", { verificationSummary: "done" });
+  assert.equal(workspaces.promptActivity(prompt.id).item.prompt.status, "NEEDS_REVIEW");
+
+  const flowchart = workspaces.createPipeline({ workspaceId: workspace.id, name: `Flowchart ${workspace.id}`, suiteIds: [suite.id] });
+  workspaces.addNamedPipelineStep(flowchart.id, prompt.id, { provider: "claude" });
+  const namedRun = workspaces.createNamedPipelineRun({ id: `tg-stuck-named-${workspace.id}`, pipelineId: flowchart.id, workspaceId: workspace.id, playProvider: "claude", playModel: null });
+  const suiteRun = workspaces.createPipelineRun({ id: `tg-stuck-suite-${workspace.id}`, suiteId: suite.id, workspaceId: workspace.id, playProvider: "claude", playModel: null, pipelineRunId: namedRun.id });
+  const endedAt = run.state === "STOPPED" || run.state === "INTERRUPTED" ? new Date().toISOString() : null;
+  workspaces.updatePipelineRun(suiteRun.id, { state: run.state, currentPromptId: prompt.id, waitReason: run.waitReason ?? null, stopReason: run.stopReason ?? null, endedAt });
+  workspaces.updateNamedPipelineRun(namedRun.id, { state: run.state, currentSuiteId: suite.id, currentSuiteRunId: suiteRun.id, stopReason: run.stopReason ?? null, endedAt });
+  return {
+    workspace, suite, prompt, title, suiteRun,
+    cleanup() { workspaces.remove(workspace.id); rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+test("a pipeline that gave up on a station reaches the phone, and the reply resumes it", async () => {
+  // The stop that was silent: four continuations ran out on a failing Verify
+  // command, the pipeline parked, and the item was never BLOCKED, so no card.
+  const h = harness();
+  const f = await stuckFixture({ state: "WAITING_HUMAN", waitReason: "continuations_exhausted" });
+  let starts = 0;
+  try {
+    setPipelineStationStarter(async () => {
+      starts++;
+      const runId = `tg-stuck-resumed-${f.workspace.id}`;
+      workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "claude", model: null, tokenHash: "test", expiresAt: new Date().toISOString() });
+      return { runId };
+    });
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+
+    const card = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "card for the parked station");
+    assert.match(card.text, /definition of done was not satisfied/i, "the card says why the station stopped");
+    assert.match(card.text, /Reply to this message with your answer/);
+
+    h.stub.send(operator, operatorChat, "The check is wrong, skip it and finish", card.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Answer and resume")), "answer card");
+    h.stub.tap(operator, answerCard, "Answer and resume");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done: Answer saved and resume requested.")), "resume receipt");
+    assert.equal(starts, 1, "the station restarted once");
+    assert.equal(workspaces.pipelineById(f.suiteRun.id)?.state, "PLAYING");
+    assert.equal(workspaces.promptActivity(f.prompt.id).remarks.some(remark => remark.kind === "HUMAN_RESPONSE" && remark.content === "The check is wrong, skip it and finish"), true, "the reply is on the item for the next run to read");
+  } finally {
+    setPipelineStationStarter(null);
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("a station the pipeline gave up on still reaches the phone after the server is restarted", async () => {
+  // What a restart does to a parked run: it is no longer WAITING_HUMAN but
+  // INTERRUPTED by `server_restart`, with the reason it was parked still on it.
+  // The boot-time resume cannot move it, because the station is not ready, so it
+  // is exactly as stuck as before and the operator is still the only way out.
+  const h = harness();
+  const f = await stuckFixture({ state: "WAITING_HUMAN", waitReason: "continuations_exhausted" });
+  let starts = 0;
+  try {
+    workspaces.interruptPipelinesOnRestart();
+    const restarted = workspaces.pipelineById(f.suiteRun.id);
+    assert.deepEqual([restarted?.state, restarted?.stopReason, restarted?.waitReason], ["INTERRUPTED", "server_restart", "continuations_exhausted"]);
+
+    setPipelineStationStarter(async () => {
+      starts++;
+      const runId = `tg-stuck-restarted-${f.workspace.id}`;
+      workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "claude", model: null, tokenHash: "test", expiresAt: new Date().toISOString() });
+      return { runId };
+    });
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+
+    const card = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "card for the station parked before the restart");
+    h.stub.send(operator, operatorChat, "Carry on without that check", card.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Answer and resume")), "answer card");
+    h.stub.tap(operator, answerCard, "Answer and resume");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done: Answer saved and resume requested.")), "resume receipt");
+    assert.equal(starts, 1, "the station restarted once");
+    assert.equal(workspaces.pipelineById(f.suiteRun.id)?.state, "PLAYING", "the same run carries on");
+  } finally {
+    setPipelineStationStarter(null);
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("a pipeline that could not start a station reaches the phone, and the reply plays it again", async () => {
+  const h = harness();
+  const f = await stuckFixture({ state: "STOPPED", stopReason: "unexpected_status:IN_PROGRESS" });
+  let starts = 0;
+  try {
+    setPipelineStationStarter(async () => {
+      starts++;
+      const runId = `tg-stuck-replayed-${f.workspace.id}`;
+      workspaces.beginAgentRun({ runId, workspaceId: f.workspace.id, promptId: f.prompt.id, provider: "claude", model: null, tokenHash: "test", expiresAt: new Date().toISOString() });
+      return { runId };
+    });
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    await pair(h);
+
+    const card = await waitFor(() => h.stub.messages.find(message => message.text.includes(f.title)), "card for the stopped station");
+    h.stub.send(operator, operatorChat, "Run it again", card.messageId);
+    const answerCard = await waitFor(() => h.stub.messages.find(message => message.buttons.some(button => button.text === "Answer and resume")), "answer card");
+    h.stub.tap(operator, answerCard, "Answer and resume");
+    await waitFor(() => h.stub.messages.find(message => message.text.startsWith("Done: Answer saved and resume requested.")), "resume receipt");
+    assert.equal(starts, 1, "the station started once");
+  } finally {
+    setPipelineStationStarter(null);
+    await h.cleanup();
+    f.cleanup();
+  }
+});
+
+test("only a station nobody but the operator can move counts as waiting on them", async () => {
+  const cases: Array<{ run: Parameters<typeof stuckFixture>[0]; waiting: boolean }> = [
+    { run: { state: "WAITING_HUMAN", waitReason: "continuations_exhausted" }, waiting: true },
+    { run: { state: "WAITING_HUMAN", waitReason: "station_rule_wait" }, waiting: true },
+    { run: { state: "WAITING_HUMAN", waitReason: "no_provider_available" }, waiting: true },
+    { run: { state: "STOPPED", stopReason: "start_failed" }, waiting: true },
+    { run: { state: "STOPPED", stopReason: "no_provider" }, waiting: true },
+    { run: { state: "STOPPED", stopReason: "unexpected_status:IN_PROGRESS" }, waiting: true },
+    // A restart relabels a parked run; it is no less stuck for that.
+    { run: { state: "INTERRUPTED", stopReason: "server_restart", waitReason: "continuations_exhausted" }, waiting: true },
+    // A run the restart caught mid-flight is the boot-time resume's to pick up.
+    { run: { state: "INTERRUPTED", stopReason: "server_restart" }, waiting: false },
+    // Between two automatic retries the item is NEEDS_REVIEW too, and a card
+    // there would ask the operator about work that is about to carry on.
+    { run: { state: "PLAYING" }, waiting: false },
+    // A reviewer is still deciding; it settles by itself.
+    { run: { state: "WAITING_HUMAN", waitReason: "review_running" }, waiting: false },
+    // Stops the operator or a station rule asked for.
+    { run: { state: "STOPPED", stopReason: "operator_stop" }, waiting: false },
+    { run: { state: "STOPPED", stopReason: "on_done_stop" }, waiting: false },
+  ];
+  for (const { run, waiting } of cases) {
+    const f = await stuckFixture(run);
+    const label = `${run.state} ${run.waitReason ?? run.stopReason ?? ""}`.trim();
+    try {
+      assert.equal(workspaces.promptsAwaitingResponse().some(prompt => prompt.id === f.prompt.id), waiting, label);
+      if (!waiting) {
+        assert.throws(
+          () => workspaces.respondToBlockedPrompt(f.prompt.id, { content: "an answer nobody asked for" }),
+          (error: unknown) => error instanceof WorkspaceError && error.code === "prompt_not_blocked",
+          `${label}: an answer is still refused`,
+        );
+      }
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+test("a station stopped with no remark to quote gets a sentence for its own reason", () => {
+  // A station that could not be started has run nothing, so nothing left a
+  // remark; the card must still say more than "needs your input".
+  const dir = mkdtempSync(join(tmpdir(), "telegram-stuck-"));
+  const workspace = workspaces.create({ name: dir, workDirectory: dir });
+  try {
+    const program = workspaces.createChild("program", workspace.id, { name: "Program" }) as ProgramRecord;
+    const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as SuiteRecord;
+    const prompt = workspaces.createChild("prompt", suite.id, { title: `Never started ${workspace.id}`, content: "Do it." }) as PromptRecord;
+    const suiteRun = workspaces.createPipelineRun({ id: `tg-stuck-bare-${workspace.id}`, suiteId: suite.id, workspaceId: workspace.id, playProvider: "claude", playModel: null });
+    workspaces.updatePipelineRun(suiteRun.id, { state: "STOPPED", currentPromptId: prompt.id, stopReason: "start_failed", endedAt: new Date().toISOString() });
+    assert.equal(workspaces.pipelineStuckOn(prompt.id), "start_failed");
+    assert.match(renderPersonalQuestion(prompt.id, []).question, /could not be started\. Reply to try again\./);
+    workspaces.updatePipelineRun(suiteRun.id, { state: "WAITING_HUMAN", waitReason: "no_provider_available", stopReason: null, endedAt: null });
+    assert.match(renderPersonalQuestion(prompt.id, []).question, /No provider could run this task/);
+  } finally {
+    workspaces.remove(workspace.id);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

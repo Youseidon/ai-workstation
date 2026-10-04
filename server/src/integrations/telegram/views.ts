@@ -76,6 +76,8 @@ export interface RenderedView {
 export interface ViewContext {
   snapshot: OperationsSnapshot;
   summary: (promptId: number) => TaskSummary | null;
+  /** Whether a pipeline gave up on this task and only the operator can move it. */
+  stuck?: (promptId: number) => boolean;
   usage: { at: number; usage: ProviderUsage[] } | null;
   now: Date;
   workstation: string;
@@ -188,11 +190,15 @@ function asOf(context: ViewContext): string {
 
 const prompts = (snapshot: OperationsSnapshot) => snapshot.suites.flatMap((suite) => suite.prompts.map((item) => ({ suite, item })));
 
-function matches(item: OperationsPrompt, filter: TaskFilter, now: Date): boolean {
-  // `blocked` is every item waiting on a person, under either of the two names
-  // the status model gives that state.
-  if (filter === "blocked" ? !awaitsResponse(item.operationalState) : item.operationalState !== FILTER_STATE[filter]) return false;
-  return filter !== "done" || now.getTime() - Date.parse(item.lastActivityAt) <= 24 * 60 * 60_000;
+function matches(item: OperationsPrompt, filter: TaskFilter, context: ViewContext): boolean {
+  // `blocked` is every item waiting on a person: under either of the two names
+  // the status model gives that state, or because its pipeline gave up on it,
+  // which is the same wait without being a state of the item. It is counted
+  // here so the list agrees with the card the operator was sent, and only here,
+  // so a task is still in at most one list.
+  const stuck = context.stuck?.(item.prompt.id) === true;
+  if (filter === "blocked" ? !(stuck || awaitsResponse(item.operationalState)) : stuck || item.operationalState !== FILTER_STATE[filter]) return false;
+  return filter !== "done" || context.now.getTime() - Date.parse(item.lastActivityAt) <= 24 * 60 * 60_000;
 }
 
 const taskLabel = (item: OperationsPrompt) => lineText(`${item.prompt.externalKey ? `${item.prompt.externalKey} ` : ""}${item.prompt.title}`, 60);
@@ -239,7 +245,7 @@ export function renderView(request: ViewRequest, context: ViewContext): Rendered
       return view([HELP_HINT, "", "Commands:", ...COMMANDS.map((entry) => `/${entry.command} - ${entry.description}`)], []);
     case "status": {
       const all = prompts(context.snapshot).map(({ item }) => item);
-      const count = (filter: TaskFilter) => all.filter((item) => matches(item, filter, context.now)).length;
+      const count = (filter: TaskFilter) => all.filter((item) => matches(item, filter, context)).length;
       const lines = [header("Status")];
       if (all.length === 0) {
         lines.push("No tasks on this workstation.");
@@ -257,7 +263,7 @@ export function renderView(request: ViewRequest, context: ViewContext): Rendered
         return view([header("Tasks"), "Choose which tasks to list."], [TASK_FILTERS.slice(0, 3).map((filter) => ({ text: filter, data: encodeNav({ view: "tasks", filter, page: 0 }) })), TASK_FILTERS.slice(3).map((filter) => ({ text: filter, data: encodeNav({ view: "tasks", filter, page: 0 }) }))]);
       }
       const filter = request.filter;
-      const matching = prompts(context.snapshot).filter(({ item }) => matches(item, filter, context.now));
+      const matching = prompts(context.snapshot).filter(({ item }) => matches(item, filter, context));
       if (matching.length === 0) return view([header(FILTER_TITLE[filter]), `No ${FILTER_TITLE[filter].toLowerCase()} ${asOf(context)}.`], [[back({ view: "tasks", filter: null, page: 0 }), refresh(request)]]);
       const { items, page, pages } = paginate(matching, request.page);
       const here: ViewRequest = { view: "tasks", filter, page };
