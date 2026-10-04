@@ -42,6 +42,12 @@ export interface ContextExtras {
    * what it can actually call.
    */
   progressTools?: { getContext: string; postRemark: string; postStatus: string };
+  /**
+   * A run whose sandbox cannot reach the console. It reports once, in a status
+   * block at the end of its final message, so the protocol section must not
+   * send it to a command or offer an ending the block cannot carry.
+   */
+  offline?: boolean;
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
@@ -103,6 +109,28 @@ systems); remaining work is never a blocker. Reconcile stale saved scope from re
 never ask the user to edit the tracker or choose a speculative mapping.
 Bank progress with \`${tools.postRemark}\` (kind PROGRESS) after each verified piece; if this run is
 stopped by its budget you get a short wrap-up turn on the same session to record what remains.
+Do not look for or edit a tracker file; the database is the tracker.
+`;
+}
+
+/**
+ * The protocol for a run that can reach nothing and reports once, at the end.
+ * There is no remark to bank and no decompose, and a refused DONE cannot be
+ * handed back to a process that has already exited, so each of those is said
+ * as it is for this run rather than as it is for one with a live channel.
+ */
+function offlineExecuteProtocol(): string {
+  return `## How this run ends
+
+End your final message with exactly one \`agent-status\` block saying DONE, CONTINUE or BLOCKED;
+its format is given below. Nothing else this run does is recorded.
+DONE is checked by the server after this run exits: the Verification commands above run in the
+workspace, and the item is not closed if any fails. Run them yourself first. CONTINUE records
+what remains and re-queues this item on this working tree — use it whenever the work is not
+finished, or a Verification command still fails, instead of claiming DONE.
+BLOCKED is only for action only a human can take (credentials, undelegated decisions, external
+systems); remaining work is never a blocker. Reconcile stale saved scope from repository evidence;
+never ask the user to edit the tracker or choose a speculative mapping.
 Do not look for or edit a tracker file; the database is the tracker.
 `;
 }
@@ -252,7 +280,9 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     + verification
     + section("Where the last run stopped", cap(stopped, 6 * 1024))
     + section("Clarifications", cap(clarifications, 2 * 1024))
-    + (extras?.progressTools === undefined ? executeProtocol(canDecompose) : toolsExecuteProtocol(extras.progressTools));
+    + (extras?.offline === true
+      ? offlineExecuteProtocol()
+      : extras?.progressTools === undefined ? executeProtocol(canDecompose) : toolsExecuteProtocol(extras.progressTools));
 }
 
 /** Consult / clarify keep the pre-diet layout. */

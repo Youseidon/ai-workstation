@@ -228,10 +228,15 @@ test("a cut section tells each run how it can get the rest, and a run that canno
     assert.deepEqual(executeContextExtras("shim", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH });
     assert.deepEqual(executeContextExtras("tools", 1), { depth: 1, maxDepth: DECOMPOSE_MAX_DEPTH, progressTools: { getContext: "get_context", postRemark: "post_remark", postStatus: "post_status", repairVerify: "repair_verify" } });
     const offline = executeContextExtras("offline", 0);
-    assert.deepEqual(offline, { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, full: true });
+    assert.deepEqual(offline, { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, full: true, offline: true });
     const inlined = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id, { full: true }), "execute", offline);
     assert.match(inlined, /TAIL-OF-THE-OVERVIEW/);
     assert.doesNotMatch(inlined, /truncated/, "nothing in an offline run's context points at a command it cannot run");
+
+    // How it ends is told in the one thing an offline run can do: its status block.
+    const ending = inlined.slice(inlined.indexOf("## How this run ends"));
+    assert.match(ending, /exactly one `agent-status` block saying DONE, CONTINUE or BLOCKED/);
+    assert.doesNotMatch(ending, /agent-step|decompose|remark --kind/);
   } finally {
     f.cleanup();
   }

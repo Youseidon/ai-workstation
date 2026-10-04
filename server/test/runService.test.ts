@@ -188,6 +188,12 @@ test("parseOfflineAgentStatus accepts the final agent-status block", () => {
     { status: "BLOCKED", reason: "Need deployment access", verificationSummary: "Grant deploy token" },
   );
   assert.equal(parseOfflineAgentStatus(`{"status":"BLOCKED","reason":"Need deployment access"}`), null);
+  // Unfinished work has an ending of its own; what was verified is optional, what remains is not.
+  assert.deepEqual(
+    parseOfflineAgentStatus(`\`\`\`agent-status\n{"status":"CONTINUE","reason":"Port the two remaining endpoints"}\n\`\`\``),
+    { status: "CONTINUE", reason: "Port the two remaining endpoints", verificationSummary: "" },
+  );
+  assert.equal(parseOfflineAgentStatus(`\`\`\`agent-status\n{"status":"CONTINUE","reason":""}\n\`\`\``), null);
 });
 
 function offlineRunFixture(verify: string | null) {
@@ -233,6 +239,17 @@ test("an offline DONE whose Verify command fails stays open on what really faile
     assert.equal(workspaces.promptOutcome(f.promptId).status, "NEEDS_REVIEW");
     assert.equal(f.remarks().some(remark => remark.kind === "VERIFICATION" && remark.content.includes("broken")), true, "the output is banked for the run that picks it up");
     assert.equal(f.remarks().some(remark => remark.kind === "COMPLETION"), true, "the agent's own claim is kept beside it");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("an offline CONTINUE re-queues the item with its brief", () => {
+  const f = offlineRunFixture(null);
+  try {
+    assert.equal(applyOfflineAgentStatus(f.runId, { status: "CONTINUE", reason: "Port the two remaining endpoints", verificationSummary: "" }), null);
+    assert.equal(workspaces.promptOutcome(f.promptId).status, "TODO");
+    assert.equal(f.remarks().some(remark => remark.kind === "CONTINUATION" && remark.content === "Port the two remaining endpoints"), true);
   } finally {
     f.cleanup();
   }

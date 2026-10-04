@@ -67,7 +67,7 @@ export function executeContextExtras(channel: ExecuteChannel, depth: number): Co
     depth,
     maxDepth: DECOMPOSE_MAX_DEPTH,
     ...(channel === "tools" ? { progressTools: PROGRESS_TOOL_NAMES } : {}),
-    ...(channel === "offline" ? { full: true } : {}),
+    ...(channel === "offline" ? { full: true, offline: true } : {}),
   };
 }
 
@@ -105,7 +105,7 @@ export function savedTaskExecutePrompt(args: {
 }
 
 export interface OfflineAgentStatus {
-  status: "DONE" | "BLOCKED";
+  status: "DONE" | "CONTINUE" | "BLOCKED";
   reason: string;
   verificationSummary: string;
 }
@@ -129,10 +129,12 @@ export function parseOfflineAgentStatus(text: string): OfflineAgentStatus | null
       const parsed = JSON.parse(candidate) as Record<string, unknown>;
       const raw = (parsed.agentStatus && typeof parsed.agentStatus === "object" ? parsed.agentStatus : parsed) as Record<string, unknown>;
       const status = raw.status;
-      if (status !== "DONE" && status !== "BLOCKED") continue;
+      if (status !== "DONE" && status !== "CONTINUE" && status !== "BLOCKED") continue;
       const reason = typeof raw.reason === "string" ? raw.reason.trim() : "";
       const verificationSummary = typeof raw.verificationSummary === "string" ? raw.verificationSummary.trim() : "";
       if (status === "DONE" && verificationSummary === "") continue;
+      // What remains is the whole content of a CONTINUE; what was verified is optional.
+      if (status === "CONTINUE" && reason === "") continue;
       if (status === "BLOCKED" && (reason === "" || verificationSummary === "")) continue;
       return { status, reason: status === "DONE" && reason === "" ? "Completed" : reason, verificationSummary };
     } catch {
@@ -189,6 +191,12 @@ For success:
 
 \`\`\`agent-status
 {"status":"DONE","reason":"Completed","verificationSummary":"Commands run and observable results"}
+\`\`\`
+
+For work that is not finished, with what remains as concrete instructions for the run that resumes it:
+
+\`\`\`agent-status
+{"status":"CONTINUE","reason":"What still has to happen","verificationSummary":"What this run verified, if anything"}
 \`\`\`
 
 For a real blocker:
