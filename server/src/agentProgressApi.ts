@@ -1,7 +1,11 @@
+import type { DbAccessPayload, NormalizedEvent } from "@agent-console/shared";
 import { consultWorkspaceMarkdown, contextMarkdown } from "./agentContext.ts";
 import { config } from "./config.ts";
+import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import type { AgentProgressTools } from "./adapters/types.ts";
+import { newId } from "./lib/ids.ts";
+import { createLogger } from "./lib/logger.ts";
 import { hashRunToken, runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
@@ -12,6 +16,40 @@ import { WorkspaceError, workspaces } from "./workspaces.ts";
  * HTTP with a bearer run credential, or through in-process tools bound to that
  * same credential - so both paths go through the functions below.
  */
+
+const log = createLogger("server");
+
+/**
+ * Record one trip an agent made to this app's database.
+ *
+ * Called where the agent API is entered - the HTTP route handler and the bound
+ * tools - rather than by each adapter, so a raw curl, the CLI shim and a
+ * provider's own tool call all produce the same line, and no adapter has to
+ * cooperate for the operator to see it. The event rides the normal transcript
+ * channel, so it streams live and is replayed to a tab that opens mid-run like
+ * anything else.
+ *
+ * Failures here are swallowed. Losing a log line is bad; failing an agent's
+ * status post because the logging of it broke would be very much worse.
+ */
+export function recordDbAccess(runId: string, payload: DbAccessPayload): void {
+  try {
+    const live = runHub.get(runId);
+    const event: NormalizedEvent = {
+      id: newId("evt"),
+      runId,
+      provider: live?.provider ?? "claude",
+      model: live?.model ?? null,
+      timestamp: new Date().toISOString(),
+      type: "db_access",
+      payload,
+    };
+    workspaces.recordAgentEvent(runId, event);
+    runHub.event(runId, event);
+  } catch (error) {
+    log.warn(`could not record database access for run=${runId}`, error);
+  }
+}
 
 export type AgentApiOperation = "context" | "remarks" | "status" | "state";
 
@@ -149,11 +187,63 @@ export async function repairAgentVerify(runId: string, token: string, body: Reco
 
 /** Tool handlers bound to one run credential, for providers that run in-process. */
 export function bindAgentProgressTools(runId: string, token: string): AgentProgressTools {
+  // The work item's status, for the "before → after" of a write. Read through the
+  // credential so a revoked or foreign run learns nothing; such a call is refused
+  // anyway, and its line needs no status.
+  const status = (): string | null => {
+    try {
+      const run = authorizeAgentCredential(runId, token);
+      return run.promptId === null ? null : workspaces.promptOutcome(run.promptId).status;
+    } catch {
+      return null;
+    }
+  };
+  // The tool path's entry in the access log, which the HTTP route writes for
+  // itself. A tool call is not an HTTP request, so the method says so; the
+  // status code is the one the same call would have got over HTTP.
+  const write = <T>(operation: Extract<DbOperation, "remarks" | "status" | "repair-verify">, input: Record<string, unknown>, action: () => T): T => {
+    const startedAt = Date.now();
+    const requestId = typeof input.requestId === "string" ? input.requestId : null;
+    const before = status();
+    const accepted = (): void => recordDbAccess(runId, {
+      ...describeAcceptedWrite({ operation, before, after: status(), requestId, remarkKind: typeof input.kind === "string" ? input.kind : null, durationMs: Date.now() - startedAt }),
+      method: "TOOL",
+    });
+    const rejected = (error: unknown): void => recordDbAccess(runId, {
+      ...describeRejectedWrite({
+        operation,
+        httpStatus: error instanceof WorkspaceError ? error.status : 400,
+        errorCode: error instanceof WorkspaceError ? error.code : "invalid_request",
+        message: error instanceof Error ? error.message : String(error),
+        requestId,
+        durationMs: Date.now() - startedAt,
+      }),
+      method: "TOOL",
+    });
+    let result: T;
+    try {
+      result = action();
+    } catch (error) {
+      rejected(error);
+      throw error;
+    }
+    if (result instanceof Promise) {
+      return result.then((value: unknown) => { accepted(); return value; }, (error: unknown) => { rejected(error); throw error; }) as T;
+    }
+    accepted();
+    return result;
+  };
   return {
-    getContext: () => readAgentContext(runId, token, "tools").markdown,
-    postRemark: (input) => postAgentRemark(runId, token, input),
-    postStatus: (input) => postAgentStatus(runId, token, input),
-    repairVerify: (input) => repairAgentVerify(runId, token, input),
+    getContext: () => {
+      const startedAt = Date.now();
+      const result = readAgentContext(runId, token, "tools");
+      const summary = result.purpose === "execute" ? `read work item ${result.context.prompt.externalKey ?? result.context.prompt.title}` : "read the consult context";
+      recordDbAccess(runId, { ...describeRead({ operation: "context", summary, durationMs: Date.now() - startedAt }), method: "TOOL" });
+      return result.markdown;
+    },
+    postRemark: (input) => write("remarks", input, () => postAgentRemark(runId, token, input)),
+    postStatus: (input) => write("status", input, () => postAgentStatus(runId, token, input)),
+    repairVerify: (input) => write("repair-verify", input, () => repairAgentVerify(runId, token, input)),
   };
 }
 

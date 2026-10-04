@@ -168,6 +168,38 @@ test("a Verify command that is itself wrong can be repaired through the tools, a
   }
 });
 
+test("every trip a run makes through the tools is in the access log, refusals included", async () => {
+  // The log answers "did this agent talk to the app, and what did it change?".
+  // Only the HTTP route wrote it, so a Claude run that posted and was refused
+  // looked exactly like one that never tried.
+  const f = fixture();
+  try {
+    const prompt = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("logged"), content: "Do it.\n\n## Verify\n\n```sh\necho broken; exit 3\n```\n" }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, prompt.id);
+    const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+    await callTool(tools, "get_context", {});
+    await callTool(tools, "post_remark", { requestId: "remark-logged-1", kind: "FINDING", content: "noted" });
+    await callTool(tools, "post_status", DONE);
+    await callTool(tools, "post_status", { ...DONE, requestId: "status-continue-1", status: "CONTINUE", reason: "Fix the check.", verificationSummary: "" });
+
+    const lines = workspaces.runEvents(run.runId).filter((event) => event.type === "db_access").map((event) => {
+      const { method, operation, outcome, httpStatus, errorCode, changed, requestId } = event.payload;
+      return { method, operation, outcome, httpStatus, errorCode, changed, requestId };
+    });
+    assert.deepEqual(lines, [
+      { method: "TOOL", operation: "context", outcome: "accepted", httpStatus: 200, errorCode: null, changed: [], requestId: null },
+      { method: "TOOL", operation: "remarks", outcome: "accepted", httpStatus: 200, errorCode: null, changed: ["prompt_remark"], requestId: "remark-logged-1" },
+      { method: "TOOL", operation: "status", outcome: "rejected", httpStatus: 409, errorCode: "verification_failed", changed: [], requestId: "status-done-1" },
+      { method: "TOOL", operation: "status", outcome: "accepted", httpStatus: 200, errorCode: null, changed: ["prompt", "prompt_status_event"], requestId: "status-continue-1" },
+    ]);
+    const summaries = workspaces.runEvents(run.runId).filter((event) => event.type === "db_access").map((event) => event.payload.summary);
+    assert.equal(summaries[1], "+1 FINDING remark");
+    assert.equal(summaries[3], "IN_PROGRESS → TODO");
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("S-CLT-01/24: Claude takes the tool path and exposes exactly the four progress tools", () => {
   assert.equal(getAdapter("claude").supportsProgressTools, true);
   for (const provider of ["codex", "grok", "cursor"] as const) assert.equal(getAdapter(provider).supportsProgressTools, false);

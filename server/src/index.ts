@@ -3,8 +3,6 @@ import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
-import type { DbAccessPayload, NormalizedEvent } from "@agent-console/shared";
-import { newId } from "./lib/ids.ts";
 import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { config } from "./config.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
@@ -16,7 +14,7 @@ import { runRoleStartError } from "./runner.ts";
 import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
-import { authorizeAgentCredential, postAgentRemark, postAgentStatus, readAgentContext, readAgentState } from "./agentProgressApi.ts";
+import { authorizeAgentCredential, postAgentRemark, postAgentStatus, readAgentContext, readAgentState, recordDbAccess } from "./agentProgressApi.ts";
 import { runContexts } from "./runContext.ts";
 import { removeAllAgentShims } from "./agentShim.ts";
 import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentContext.ts";
@@ -124,36 +122,6 @@ async function broadcastSettingsChange(): Promise<void> {
 }
 
 
-/**
- * Record one trip an agent made to this app's database.
- *
- * Emitted here, at the agent API's single route handler, rather than by each
- * adapter — so a raw curl, the CLI shim and a provider's own tool call all
- * produce the same line, and no adapter has to cooperate for the operator to
- * see it. The event rides the normal transcript channel, so it streams live and
- * is replayed to a tab that opens mid-run like anything else.
- *
- * Failures here are swallowed. Losing a log line is bad; failing an agent's
- * status post because the logging of it broke would be very much worse.
- */
-function recordDbAccess(runId:string,payload:DbAccessPayload):void{
-  try{
-    const live=runHub.get(runId);
-    const event:NormalizedEvent={
-      id:newId("evt"),
-      runId,
-      provider:live?.provider??"claude",
-      model:live?.model??null,
-      timestamp:new Date().toISOString(),
-      type:"db_access",
-      payload,
-    };
-    workspaces.recordAgentEvent(runId,event);
-    runHub.event(runId,event);
-  }catch(error){
-    log.warn(`could not record database access for run=${runId}`,error);
-  }
-}
 
 const httpServer = createServer((req, res) => {
   applyCors(req, res);
