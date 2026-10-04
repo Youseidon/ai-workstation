@@ -1,5 +1,6 @@
 import { consultWorkspaceMarkdown, contextMarkdown } from "./agentContext.ts";
 import { config } from "./config.ts";
+import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import type { AgentProgressTools } from "./adapters/types.ts";
 import { hashRunToken, runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
@@ -86,8 +87,41 @@ export function postAgentRemark(runId: string, token: string, body: Record<strin
   return result;
 }
 
-export function postAgentStatus(runId: string, token: string, body: Record<string, unknown>): unknown {
-  requireMutatingRole(authorizeAgentCredential(runId, token));
+function hasVerifyCommands(promptId: number): boolean {
+  try {
+    return workspaces.dodCommandPlan(promptId).criteria.some((criterion) => criterion.command !== null);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Records a run's terminal status, running the item's Verify commands first when
+ * the status is DONE.
+ *
+ * The gate that closes an item only reads recorded results, so the commands
+ * have to be run before it looks. The HTTP route does that in its handler; this
+ * is the same step for a provider that reports through bound tools. Without it
+ * every criterion stayed "not run yet", the gate refused a finished item, and
+ * the pipeline retried work that was already done until it parked.
+ *
+ * A failing command is a refusal, not a status: the run is still live and can
+ * fix it, so the output goes back to it and the item stays in progress.
+ */
+export async function postAgentStatus(runId: string, token: string, body: Record<string, unknown>): Promise<unknown> {
+  const run = authorizeAgentCredential(runId, token);
+  requireMutatingRole(run);
+  // With no command to run there is nothing to wait for, and not waiting keeps a
+  // done ahead of any status posted after it.
+  if (body.status === "DONE" && run.promptId !== null && hasVerifyCommands(run.promptId)) {
+    await runDefinitionOfDoneCommands(run.promptId, runId);
+    const failures = workspaces.agentDoneVerificationFailures(run.promptId);
+    if (failures !== null) {
+      workspaces.recordVerificationFailureRemark(run.promptId, runId, failures);
+      const detail = failures.map((failure) => `$ ${failure.command}\nexit ${failure.exitCode ?? "none"}: ${failure.evidence}\n${failure.output.trim()}`).join("\n\n").slice(0, 6000);
+      throw new WorkspaceError(409, "verification_failed", `Fix this and post \`done\` again. If it cannot be fixed in this run, post \`continue\` with what remains.\n\n${detail}`);
+    }
+  }
   const result = workspaces.updateAgentStatus(runId, body);
   runHub.operationsChanged();
   return result;

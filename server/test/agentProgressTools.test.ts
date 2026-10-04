@@ -87,6 +87,36 @@ function isTerminalEvent(event: unknown, runId: string): boolean {
 
 const DONE = { requestId: "status-done-1", expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Completed", verificationSummary: "npm test passed" };
 
+test("a done reported through the tools runs the item's Verify commands, as a done over HTTP does", async () => {
+  // The gate that closes an item only reads recorded results; something has to
+  // run the commands first. The HTTP route did and the tool path did not, so a
+  // Claude run that finished its work was refused as "not verified" every time,
+  // retried until its continuations ran out, and parked a pipeline whose checks
+  // would all have passed.
+  const f = fixture();
+  try {
+    const passing = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("verified"), content: "Do it.\n\n## Verify\n\n```sh\ntrue\n```\n" }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, passing.id);
+    const done = await callTool(claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token)), "post_status", DONE);
+    assert.equal(done.isError, false, done.text);
+    assert.equal(workspaces.promptOutcome(passing.id).status, "DONE");
+
+    // A failing command is handed back while the run can still act on it; the
+    // item stays in progress instead of ending the run on NEEDS_REVIEW.
+    const failing = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("unverified"), content: "Do it.\n\n## Verify\n\n```sh\necho broken; exit 3\n```\n" }) as PromptRecord;
+    const second = startExecuteRun(f.workspace.id, failing.id);
+    const refused = await callTool(claudeProgressToolDefinitions(bindAgentProgressTools(second.runId, second.token)), "post_status", DONE);
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /^verification_failed: /);
+    assert.match(refused.text, /broken/, "the command's output is in the refusal");
+    assert.equal(workspaces.promptOutcome(failing.id).status, "IN_PROGRESS");
+    const remarks = workspaces.promptHistory(failing.id).remarks as Array<{ kind: string; content: string }>;
+    assert.equal(remarks.some((remark) => remark.kind === "VERIFICATION" && remark.content.includes("broken")), true, "the failure is banked for the next run");
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("S-CLT-01/24: Claude takes the tool path and exposes exactly the three progress tools", () => {
   assert.equal(getAdapter("claude").supportsProgressTools, true);
   for (const provider of ["codex", "grok", "cursor"] as const) assert.equal(getAdapter(provider).supportsProgressTools, false);

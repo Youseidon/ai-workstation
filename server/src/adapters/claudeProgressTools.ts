@@ -40,7 +40,7 @@ function refused(error: unknown): ToolResult {
 
 async function guarded(action: () => unknown): Promise<ToolResult> {
   try {
-    return ok(action());
+    return ok(await action());
   } catch (error) {
     return refused(error);
   }
