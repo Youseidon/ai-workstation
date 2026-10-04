@@ -43,6 +43,10 @@ test("a connected bot goes back to the token step only when the operator asks fo
   assert.equal(telegramSetupStep(paired, true, false), "ready");
   assert.equal(telegramSetupStep(paired, true, true), "bot");
   assert.equal(telegramSetupStep(status(), true, true), "bot", "also before a phone is paired");
+  // A saved bot that is switched off sits on the connecting step, and the
+  // operator must be able to replace it without enabling it first.
+  assert.equal(telegramSetupStep(status({ state: "disabled" }), true, false), "connecting");
+  assert.equal(telegramSetupStep(status({ state: "disabled" }), true, true), "bot");
 });
 
 test("the client sends a write-only token to the dedicated local credential route", async () => {

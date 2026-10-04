@@ -174,9 +174,10 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
 
       {step === "connecting" && (
         <section className="mt-5 rounded-md border border-line bg-surface-0 p-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge tone="info" dot pulse>connecting</Badge>
             {status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}
+            {useDifferentBot}
           </div>
           <p className="mt-2 text-xs text-fg-muted">{status?.reason ?? "Checking the local Telegram service…"}</p>
           {status?.tokenConfigured && status.state === "disabled" && (
