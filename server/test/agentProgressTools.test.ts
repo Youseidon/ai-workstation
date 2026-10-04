@@ -238,6 +238,26 @@ test("S-CLT-20/21/25: every channel is chosen once, and only the launcher channe
   assert.equal(savedTaskBody.match(/resolvedPrompt = /g)?.length, 1);
 });
 
+test("the context of a run that reports through tools ends in the tools it has, not in agent-step", () => {
+  // The section was written for the launcher and reached tools runs unchanged:
+  // it sent them to a command they do not have and offered `decompose`, which
+  // has no tool.
+  const f = fixture();
+  try {
+    const run = startExecuteRun(f.workspace.id, f.prompt.id);
+    const protocol = (markdown: string) => markdown.slice(markdown.indexOf("## How this run ends")).split("\n## ")[0] as string;
+    const tools = protocol(readAgentContext(run.runId, run.token, "tools").markdown);
+    assert.match(tools, /Post exactly one of DONE, CONTINUE or BLOCKED with the `post_status` tool\./);
+    assert.match(tools, /Bank progress with `post_remark`/);
+    assert.doesNotMatch(tools, /agent-step|decompose/);
+    const http = protocol(readAgentContext(run.runId, run.token, "http").markdown);
+    assert.match(http, /through `agent-step` \(below\)/, "a run with the launcher is told what it always was");
+    assert.match(http, /decompose/);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("S-CLT-04/05/06/28: remarks, DONE status and context work through the tools without leaking the credential", async () => {
   const f = fixture();
   try {
@@ -251,7 +271,9 @@ test("S-CLT-04/05/06/28: remarks, DONE status and context work through the tools
     assert.doesNotMatch(context.text, /## Progress|curl|Bearer|\/api\/agent\/runs\//);
     const http = readAgentContext(run.runId, run.token, "http");
     assert.ok(http.purpose === "execute");
-    assert.equal(`${context.text}\n\n${http.markdown.slice(http.markdown.indexOf("## Progress API"))}`, http.markdown, "tool context equals the HTTP context without its reporting section");
+    // Up to how the run ends, which names the channel each of them reports through.
+    const workItem = (markdown: string) => markdown.slice(0, markdown.indexOf("## How this run ends"));
+    assert.equal(workItem(context.text), workItem(http.markdown), "tool context carries the same work item as the HTTP context");
 
     for (const kind of ["PROGRESS", "FINDING", "DECISION_NEEDED", "BLOCKER", "VERIFICATION", "COMPLETION"]) {
       const remark = await callTool(tools, "post_remark", { requestId: `remark-${kind.toLowerCase().replaceAll("_", "-")}`, kind, content: `${kind} note` });

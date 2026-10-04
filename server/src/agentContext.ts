@@ -36,6 +36,11 @@ export interface ContextExtras {
    * `agent-step context --full`.
    */
   full?: boolean;
+  /**
+   * The tool names of a run that reports through bound tools. Such a run has no
+   * `agent-step`, so the protocol section has to name what it can actually call.
+   */
+  progressTools?: { postRemark: string; postStatus: string };
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
@@ -71,6 +76,29 @@ export function descriptionContainedInInstructions(description: string, agentsMd
     if (needle !== "" && haystack.includes(needle)) hits += 1;
   }
   return hits / lines.length >= 0.8;
+}
+
+/**
+ * The same protocol for a run that reports through bound tools. It is a section
+ * of its own rather than a few substituted words because the set of endings is
+ * different: there is no tool to decompose with, so offering it would send the
+ * run looking for a command it does not have.
+ */
+function toolsExecuteProtocol(tools: { postRemark: string; postStatus: string }): string {
+  return `## How this run ends
+
+Post exactly one of DONE, CONTINUE or BLOCKED with the \`${tools.postStatus}\` tool.
+DONE is checked by the server: the Verification commands above run in the workspace and DONE
+is refused with their output if any fails. CONTINUE records what remains and re-queues this
+item on this working tree — keep posting it until DONE passes, or until a real human question
+needs BLOCKED. The rail does not stop for CONTINUE.
+BLOCKED is only for action only a human can take (credentials, undelegated decisions, external
+systems); remaining work is never a blocker. Reconcile stale saved scope from repository evidence;
+never ask the user to edit the tracker or choose a speculative mapping.
+Bank progress with \`${tools.postRemark}\` (kind PROGRESS) after each verified piece; if this run is
+stopped by its budget you get a short wrap-up turn on the same session to record what remains.
+Do not look for or edit a tracker file; the database is the tracker.
+`;
 }
 
 function executeProtocol(canDecompose: boolean): string {
@@ -217,7 +245,7 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     + verification
     + section("Where the last run stopped", cap(stopped, 6 * 1024))
     + section("Clarifications", cap(clarifications, 2 * 1024))
-    + executeProtocol(canDecompose);
+    + (extras?.progressTools === undefined ? executeProtocol(canDecompose) : toolsExecuteProtocol(extras.progressTools));
 }
 
 /** Consult / clarify keep the pre-diet layout. */

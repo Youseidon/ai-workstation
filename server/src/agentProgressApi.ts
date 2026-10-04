@@ -69,8 +69,9 @@ export function readAgentContext(runId: string, token: string, progress: "http" 
   if (run.promptId === null) throw new WorkspaceError(409, "run_not_active", "Run is not attached to a work item");
   const context = workspaces.agentContext(run.workspaceId, run.promptId);
   // Tool callers already received the reporting contract in their run prompt, so
-  // their context is the work item alone, never instructions arriving as tool output.
-  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context);
+  // their context carries no second copy of it, only the work item and how the
+  // run ends, in the names of the tools they have.
+  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context, "execute", { progressTools: PROGRESS_TOOL_NAMES });
   return { purpose: "execute", context, markdown };
 }
 

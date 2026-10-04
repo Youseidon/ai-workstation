@@ -353,7 +353,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       }
       resolvedPrompt = savedTaskExecutePrompt({
         taskLabel,
-        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
+        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH, ...(channel === "tools" ? { progressTools: PROGRESS_TOOL_NAMES } : {}) }),
         channel,
         contract,
       });
