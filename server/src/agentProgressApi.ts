@@ -149,9 +149,11 @@ export function progressToolsMarkdown(): string {
 This run is already marked IN_PROGRESS. Record progress only through these tools; never open or modify SQLite directly, and do not call the local HTTP API.
 
 - \`${PROGRESS_TOOL_NAMES.postRemark}\` records a remark: \`requestId\` (unique for this run), \`kind\` (PROGRESS, FINDING, DECISION_NEEDED, BLOCKER, VERIFICATION or COMPLETION) and \`content\`.
-- \`${PROGRESS_TOOL_NAMES.postStatus}\` records exactly one terminal status before you finish: \`requestId\`, \`expectedStatus\` "IN_PROGRESS", \`status\` DONE or BLOCKED, \`reason\`, \`verificationSummary\` and, for BLOCKED, an optional \`options\` list.
+- \`${PROGRESS_TOOL_NAMES.postStatus}\` records exactly one terminal status before you finish: \`requestId\`, \`expectedStatus\` "IN_PROGRESS", \`status\` DONE, CONTINUE or BLOCKED, \`reason\`, \`verificationSummary\` and, for BLOCKED, an optional \`options\` list.
 
-For DONE, \`verificationSummary\` lists the commands run and their observable results.
+For DONE, \`verificationSummary\` lists the commands run and their observable results. The server then runs the work item's Verify commands; if one fails, the DONE is refused with its output and nothing is recorded. Fix the work and post DONE again.
+
+CONTINUE is for work that cannot finish in this run: put what remains in \`reason\`, as concrete instructions for the run that resumes this item on this working tree, and what you verified in \`verificationSummary\`.
 
 BLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, put observed evidence in \`reason\` and the exact action only the human can take in \`verificationSummary\`.
 

@@ -66,13 +66,13 @@ export function claudeProgressToolDefinitions(tools: AgentProgressTools) {
     ),
     tool(
       "post_status",
-      "Records this run's single terminal status: DONE with a verification summary, or BLOCKED with evidence and the exact human action required.",
+      "Records how this run ends: DONE with a verification summary, CONTINUE with what remains, or BLOCKED with evidence and the exact human action required. A DONE whose Verify commands fail is refused with their output and records nothing, so another status can still be posted.",
       {
         requestId: REQUEST_ID,
         expectedStatus: z.literal("IN_PROGRESS"),
-        status: z.enum(["DONE", "BLOCKED"]),
-        reason: z.string().max(10000).describe("For BLOCKED: observed evidence showing why execution cannot continue."),
-        verificationSummary: z.string().max(20000).describe("For DONE: commands run and observable results. For BLOCKED: the exact action only the human can take."),
+        status: z.enum(["DONE", "CONTINUE", "BLOCKED"]),
+        reason: z.string().max(10000).describe("For CONTINUE: the remaining work, as concrete instructions for the run that resumes this item. For BLOCKED: observed evidence showing why execution cannot continue."),
+        verificationSummary: z.string().max(20000).describe("For DONE: commands run and observable results. For CONTINUE: what this run verified, if anything. For BLOCKED: the exact action only the human can take."),
         options: z
           .array(OPTION)
           .max(20)

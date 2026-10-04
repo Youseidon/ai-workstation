@@ -112,6 +112,17 @@ test("a done reported through the tools runs the item's Verify commands, as a do
     assert.equal(workspaces.promptOutcome(failing.id).status, "IN_PROGRESS");
     const remarks = workspaces.promptHistory(failing.id).remarks as Array<{ kind: string; content: string }>;
     assert.equal(remarks.some((remark) => remark.kind === "VERIFICATION" && remark.content.includes("broken")), true, "the failure is banked for the next run");
+
+    // The refusal tells the run to post `continue` if it cannot fix the check,
+    // so the tool has to take one: the item is re-queued with the brief.
+    const tools = claudeProgressToolDefinitions(bindAgentProgressTools(second.runId, second.token));
+    const empty = await callTool(tools, "post_status", { ...DONE, requestId: "status-continue-0", status: "CONTINUE", reason: "", verificationSummary: "" });
+    assert.ok(!empty.schemaRejected && empty.isError, "a continue with nothing remaining is refused by the server");
+    const resumed = await callTool(tools, "post_status", { ...DONE, requestId: "status-continue-1", status: "CONTINUE", reason: "Make the check print ok instead of broken.", verificationSummary: "" });
+    assert.ok(!resumed.schemaRejected && !resumed.isError, resumed.text);
+    assert.equal(workspaces.promptOutcome(failing.id).status, "TODO");
+    const after = workspaces.promptHistory(failing.id).remarks as Array<{ kind: string; content: string }>;
+    assert.equal(after.some((remark) => remark.kind === "CONTINUATION" && remark.content === "Make the check print ok instead of broken."), true, "the brief is left for the run that resumes it");
   } finally {
     f.cleanup();
   }
