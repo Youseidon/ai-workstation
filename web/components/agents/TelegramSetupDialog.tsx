@@ -10,8 +10,11 @@ import { workspaceApi } from "@/lib/workspacesApi";
 
 export type TelegramSetupStep = "bot" | "connecting" | "phone" | "confirm" | "enable" | "ready";
 
-export function telegramSetupStep(status: TelegramLiveStatus | null, controlsEnabled = true): TelegramSetupStep {
+export function telegramSetupStep(status: TelegramLiveStatus | null, controlsEnabled = true, changingBot = false): TelegramSetupStep {
   if (status === null || !status.tokenConfigured || status.state === "auth_failed" || status.state === "missing_token") return "bot";
+  // A connected bot never reaches the token step again by itself, so the
+  // operator asking for another one is what sends the dialog back there.
+  if (changingBot) return "bot";
   if (status.state !== "polling" && status.state !== "backoff") return "connecting";
   if (status.actors.length > 0) return controlsEnabled ? "ready" : "enable";
   if (status.pairing?.observed) return "confirm";
@@ -33,6 +36,7 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
   const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [changingBot, setChangingBot] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -69,6 +73,7 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
     await act(async () => {
       await workspaceApi.configureTelegram(SERVER_URL, token);
       setToken("");
+      setChangingBot(false);
       await onEnable();
     });
   }
@@ -87,21 +92,32 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
     await act(async () => { await workspaceApi.confirmTelegramPairing(SERVER_URL, code); });
   }
 
-  const step = telegramSetupStep(status, controlsEnabled);
+  // Closing abandons a half-entered change of bot, so reopening shows the bot in use.
+  function close(): void {
+    setChangingBot(false);
+    setToken("");
+    onClose();
+  }
+
+  const step = telegramSetupStep(status, controlsEnabled, changingBot);
   const pairing = status?.pairing ?? null;
+  const currentBot = status?.bot?.username ? `@${status.bot.username}` : "the current bot";
+  const useDifferentBot = (
+    <Button className="ml-auto" size="sm" variant="ghost" disabled={busy} onClick={() => { setError(null); setChangingBot(true); }}>Use a different bot</Button>
+  );
 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
       size="lg"
       title="Set up Telegram"
       description="Connect this workstation to your own Telegram bot. Your teammate should repeat this setup with a different bot on their workstation."
       footer={
         step === "ready" ? (
-          <Button size="sm" variant="success" onClick={onClose}>Done</Button>
+          <Button size="sm" variant="success" onClick={close}>Done</Button>
         ) : (
-          <Button size="sm" variant="ghost" onClick={onClose} disabled={busy}>Finish later</Button>
+          <Button size="sm" variant="ghost" onClick={close} disabled={busy}>Finish later</Button>
         )
       }
     >
@@ -113,10 +129,21 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
 
       {step === "bot" && (
         <section className="mt-5">
-          <h3 className="text-sm font-medium text-fg">Create your personal bot</h3>
-          <p className="mt-1 text-xs leading-5 text-fg-muted">
-            Open <a className="text-accent underline" href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a>, send <code>/newbot</code>, and follow its two prompts. Then paste the token it gives you below.
-          </p>
+          {changingBot ? (
+            <>
+              <h3 className="text-sm font-medium text-fg">Use a different bot</h3>
+              <p className="mt-1 text-xs leading-5 text-fg-muted">
+                Paste the token of the bot this workstation should use instead of {currentBot}. A phone paired with {currentBot} is unpaired, and the next step pairs it with the new bot.
+              </p>
+            </>
+          ) : (
+            <>
+              <h3 className="text-sm font-medium text-fg">Create your personal bot</h3>
+              <p className="mt-1 text-xs leading-5 text-fg-muted">
+                Open <a className="text-accent underline" href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a>, send <code>/newbot</code>, and follow its two prompts. Then paste the token it gives you below.
+              </p>
+            </>
+          )}
           <label className="mt-3 block text-[11px] uppercase tracking-wider text-fg-dim" htmlFor="telegram-bot-token">Bot token</label>
           <div className="mt-1.5 flex gap-2">
             <input
@@ -134,7 +161,10 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
           <p className="mt-2 text-[11px] leading-4 text-fg-dim">
             The server validates the token directly with Telegram, stores it only in an owner-readable local credential file, and never returns it to the browser or passes it to agents.
           </p>
-          <div className="mt-3 flex justify-end">
+          <div className="mt-3 flex justify-end gap-2">
+            {changingBot && (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setToken(""); setError(null); setChangingBot(false); }}>Keep {currentBot}</Button>
+            )}
             <Button size="sm" variant="primary" loading={busy} disabled={token.trim() === ""} onClick={() => void saveToken()}>
               Save bot and continue
             </Button>
@@ -162,6 +192,7 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={status?.state === "backoff" ? "warning" : "success"} dot>{status?.state === "backoff" ? "retrying" : "connected"}</Badge>
             {status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}
+            {useDifferentBot}
           </div>
           {pairing === null ? (
             <div className="mt-4 rounded-md border border-line bg-surface-0 p-4">
@@ -196,7 +227,7 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
 
       {step === "ready" && (
         <section className="mt-5 rounded-md border border-success/40 bg-surface-0 p-4">
-          <div className="flex flex-wrap items-center gap-2"><Badge tone="success" dot>ready</Badge>{status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}</div>
+          <div className="flex flex-wrap items-center gap-2"><Badge tone="success" dot>ready</Badge>{status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}{useDifferentBot}</div>
           <h3 className="mt-3 text-sm font-medium text-fg">Telegram is ready on this workstation</h3>
           <p className="mt-1 text-xs leading-5 text-fg-muted">Task notifications and validated phone actions are enabled for {status?.actors[0]?.label ?? "your paired account"}. Your teammate should run this setup on their workstation with their own bot.</p>
           <p className="mt-2 text-[11px] text-fg-dim">Use the Telegram status card to inspect delivery health, pair another phone or unpair an account.</p>
@@ -205,7 +236,7 @@ export function TelegramSetupDialog({ open, onClose, onEnable, onChanged, contro
 
       {step === "enable" && (
         <section className="mt-5 rounded-md border border-accent/40 bg-surface-0 p-4">
-          <div className="flex flex-wrap items-center gap-2"><Badge tone="success" dot>paired</Badge>{status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}</div>
+          <div className="flex flex-wrap items-center gap-2"><Badge tone="success" dot>paired</Badge>{status?.bot?.username && <span className="font-mono text-xs text-fg">@{status.bot.username}</span>}{useDifferentBot}</div>
           <h3 className="mt-3 text-sm font-medium text-fg">Finish personal controls</h3>
           <p className="mt-1 text-xs leading-5 text-fg-muted">The bot and phone are paired. Enable task notifications and validated phone actions to make the connection useful. Team and handover remain off.</p>
           <Button className="mt-3" size="sm" variant="primary" loading={busy} onClick={() => void enableExisting()}>Enable personal controls</Button>

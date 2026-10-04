@@ -948,6 +948,13 @@ export class TelegramLiveRuntime {
    * told the workstation is up, which is also how the operator learns the link
    * still works. With no chat at all a pairing is opened and its link logged, so
    * the next step is on the screen that just started the server.
+   *
+   * A different bot is the third case. The pairing rows do not say which bot they
+   * were made with, so they used to carry over to a new one, which then tried to
+   * message a chat that may never have opened it; Telegram refuses that for good,
+   * and the card it refused is not sent twice. The chats remembered for the
+   * previous bot are unpaired instead, which leaves nobody and so opens a pairing
+   * with the new bot.
    */
   private connectPairedChats(session: Session): void {
     const store = this.options.pairedChats;
@@ -955,7 +962,11 @@ export class TelegramLiveRuntime {
     const enrolled = new Set(this.pairedActors().map(actor => actor.id));
     const actorId = (chat: { transportUserId: string; chatId: string; topicId: string | null }) => `telegram-${chat.transportUserId}-${chat.chatId}-${chat.topicId ?? "main"}`;
     const remembered = store.read();
-    if (remembered !== null && remembered.botId === session.botId) {
+    if (remembered !== null && remembered.botId !== session.botId) {
+      const previous = remembered.chats.map(actorId).filter(id => enrolled.has(id));
+      for (const id of previous) workspaces.disableTaskControlActor(id);
+      if (previous.length > 0) this.log.info(`this is a different bot, so ${previous.length} chat(s) paired with the previous one were unpaired`);
+    } else if (remembered !== null) {
       let restored = 0;
       for (const chat of remembered.chats) {
         const id = actorId(chat);

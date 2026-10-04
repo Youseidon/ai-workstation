@@ -185,11 +185,13 @@ function harness(options: {
   const logs: string[] = [];
   const sleeps: number[] = [];
   const persisted: string[] = [];
+  const others: StubTelegram[] = [];
   const log = (level: string) => (message: string, extra?: unknown) => { logs.push(`${level} ${message} ${extra === undefined ? "" : String(extra)}`); };
   const runtime = new TelegramLiveRuntime({
     settings: () => settings,
     credential: { token: options.token === "none" ? null : BotToken.parse(stub.rawToken), problem: null },
-    createApi: (token, contentForRef) => new HttpTelegramBotApi({ token, contentForRef, fetch: stub.fetch }),
+    // Each request goes to the stub whose token it carries, so a second bot can stand beside the first.
+    createApi: (token, contentForRef) => new HttpTelegramBotApi({ token, contentForRef, fetch: ((input: string | URL | Request, init?: RequestInit) => (others.find(other => String(input).includes(`/bot${other.rawToken}/`)) ?? stub).fetch(input, init)) as typeof fetch }),
     persistCredential: options.persistCredential ?? (token => { persisted.push(token.reveal()); }),
     ...(options.pairedChats === undefined ? {} : { pairedChats: options.pairedChats }),
     // Record the requested backoff but do not actually wait for it.
@@ -209,6 +211,8 @@ function harness(options: {
   const botId = `telegram-${stub.botUserId}`;
   return {
     stub, settings, logs, sleeps, persisted, runtime, botId,
+    /** Makes another bot reachable, for a test that replaces the token. */
+    useStub(other: StubTelegram) { others.push(other); },
     async cleanup() {
       await runtime.stop();
       for (const actor of workspaces.taskControlActors("telegram")) workspaces.removeTaskControlActor(actor.id);
@@ -728,6 +732,51 @@ test("a paired-chat file that cannot be written does not fail the pairing", asyn
     assert.equal(h.logs.some(line => line.startsWith("warn ") && line.includes("could not save the paired chats: disk full")), true);
   } finally {
     await h.cleanup();
+  }
+});
+
+test("switching to a different bot unpairs the chat paired with the old one and opens a pairing with the new one", async () => {
+  // A chat paired with one bot may never have opened another, and Telegram will
+  // not let a bot start that conversation. Carrying the pairing over would show
+  // the phone as connected while every message to it was refused.
+  const dir = mkdtempSync(join(tmpdir(), "telegram-paired-"));
+  const store = filePairedChatStore(join(dir, "telegram-paired-chats.json"));
+  assert.deepEqual(workspaces.taskControlActors("telegram"), [], "sanity: no chat is paired before this test");
+  const h = harness({ pairedChats: store });
+  const next = new StubTelegram(7_200_000_000 + Math.floor(Math.random() * 1_000_000));
+  try {
+    await h.runtime.reconcile();
+    const opened = await waitFor(() => h.runtime.status().pairing, "a pairing opened at start");
+    h.stub.send(operator, operatorChat, `/start ${opened.code}`);
+    await waitFor(() => h.runtime.status().pairing?.observed, "pairing observation");
+    h.runtime.confirmPairing(opened.code);
+    assert.equal(h.runtime.status().actors.length, 1);
+
+    // Saving a token for the same bot again is not a change of bot.
+    await h.runtime.configureToken(h.stub.rawToken);
+    await waitFor(() => h.runtime.status().state === "polling", "polling again on the same bot");
+    assert.equal(h.runtime.status().actors.length, 1, "the pairing is kept");
+    assert.equal(h.runtime.status().pairing, null);
+
+    // The token is replaced from the setup screen, as the operator would do it.
+    h.useStub(next);
+    await h.runtime.configureToken(next.rawToken);
+    const reopened = await waitFor(() => h.runtime.status().pairing, "a pairing opened with the new bot");
+    assert.equal(h.runtime.status().bot?.id, String(next.botUserId));
+    assert.deepEqual(h.runtime.status().actors, [], "the old bot's chat is not carried over");
+    assert.equal(next.messages.length, 0, "nothing is sent to a chat that has not opened the new bot");
+
+    // Pairing with the new bot brings the same phone back, and it is remembered for that bot.
+    next.send(operator, operatorChat, `/start ${reopened.code}`);
+    await waitFor(() => h.runtime.status().pairing?.observed, "pairing observation on the new bot");
+    h.runtime.confirmPairing(reopened.code);
+    await waitFor(() => next.messages.find(message => message.text.startsWith("Paired")), "paired notice from the new bot");
+    assert.equal(h.runtime.status().actors.length, 1);
+    assert.equal(store.read()?.botId, `telegram-${next.botUserId}`);
+  } finally {
+    await h.cleanup();
+    workspaces.removeTelegramRecordsForBot(`telegram-${next.botUserId}`);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

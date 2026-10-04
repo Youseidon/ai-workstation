@@ -38,6 +38,13 @@ test("Telegram setup advances from token to phone confirmation and ready", () =>
   assert.equal(telegramSetupStep(status({ actors: [{ id: "actor", label: "Teammate", transportUserId: "42", chatId: "42", createdAt: "2099-01-01T00:00:00.000Z" }] }), false), "enable");
 });
 
+test("a connected bot goes back to the token step only when the operator asks for a different one", () => {
+  const paired = status({ actors: [{ id: "actor", label: "Owner", transportUserId: "42", chatId: "42", createdAt: "2099-01-01T00:00:00.000Z" }] });
+  assert.equal(telegramSetupStep(paired, true, false), "ready");
+  assert.equal(telegramSetupStep(paired, true, true), "bot");
+  assert.equal(telegramSetupStep(status(), true, true), "bot", "also before a phone is paired");
+});
+
 test("the client sends a write-only token to the dedicated local credential route", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: URL; init?: RequestInit }> = [];
