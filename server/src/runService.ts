@@ -5,7 +5,8 @@ import { INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, t
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown, type ContextExtras } from "./agentContext.ts";
 import type { AgentProgressTools } from "./adapters/types.ts";
-import { PROGRESS_TOOL_NAMES, agentApiUrl, bindAgentProgressTools, progressToolsMarkdown } from "./agentProgressApi.ts";
+import { PROGRESS_TOOL_NAMES, agentApiUrl, bindAgentProgressTools, hasVerifyCommands, progressToolsMarkdown } from "./agentProgressApi.ts";
+import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
 import { programBriefMarkdown, programConsultMarkdown } from "./programBrief.ts";
 import { config } from "./config.ts";
@@ -148,6 +149,31 @@ function offlineStatusApplyFailureReason(status: OfflineAgentStatus["status"], e
       ? error.message
       : String(error);
   return `Internal orchestration error: parsed ${status} agent-status, but failed to apply it: ${detail}`;
+}
+
+/** Applies the status an offline run left in its final message; returns why it could not be applied, or null. */
+export function applyOfflineAgentStatus(runId: string, status: OfflineAgentStatus): string | null {
+  try {
+    workspaces.updateAgentStatus(runId, { requestId: offlineStatusRequestId(), expectedStatus: "IN_PROGRESS", ...status });
+    return null;
+  } catch (error) {
+    log.warn("could not apply offline agent status", error);
+    return offlineStatusApplyFailureReason(status.status, error);
+  }
+}
+
+/**
+ * Runs the item's Verify commands for a DONE an offline run claimed, so the
+ * gate has results to read when the claim is applied.
+ *
+ * The run has exited and cannot be handed a refusal, so a failing command does
+ * not stop the claim from being applied: the gate then keeps the item open on
+ * what really failed, and the output is banked for the run that picks it up.
+ */
+export async function verifyOfflineDone(runId: string, promptId: number): Promise<void> {
+  await runDefinitionOfDoneCommands(promptId, runId);
+  const failures = workspaces.agentDoneVerificationFailures(promptId);
+  if (failures !== null) workspaces.recordVerificationFailureRemark(promptId, runId, failures);
 }
 
 function offlineCompletionProtocol(reason: string): string {
@@ -452,90 +478,96 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
           ? { promptId: endedPromptId, stopReason: metrics.stopReason, sessionId: metrics.sessionId }
           : null;
-      if (activeContextRunId !== null) {
-        if (state === "done") {
-          const offlineStatus = parseOfflineAgentStatus(executionAnswer);
-          if (offlineStatus !== null) {
-            try {
-              workspaces.updateAgentStatus(activeContextRunId, {
-                requestId: offlineStatusRequestId(),
-                expectedStatus: "IN_PROGRESS",
-                ...offlineStatus,
-              });
-            } catch (error) {
-              terminalStatusApplyFailure = offlineStatusApplyFailureReason(offlineStatus.status, error);
-              log.warn("could not apply offline agent status", error);
+      const offlineStatus = activeContextRunId !== null && state === "done" ? parseOfflineAgentStatus(executionAnswer) : null;
+      const conclude = (): void => {
+        if (activeContextRunId !== null) {
+          if (offlineStatus !== null) terminalStatusApplyFailure = applyOfflineAgentStatus(activeContextRunId, offlineStatus);
+          workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null, terminalStatusFailure: terminalStatusApplyFailure });
+          runContexts.complete(activeContextRunId);
+          // The launcher holds this run's token. The credential is collapsed to a
+          // short TTL above, but a live-looking token sitting in tmp after its run
+          // is over is not something to leave lying around.
+          removeAgentShim(activeContextRunId);
+          activeContextRunId = null;
+        }
+        if (clarificationId !== null) {
+          workspaces.finishClarification(
+            clarificationId,
+            state === "done" ? "DONE" : state === "interrupted" ? "INTERRUPTED" : "ERROR",
+            clarificationAnswer,
+          );
+        }
+        runHub.end(runId, state);
+        workspaces.markStartIntent(runId, "KNOWN_STOPPED", `Process ended ${state}.`);
+        if (mode === "execute") proposeFromWorkingTree(endedWorkspaceId, runId);
+        const tellPipeline = () => {
+          if (mode !== "execute" || endedPromptId === undefined) return;
+          // Always the *source* run id: the scheduler's `currentRunId` guard keys
+          // on the run it started, and the wrap-up's own end must not fire this a
+          // second time.
+          void pipelineScheduler
+            .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
+            .catch((error:unknown)=>log.error(`pipeline advance failed after run ${runId}`,error));
+        };
+        if (wrapUp === null) { tellPipeline(); return; }
+        void (async () => {
+          // A cooling source provider cannot resume its session; pick another
+          // available provider for a fresh short turn, or skip the wrap-up and
+          // continue without notes (prompt 05).
+          let wrapProvider = provider;
+          let wrapModel = model;
+          let wrapSession = wrapUp.sessionId;
+          if (isCooling(provider)) {
+            const providers = await detectProviders();
+            const next = providers.find((item) => item.available && item.id !== provider && !isCooling(item.id));
+            if (next === undefined) {
+              log.warn(`wrap-up skipped after run ${runId}: ${provider} is cooling and no fallback is free`);
+              workspaces.applyDeferredRunEnd(runId);
+              return;
             }
+            wrapProvider = next.id;
+            wrapModel = null;
+            wrapSession = null;
+            log.info(`wrap-up fallback after run ${runId}: ${provider}→${wrapProvider}`);
           }
-        }
-        workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null, terminalStatusFailure: terminalStatusApplyFailure });
-        runContexts.complete(activeContextRunId);
-        // The launcher holds this run's token. The credential is collapsed to a
-        // short TTL above, but a live-looking token sitting in tmp after its run
-        // is over is not something to leave lying around.
-        removeAgentShim(activeContextRunId);
-        activeContextRunId = null;
-      }
-      if (clarificationId !== null) {
-        workspaces.finishClarification(
-          clarificationId,
-          state === "done" ? "DONE" : state === "interrupted" ? "INTERRUPTED" : "ERROR",
-          clarificationAnswer,
-        );
-      }
-      runHub.end(runId, state);
-      workspaces.markStartIntent(runId, "KNOWN_STOPPED", `Process ended ${state}.`);
-      if (mode === "execute") proposeFromWorkingTree(endedWorkspaceId, runId);
-      const tellPipeline = () => {
-        if (mode !== "execute" || endedPromptId === undefined) return;
-        // Always the *source* run id: the scheduler's `currentRunId` guard keys
-        // on the run it started, and the wrap-up's own end must not fire this a
-        // second time.
-        void pipelineScheduler
-          .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
-          .catch((error:unknown)=>log.error(`pipeline advance failed after run ${runId}`,error));
-      };
-      if (wrapUp === null) { tellPipeline(); return; }
-      void (async () => {
-        // A cooling source provider cannot resume its session; pick another
-        // available provider for a fresh short turn, or skip the wrap-up and
-        // continue without notes (prompt 05).
-        let wrapProvider = provider;
-        let wrapModel = model;
-        let wrapSession = wrapUp.sessionId;
-        if (isCooling(provider)) {
-          const providers = await detectProviders();
-          const next = providers.find((item) => item.available && item.id !== provider && !isCooling(item.id));
-          if (next === undefined) {
-            log.warn(`wrap-up skipped after run ${runId}: ${provider} is cooling and no fallback is free`);
+          const started = await startWrapUp({
+            workspaceId: endedWorkspaceId,
+            promptId: wrapUp.promptId,
+            sourceRunId: runId,
+            provider: wrapProvider,
+            model: wrapModel,
+            sessionId: wrapSession,
+            stopReason: wrapUp.stopReason,
+          });
+          await started.done;
+        })()
+          .catch((error: unknown) => {
+            // The provider is gone, or the run could not be recorded. The item
+            // must land exactly where it would have without this feature rather
+            // than sitting IN_PROGRESS forever waiting for a turn that is not
+            // coming.
+            log.error(`wrap-up could not start after run ${runId}`, error);
             workspaces.applyDeferredRunEnd(runId);
-            return;
-          }
-          wrapProvider = next.id;
-          wrapModel = null;
-          wrapSession = null;
-          log.info(`wrap-up fallback after run ${runId}: ${provider}→${wrapProvider}`);
-        }
-        const started = await startWrapUp({
-          workspaceId: endedWorkspaceId,
-          promptId: wrapUp.promptId,
-          sourceRunId: runId,
-          provider: wrapProvider,
-          model: wrapModel,
-          sessionId: wrapSession,
-          stopReason: wrapUp.stopReason,
-        });
-        await started.done;
-      })()
-        .catch((error: unknown) => {
-          // The provider is gone, or the run could not be recorded. The item
-          // must land exactly where it would have without this feature rather
-          // than sitting IN_PROGRESS forever waiting for a turn that is not
-          // coming.
-          log.error(`wrap-up could not start after run ${runId}`, error);
-          workspaces.applyDeferredRunEnd(runId);
-        })
-        .finally(tellPipeline);
+          })
+          .finally(tellPipeline);
+      };
+      // A DONE left in a final message is a claim like any other, and the gate
+      // that closes the item only reads recorded results. The Verify commands
+      // therefore run before the claim is applied, as they do for a DONE posted
+      // over HTTP or through the tools; without that every criterion read "not
+      // run yet" and a finished item was sent back for review. Everything that
+      // ends the run waits for them, so the run is not reported over while its
+      // outcome is still being decided.
+      const verifyFirst = offlineStatus?.status === "DONE"
+        && activeContextRunId !== null
+        && endedPromptId !== undefined
+        && workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
+        && hasVerifyCommands(endedPromptId);
+      if (!verifyFirst) { conclude(); return; }
+      void verifyOfflineDone(activeContextRunId!, endedPromptId!)
+        .catch((error: unknown) => log.warn(`could not run the Verify commands for run ${runId}`, error))
+        .then(conclude)
+        .catch((error: unknown) => log.error(`run ${runId} could not be concluded`, error));
     },
   });
   } catch (error) {

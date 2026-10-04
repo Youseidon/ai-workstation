@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { RunHandle } from "../src/runner.ts";
 import { runHub } from "../src/runHub.ts";
-import { ProviderUnavailableError, agentApiReachabilityProblem, offlineStatusRequestId, parseOfflineAgentStatus, startConsult, startExecute, startVerifySuite } from "../src/runService.ts";
+import { ProviderUnavailableError, agentApiReachabilityProblem, applyOfflineAgentStatus, offlineStatusRequestId, parseOfflineAgentStatus, startConsult, startExecute, startVerifySuite, verifyOfflineDone } from "../src/runService.ts";
 import { settings } from "../src/settings.ts";
 import { WorkspaceError, workspaces } from "../src/workspaces.ts";
 
@@ -188,6 +188,62 @@ test("parseOfflineAgentStatus accepts the final agent-status block", () => {
     { status: "BLOCKED", reason: "Need deployment access", verificationSummary: "Grant deploy token" },
   );
   assert.equal(parseOfflineAgentStatus(`{"status":"BLOCKED","reason":"Need deployment access"}`), null);
+});
+
+function offlineRunFixture(verify: string | null) {
+  const dir = mkdtempSync(join(tmpdir(), "run-svc-offline-"));
+  const saved = workspaces.create({ name: `run-svc-offline-${Date.now()}-${Math.random()}`, description: "", workDirectory: dir });
+  const program = workspaces.createChild("program", saved.id, { name: "Program" }) as { id: number };
+  const suite = workspaces.createChild("suite", program.id, { name: "Suite" }) as { id: number };
+  const content = verify === null ? "Do it" : `Do it.\n\n## Verify\n\n\`\`\`sh\n${verify}\n\`\`\`\n`;
+  const prompt = workspaces.createChild("prompt", suite.id, { title: "Task", content }) as { id: number };
+  const runId = `run-svc-offline-${saved.id}`;
+  workspaces.beginAgentRun({ runId, workspaceId: saved.id, promptId: prompt.id, provider: "grok", model: null, tokenHash: runId, expiresAt: new Date(Date.now() + 60_000).toISOString(), role: "execute" });
+  workspaces.markAgentRunRunning(runId);
+  const remarks = () => workspaces.promptHistory(prompt.id).remarks as Array<{ kind: string; content: string }>;
+  return { runId, promptId: prompt.id, remarks, cleanup() { workspaces.remove(saved.id); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+const OFFLINE_DONE = { status: "DONE", reason: "Completed", verificationSummary: "ran it" } as const;
+
+test("an offline DONE closes an item whose Verify commands pass", async () => {
+  // The claim used to be applied with no command run, so the gate read "not run
+  // yet" and a finished item went to review, every time.
+  const unverified = offlineRunFixture("true");
+  const verified = offlineRunFixture("true");
+  try {
+    assert.equal(applyOfflineAgentStatus(unverified.runId, OFFLINE_DONE), null);
+    assert.equal(workspaces.promptOutcome(unverified.promptId).status, "NEEDS_REVIEW", "the bug: applied without running the commands");
+
+    await verifyOfflineDone(verified.runId, verified.promptId);
+    assert.equal(applyOfflineAgentStatus(verified.runId, OFFLINE_DONE), null);
+    assert.equal(workspaces.promptOutcome(verified.promptId).status, "DONE");
+    assert.equal(verified.remarks().some(remark => remark.kind === "VERIFICATION"), false, "a passing check leaves no failure remark");
+  } finally {
+    unverified.cleanup();
+    verified.cleanup();
+  }
+});
+
+test("an offline DONE whose Verify command fails stays open on what really failed", async () => {
+  const f = offlineRunFixture("echo broken; exit 3");
+  try {
+    await verifyOfflineDone(f.runId, f.promptId);
+    assert.equal(applyOfflineAgentStatus(f.runId, OFFLINE_DONE), null);
+    assert.equal(workspaces.promptOutcome(f.promptId).status, "NEEDS_REVIEW");
+    assert.equal(f.remarks().some(remark => remark.kind === "VERIFICATION" && remark.content.includes("broken")), true, "the output is banked for the run that picks it up");
+    assert.equal(f.remarks().some(remark => remark.kind === "COMPLETION"), true, "the agent's own claim is kept beside it");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("the run-end handler runs the Verify commands before it applies an offline DONE", () => {
+  const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
+  const verify = firstIndex(source, "void verifyOfflineDone(activeContextRunId!, endedPromptId!)");
+  assert.ok(firstIndex(source, "const conclude = (): void => {") < verify);
+  assert.match(source.slice(verify, verify + 400), /\.then\(conclude\)/, "the claim is applied only after the commands have run");
+  assert.match(source, /if \(!verifyFirst\) \{ conclude\(\); return; \}/, "a run with nothing to verify ends as it always did");
 });
 
 test("offline status request id is valid even when the run id contains underscores", () => {

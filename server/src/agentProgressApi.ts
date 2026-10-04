@@ -128,7 +128,8 @@ export function postAgentRemark(runId: string, token: string, body: Record<strin
   return result;
 }
 
-function hasVerifyCommands(promptId: number): boolean {
+/** Whether this work item has any Verify command to run before a DONE is weighed. */
+export function hasVerifyCommands(promptId: number): boolean {
   try {
     return workspaces.dodCommandPlan(promptId).criteria.some((criterion) => criterion.command !== null);
   } catch {

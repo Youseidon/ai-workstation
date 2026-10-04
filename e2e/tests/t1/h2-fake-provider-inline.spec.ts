@@ -25,6 +25,22 @@ test("S-H2-07: done on the offline channel embeds context, is given no launcher 
   expect(commands).toEqual([{ request_id: "offline-status-final", operation: "status" }]);
 });
 
+test("a done on the offline channel runs the item's Verify commands before it is applied", async ({ harness }) => {
+  // The status block is read after the process exits, and the gate that closes
+  // an item only reads recorded results. With no command run it read "not run
+  // yet", so an offline run could never close an item that had a Verify section.
+  const passing = await runSavedTask(harness, { content: "Rename the INSTALL section to Setup.\n\n## Verify\n\n```sh\ntrue\n```\n", scenarios: [{ behavior: "done" }] });
+  expect((await waitForRunEnd(passing.task, passing.runId)).state.toUpperCase()).toBe("DONE");
+  expect((await state.prompt(passing.task)).status).toBe("DONE");
+
+  // A failing command keeps the item open on what failed, with the output kept.
+  const failing = await runSavedTask(harness, { content: "Rename the INSTALL section to Setup.\n\n## Verify\n\n```sh\necho broken; exit 3\n```\n", scenarios: [{ behavior: "done" }] });
+  await waitForRunEnd(failing.task, failing.runId);
+  expect((await state.prompt(failing.task)).status).toBe("NEEDS_REVIEW");
+  const remarks = (await state.history(failing.task)).remarks as Array<{ kind: string; content: string }>;
+  expect(remarks.some((remark) => remark.kind === "VERIFICATION" && remark.content.includes("broken"))).toBe(true);
+});
+
 test("S-H2-08: blocked on the inline path records the reason and human action", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "block-on-decision", reason: "The licence choice is the owner's.", humanAction: "Choose MIT or Apache-2.0." }] });
   await waitForRunEnd(task, runId);
