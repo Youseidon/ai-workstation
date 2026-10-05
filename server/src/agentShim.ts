@@ -57,6 +57,29 @@ export function createAgentShim(args: { runId: string; token: string; port: numb
   }
 }
 
+/**
+ * Writes a run's whole work-item context beside where its launcher would be and
+ * returns the absolute path, or null if it could not be written.
+ *
+ * For a run that cannot ask the console for anything: its prompt carries the
+ * capped context, and a section that was cut names this file. A sandbox that
+ * blocks the network still reads files, so this is the one way such a run can
+ * get the rest. It is in the run's temp directory and not the working tree, so
+ * it is never mistaken for a change to the repository, and it goes when the
+ * run's directory does.
+ */
+export function writeRunContextFile(runId: string, markdown: string): string | null {
+  try {
+    const directory = runDirectory(runId);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const path = resolve(directory, "work-item-context.md");
+    writeFileSync(path, markdown, { encoding: "utf8", mode: 0o600 });
+    return path;
+  } catch {
+    return null;
+  }
+}
+
 /** Removes a run's launcher. Best effort: a leftover in tmp is not worth failing over. */
 export function removeAgentShim(runId: string): void {
   try {

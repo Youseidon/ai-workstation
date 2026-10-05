@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,8 +12,9 @@ import { claudeProgressToolDefinitions } from "../src/adapters/claudeProgressToo
 import { getAdapter } from "../src/adapters/registry.ts";
 import { bindAgentProgressTools, progressToolsMarkdown, readAgentContext } from "../src/agentProgressApi.ts";
 import { buildCanUseTool } from "../src/lib/claudePermissions.ts";
+import { removeAgentShim, writeRunContextFile } from "../src/agentShim.ts";
 import { runContexts } from "../src/runContext.ts";
-import { agentApiReachabilityProblem, executeChannel, executeContextExtras, savedTaskExecutePrompt } from "../src/runService.ts";
+import { agentApiReachabilityProblem, executeChannel, executeContextExtras, sandboxReadsRunFiles, savedTaskExecutePrompt } from "../src/runService.ts";
 import { settings } from "../src/settings.ts";
 import { DECOMPOSE_MAX_DEPTH, workspaces } from "../src/workspaces.ts";
 
@@ -33,6 +34,16 @@ function withHostAccess<T>(enabled: boolean, fn: () => T): T {
   } finally {
     if (previous) Object.defineProperty(settings, "hostAccess", previous);
     else delete (settings as { hostAccess?: unknown }).hostAccess;
+  }
+}
+
+function withGrokSandbox<T>(mode: string, fn: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(settings.grok, "sandboxMode");
+  Object.defineProperty(settings.grok, "sandboxMode", { configurable: true, enumerable: true, get: () => mode });
+  try {
+    return withHostAccess(false, fn);
+  } finally {
+    if (previous) Object.defineProperty(settings.grok, "sandboxMode", previous);
   }
 }
 
@@ -200,7 +211,7 @@ test("every trip a run makes through the tools is in the access log, refusals in
   }
 });
 
-test("a cut section tells each run how it can get the rest, and a run that cannot ask is given everything", async () => {
+test("a cut section tells each run how it can get the rest, and a run that cannot ask is given a file to read", async () => {
   // The notice named `agent-step context --full` for every run. A tools run has
   // no launcher and an offline run can call nothing at all, so for both the
   // rest of a long section was simply out of reach.
@@ -227,11 +238,30 @@ test("a cut section tells each run how it can get the rest, and a run that canno
 
     assert.deepEqual(executeContextExtras("shim", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH });
     assert.deepEqual(executeContextExtras("tools", 1), { depth: 1, maxDepth: DECOMPOSE_MAX_DEPTH, progressTools: { getContext: "get_context", postRemark: "post_remark", postStatus: "post_status", repairVerify: "repair_verify" } });
-    const offline = executeContextExtras("offline", 0);
-    assert.deepEqual(offline, { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, full: true, offline: true });
-    const inlined = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id, { full: true }), "execute", offline);
-    assert.match(inlined, /TAIL-OF-THE-OVERVIEW/);
-    assert.doesNotMatch(inlined, /truncated/, "nothing in an offline run's context points at a command it cannot run");
+    // An offline run can call nothing, but it can read: the whole context goes
+    // into a file for it, and its prompt stays the size everyone else's is.
+    assert.deepEqual(executeContextExtras("offline", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, offline: true, fullContextPath: null });
+    const whole = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id, { full: true }), "execute", { ...executeContextExtras("offline", 0), full: true });
+    const file = writeRunContextFile(run.runId, whole);
+    assert.ok(file !== null);
+    try {
+      assert.match(readFileSync(file, "utf8"), /TAIL-OF-THE-OVERVIEW/);
+      assert.doesNotMatch(readFileSync(file, "utf8"), /truncated/);
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+      const inlined = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id), "execute", executeContextExtras("offline", 0, file));
+      assert.ok(inlined.includes(`…(truncated; the full text of this context is in the file ${file})`));
+      assert.doesNotMatch(inlined, /agent-step context --full|TAIL-OF-THE-OVERVIEW/);
+    } finally {
+      removeAgentShim(run.runId);
+    }
+    assert.equal(existsSync(file), false, "the file goes when the run's directory does");
+    // With no file it can read, the run is told the rest is out of reach, not sent to a command.
+    const inlined = contextMarkdown(workspaces.agentContext(f.workspace.id, prompt.id), "execute", executeContextExtras("offline", 0, null));
+    assert.match(inlined, /truncated; the rest is not available to this run/);
+    assert.doesNotMatch(inlined, /agent-step context --full/);
+    withGrokSandbox("strict", () => assert.equal(sandboxReadsRunFiles("grok"), false));
+    withGrokSandbox("workspace", () => assert.equal(sandboxReadsRunFiles("grok"), true));
+    assert.equal(sandboxReadsRunFiles("codex"), true);
 
     // How it ends is told in the one thing an offline run can do: its status block.
     const ending = inlined.slice(inlined.indexOf("## How this run ends"));

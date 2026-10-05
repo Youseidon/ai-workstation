@@ -14,10 +14,10 @@ import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { isCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
-import { createAgentShim, removeAgentShim } from "./agentShim.ts";
+import { createAgentShim, removeAgentShim, writeRunContextFile } from "./agentShim.ts";
 import { runContexts } from "./runContext.ts";
 import { startRun } from "./runner.ts";
-import { savedPromptExecuteReachabilityProblem } from "./settings.ts";
+import { effectiveGrokSandboxMode, savedPromptExecuteReachabilityProblem } from "./settings.ts";
 import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstructionFile } from "./workspaceInstructions.ts";
 import { instructionAuthorPrompt } from "./instructionAuthor.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
@@ -58,22 +58,34 @@ export function executeChannel(provider: ProviderId, reachabilityProblem: string
  *
  * A capped section ends in a notice saying how to get the rest, so the notice
  * has to name something this run can call: the launcher by default, the tool
- * for a tools run. An offline run can call nothing, so it is given everything
- * up front; a cut it could never undo would make "authoritative and complete"
- * untrue for exactly the run that has no second chance to read.
+ * for a tools run. An offline run can call nothing, but its sandbox blocks the
+ * network and not reading, so the whole context is written to a file for it
+ * and the notice names that file. The prompt stays the size every other run's
+ * is, which matters because offline is the ordinary case for a sandboxed CLI.
+ * With no readable file the notice says the rest is out of reach.
  */
-export function executeContextExtras(channel: ExecuteChannel, depth: number): ContextExtras {
+export function executeContextExtras(channel: ExecuteChannel, depth: number, fullContextPath: string | null = null): ContextExtras {
   return {
     depth,
     maxDepth: DECOMPOSE_MAX_DEPTH,
     ...(channel === "tools" ? { progressTools: PROGRESS_TOOL_NAMES } : {}),
-    ...(channel === "offline" ? { full: true, offline: true } : {}),
+    ...(channel === "offline" ? { offline: true, fullContextPath } : {}),
   };
+}
+
+/**
+ * Whether a file in the run's temp directory can be read from inside this
+ * provider's sandbox. Every profile but Grok's `strict` confines writes and the
+ * network and leaves reading alone; `strict` reads only the working directory
+ * and system paths, so a run under it is told the truth instead of a path.
+ */
+export function sandboxReadsRunFiles(provider: ProviderId): boolean {
+  return !(provider === "grok" && effectiveGrokSandboxMode() === "strict");
 }
 
 const EXECUTE_PREAMBLE_LIVE = "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit \u2014 this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.";
 
-const EXECUTE_PREAMBLE_OFFLINE = "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit - this work item lives in a database outside this working directory, and nothing in this run can reach it. The status block described below is the only way your outcome is recorded, so do not finish without one.";
+const EXECUTE_PREAMBLE_OFFLINE = "The context below is authoritative. There is no Markdown prompt file to find and no tracker file to edit - this work item lives in a database outside this working directory, and nothing in this run can reach it. The status block described below is the only way your outcome is recorded, so do not finish without one.";
 
 /**
  * The instruction that starts a saved-task execute run: the work item inlined,
@@ -185,7 +197,7 @@ The local Progress API is not reachable from this provider sandbox:
 
 ${reason}
 
-Do not call the Progress API. The full authoritative work-item context is already included above. Before your final response ends, include exactly one fenced \`agent-status\` block so the console can update the prompt after the process exits.
+Do not call the Progress API. The authoritative work-item context is already included above; where a section says it was cut, it also says where the rest is. Before your final response ends, include exactly one fenced \`agent-status\` block so the console can update the prompt after the process exits.
 
 For success:
 
@@ -403,10 +415,12 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         // that can carry its outcome out is the text of its final message.
         contract = offlineCompletionProtocol(reachabilityProblem ?? "The local Progress API is not reachable from this provider sandbox.");
       }
-      const extras = executeContextExtras(channel, depth);
+      const fullContextPath = channel === "offline" && sandboxReadsRunFiles(provider)
+        ? writeRunContextFile(plannedRunId, contextMarkdown(workspaces.agentContext(workspaceId, promptId, { full: true }), "execute", { ...executeContextExtras(channel, depth), full: true }))
+        : null;
       resolvedPrompt = savedTaskExecutePrompt({
         taskLabel,
-        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId, { full: extras.full === true }), "execute", extras),
+        context: contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", executeContextExtras(channel, depth, fullContextPath)),
         channel,
         contract,
       });

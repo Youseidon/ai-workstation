@@ -48,6 +48,12 @@ export interface ContextExtras {
    * send it to a command or offer an ending the block cannot carry.
    */
   offline?: boolean;
+  /**
+   * For an offline run: the file holding the uncapped context, or null when
+   * there is none it can read. A cut section names the file, or says plainly
+   * that the rest is out of reach.
+   */
+  fullContextPath?: string | null;
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
@@ -55,6 +61,13 @@ export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context
 /** The same notice for a run whose way to the full context is a tool. */
 export function toolsTruncationNotice(getContext: string): string {
   return `…(truncated; call \`${getContext}\` with \`full: true\` for everything)`;
+}
+
+/** The same notice for a run that can call nothing: the rest is in a file, or nowhere it can reach. */
+export function offlineTruncationNotice(fullContextPath: string | null): string {
+  return fullContextPath === null
+    ? "…(truncated; the rest is not available to this run)"
+    : `…(truncated; the full text of this context is in the file ${fullContextPath})`;
 }
 
 /** Cap a section body to `maxBytes`, appending the truncation notice. */
@@ -172,7 +185,9 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
   const full = extras?.full === true;
   const key = context.prompt.externalKey ?? String(context.prompt.id);
   const canDecompose = (extras?.depth ?? 0) < (extras?.maxDepth ?? 2);
-  const truncationNotice = extras?.progressTools === undefined ? CONTEXT_TRUNCATION_NOTICE : toolsTruncationNotice(extras.progressTools.getContext);
+  const truncationNotice = extras?.offline === true
+    ? offlineTruncationNotice(extras.fullContextPath ?? null)
+    : extras?.progressTools === undefined ? CONTEXT_TRUNCATION_NOTICE : toolsTruncationNotice(extras.progressTools.getContext);
   const cap = (text: string, max: number) => (full ? text.trim() : cappedSection(text, max, truncationNotice));
 
   const workspaceBlock = [
