@@ -50,6 +50,11 @@ personal controls and pairs your private chat. Do not put the token in a task,
 terminal command or shared file. Every teammate repeats the flow on their own
 workstation with a different bot.
 
+The paired chat is remembered in `.agent-console/telegram-paired-chats.json`, beside the bot token, so a new or different database does not unpair your phone.
+On start the workstation reconnects that chat and tells it the workstation is up.
+If nobody is paired, it opens a pairing by itself and writes the link to the server log.
+To replace the bot, choose **Use a different bot** in the same dialog; the phone paired with the old bot is unpaired and a pairing with the new one opens.
+
 ## Running a live pipeline
 
 ### Test-only side-by-side Team pilot
@@ -123,6 +128,9 @@ When a station's run ends, the scheduler has exactly three answers:
 | Agent posted **BLOCKED** with a concrete external action only a human can take | **park** `human_question` | the only human stop — answer it, then Resume |
 | Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
 | Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
+
+A station the pipeline has given up on reaches your phone as a normal question card, whatever the work item's own status: the allowance ran out, a station rule said wait, no provider could run it, or it could not be started.
+Reply to the card and choose **Answer and resume** to restart the same run.
 
 There is no automatic handoff, remediation, or retry/recover chain. Resume on a
 parked station writes a USER ledger row and grants a fresh unfinished-continuation
@@ -399,18 +407,41 @@ read-only endpoint composes workspace instructions, program and suite context,
 prompt content, dependency results, and gate information directly from SQLite.
 It returns Markdown by default and JSON for `Accept: application/json`, expires
 after the run, and cannot be changed to inspect a different prompt. The same
-run credential can append progress through `POST .../remarks` and perform the
-strict `IN_PROGRESS` → `DONE`/`BLOCKED` transition through `POST .../status`.
+run credential can append progress through `POST .../remarks` and report
+`DONE`, `CONTINUE` or `BLOCKED` through `POST .../status`.
 Every mutation is idempotent, audited, transactionally applied, and scoped to
 the selected prompt. Custom prompts continue to be sent directly.
 
-Saved-prompt execute runs use the console's local agent API when the provider can
-reach it, which lets the agent fetch context and post live remarks/status. If a
-provider is sandboxed away from host networking, the console inlines the
-authoritative context and asks for a final machine-readable `agent-status` block;
-the server records DONE/BLOCKED after the process exits. Use **Host access** or
-`AGENT_API_BASE_URL` only when agents need live Progress API calls or other host
-services.
+#### The three ways a run reports
+
+Which one a run gets is decided by the provider and the **Host access** setting, and the run is only ever told about the one it has.
+
+| Channel | Who gets it | How it reports |
+|---|---|---|
+| Launcher | Cursor always; Codex and Grok when Host access is on or their sandbox is off | The `agent-step` commands above |
+| Tools | Claude, always | Five in-process tools: `get_context`, `post_remark`, `post_status`, `repair_verify` and `decompose` |
+| Offline | Codex and Grok in their sandbox, which is the default while Host access is off | One `agent-status` block at the end of the final message |
+
+The same rules hold on all three.
+
+- A `done` is checked before it counts: the work item's `## Verify` commands are run, and a failing command keeps the item open.
+  On the launcher and tools channels the run is still live, so the `done` is refused with the command output and the run can fix the work and post again.
+  An offline run has already exited, so the item goes to review with the output recorded for the next run.
+- `continue` hands the item to the next run with what remains; `blocked` is only for something a human must do.
+- While a run's Verify commands are running, another status from the same run is refused, so the outcome is the one that was posted first.
+- An accepted status ends the run, on every channel.
+- A context section that was cut short says how to get the rest: `agent-step context --full`, `get_context` with `full: true`, or, for an offline run, a file in the run's temp directory holding the whole context.
+- The short wrap-up turn after a budget stop uses the same channel as the run it speaks for.
+
+An offline status block looks like this, with `DONE`, `CONTINUE` or `BLOCKED` as the status:
+
+````text
+```agent-status
+{"status":"CONTINUE","reason":"What still has to happen","verificationSummary":"What this run verified, if anything"}
+```
+````
+
+Use **Host access** or `AGENT_API_BASE_URL` only when Codex or Grok need live Progress API calls or other host services.
 
 Host, port, `AGENT_API_BASE_URL`, and `ALLOWED_ORIGINS` are deliberately **not**
 editable from the UI — they are boot-time only and live in `config.ts`.
@@ -570,3 +601,85 @@ authentication mechanism.
   the page and clears on reload.
 - Cursor's headless output does not reliably include token usage, so the token
   stat is omitted for Cursor runs rather than showing a made-up number.
+
+---
+
+## Day-to-day operation
+
+### Stop the workstation
+
+If you can reach the terminal running `npm run serve`, press `Ctrl+C`.
+
+Before stopping, check whether a pipeline is running.
+By default an interrupted pipeline resumes by itself roughly ten seconds after the workstation restarts.
+If you want it to stay stopped, stop the pipeline first in the UI or with:
+
+```bash
+curl -fsS -X POST \
+  http://127.0.0.1:4000/api/pipelines/PIPELINE_ID/stop \
+  -H 'Content-Type: application/json' \
+  --data '{}' | jq
+```
+
+If you cannot reach the original terminal, run this from the repository root:
+
+```bash
+npm run free-ports
+```
+
+That terminates whatever is listening on ports 3000 and 4000, so use it only when those ports belong to the workstation.
+
+### Start it again
+
+From the repository root:
+
+```bash
+npm run serve
+```
+
+Keep that terminal open, then visit <http://localhost:3000>.
+Verify the backend:
+
+```bash
+curl -fsS http://127.0.0.1:4000/api/health
+```
+
+The expected result is `{"ok":true}`.
+
+Use `npm run serve` for real work.
+Do not use `npm run dev` against the workstation you rely on, because file changes restart the server and interrupt active agents.
+
+Workspaces, programs and pipelines are stored in the database, so a restart does not require rebuilding them.
+
+### Quickest way to set up work
+
+Choose the smallest structure that fits the request:
+
+- **General question:** use the workspace Ask control.
+- **One executable task:** create one suite, one work item and one pipeline.
+- **Multi-stage objective:** ask an agent to draft a program, review it, then apply it with "create a pipeline" enabled.
+- **Large research or build objective:** use several independent suites followed by a convergence suite.
+
+For every work item, specify:
+
+- the objective
+- relevant context
+- permitted actions and paths
+- prohibited actions
+- required deliverables
+- the persistence and file allow-list
+- verification requirements, as a `## Verify` section with the commands that prove it
+- the conditions for DONE
+- the conditions for BLOCKED
+
+Then:
+
+1. Select the workspace.
+2. Create or revise the program.
+3. Create suites for independently useful phases.
+4. Keep each work item small enough for one agent session.
+5. Add work items to a named pipeline in execution order.
+6. Set the primary provider and fallback.
+7. Review the flowchart.
+8. Press Play.
+9. Inspect durable files and Git state after completion; do not rely only on the green completion indicator.

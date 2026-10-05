@@ -59,6 +59,14 @@ an operator test rig, not part of ordinary Team setup.
 Pair in a private chat. A group cannot be paired as the workstation owner. A
 wrong or expired pairing code is deliberately silent; create a new link.
 
+The pairing is remembered in `.agent-console/telegram-paired-chats.json`, beside the bot token.
+A new or different database therefore does not unpair your phone: at the next start the workstation reconnects the chat and sends it "This workstation has started and this chat is connected."
+If the workstation starts with a bot and nobody paired, it opens a pairing link by itself and writes it to the server log, so you can pair straight from the terminal that started it.
+
+A question card also arrives when a pipeline has given up on a work item without the agent asking anything, for example when its retries ran out or no provider could run it.
+The card says why it stopped.
+Reply to it and choose **Answer and resume** to restart that run.
+
 ### Token storage and security
 
 The server validates the token directly with Telegram and stores it in an
@@ -243,7 +251,7 @@ final. It does not undo work already claimed by a receiver.
 The shared roster and handover control record remain in the Git remote, and the
 local database retains the linked task and action receipts. After restarting:
 
-1. start the app and confirm **Live Telegram** reconnects;
+1. start the app and confirm **Live Telegram** reconnects, and that your phone receives the "workstation has started" message;
 2. choose **Refresh team**;
 3. open **Tasks → Team handovers** and refresh it; and
 4. inspect the local task before starting or returning work.
