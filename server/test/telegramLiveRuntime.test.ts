@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -717,6 +717,24 @@ test("a start with nobody paired opens a pairing, and a chat paired once is put 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("without a paired-chat store a start opens no pairing and says nothing, and the harness is started without one", async () => {
+  // Every other test here, and the end-to-end harness, pairs by hand and counts
+  // messages; a pairing that opened by itself would be in all of them.
+  assert.deepEqual(workspaces.taskControlActors("telegram"), [], "sanity: no chat is paired before this test");
+  const h = harness();
+  try {
+    await h.runtime.reconcile();
+    await waitFor(() => h.runtime.status().state === "polling", "polling");
+    assert.equal(h.runtime.status().pairing, null);
+    assert.equal(h.logs.some(line => line.includes("No phone is paired")), false);
+    assert.equal(h.stub.messages.length, 0);
+  } finally {
+    await h.cleanup();
+  }
+  const source = readFileSync(new URL("../src/integrations/telegram/runtime.ts", import.meta.url), "utf8");
+  assert.match(source, /\.\.\.\(isHarnessMode\(\) \? \{\} : \{ pairedChats: filePairedChatStore\(\) \}\)/, "the exported runtime is given a store everywhere but in harness mode");
 });
 
 test("a paired-chat file that cannot be written does not fail the pairing", async () => {
