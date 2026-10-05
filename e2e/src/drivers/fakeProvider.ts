@@ -5,13 +5,15 @@ import { join, resolve } from "node:path";
 
 export const FAKE_GROK_BIN = resolve(import.meta.dirname, "../../fake-provider/bin/grok");
 
-export type FakeBehaviour = "done" | "block-on-decision" | "fail" | "hang-until-stopped" | "crash-after-spawn" | "consume-answer";
+export type FakeBehaviour = "done" | "continue" | "block-on-decision" | "fail" | "hang-until-stopped" | "crash-after-spawn" | "consume-answer";
 
 export interface FakeScenario {
   behavior: FakeBehaviour;
   remark?: string;
   reason?: string;
   humanAction?: string;
+  /** `continue`: the remaining work the run hands to whichever run resumes the item. */
+  remaining?: string;
   expectInContext?: string;
   verificationSummary?: string;
   ignoreSigint?: boolean;

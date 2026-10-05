@@ -47,6 +47,15 @@ test("S-H2-04: a done scenario reads the inlined context and reports through the
   expect(commands.map((row) => row.operation)).toEqual(["remark", "status"]);
 });
 
+test("a continue through the launcher re-queues the item with what remains", async ({ harness }) => {
+  const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "continue", remaining: "Write the second changelog line." }] });
+  expect((await waitForRunEnd(task, runId)).state.toUpperCase()).toBe("DONE");
+  expect((await state.prompt(task)).status).toBe("TODO");
+  const history = await state.history(task);
+  expect(history.remarks.filter((remark) => remark.kind === "CONTINUATION" && remark.content === "Write the second changelog line.")).toHaveLength(1);
+  expect(harness.fakeProvider.log().find((entry) => entry.event === "start")?.channel).toBe("shim");
+});
+
 test("S-H2-05: a block-on-decision scenario leaves the prompt BLOCKED by the agent with exactly one run", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "block-on-decision", reason: "Two release names are possible.", humanAction: "Pick Aurora or Borealis." }] });
   await waitForRunEnd(task, runId);

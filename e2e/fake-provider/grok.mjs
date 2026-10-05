@@ -6,7 +6,7 @@
  * spawn, stream parsing and completion code runs unchanged. Behaviour comes
  * from the next scenario in $FAKE_PROVIDER_DIR/queue.json:
  *
- *   done | block-on-decision | fail | hang-until-stopped | crash-after-spawn | consume-answer
+ *   done | continue | block-on-decision | fail | hang-until-stopped | crash-after-spawn | consume-answer
  *
  * Saved tasks reach it on one of two channels, chosen by the server from this
  * provider's reachability (server/src/runService.ts, executeChannel). The work
@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const VERSION = "grok 1.0.5";
-const BEHAVIOURS = new Set(["done", "block-on-decision", "fail", "hang-until-stopped", "crash-after-spawn", "consume-answer"]);
+const BEHAVIOURS = new Set(["done", "continue", "block-on-decision", "fail", "hang-until-stopped", "crash-after-spawn", "consume-answer"]);
 const dir = process.env.FAKE_PROVIDER_DIR;
 
 function emit(event) {
@@ -181,6 +181,8 @@ async function run() {
     status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Completed", verificationSummary: scenario.verificationSummary ?? `Used the saved answer: ${scenario.expectInContext}` };
   } else if (scenario.behavior === "done") {
     status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Completed", verificationSummary: scenario.verificationSummary ?? "Fake agent verified its work." };
+  } else if (scenario.behavior === "continue") {
+    status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "CONTINUE", reason: scenario.remaining ?? "Finish the second half of the task.", verificationSummary: scenario.verificationSummary ?? "" };
   } else {
     status = { requestId: `fake-status-${process.pid}`, expectedStatus: "IN_PROGRESS", status: "BLOCKED", reason: scenario.reason ?? "The task needs an owner decision the agent cannot make.", verificationSummary: scenario.humanAction ?? "Choose which option to ship." };
     // L3 A2: options are reported by the agent with its blocking status, never generated later.
@@ -194,6 +196,8 @@ async function run() {
     if (!scenario.skipStatus) {
       if (status.status === "DONE") {
         step(shim, ["done", "--verification", status.verificationSummary, "--reason", status.reason]);
+      } else if (status.status === "CONTINUE") {
+        step(shim, ["continue", "--remaining", status.reason]);
       } else {
         // The options are written to a file the way the contract asks for them,
         // and only when the scenario has any: an empty file would claim the agent
@@ -207,11 +211,11 @@ async function run() {
         }
       }
     }
-    finish(status.status === "DONE" ? "Done." : "Blocked; waiting for the owner.");
+    finish(status.status === "DONE" ? "Done." : status.status === "CONTINUE" ? "Not finished; handed over." : "Blocked; waiting for the owner.");
   } else if (offline) {
     const { requestId: _requestId, expectedStatus: _expected, ...report } = status;
     const block = scenario.malformedStatus ? statusBlock({ status: report.status }) : scenario.skipStatus ? "" : statusBlock(report);
-    finish(`${status.status === "DONE" ? "Done." : "Blocked."}${block}`);
+    finish(`${status.status === "DONE" ? "Done." : status.status === "CONTINUE" ? "Not finished." : "Blocked."}${block}`);
   } else {
     finish(scenario.text ?? "Done.");
   }

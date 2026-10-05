@@ -41,6 +41,17 @@ test("a done on the offline channel runs the item's Verify commands before it is
   expect(remarks.some((remark) => remark.kind === "VERIFICATION" && remark.content.includes("broken"))).toBe(true);
 });
 
+test("a continue on the offline channel re-queues the item with what remains", async ({ harness }) => {
+  // The status block only took DONE or BLOCKED, so a sandboxed run that ran out
+  // of time had no honest way to end.
+  const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "continue", remaining: "Rename the two remaining headings in docs/setup.md." }] });
+  expect((await waitForRunEnd(task, runId)).state.toUpperCase()).toBe("DONE");
+  expect((await state.prompt(task)).status).toBe("TODO");
+  const history = await state.history(task);
+  expect((history.remarks as Array<{ kind: string; content: string }>).some((remark) => remark.kind === "CONTINUATION" && remark.content === "Rename the two remaining headings in docs/setup.md.")).toBe(true);
+  expect(history.events.some((event) => event.newStatus === "TODO" && event.actorType === "AGENT")).toBe(true);
+});
+
 test("S-H2-08: blocked on the inline path records the reason and human action", async ({ harness }) => {
   const { task, runId } = await runSavedTask(harness, { scenarios: [{ behavior: "block-on-decision", reason: "The licence choice is the owner's.", humanAction: "Choose MIT or Apache-2.0." }] });
   await waitForRunEnd(task, runId);
