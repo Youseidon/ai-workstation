@@ -538,9 +538,11 @@ test("S-CLT-07/08/09: read-only runs are refused and never get write tools", asy
     assert.equal(workspaces.resolvePrompt(f.workspace.id, f.prompt.id).status, "TODO");
     assert.equal(workspaces.promptHistory(f.prompt.id).remarks.length, 0);
 
-    // Only saved-task execute binds tools; consult, clarify and handoff start without them.
+    // Only a saved-task execute run and the wrap-up turn that speaks for it bind
+    // tools; consult, clarify and handoff start without them.
     const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
-    assert.equal(source.match(/bindAgentProgressTools\(/g)?.length, 1);
+    assert.equal(source.match(/bindAgentProgressTools\(/g)?.length, 2);
+    assert.match(source.slice(source.indexOf("export async function startWrapUp")), /bindAgentProgressTools\(plannedRunId, credential\.token\)/);
     const handoffSource = readFileSync(new URL("../src/handoffCoordinator.ts", import.meta.url), "utf8");
     assert.doesNotMatch(handoffSource, /progressTools/);
   } finally {
