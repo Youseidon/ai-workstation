@@ -208,10 +208,18 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
     const startedAt = Date.now();
     const requestId = typeof input.requestId === "string" ? input.requestId : null;
     const before = status();
-    const accepted = (): void => recordDbAccess(runId, {
-      ...describeAcceptedWrite({ operation, before, after: status(), requestId, remarkKind: typeof input.kind === "string" ? input.kind : null, durationMs: Date.now() - startedAt }),
-      method: "TOOL",
-    });
+    const accepted = (): void => {
+      recordDbAccess(runId, {
+        ...describeAcceptedWrite({ operation, before, after: status(), requestId, remarkKind: typeof input.kind === "string" ? input.kind : null, durationMs: Date.now() - startedAt }),
+        method: "TOOL",
+      });
+      // An accepted status is the run's last word, on this path as over HTTP:
+      // the provider is stopped so nothing it does afterwards can change a tree
+      // whose checks have already passed, and the pipeline moves on at once
+      // instead of when the model chooses to stop. Deferred a tick so the tool
+      // result is on its way back before the stop is asked for.
+      if (operation === "status") setImmediate(() => { void runHub.complete(runId).catch((error: unknown) => log.warn(`could not stop run=${runId} after its status`, error)); });
+    };
     const rejected = (error: unknown): void => recordDbAccess(runId, {
       ...describeRejectedWrite({
         operation,

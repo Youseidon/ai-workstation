@@ -14,6 +14,8 @@ import { bindAgentProgressTools, progressToolsMarkdown, readAgentContext } from 
 import { buildCanUseTool } from "../src/lib/claudePermissions.ts";
 import { removeAgentShim, writeRunContextFile } from "../src/agentShim.ts";
 import { runContexts } from "../src/runContext.ts";
+import { runHub } from "../src/runHub.ts";
+import { emptyBudgetSnapshot } from "../src/runner.ts";
 import { agentApiReachabilityProblem, executeChannel, executeContextExtras, sandboxReadsRunFiles, savedTaskExecutePrompt } from "../src/runService.ts";
 import { settings } from "../src/settings.ts";
 import { DECOMPOSE_MAX_DEPTH, workspaces } from "../src/workspaces.ts";
@@ -267,6 +269,45 @@ test("a cut section tells each run how it can get the rest, and a run that canno
     const ending = inlined.slice(inlined.indexOf("## How this run ends"));
     assert.match(ending, /exactly one `agent-status` block saying DONE, CONTINUE or BLOCKED/);
     assert.doesNotMatch(ending, /agent-step|decompose|remark --kind/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a run is stopped once its status is accepted through the tools, and only then", async () => {
+  // Over HTTP a status post ends the provider. The tool path left it running, so
+  // a run could go on editing a tree whose checks had already passed.
+  const f = fixture();
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const live = (runId: string) => {
+    let stops = 0;
+    runHub.start({
+      handle: { runId, provider: "claude", model: null, role: "execute", permissionMode: null, budget: emptyBudgetSnapshot, sessionId: () => null, interrupt: async () => {}, complete: async () => { stops += 1; }, done: Promise.resolve("done") },
+      workspace: { id: f.workspace.id, name: f.workspace.name, workDirectory: f.workspace.workDirectory },
+      source: { type: "custom", displayText: "x" },
+      role: "execute",
+      permissionMode: null,
+    });
+    return { stops: () => stops, end: () => runHub.end(runId, "done") };
+  };
+  try {
+    const failing = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("stop"), content: "Do it.\n\n## Verify\n\n```sh\nexit 3\n```\n" }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, failing.id);
+    const hub = live(run.runId);
+    try {
+      const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+      await callTool(tools, "post_remark", { requestId: "remark-stop-1", kind: "PROGRESS", content: "x" });
+      const refused = await callTool(tools, "post_status", DONE);
+      assert.ok(!refused.schemaRejected && refused.isError);
+      await tick();
+      assert.equal(hub.stops(), 0, "a remark and a refused done leave the run alive to act on them");
+      const resumed = await callTool(tools, "post_status", { ...DONE, requestId: "status-continue-1", status: "CONTINUE", reason: "Fix the check.", verificationSummary: "" });
+      assert.ok(!resumed.schemaRejected && !resumed.isError, resumed.text);
+      await tick();
+      assert.equal(hub.stops(), 1, "an accepted status stops the provider");
+    } finally {
+      hub.end();
+    }
   } finally {
     f.cleanup();
   }
