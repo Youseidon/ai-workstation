@@ -257,6 +257,8 @@ test("an offline CONTINUE re-queues the item with its brief", () => {
 
 test("the run-end handler runs the Verify commands before it applies an offline DONE", () => {
   const source = readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8");
+  // And reads a status block at all only for a run that was told to leave one.
+  assert.match(source, /const offlineStatus = reportChannel === "offline" && activeContextRunId !== null && state === "done" \? parseOfflineAgentStatus\(executionAnswer\) : null;/);
   const verify = firstIndex(source, "void verifyOfflineDone(activeContextRunId!, endedPromptId!)");
   assert.ok(firstIndex(source, "const conclude = (): void => {") < verify);
   assert.match(source.slice(verify, verify + 400), /\.then\(conclude\)/, "the claim is applied only after the commands have run");

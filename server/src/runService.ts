@@ -357,6 +357,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
   let progressTools: AgentProgressTools | undefined;
+  // The channel a saved-task execute run reports through; null for every other kind of run.
+  let reportChannel: ExecuteChannel | null = null;
   if (promptId !== undefined) {
     const record = workspaces.resolvePrompt(workspaceId, promptId);
     savedPrompt = record;
@@ -398,6 +400,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       const taskLabel = record.externalKey ?? record.title;
       const depth = workspaces.decomposeDepth(promptId);
       const channel = executeChannel(provider, reachabilityProblem);
+      reportChannel = channel;
       let contract: string;
       if (channel === "tools") {
         progressTools = bindAgentProgressTools(plannedRunId, credential.token);
@@ -500,7 +503,11 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
           ? { promptId: endedPromptId, stopReason: metrics.stopReason, sessionId: metrics.sessionId }
           : null;
-      const offlineStatus = activeContextRunId !== null && state === "done" ? parseOfflineAgentStatus(executionAnswer) : null;
+      // Only a run that was told to end with a status block has one read. A run
+      // with a live channel reports through it and nowhere else: a fenced block
+      // that happens to look like a status in its final message is prose, and
+      // applying it would let text decide an outcome the run never posted.
+      const offlineStatus = reportChannel === "offline" && activeContextRunId !== null && state === "done" ? parseOfflineAgentStatus(executionAnswer) : null;
       const conclude = (): void => {
         if (activeContextRunId !== null) {
           if (offlineStatus !== null) terminalStatusApplyFailure = applyOfflineAgentStatus(activeContextRunId, offlineStatus);
