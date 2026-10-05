@@ -690,10 +690,16 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
     runContexts.revoke(plannedRunId);
     throw error;
   }
-  const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  // The same channel the source run reported through, chosen the same way: a
+  // wrap-up told to run a launcher it has no permission to run, or to call an
+  // API its sandbox cannot reach, writes nothing, and the turn exists to write.
+  const channel = executeChannel(args.provider, agentApiReachabilityProblem(args.provider));
+  const progressTools = channel === "tools" ? bindAgentProgressTools(plannedRunId, credential.token) : undefined;
+  const shimPath = channel === "shim" ? createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port }) : null;
   const resumable = args.sessionId !== null && providerCanResume(args.provider);
   const prompt = wrapUpPrompt({
     stopReason: args.stopReason,
+    channel,
     shimPath,
     runId: plannedRunId,
     token: credential.token,
@@ -720,6 +726,7 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
     // wrap-up that cannot reach the door has nothing to write with.
     permissionOverride: "inherit",
     resumeSessionId: resumable ? args.sessionId : null,
+    ...(progressTools === undefined ? {} : { progressTools }),
     budget: { ...WRAP_UP_BUDGET },
     onEvent: (event) => {
       if (event.type === "assistant_text" && event.payload.kind === "message") answer += event.payload.text;
@@ -732,10 +739,24 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
       // ends, and `finishAgentRun` applies the transition the source run's end
       // deferred — attributing the *source* run's stop reason, because that is
       // what stopped the work.
-      workspaces.finishAgentRun(runId, state, answer, metrics);
-      runContexts.complete(runId);
-      removeAgentShim(runId);
-      runHub.end(runId, state);
+      const conclude = (failure: string | null): void => {
+        workspaces.finishAgentRun(runId, state, answer, metrics, { terminalStatusFailure: failure });
+        runContexts.complete(runId);
+        removeAgentShim(runId);
+        runHub.end(runId, state);
+      };
+      // An offline wrap-up has one thing to say and one place to say it: the
+      // status block in its final message, read here as it is for an offline
+      // source run, with a claimed DONE verified before it is applied.
+      const offlineStatus = channel === "offline" && state === "done" ? parseOfflineAgentStatus(answer) : null;
+      if (offlineStatus === null) { conclude(null); return; }
+      const verifyFirst = offlineStatus.status === "DONE"
+        && workspaces.promptOutcome(args.promptId).status === "IN_PROGRESS"
+        && hasVerifyCommands(args.promptId);
+      void (verifyFirst ? verifyOfflineDone(runId, args.promptId) : Promise.resolve())
+        .catch((error: unknown) => log.warn(`could not run the Verify commands for wrap-up ${runId}`, error))
+        .then(() => conclude(applyOfflineAgentStatus(runId, offlineStatus)))
+        .catch((error: unknown) => log.error(`wrap-up ${runId} could not be concluded`, error));
     },
   });
   workspaces.markAgentRunRunning(handle.runId);
@@ -812,6 +833,7 @@ function workingTreeSummary(cwd: string): string {
  */
 function wrapUpPrompt(args: {
   stopReason: string;
+  channel: ExecuteChannel;
   shimPath: string | null;
   runId: string;
   token: string;
@@ -833,6 +855,64 @@ function wrapUpPrompt(args: {
   const blocked = step === null
     ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'`
     : `${step} blocked --reason "…" --action "…"`;
+
+  // What to do, in the one way this run can do it. The three forms say the same
+  // thing; they differ because a tool call, a shell command and a block of text
+  // in a final message are not interchangeable to the agent reading them.
+  const block = (status: Record<string, string>) => `\`\`\`agent-status\n${JSON.stringify(status)}\n\`\`\``;
+  const steps = args.channel === "tools"
+    ? [
+        `1. Call \`${PROGRESS_TOOL_NAMES.postRemark}\` with kind PROGRESS`,
+        "   — what is verified (with the command and result), what is partly done (file paths), and",
+        "   any decision you made that the next run must know.",
+        "",
+        `2. Then call \`${PROGRESS_TOOL_NAMES.postStatus}\` exactly once, with \`expectedStatus\` "IN_PROGRESS" and:`,
+        "",
+        "   - `status` DONE and a `verificationSummary`,",
+        "     only if every acceptance criterion is already verified; or",
+        "",
+        "   - `status` CONTINUE, with `reason`",
+        "     — the remaining work as concrete instructions for the run that resumes this item on the",
+        "     same working tree (files, routes, commands, what \"done\" looks like); or",
+        "",
+        "   - `status` BLOCKED, with the evidence in `reason` and the human action in `verificationSummary`,",
+        "     only for a concrete external dependency that needs a human.",
+      ]
+    : args.channel === "offline"
+      ? [
+          "This run cannot reach the console, so nothing can be recorded as you go.",
+          "End your final message with exactly one of these blocks, and put everything the next run",
+          "must know inside it: what is verified (with the command and result), what is partly done",
+          "(file paths), and any decision you made.",
+          "",
+          `   - ${block({ status: "DONE", reason: "Completed", verificationSummary: "…" }).replaceAll("\n", "\n     ")}`,
+          "     only if every acceptance criterion is already verified; or",
+          "",
+          `   - ${block({ status: "CONTINUE", reason: "…", verificationSummary: "…" }).replaceAll("\n", "\n     ")}`,
+          "     — `reason` is the remaining work as concrete instructions for the run that resumes this",
+          "     item on the same working tree (files, routes, commands, what \"done\" looks like); or",
+          "",
+          `   - ${block({ status: "BLOCKED", reason: "…", verificationSummary: "…" }).replaceAll("\n", "\n     ")}`,
+          "     only for a concrete external dependency that needs a human; `verificationSummary` is",
+          "     the exact action only they can take.",
+        ]
+      : [
+          `1. \`\`\`bash\n${remark}\n\`\`\``,
+          "   — what is verified (with the command and result), what is partly done (file paths), and",
+          "   any decision you made that the next run must know.",
+          "",
+          "2. Then exactly one of:",
+          "",
+          `   - \`\`\`bash\n${done}\n\`\`\``,
+          "     only if every acceptance criterion is already verified; or",
+          "",
+          `   - \`\`\`bash\n${cont}\n\`\`\``,
+          "     — the remaining work as concrete instructions for the run that resumes this item on the",
+          "     same working tree (files, routes, commands, what \"done\" looks like); or",
+          "",
+          `   - \`\`\`bash\n${blocked}\n\`\`\``,
+          "     only for a concrete external dependency that needs a human.",
+        ];
 
   const context = args.freshSession === null
     ? ""
@@ -858,21 +938,7 @@ function wrapUpPrompt(args: {
     "",
     "**Do not edit files or run build/test commands.** Do exactly this, in order:",
     "",
-    `1. \`\`\`bash\n${remark}\n\`\`\``,
-    "   — what is verified (with the command and result), what is partly done (file paths), and",
-    "   any decision you made that the next run must know.",
-    "",
-    "2. Then exactly one of:",
-    "",
-    `   - \`\`\`bash\n${done}\n\`\`\``,
-    "     only if every acceptance criterion is already verified; or",
-    "",
-    `   - \`\`\`bash\n${cont}\n\`\`\``,
-    "     — the remaining work as concrete instructions for the run that resumes this item on the",
-    "     same working tree (files, routes, commands, what \"done\" looks like); or",
-    "",
-    `   - \`\`\`bash\n${blocked}\n\`\`\``,
-    "     only for a concrete external dependency that needs a human.",
+    ...steps,
     "",
     "A run that ends without one of these is treated as `continue` with no notes.",
     context,

@@ -40,7 +40,9 @@ interface Turn {
   /** Tool calls to make before idling — more than the cap trips the budget. */
   toolCalls?: number;
   /** What the agent does through the door before it finishes, if anything. */
-  post?: (runId: string) => void;
+  post?: (runId: string, options: RunOptions) => void | Promise<void>;
+  /** The final message, for a run whose only way to report is what it says last. */
+  text?: string;
   /** End on a `result` rather than idling until interrupted. */
   finish?: boolean;
 }
@@ -56,13 +58,15 @@ interface Started {
  * one adapter covers a source run and the wrap-up that follows it, and what
  * each turn was started with is kept for the resume and brief assertions.
  */
-function scriptedProvider(turns: Turn[]): AgentAdapter & { seen: Started[] } {
+function scriptedProvider(turns: Turn[], kind: { id?: "claude" | "codex"; tools?: boolean } = {}): AgentAdapter & { seen: Started[] } {
   const seen: Started[] = [];
   let index = 0;
   const stops = new Map<string, () => void>();
   const interrupted = new Set<string>();
   const adapter = {
-    id: "claude" as const,
+    id: kind.id ?? ("claude" as const),
+    // Off unless asked for: the launcher is what every older test here reports through.
+    supportsProgressTools: kind.tools === true,
     label: "Claude Code",
     transport: "sdk" as const,
     reportsTokens: true,
@@ -90,9 +94,9 @@ function scriptedProvider(turns: Turn[]): AgentAdapter & { seen: Started[] } {
         yield { type: "tool_result", payload: { toolUseId: `t${call}`, name: "Read", isError: false, summary: "ok", output: "ok", exitCode: 0 } };
         await Promise.resolve();
       }
-      turn.post?.(opts.runId);
+      await turn.post?.(opts.runId, opts);
       if (turn.finish === true || interrupted.has(opts.runId)) {
-        yield { type: "result", payload: { state: "done" } };
+        yield { type: "result", payload: { state: "done", ...(turn.text === undefined ? {} : { text: turn.text }) } };
         return;
       }
       await new Promise<void>((resolve) => stops.set(opts.runId, resolve));
@@ -141,16 +145,17 @@ const remarks = (promptId: number) =>
  * from the source run's `onEnd`, so the settle point is the workspace going
  * quiet — that is also exactly the moment the pipeline may be told.
  */
-async function runToBudgetStop(ctx: ReturnType<typeof fixture>, turns: Turn[]): Promise<{ adapter: AgentAdapter & { seen: Started[] } }> {
-  const adapter = scriptedProvider(turns);
-  setAdapterOverride("claude", adapter);
+async function runToBudgetStop(ctx: ReturnType<typeof fixture>, turns: Turn[], kind: { id?: "claude" | "codex"; tools?: boolean } = {}): Promise<{ adapter: AgentAdapter & { seen: Started[] } }> {
+  const adapter = scriptedProvider(turns, kind);
+  const provider = kind.id ?? "claude";
+  setAdapterOverride(provider, adapter);
   updateSettings({ "budget.maxToolCalls": TOOL_CALL_CAP });
   try {
-    await startExecute({ workspaceId: ctx.workspace.id, provider: "claude", model: null, promptId: ctx.prompt.id });
+    await startExecute({ workspaceId: ctx.workspace.id, provider, model: null, promptId: ctx.prompt.id });
     await settle(ctx.workspace.id);
   } finally {
     resetSettings(["budget.maxToolCalls"]);
-    setAdapterOverride("claude", null);
+    setAdapterOverride(provider, null);
   }
   return { adapter };
 }
@@ -204,6 +209,61 @@ test("a run stopped by its budget gets one wrap-up turn, on the session it was a
     assert.equal(adapter.seen.length, 2);
     assert.equal(adapter.seen[0]!.options.resumeSessionId ?? null, null, "the source run started a fresh session");
     assert.equal(adapter.seen[1]!.options.resumeSessionId, "sess-abc", "the wrap-up did not resume the stopped run's session");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a wrap-up for a run that reports through tools is given the tools, not a launcher it cannot run", async () => {
+  // The turn was always told to run agent-step. A Claude run without Host access
+  // may not run shell commands that are not pre-approved, so it wrote nothing
+  // and the item fell back to "continue with no notes" - the outcome the
+  // wrap-up exists to prevent.
+  const ctx = fixture();
+  try {
+    const { adapter } = await runToBudgetStop(ctx, [
+      { sessionId: "sess-tools", toolCalls: 6 },
+      {
+        toolCalls: 0,
+        finish: true,
+        post: async (_runId, options) => {
+          await options.progressTools!.postRemark({ requestId: unique("req").replaceAll(/[^0-9a-zA-Z-]/g, "-"), kind: "PROGRESS", content: "Verified the parser; the writer is half done." });
+          await options.progressTools!.postStatus({ requestId: unique("req").replaceAll(/[^0-9a-zA-Z-]/g, "-"), expectedStatus: "IN_PROGRESS", status: "CONTINUE", reason: "Finish the writer in src/writer.ts", verificationSummary: "" });
+        },
+      },
+    ], { tools: true });
+
+    assert.equal(adapter.seen.length, 2);
+    const wrapUp = adapter.seen[1]!;
+    assert.ok(wrapUp.options.progressTools !== undefined, "the wrap-up was not given the progress tools");
+    assert.match(wrapUp.prompt, /Call `post_remark` with kind PROGRESS/);
+    assert.match(wrapUp.prompt, /call `post_status` exactly once/);
+    assert.doesNotMatch(wrapUp.prompt, /agent-step|curl|Bearer/);
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
+    assert.equal(remarks(ctx.prompt.id).some((remark) => remark.kind === "CONTINUATION" && remark.content === "Finish the writer in src/writer.ts"), true);
+    assert.equal(remarks(ctx.prompt.id).some((remark) => remark.kind === "PROGRESS" && remark.content.startsWith("Verified the parser")), true);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a wrap-up for a run that cannot reach the console reports in a status block, and it is read", async () => {
+  // Sandboxed Codex and Grok have neither launcher nor tools. Their wrap-up was
+  // handed a curl to a port the sandbox blocks, and nothing read what it said.
+  const ctx = fixture();
+  try {
+    const { adapter } = await runToBudgetStop(ctx, [
+      { sessionId: "sess-offline", toolCalls: 6 },
+      { toolCalls: 0, finish: true, text: 'Stopped here.\n\n```agent-status\n{"status":"CONTINUE","reason":"Port the last two endpoints in api/routes.ts","verificationSummary":"npm test passed for the first three"}\n```' },
+    ], { id: "codex" });
+
+    assert.equal(adapter.seen.length, 2);
+    const wrapUp = adapter.seen[1]!;
+    assert.equal(wrapUp.options.progressTools, undefined);
+    assert.match(wrapUp.prompt, /```agent-status\n\s*\{"status":"CONTINUE"/);
+    assert.doesNotMatch(wrapUp.prompt, /agent-step|curl|Bearer|post_status/);
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
+    assert.equal(remarks(ctx.prompt.id).some((remark) => remark.kind === "CONTINUATION" && remark.content === "Port the last two endpoints in api/routes.ts"), true);
   } finally {
     ctx.cleanup();
   }
