@@ -239,7 +239,7 @@ test("a cut section tells each run how it can get the rest, and a run that canno
     assert.match(readAgentContext(run.runId, run.token, "http").markdown, /truncated; run `agent-step context --full` for everything/);
 
     assert.deepEqual(executeContextExtras("shim", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH });
-    assert.deepEqual(executeContextExtras("tools", 1), { depth: 1, maxDepth: DECOMPOSE_MAX_DEPTH, progressTools: { getContext: "get_context", postRemark: "post_remark", postStatus: "post_status", repairVerify: "repair_verify" } });
+    assert.deepEqual(executeContextExtras("tools", 1), { depth: 1, maxDepth: DECOMPOSE_MAX_DEPTH, progressTools: { getContext: "get_context", postRemark: "post_remark", postStatus: "post_status", repairVerify: "repair_verify", decompose: "decompose" } });
     // An offline run can call nothing, but it can read: the whole context goes
     // into a file for it, and its prompt stays the size everyone else's is.
     assert.deepEqual(executeContextExtras("offline", 0), { depth: 0, maxDepth: DECOMPOSE_MAX_DEPTH, offline: true, fullContextPath: null });
@@ -313,7 +313,66 @@ test("a run is stopped once its status is accepted through the tools, and only t
   }
 });
 
-test("S-CLT-01/24: Claude takes the tool path and exposes exactly the four progress tools", () => {
+test("a run can split its work item into sub-steps through the tools, under the rules the launcher has", async () => {
+  // Every other provider could decompose; a run on the tool path could only
+  // post continue and have the same oversized item handed back whole.
+  const f = fixture();
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    const run = startExecuteRun(f.workspace.id, f.prompt.id);
+    let stops = 0;
+    runHub.start({
+      handle: { runId: run.runId, provider: "claude", model: null, role: "execute", permissionMode: null, budget: emptyBudgetSnapshot, sessionId: () => null, interrupt: async () => {}, complete: async () => { stops += 1; }, done: Promise.resolve("done") },
+      workspace: { id: f.workspace.id, name: f.workspace.name, workDirectory: f.workspace.workDirectory },
+      source: { type: "custom", displayText: "x" },
+      role: "execute",
+      permissionMode: null,
+    });
+    try {
+      const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+      const child = (title: string) => ({ title, content: `Do ${title}.\n\n## Verify\n\n\`\`\`sh\ntrue\n\`\`\`\n` });
+      const single = await callTool(tools, "decompose", { requestId: "decompose-0", resumeBrief: "Nothing yet.", children: [child("only one")] });
+      assert.equal(single.schemaRejected, true, "one sub-step is not a split");
+
+      const first = unique("slice-a");
+      const second = unique("slice-b");
+      const split = await callTool(tools, "decompose", { requestId: "decompose-1", resumeBrief: "The outline is written; join the two halves once they are done.", children: [child(first), child(second)] });
+      assert.ok(!split.schemaRejected && !split.isError, split.text);
+      const created = (JSON.parse(split.text) as { children: Array<{ id: number; title: string }> }).children;
+      assert.deepEqual(created.map((entry) => entry.title), [first, second]);
+      assert.equal(workspaces.promptOutcome(f.prompt.id).status, "TODO", "the parent waits for its sub-steps");
+      for (const entry of created) {
+        assert.equal(workspaces.promptOutcome(entry.id).status, "TODO");
+        assert.equal(workspaces.dodCommandPlan(entry.id).criteria.some((criterion) => criterion.command === "true"), true, "a sub-step's Verify section is its own check");
+      }
+      await tick();
+      assert.equal(stops, 1, "a split ends the run, as a status does");
+      const logged = workspaces.runEvents(run.runId).filter((event) => event.type === "db_access").map((event) => `${event.payload.method} ${event.payload.operation} ${event.payload.outcome}`);
+      assert.deepEqual(logged, ["TOOL decompose accepted"]);
+
+      // A sub-step two levels down is refused a further split, and is not offered one.
+      const childRun = startExecuteRun(f.workspace.id, created[0]!.id);
+      const childTools = claudeProgressToolDefinitions(bindAgentProgressTools(childRun.runId, childRun.token));
+      const deeper = await callTool(childTools, "decompose", { requestId: "decompose-2", resumeBrief: "x", children: [child(unique("deep-a")), child(unique("deep-b"))] });
+      assert.ok(!deeper.schemaRejected && !deeper.isError, "one level down may still split");
+      const grandchild = (JSON.parse(deeper.text) as { children: Array<{ id: number }> }).children[0]!.id;
+      const leafRun = startExecuteRun(f.workspace.id, grandchild);
+      const refused = await callTool(claudeProgressToolDefinitions(bindAgentProgressTools(leafRun.runId, leafRun.token)), "decompose", { requestId: "decompose-3", resumeBrief: "x", children: [child(unique("leaf-a")), child(unique("leaf-b"))] });
+      assert.ok(!refused.schemaRejected && refused.isError);
+      assert.match(refused.text, /^decompose_depth_exceeded: /);
+      const leafContext = readAgentContext(leafRun.runId, leafRun.token, "tools").markdown;
+      assert.match(leafContext, /`decompose` is refused at this depth/);
+      assert.match(progressToolsMarkdown(), /`decompose` splits the remaining work/);
+      assert.doesNotMatch(progressToolsMarkdown({ canDecompose: false }), /`decompose`/);
+    } finally {
+      runHub.end(run.runId, "done");
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("S-CLT-01/24: Claude takes the tool path and exposes exactly the five progress tools", () => {
   assert.equal(getAdapter("claude").supportsProgressTools, true);
   for (const provider of ["codex", "grok", "cursor"] as const) assert.equal(getAdapter(provider).supportsProgressTools, false);
   withHostAccess(false, () => {
@@ -321,7 +380,7 @@ test("S-CLT-01/24: Claude takes the tool path and exposes exactly the four progr
     assert.match(agentApiReachabilityProblem("codex") ?? "", /cannot reach the saved-prompt context/);
   });
   const names = claudeProgressToolDefinitions(bindAgentProgressTools("run_none", "none")).map((item) => item.name).sort();
-  assert.deepEqual(names, ["get_context", "post_remark", "post_status", "repair_verify"]);
+  assert.deepEqual(names, ["decompose", "get_context", "post_remark", "post_status", "repair_verify"]);
 });
 
 test("S-CLT-01/09/26: only runs given progress tools get the in-process server; permissions are otherwise identical", () => {
@@ -392,9 +451,9 @@ test("the context of a run that reports through tools ends in the tools it has, 
     const run = startExecuteRun(f.workspace.id, f.prompt.id);
     const protocol = (markdown: string) => markdown.slice(markdown.indexOf("## How this run ends")).split("\n## ")[0] as string;
     const tools = protocol(readAgentContext(run.runId, run.token, "tools").markdown);
-    assert.match(tools, /Post exactly one of DONE, CONTINUE or BLOCKED with the `post_status` tool\./);
+    assert.match(tools, /Post exactly one of DONE, CONTINUE or BLOCKED with the `post_status` tool, or split the work with `decompose`\./);
     assert.match(tools, /Bank progress with `post_remark`/);
-    assert.doesNotMatch(tools, /agent-step|decompose/);
+    assert.doesNotMatch(tools, /agent-step/);
     const http = protocol(readAgentContext(run.runId, run.token, "http").markdown);
     assert.match(http, /through `agent-step` \(below\)/, "a run with the launcher is told what it always was");
     assert.match(http, /decompose/);

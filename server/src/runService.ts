@@ -401,7 +401,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       let contract: string;
       if (channel === "tools") {
         progressTools = bindAgentProgressTools(plannedRunId, credential.token);
-        contract = progressToolsMarkdown();
+        contract = progressToolsMarkdown({ canDecompose: depth < DECOMPOSE_MAX_DEPTH });
       } else if (channel === "shim") {
         // One command with this run's credentials already in it, rather than a
         // curl the model has to assemble. Per-run rather than per-process: the

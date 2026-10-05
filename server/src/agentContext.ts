@@ -41,7 +41,7 @@ export interface ContextExtras {
    * `agent-step`, so the protocol section and the truncation notice have to name
    * what it can actually call.
    */
-  progressTools?: { getContext: string; postRemark: string; postStatus: string };
+  progressTools?: { getContext: string; postRemark: string; postStatus: string; decompose: string };
   /**
    * A run whose sandbox cannot reach the console. It reports once, in a status
    * block at the end of its final message, so the protocol section must not
@@ -104,15 +104,18 @@ export function descriptionContainedInInstructions(description: string, agentsMd
 }
 
 /**
- * The same protocol for a run that reports through bound tools. It is a section
- * of its own rather than a few substituted words because the set of endings is
- * different: there is no tool to decompose with, so offering it would send the
- * run looking for a command it does not have.
+ * The same protocol for a run that reports through bound tools, in the names of
+ * the tools it has. Its own section rather than a few substituted words: the
+ * endings are tool calls with arguments, not subcommands, and banking progress
+ * is a different tool again.
  */
-function toolsExecuteProtocol(tools: { postRemark: string; postStatus: string }): string {
+function toolsExecuteProtocol(tools: { postRemark: string; postStatus: string; decompose: string }, canDecompose: boolean): string {
+  const decompose = canDecompose
+    ? `\`${tools.decompose}\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Do not split because the work is large or the run is long — CONTINUE re-queues this station until the work is done.`
+    : `\`${tools.decompose}\` is refused at this depth — sub-steps cannot be split further. Finish it, or post CONTINUE with what remains; it will be resumed on this working tree.`;
   return `## How this run ends
 
-Post exactly one of DONE, CONTINUE or BLOCKED with the \`${tools.postStatus}\` tool.
+Post exactly one of DONE, CONTINUE or BLOCKED with the \`${tools.postStatus}\` tool, or split the work with \`${tools.decompose}\`.
 DONE is checked by the server: the Verification commands above run in the workspace and DONE
 is refused with their output if any fails. CONTINUE records what remains and re-queues this
 item on this working tree — keep posting it until DONE passes, or until a real human question
@@ -120,6 +123,7 @@ needs BLOCKED. The rail does not stop for CONTINUE.
 BLOCKED is only for action only a human can take (credentials, undelegated decisions, external
 systems); remaining work is never a blocker. Reconcile stale saved scope from repository evidence;
 never ask the user to edit the tracker or choose a speculative mapping.
+${decompose}
 Bank progress with \`${tools.postRemark}\` (kind PROGRESS) after each verified piece; if this run is
 stopped by its budget you get a short wrap-up turn on the same session to record what remains.
 Do not look for or edit a tracker file; the database is the tracker.
@@ -297,7 +301,7 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     + section("Clarifications", cap(clarifications, 2 * 1024))
     + (extras?.offline === true
       ? offlineExecuteProtocol()
-      : extras?.progressTools === undefined ? executeProtocol(canDecompose) : toolsExecuteProtocol(extras.progressTools));
+      : extras?.progressTools === undefined ? executeProtocol(canDecompose) : toolsExecuteProtocol(extras.progressTools, canDecompose));
 }
 
 /** Consult / clarify keep the pre-diet layout. */

@@ -94,6 +94,23 @@ export function claudeProgressToolDefinitions(tools: AgentProgressTools) {
       },
       async (args) => guarded(() => tools.repairVerify(args)),
     ),
+    tool(
+      "decompose",
+      "Splits this work item's remaining work into 2-12 sub-steps that run one by one, each verified on its own. This run then ends and the item resumes when its sub-steps are finished. Refused on a sub-step that is already at the maximum depth.",
+      {
+        requestId: REQUEST_ID,
+        resumeBrief: z.string().min(1).max(20000).describe("What this run already finished and verified, and what this item still has to do once its sub-steps are done."),
+        children: z
+          .array(z.object({
+            title: z.string().min(1).max(200).describe("A short title, different from every existing sub-step's."),
+            content: z.string().min(1).max(20000).describe("The sub-step's complete instructions. It is read on its own, so name files and expected results, and end with a `## Verify` section holding the commands that prove it."),
+          }))
+          .min(2)
+          .max(12)
+          .describe("Mostly independent slices that can each be verified separately, in the order they should run."),
+      },
+      async (args) => guarded(() => tools.decompose(args)),
+    ),
   ];
 }
 

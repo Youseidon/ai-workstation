@@ -8,7 +8,7 @@ import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { hashRunToken, runContexts } from "./runContext.ts";
 import { runHub } from "./runHub.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
 
 /*
  * The agent Progress API: how a running agent reads its work item and records
@@ -111,7 +111,7 @@ export function readAgentContext(runId: string, token: string, progress: "http" 
   // Tool callers already received the reporting contract in their run prompt, so
   // their context carries no second copy of it, only the work item and how the
   // run ends, in the names of the tools they have.
-  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context, "execute", { progressTools: PROGRESS_TOOL_NAMES, full });
+  const markdown = progress === "http" ? `${contextMarkdown(context)}\n\n${progressApiMarkdown(runId, token)}` : contextMarkdown(context, "execute", { progressTools: PROGRESS_TOOL_NAMES, full, depth: workspaces.decomposeDepth(run.promptId), maxDepth: DECOMPOSE_MAX_DEPTH });
   return { purpose: "execute", context, markdown };
 }
 
@@ -188,6 +188,14 @@ export async function repairAgentVerify(runId: string, token: string, body: Reco
   return result;
 }
 
+/** Splits the run's work item into sub-steps, under the same rules as the HTTP route. */
+export function decomposeAgentPrompt(runId: string, token: string, body: Record<string, unknown>): unknown {
+  requireMutatingRole(authorizeAgentCredential(runId, token));
+  const result = workspaces.decomposePrompt(runId, body);
+  runHub.operationsChanged();
+  return result;
+}
+
 /** Tool handlers bound to one run credential, for providers that run in-process. */
 export function bindAgentProgressTools(runId: string, token: string): AgentProgressTools {
   // The work item's status, for the "before → after" of a write. Read through the
@@ -204,7 +212,7 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
   // The tool path's entry in the access log, which the HTTP route writes for
   // itself. A tool call is not an HTTP request, so the method says so; the
   // status code is the one the same call would have got over HTTP.
-  const write = <T>(operation: Extract<DbOperation, "remarks" | "status" | "repair-verify">, input: Record<string, unknown>, action: () => T): T => {
+  const write = <T>(operation: Extract<DbOperation, "remarks" | "status" | "repair-verify" | "decompose">, input: Record<string, unknown>, action: () => T): T => {
     const startedAt = Date.now();
     const requestId = typeof input.requestId === "string" ? input.requestId : null;
     const before = status();
@@ -213,12 +221,12 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
         ...describeAcceptedWrite({ operation, before, after: status(), requestId, remarkKind: typeof input.kind === "string" ? input.kind : null, durationMs: Date.now() - startedAt }),
         method: "TOOL",
       });
-      // An accepted status is the run's last word, on this path as over HTTP:
+      // An accepted status or decompose is the run's last word, on this path as over HTTP:
       // the provider is stopped so nothing it does afterwards can change a tree
       // whose checks have already passed, and the pipeline moves on at once
       // instead of when the model chooses to stop. Deferred a tick so the tool
       // result is on its way back before the stop is asked for.
-      if (operation === "status") setImmediate(() => { void runHub.complete(runId).catch((error: unknown) => log.warn(`could not stop run=${runId} after its status`, error)); });
+      if (operation === "status" || operation === "decompose") setImmediate(() => { void runHub.complete(runId).catch((error: unknown) => log.warn(`could not stop run=${runId} after its status`, error)); });
     };
     const rejected = (error: unknown): void => recordDbAccess(runId, {
       ...describeRejectedWrite({
@@ -255,6 +263,7 @@ export function bindAgentProgressTools(runId: string, token: string): AgentProgr
     postRemark: (input) => write("remarks", input, () => postAgentRemark(runId, token, input)),
     postStatus: (input) => write("status", input, () => postAgentStatus(runId, token, input)),
     repairVerify: (input) => write("repair-verify", input, () => repairAgentVerify(runId, token, input)),
+    decompose: (input) => write("decompose", input, () => decomposeAgentPrompt(runId, token, input)),
   };
 }
 
@@ -263,10 +272,15 @@ export const PROGRESS_TOOL_NAMES = {
   postRemark: "post_remark",
   postStatus: "post_status",
   repairVerify: "repair_verify",
+  decompose: "decompose",
 } as const;
 
 /** The reporting contract for tool callers; it belongs in the trusted run prompt. */
-export function progressToolsMarkdown(): string {
+export function progressToolsMarkdown(options: { canDecompose?: boolean } = {}): string {
+  // A sub-step at the maximum depth is refused a split, so it is not offered one.
+  const decompose = options.canDecompose === false
+    ? ""
+    : `\n- \`${PROGRESS_TOOL_NAMES.decompose}\` splits the remaining work into 2-12 sub-steps that run one by one and are each verified on their own: \`requestId\`, \`resumeBrief\` (what is done, and what this item still does once they finish) and \`children\`, each with a \`title\` and self-contained \`content\` ending in its own \`## Verify\` section. It ends this run in place of a status. Use it for mostly independent slices, not because the work is large or the run is long; CONTINUE re-queues this item until it is done.\n`;
   return `## Progress tools
 
 This run is already marked IN_PROGRESS. Record progress only through these tools; never open or modify SQLite directly, and do not call the local HTTP API.
@@ -278,7 +292,7 @@ This run is already marked IN_PROGRESS. Record progress only through these tools
 For DONE, \`verificationSummary\` lists the commands run and their observable results. The server then runs the work item's Verify commands; if one fails, the DONE is refused with its output and nothing is recorded. Fix the work and post DONE again.
 
 - \`${PROGRESS_TOOL_NAMES.repairVerify}\` replaces a Verify command that is itself wrong: \`requestId\`, \`oldCommand\` (exactly as the refusal printed it), \`newCommand\` and \`reason\`. It only works on a command a refused DONE has just shown failing, and it returns what still fails. Use it when the check is defective, never to make failing work pass.
-
+${decompose}
 CONTINUE is for work that cannot finish in this run: put what remains in \`reason\`, as concrete instructions for the run that resumes this item on this working tree, and what you verified in \`verificationSummary\`.
 
 BLOCKED is only valid for a concrete external dependency that requires human action after safe in-scope alternatives have been exhausted. Remaining implementation work is not a blocker. For BLOCKED, put observed evidence in \`reason\` and the exact action only the human can take in \`verificationSummary\`.
