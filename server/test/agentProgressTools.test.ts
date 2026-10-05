@@ -372,6 +372,42 @@ test("a run can split its work item into sub-steps through the tools, under the 
   }
 });
 
+test("a done holds its place while its Verify commands run", async () => {
+  // The commands run outside any transaction, so the item is still in progress
+  // for as long as they take. A blocked sent in that window used to be accepted
+  // and the done that was posted first came back stale.
+  const f = fixture();
+  try {
+    const slow = workspaces.createChild("prompt", workspaces.promptHome(f.prompt.id).suiteId, { title: unique("slow"), content: "Do it.\n\n## Verify\n\n```sh\nsleep 0.4 && true\n```\n" }) as PromptRecord;
+    const run = startExecuteRun(f.workspace.id, slow.id);
+    const tools = claudeProgressToolDefinitions(bindAgentProgressTools(run.runId, run.token));
+    const done = callTool(tools, "post_status", DONE);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const overtaking = [
+      await callTool(tools, "post_status", { ...DONE, requestId: "status-blocked-2", status: "BLOCKED", reason: "x", verificationSummary: "y" }),
+      await callTool(tools, "post_status", { ...DONE, requestId: "status-continue-2", status: "CONTINUE", reason: "x", verificationSummary: "" }),
+      await callTool(tools, "decompose", { requestId: "decompose-9", resumeBrief: "x", children: [{ title: unique("a"), content: "a" }, { title: unique("b"), content: "b" }] }),
+    ];
+    for (const result of overtaking) {
+      assert.ok(!result.schemaRejected && result.isError);
+      assert.match(result.text, /^verification_in_flight: /);
+    }
+    // A remark changes nothing about the outcome and is still taken.
+    const remark = await callTool(tools, "post_remark", { requestId: "remark-during-1", kind: "PROGRESS", content: "waiting on the check" });
+    assert.ok(!remark.schemaRejected && !remark.isError, remark.text);
+
+    const landed = await done;
+    assert.ok(!landed.schemaRejected && !landed.isError, landed.text);
+    assert.equal(workspaces.promptOutcome(slow.id).status, "DONE");
+    // The hold ends with the check: a later call is judged on its own again.
+    const late = await callTool(tools, "post_status", { ...DONE, requestId: "status-blocked-3", status: "BLOCKED", reason: "x", verificationSummary: "y" });
+    assert.ok(!late.schemaRejected && late.isError);
+    assert.doesNotMatch(late.text, /^verification_in_flight: /);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("S-CLT-01/24: Claude takes the tool path and exposes exactly the five progress tools", () => {
   assert.equal(getAdapter("claude").supportsProgressTools, true);
   for (const provider of ["codex", "grok", "cursor"] as const) assert.equal(getAdapter(provider).supportsProgressTools, false);

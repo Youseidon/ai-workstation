@@ -128,6 +128,35 @@ export function postAgentRemark(runId: string, token: string, body: Record<strin
   return result;
 }
 
+/*
+ * Runs whose Verify commands are executing right now, for a done or a repair.
+ *
+ * The commands are awaited outside any transaction, so for as long as they run
+ * the item is still IN_PROGRESS and a second post from the same run would be
+ * accepted: a blocked sent while a done was being checked won, and the done
+ * that had been posted first came back stale. One run has one claim at a time.
+ * While it is being checked, anything else that would change the item is
+ * refused and told to wait, so the outcome is the one that was asked for first.
+ */
+const verifying = new Set<string>();
+
+/** Refuses a write from a run whose earlier claim is still being verified. */
+export function assertNoVerificationInFlight(runId: string): void {
+  if (verifying.has(runId)) {
+    throw new WorkspaceError(409, "verification_in_flight", "This run's Verify commands are still running for an earlier call. Wait for that call's result before posting anything else.");
+  }
+}
+
+/** Runs the item's Verify commands with the run's claim held until they finish. */
+export async function verifyHoldingClaim(runId: string, promptId: number): Promise<void> {
+  verifying.add(runId);
+  try {
+    await runDefinitionOfDoneCommands(promptId, runId);
+  } finally {
+    verifying.delete(runId);
+  }
+}
+
 /** Whether this work item has any Verify command to run before a DONE is weighed. */
 export function hasVerifyCommands(promptId: number): boolean {
   try {
@@ -153,10 +182,12 @@ export function hasVerifyCommands(promptId: number): boolean {
 export async function postAgentStatus(runId: string, token: string, body: Record<string, unknown>): Promise<unknown> {
   const run = authorizeAgentCredential(runId, token);
   requireMutatingRole(run);
+  assertNoVerificationInFlight(runId);
   // With no command to run there is nothing to wait for, and not waiting keeps a
-  // done ahead of any status posted after it.
+  // done ahead of any status posted after it. With commands, the claim is held
+  // while they run, which does the same.
   if (body.status === "DONE" && run.promptId !== null && hasVerifyCommands(run.promptId)) {
-    await runDefinitionOfDoneCommands(run.promptId, runId);
+    await verifyHoldingClaim(runId, run.promptId);
     const failures = workspaces.agentDoneVerificationFailures(run.promptId);
     if (failures !== null) {
       workspaces.recordVerificationFailureRemark(run.promptId, runId, failures);
@@ -179,9 +210,10 @@ export async function postAgentStatus(runId: string, token: string, body: Record
 export async function repairAgentVerify(runId: string, token: string, body: Record<string, unknown>): Promise<unknown> {
   const run = authorizeAgentCredential(runId, token);
   requireMutatingRole(run);
+  assertNoVerificationInFlight(runId);
   const result = workspaces.repairAgentVerifyCommand(runId, body);
   if (run.promptId !== null) {
-    await runDefinitionOfDoneCommands(run.promptId, runId);
+    await verifyHoldingClaim(runId, run.promptId);
     result.failures = workspaces.agentDoneVerificationFailures(run.promptId) ?? [];
   }
   runHub.operationsChanged();
@@ -191,6 +223,7 @@ export async function repairAgentVerify(runId: string, token: string, body: Reco
 /** Splits the run's work item into sub-steps, under the same rules as the HTTP route. */
 export function decomposeAgentPrompt(runId: string, token: string, body: Record<string, unknown>): unknown {
   requireMutatingRole(authorizeAgentCredential(runId, token));
+  assertNoVerificationInFlight(runId);
   const result = workspaces.decomposePrompt(runId, body);
   runHub.operationsChanged();
   return result;

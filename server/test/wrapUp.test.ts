@@ -269,6 +269,28 @@ test("a wrap-up for a run that cannot reach the console reports in a status bloc
   }
 });
 
+test("a run that reports its status through the tools is stopped there, and ends as done", async () => {
+  // The provider here never finishes by itself: it idles until it is stopped,
+  // as a model that kept working after its status would. The status is the
+  // run's last word, so the run is ended for it and recorded as a normal end.
+  const ctx = fixture();
+  const adapter = scriptedProvider([
+    { toolCalls: 1, post: async (_runId, options) => { await options.progressTools!.postStatus({ requestId: unique("req").replaceAll(/[^0-9a-zA-Z-]/g, "-"), expectedStatus: "IN_PROGRESS", status: "DONE", reason: "Completed", verificationSummary: "checked by hand" }); } },
+  ], { tools: true });
+  setAdapterOverride("claude", adapter);
+  try {
+    await startExecute({ workspaceId: ctx.workspace.id, provider: "claude", model: null, promptId: ctx.prompt.id });
+    await settle(ctx.workspace.id);
+    const runs = runsFor(ctx.prompt.id);
+    assert.equal(runs.length, 1, "a stop after a status is not a budget stop and earns no wrap-up");
+    assert.equal(runs[0]!.state.toUpperCase(), "DONE", "stopping after a status is a normal end, not an interruption");
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "DONE");
+  } finally {
+    setAdapterOverride("claude", null);
+    ctx.cleanup();
+  }
+});
+
 test("the wrap-up is never given a wrap-up of its own", async () => {
   const ctx = fixture();
   try {

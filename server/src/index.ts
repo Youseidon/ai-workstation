@@ -11,10 +11,9 @@ import { assertNoLiveHandover } from "./teamHandoverHold.ts";
 import { createLogger } from "./lib/logger.ts";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
 import { runRoleStartError } from "./runner.ts";
-import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspaceApi.ts";
 import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
-import { authorizeAgentCredential, postAgentRemark, postAgentStatus, readAgentContext, readAgentState, recordDbAccess } from "./agentProgressApi.ts";
+import { assertNoVerificationInFlight, authorizeAgentCredential, postAgentRemark, postAgentStatus, readAgentContext, readAgentState, recordDbAccess, verifyHoldingClaim } from "./agentProgressApi.ts";
 import { runContexts } from "./runContext.ts";
 import { removeAllAgentShims } from "./agentShim.ts";
 import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentContext.ts";
@@ -196,6 +195,9 @@ const httpServer = createServer((req, res) => {
       if((operation==="remarks"||operation==="status"||operation==="decompose"||operation==="repair-verify"||authoring)&&req.method==="POST"){
         void readJsonBody(req,authoring?MAX_AUTHOR_BODY_BYTES:MAX_BODY_BYTES).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
+          // One claim at a time: while this run's Verify commands are running for an
+          // earlier post, a second one must not overtake it.
+          if(operation==="status"||operation==="decompose"||operation==="repair-verify")assertNoVerificationInFlight(runId);
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
           // An agent claiming DONE is the moment the definition-of-done commands
           // are worth running: the gate that reads their results is a synchronous
@@ -207,7 +209,7 @@ const httpServer = createServer((req, res) => {
           // said "here is what still remains" would charge the item for the
           // evidence it is explicitly not offering.
           if(operation==="status"&&(body as Record<string,unknown>).status==="DONE"&&memory.promptId!==null){
-            await runDefinitionOfDoneCommands(memory.promptId,runId);
+            await verifyHoldingClaim(runId,memory.promptId);
             // Under `block`, a failing criterion is not a status change — it is
             // a refusal the agent can still act on. Writing NEEDS_REVIEW here
             // would end the run and park the rail; handing the compiler output
@@ -232,7 +234,7 @@ const httpServer = createServer((req, res) => {
             :operation==="repair-verify"?workspaces.repairAgentVerifyCommand(runId,body)
             :workspaces.decomposePrompt(runId,body);
           if(operation==="repair-verify"&&memory.promptId!==null){
-            await runDefinitionOfDoneCommands(memory.promptId,runId);
+            await verifyHoldingClaim(runId,memory.promptId);
             (result as Record<string,unknown>).failures=workspaces.agentDoneVerificationFailures(memory.promptId)??[];
           }
           // The agent cannot see the runner's counters. Riding the reply it is
