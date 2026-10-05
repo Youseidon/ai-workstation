@@ -265,6 +265,16 @@ Team allows the workstation to read it again.
   rejected**, open **Agents → Manage Telegram**, paste the replacement and pair
   again if required. Revocation creates an outage until the replacement is
   saved.
+- To switch this workstation to a different bot, open **Agents → Manage
+  Telegram**, choose **Use a different bot** and paste the new bot's token.
+  The phone paired with the previous bot is unpaired and a pairing link for the
+  new bot opens by itself.
+  One case needs a manual step: a phone that was paired before the workstation
+  started remembering pairings beside the token.
+  If the bot is changed before the workstation has started once on the old bot
+  with that version, the phone stays listed as paired but receives nothing,
+  because it has never opened the new bot.
+  Use **Unpair** beside it, then pair again with the new bot.
 - To disable Team locally, turn off **Enable handover** first, then **Enable
   Team**, and save. Personal Telegram can remain enabled.
 - Before decommissioning a team, withdraw open offers, return or apply claimed

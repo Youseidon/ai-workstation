@@ -47,3 +47,34 @@ T1 fake rows cover only the other providers' paths, which this slice must leave 
 | S-CLT-29 | H-L1-17 | Secret | Given S-CLT-03's real run. When the harness token sweep runs. Then no run token, bot token or client session secret is found in logs, API responses, event log artifacts or the temporary database. | T3 real | must |
 | S-CLT-30 | 7a-zod | Failure path | Given a clean install of the server workspace. When dependencies are resolved. Then `zod` is a direct dependency in `server/package.json` and `npm run typecheck --workspace server` passes. | T0 | should |
 | S-CLT-31 | 7a-shared | Failure path | Given the HTTP Progress API after the handlers are shared. When the existing `consult.test.ts`, `runContext.test.ts`, `runService.test.ts` and HTTP route tests run. Then all pass unchanged, including `consult_read_only`, token scope and expiry, and the Markdown context response still carrying the `curl` Progress API section for HTTP callers. | T0 | must |
+
+## Changes since this table was written (2026-10-05)
+
+The rows above describe the slice as first built: three tools, and a `post_status` that takes only DONE or BLOCKED.
+The tool path has since been brought level with the HTTP path, and where a row and this section disagree, this section is current.
+The tests named below are in `server/test/agentProgressTools.test.ts` unless another file is given.
+
+- **Five tools, not three.**
+  The in-process server exposes `get_context`, `post_remark`, `post_status`, `repair_verify` and `decompose`.
+  This supersedes "exactly" three in S-CLT-01 and "the three tools" in S-CLT-10, S-CLT-26 and S-CLT-28.
+- **`post_status` takes CONTINUE.**
+  DONE, CONTINUE and BLOCKED are accepted; CONTINUE needs the remaining work in `reason`.
+  This supersedes "a status other than DONE/BLOCKED" in S-CLT-13: a status other than those three is still refused.
+- **A DONE runs the item's Verify commands first.**
+  A failing command refuses the DONE as `verification_failed` with the command output, records a VERIFICATION remark and leaves the item IN_PROGRESS.
+  An item with no commands does not wait, so S-CLT-16 holds unchanged.
+- **One claim at a time.**
+  While a run's Verify commands are running for a DONE or a repair, another status, decompose or repair from that run is refused as `verification_in_flight`.
+  Remarks are still taken.
+- **`repair_verify`** replaces a Verify command the server has seen fail, under the HTTP route's safety rules, then runs the commands again and returns what still fails.
+- **`decompose`** splits the item into 2-12 sub-steps under the HTTP route's rules, including the depth limit.
+- **`get_context` takes `full: true`** and returns the uncapped context; a cut section in a tools run names it.
+- **An accepted status or decompose stops the provider**, as it does over HTTP.
+  A remark or a refused DONE does not.
+  Covered at run level in `server/test/wrapUp.test.ts`.
+- **Every tool call is in the access log** with method `TOOL`, refusals included.
+- **The wrap-up turn after a budget stop is given the tools** when the run it speaks for reports through them.
+  Covered in `server/test/wrapUp.test.ts`.
+
+Not yet run against a real Claude session: stopping the provider from inside its own tool call, and how the model uses `repair_verify` and `decompose`.
+These need the T3 harness or one supervised run.
