@@ -10,5 +10,5 @@ test("without a bot token the Task Control badge and reason say so, matching the
   await expect(panel.getByText("no token", { exact: true })).toBeVisible();
   await expect(section.getByText("Telegram configured", { exact: true })).toHaveCount(0);
   await expect(section.getByText("Telegram token missing", { exact: true })).toBeVisible();
-  await expect(section.getByText("Set TELEGRAM_BOT_TOKEN in .env and restart the server.").first()).toBeVisible();
+  await expect(section.getByText("Connect your bot from the Telegram setup screen.").first()).toBeVisible();
 });
