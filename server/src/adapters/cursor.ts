@@ -94,9 +94,15 @@ export function cursorAgentArgs(input: {
 export function cursorModelWithEffort(model: string | null, effort: "low" | "medium" | "high"): string {
   const selected = model ?? "auto";
   const open = selected.lastIndexOf("[");
+  const base = open < 0 || !selected.endsWith("]") ? selected : selected.slice(0, open);
+
+  // Cursor-native routing/model ids do not expose the vendor parameter surface.
+  // Passing `composer-2.5[effort=high]`, for example, makes the CLI reject the
+  // otherwise valid model before it starts a session.
+  if (base === "auto" || base.startsWith("composer-") || base.startsWith("cursor-")) return selected;
+
   if (open < 0 || !selected.endsWith("]")) return `${selected}[effort=${effort}]`;
 
-  const base = selected.slice(0, open);
   const parameters = selected.slice(open + 1, -1)
     .split(",")
     .map((part) => part.trim())

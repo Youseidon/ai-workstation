@@ -1784,8 +1784,19 @@ const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;
   const prompt=db.prepare(`SELECT p.id,p.status FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=? AND g.workspace_id=?`).get(args.promptId,args.workspaceId) as {id:number;status:PromptRecord["status"]}|undefined;
   if(!prompt)throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
   const active=db.prepare("SELECT id,provider,model,state,started_at startedAt FROM agent_run WHERE prompt_id=? AND state IN ('STARTING','RUNNING') AND role='execute' ORDER BY started_at DESC LIMIT 1").get(args.promptId) as {id:string;provider:string;model:string|null;state:string;startedAt:string}|undefined;
-  if(active)throw new WorkspaceError(409,"prompt_run_active",`This prompt already has an active session: ${active.id} (${active.provider}${active.model?` / ${active.model}`:""}, ${active.state.toLowerCase()}, started ${active.startedAt}). Open Sessions to inspect it before starting another run.`,{runId:active.id,state:active.state,provider:active.provider,startedAt:active.startedAt});
-  const now=new Date().toISOString(); db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.role??"execute");
+  if(active&&activeRuns.has(active.id))throw new WorkspaceError(409,"prompt_run_active",`This prompt already has an active session: ${active.id} (${active.provider}${active.model?` / ${active.model}`:""}, ${active.state.toLowerCase()}, started ${active.startedAt}). Open Sessions to inspect it before starting another run.`,{runId:active.id,state:active.state,provider:active.provider,startedAt:active.startedAt});
+  const now=new Date().toISOString();
+  // A row still STARTING/RUNNING with no live process behind it is not a run,
+  // it is a record nobody closed, and it will never end by itself. Refusing on
+  // it parked the pipeline `start_refused:prompt_run_active` and made every
+  // Resume re-park on the same row until a restart swept it. Every start path
+  // registers with the run hub in the same tick it inserts its row, so a row
+  // the hub does not know is dead by the time anyone else can read it.
+  if(active){
+    createLogger("runs").warn(`closing abandoned run ${active.id} (${active.provider}, ${active.state.toLowerCase()}, started ${active.startedAt}) that was blocking a new start on prompt ${args.promptId}`);
+    db.prepare("UPDATE agent_run SET state='INTERRUPTED',ended_at=? WHERE id=? AND state IN ('STARTING','RUNNING')").run(now,active.id);
+  }
+  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role) VALUES(?,?,?,?,?,'STARTING',?,?,?,?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.role??"execute");
   if(prompt.status==="TODO"){
     writeStatus({promptId:args.promptId,to:"IN_PROGRESS",expect:"TODO",trigger:"run_started",actor:"SYSTEM",runId:args.runId,reason:"An agent run started."});
   }
@@ -3192,10 +3203,22 @@ type ChangeSetRow = {
   baseCommit:string; headCommit:string|null; state:RunChangeState;
   filesChanged:number; additions:number; deletions:number; commitCount:number;
   message:string|null; capturedAt:string; updatedAt:string;
+  savedTitle:string|null; displayText:string|null; role:string;
+  pipelineId:number|null; pipelineName:string|null;
 };
 
+// A run is not stamped with the pipeline that launched it, so the link is
+// derived from its work item: the pipeline that holds it (or, for a sub-step,
+// its parent) as a step. Needs `r` (agent_run) and `p` (prompt) in scope.
+const RUN_PIPELINE_JOIN=`LEFT JOIN pipeline pl ON pl.id=(SELECT MIN(ps.pipeline_id) FROM pipeline_step ps WHERE ps.prompt_id IN (p.id,p.parent_prompt_id))`;
+
+function runPipeline(id:number|null,name:string|null):RunChangeSummary["pipeline"] {
+  return id===null?null:{id,name:name??""};
+}
+
 function changeSetDto(row:ChangeSetRow):RunChangeSummary {
-  return {...row};
+  const {savedTitle,displayText,role,pipelineId,pipelineName,...change}=row;
+  return {...change,promptTitle:sessionPromptTitle(savedTitle,displayText,role),pipeline:runPipeline(pipelineId,pipelineName)};
 }
 
 type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"|"changes"> & {
@@ -3204,24 +3227,27 @@ type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"|"changes"> & {
   changeBranch:string|null; baseCommit:string|null; headCommit:string|null; changeState:RunChangeState|null;
   filesChanged:number|null; additions:number|null; deletions:number|null; commitCount:number|null;
   changeMessage:string|null; capturedAt:string|null; changeUpdatedAt:string|null;
+  pipelineId:number|null; pipelineName:string|null;
 };
 
 function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSession {
-  const {savedTitle, displayText, changeRunId, changeWorkspaceId, repositoryRoot, changeBranch, baseCommit, headCommit, changeState, filesChanged, additions, deletions, commitCount, changeMessage, capturedAt, changeUpdatedAt, ...rest}=row;
+  const {savedTitle, displayText, changeRunId, changeWorkspaceId, repositoryRoot, changeBranch, baseCommit, headCommit, changeState, filesChanged, additions, deletions, commitCount, changeMessage, capturedAt, changeUpdatedAt, pipelineId, pipelineName, ...rest}=row;
+  const promptTitle=sessionPromptTitle(savedTitle,displayText,rest.role);
   return {
     ...rest,
     displayText: displayText ?? null,
-    promptTitle: sessionPromptTitle(savedTitle, displayText, rest.role),
+    promptTitle,
     events,
     changes:changeRunId===null?null:{
-      runId:changeRunId,workspaceId:changeWorkspaceId!,repositoryRoot:repositoryRoot!,branch:changeBranch,
+      runId:changeRunId,promptTitle,workspaceId:changeWorkspaceId!,repositoryRoot:repositoryRoot!,branch:changeBranch,
       baseCommit:baseCommit!,headCommit,state:changeState!,filesChanged:filesChanged??0,additions:additions??0,
       deletions:deletions??0,commitCount:commitCount??0,message:changeMessage,capturedAt:capturedAt!,updatedAt:changeUpdatedAt!,
+      pipeline:runPipeline(pipelineId,pipelineName),
     },
   };
 }
 
-const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id`;
+const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt,pl.id pipelineId,pl.name pipelineName FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id ${RUN_PIPELINE_JOIN}`;
 
 export const workspaces = {
   databasePath,
@@ -3988,12 +4014,17 @@ export const workspaces = {
     return this.runChangeSet(args.runId)!;
   },
   runChangeSet(runId:string):RunChangeSummary|null {
-    const row=db.prepare(`SELECT run_id runId,workspace_id workspaceId,repository_root repositoryRoot,branch,base_commit baseCommit,head_commit headCommit,state,files_changed filesChanged,additions,deletions,commit_count commitCount,message,captured_at capturedAt,updated_at updatedAt FROM run_change_set WHERE run_id=?`).get(runId) as ChangeSetRow|undefined;
+    const row=db.prepare(`SELECT c.run_id runId,c.workspace_id workspaceId,c.repository_root repositoryRoot,c.branch,c.base_commit baseCommit,c.head_commit headCommit,c.state,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message,c.captured_at capturedAt,c.updated_at updatedAt,p.title savedTitle,r.display_text displayText,r.role,pl.id pipelineId,pl.name pipelineName FROM run_change_set c JOIN agent_run r ON r.id=c.run_id LEFT JOIN prompt p ON p.id=r.prompt_id ${RUN_PIPELINE_JOIN} WHERE c.run_id=?`).get(runId) as ChangeSetRow|undefined;
     return row===undefined?null:changeSetDto(row);
+  },
+  /** The newest capture opened in this repository, whichever workspace or run opened it. */
+  latestRunChangeSet(repositoryRoot:string):{runId:string;state:RunChangeState;baseCommit:string;headCommit:string|null}|null {
+    const row=db.prepare("SELECT run_id runId,state,base_commit baseCommit,head_commit headCommit FROM run_change_set WHERE repository_root=? ORDER BY captured_at DESC,rowid DESC LIMIT 1").get(repositoryRoot) as {runId:string;state:RunChangeState;baseCommit:string;headCommit:string|null}|undefined;
+    return row??null;
   },
   runChangeSets(workspaceId:number):RunChangeSummary[] {
     this.get(workspaceId);
-    return (db.prepare(`SELECT run_id runId,workspace_id workspaceId,repository_root repositoryRoot,branch,base_commit baseCommit,head_commit headCommit,state,files_changed filesChanged,additions,deletions,commit_count commitCount,message,captured_at capturedAt,updated_at updatedAt FROM run_change_set WHERE workspace_id=? ORDER BY updated_at DESC`).all(workspaceId) as ChangeSetRow[]).map(changeSetDto);
+    return (db.prepare(`SELECT c.run_id runId,c.workspace_id workspaceId,c.repository_root repositoryRoot,c.branch,c.base_commit baseCommit,c.head_commit headCommit,c.state,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message,c.captured_at capturedAt,c.updated_at updatedAt,p.title savedTitle,r.display_text displayText,r.role,pl.id pipelineId,pl.name pipelineName FROM run_change_set c JOIN agent_run r ON r.id=c.run_id LEFT JOIN prompt p ON p.id=r.prompt_id ${RUN_PIPELINE_JOIN} WHERE c.workspace_id=? AND c.files_changed>0 ORDER BY c.updated_at DESC`).all(workspaceId) as ChangeSetRow[]).map(changeSetDto);
   },
   updateRunChangeSet(runId:string,patch:{headCommit:string|null;state:RunChangeState;filesChanged:number;additions:number;deletions:number;commitCount:number;message:string|null}):RunChangeSummary {
     const now=new Date().toISOString();
@@ -4176,23 +4207,33 @@ export const workspaces = {
     })());
   },
   /**
-   * Error text + tool-call count for classifyFailure. Prefers the last fatal
-   * error event; falls back to the run's stop_reason / result.
+   * Error text + tool-call count for classifyFailure: every error the run
+   * reported, newest first, message and detail both, falling back to the
+   * run's stop_reason.
+   *
+   * The newest message alone is usually the least informative one. Claude says
+   * "rate_limit" and then "Claude Code run failed"; Cursor's message is
+   * "exited unexpectedly" with "You're out of usage" in the detail. Reading
+   * only the last message classified both as a crash about the work, so a run
+   * that hit its allowance was continued on the same exhausted provider.
    */
   runFailureFacts(runId:string):{errorText:string;toolCalls:number;provider:ProviderId;startFailed:boolean} {
     const run=db.prepare("SELECT provider,tool_calls toolCalls,stop_reason stopReason,state FROM agent_run WHERE id=?").get(runId) as {provider:string;toolCalls:number|null;stopReason:string|null;state:string}|undefined;
     if(!run||!isProviderId(run.provider)) throw new WorkspaceError(404,"not_found","Run not found");
     const rows=db.prepare("SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id DESC").all(runId) as Array<{event_json:string}>;
-    let errorText="";
+    const errors:string[]=[];
     for(const row of rows){
+      // Cheap pre-filter: a long run has thousands of tool events to skip.
+      if(!row.event_json.includes('"error"'))continue;
       try{
-        const event=JSON.parse(row.event_json) as {type?:string;payload?:{message?:string;fatal?:boolean}};
-        if(event.type==="error"&&typeof event.payload?.message==="string"&&event.payload.message.trim()!==""){
-          errorText=event.payload.message;
-          break;
+        const event=JSON.parse(row.event_json) as {type?:string;payload?:{message?:unknown;detail?:unknown}};
+        if(event.type!=="error")continue;
+        for(const part of [event.payload?.message,event.payload?.detail]){
+          if(typeof part==="string"&&part.trim()!==""&&!errors.includes(part))errors.push(part);
         }
       }catch{/* ignore malformed */ }
     }
+    let errorText=errors.join("\n").slice(0,8000);
     if(errorText===""&&run.stopReason) errorText=run.stopReason;
     return {
       errorText,

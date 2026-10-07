@@ -100,6 +100,15 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   const hubStart = firstIndex(body, "runHub.start");
   assert.ok(pipelineLock < lock && lock < begin && begin < launch && launch < running && running < hubStart);
   assert.ok(lock < customBegin && customBegin < launch);
+  // A pipeline repository is claimed before either run row is written: a tree
+  // that refuses a managed writer must not leave a crashed run or FAILED item.
+  const claims = [...body.matchAll(/capture = openCapture\(\)/g)].map((match) => match.index);
+  assert.equal(claims.length, 2);
+  assert.ok(lock < claims[0]! && claims[0]! < begin && claims[1]! < customBegin && begin < claims[1]!);
+  assert.match(body, /const pipelineManaged = args\.pipelineRunId !== undefined/);
+  assert.equal([...body.matchAll(/if \(pipelineManaged\) capture = openCapture\(\)/g)].length, 2);
+  assert.match(body, /canCheckpoint: pipelineManaged/);
+  assert.match(body, /if \(capture !== null\) \{\s*const checkpoint=/);
   const onEnd = body.slice(firstIndex(body, "onEnd:"), running);
   assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
   assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));

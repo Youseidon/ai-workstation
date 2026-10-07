@@ -201,7 +201,7 @@ function workItemHref(row: ActivityRow): string | null {
   return null;
 }
 
-export function ActivityView() {
+export function ActivityView({ initialRunId = null }: { initialRunId?: string | null }) {
   const console_ = useAgentConsole();
   const { runs, operationsRevision, itemsFor } = console_;
   const { workspaceId } = useWorkspace();
@@ -210,8 +210,8 @@ export function ActivityView() {
   const [detailById, setDetailById] = useState<Record<string, AgentSession>>({});
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pane, setPane] = useState<Pane>("list");
+  const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
+  const [pane, setPane] = useState<Pane>(initialRunId === null ? "list" : "detail");
 
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [stateFilter, setStateFilter] = useState<string>("all");
@@ -437,8 +437,11 @@ export function ActivityView() {
                       )}
                       <Badge tone={stateTone(row.state)}>{normalizeState(row.state).toLowerCase()}</Badge>
                       <Badge tone="neutral">{row.role}</Badge>
-                      {row.changes !== null && row.changes.state === "COMMITTED" && (
+                      {row.changes !== null && row.changes.state === "COMMITTED" && row.changes.filesChanged > 0 && (
                         <Badge tone="success">{row.changes.filesChanged} files</Badge>
+                      )}
+                      {row.changes?.state === "UNCHANGED" && (
+                        <Badge tone="neutral">No code changes</Badge>
                       )}
                       {sessionEndReason(row.state, row.events) !== null && (
                         <Badge tone="neutral">{sessionEndReason(row.state, row.events)}</Badge>
@@ -484,6 +487,9 @@ export function ActivityView() {
                         live
                       </Badge>
                     )}
+                    {selected.changes?.state === "UNCHANGED" && (
+                      <Badge tone="neutral">No code changes</Badge>
+                    )}
                   </div>
                   <h2 className="mt-1.5 text-xl text-fg">
                     {selected.promptKey !== null && `${selected.promptKey} — `}
@@ -496,7 +502,7 @@ export function ActivityView() {
                   </p>
                 </div>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
-                  {selected.changes !== null && (
+                  {selected.changes !== null && selected.changes.filesChanged > 0 && (
                     <Link
                       href={`/changes/${encodeURIComponent(selected.id)}`}
                       className="rounded-md bg-accent px-3 py-1.5 text-xs text-white transition-colors hover:opacity-90"

@@ -285,6 +285,8 @@ export interface ProgressApiArgs {
   port: number;
   /** False at maximum decompose depth: the operation would be refused. */
   canDecompose: boolean;
+  /** False for operator-started runs, which must not commit a pre-existing dirty tree. */
+  canCheckpoint?: boolean;
   /**
    * When true, emit the curl contract *instead of* the shim (providers that
    * cannot exec the launcher). Defaults to `shimPath == null`.
@@ -305,13 +307,13 @@ export function progressApiMarkdown(args: ProgressApiArgs): string {
   const decompose = args.canDecompose
     ? `${cmd} decompose --file children.json\n`
     : "";
+  const checkpoint = args.canCheckpoint === false ? "" : `${cmd} checkpoint --message "Short imperative summary"\n`;
   return `## Recording your progress
 
 ${cmd}
 
 ${cmd} remark --kind PROGRESS --text "What changed or was verified"
-${cmd} checkpoint --message "Short imperative summary"
-${cmd} done --verification "Commands run and observable results"
+${checkpoint}${cmd} done --verification "Commands run and observable results"
 ${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
 ${cmd} blocked --reason "Observed evidence" --action "Exact human action"
@@ -326,13 +328,15 @@ function curlProgressApiMarkdown(args: ProgressApiArgs): string {
   const decompose = args.canDecompose
     ? `curl -fsS -X POST ${auth} ${base}/decompose -d '{"requestId":"unique-decompose-id","resumeBrief":"…","children":[{"title":"…","content":"…"}]}'\n`
     : "";
+  const checkpoint = args.canCheckpoint === false
+    ? ""
+    : `curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Short imperative summary"}'\n`;
   return `## Recording your progress
 
 Post through the Progress API (no launcher available for this provider):
 
 curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"…"}'
-curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Short imperative summary"}'
-curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
+${checkpoint}curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
 curl -fsS -X POST ${auth} ${base}/repair-verify -d '{"requestId":"unique-repair-id","oldCommand":"exact failing command","newCommand":"corrected command","reason":"why the recipe itself is wrong"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'

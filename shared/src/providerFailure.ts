@@ -11,8 +11,11 @@ export type FailureClass = "transient_provider" | "crash" | "unknown";
 
 export const TRANSIENT_PATTERNS: readonly { id: string; pattern: RegExp; because: string }[] = [
   { id: "capacity", pattern: /at capacity|overloaded|try (a different|another) model/i, because: "The provider reported it is at capacity." },
-  { id: "rate_limit", pattern: /rate limit|too many requests|\b429\b/i, because: "The provider rate-limited the run." },
-  { id: "quota", pattern: /quota|usage limit|weekly limit|credit|insufficient.*balance/i, because: "The account is out of allowance for now." },
+  // Quota before rate limit: a message that says both gets the longer cooling.
+  // Separators are loose on purpose — providers write `usage limit`,
+  // `usage_limit_exceeded`, `rate_limit` and `rate-limit` for the same thing.
+  { id: "quota", pattern: /quota|usage[ _-]?limit|weekly limit|out of usage|hit your limit|limit reached|credit|payment required|\b402\b|insufficient.*balance/i, because: "The account is out of allowance for now." },
+  { id: "rate_limit", pattern: /rate[ _-]?limit|too many requests|\b429\b/i, because: "The provider rate-limited the run." },
   { id: "auth", pattern: /unauthori[sz]ed|\b401\b|not logged in|login required|invalid.*api key/i, because: "The provider rejected the credentials." },
   { id: "network", pattern: /ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|fetch failed/i, because: "The provider could not be reached." },
 ];

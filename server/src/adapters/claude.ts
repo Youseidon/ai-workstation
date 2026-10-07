@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { mergeUsage, oneLine } from "@agent-console/shared";
@@ -22,6 +22,32 @@ export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "Edit",
   "NotebookEdit",
 ] as const;
+
+let bundledClaudeEffortSupport: boolean | null = null;
+
+/**
+ * The Agent SDK launches its bundled Claude Code, not the `claude` binary on
+ * PATH. Older SDK bundles reject the newer `--effort` flag before a session is
+ * created, so inspect the executable that will actually receive the argument.
+ */
+function bundledClaudeSupportsEffort(): boolean {
+  if (bundledClaudeEffortSupport !== null) return bundledClaudeEffortSupport;
+  try {
+    const require = createRequire(import.meta.url);
+    const packagePath = require.resolve("@anthropic-ai/claude-agent-sdk/package.json");
+    bundledClaudeEffortSupport = readFileSync(join(dirname(packagePath), "cli.js"), "utf8").includes("--effort");
+  } catch {
+    bundledClaudeEffortSupport = false;
+  }
+  return bundledClaudeEffortSupport;
+}
+
+export function claudeEffortExtraArgs(
+  effort: "low" | "medium" | "high",
+  supportsEffort = bundledClaudeSupportsEffort(),
+): Record<string, string | null> {
+  return supportsEffort ? { effort } : {};
+}
 
 /** Per-run Claude permission flags. */
 export function claudePermissionConfig(override: PermissionOverride): {
@@ -250,9 +276,9 @@ export class ClaudeAdapter implements AgentAdapter {
       includePartialMessages: true,
       permissionMode: permission.permissionMode as Options["permissionMode"],
       settingSources: settings.claude.settingSources as Options["settingSources"],
-      // The SDK forwards unknown/current Claude CLI flags through this map.
-      // Keeping effort here also makes it apply to resumed sessions.
-      extraArgs: { effort: settings.reasoningEffortFor("claude") },
+      // extraArgs reach the SDK's bundled CLI, which may be older than the
+      // system `claude` command and therefore not know the current flag.
+      extraArgs: claudeEffortExtraArgs(settings.reasoningEffortFor("claude")),
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
     };
     if (permission.allowDangerouslySkipPermissions) {

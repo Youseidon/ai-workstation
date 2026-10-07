@@ -3,7 +3,7 @@ import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
-import { cooling, isCooling, markCooling } from "./providerHealth.ts";
+import { clearCooling, cooling, isCooling, markCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
 import { settings } from "./settings.ts";
 import type { StartExecuteArgs } from "./runService.ts";
@@ -168,6 +168,29 @@ function namedPipelineIdFor(live: SuitePipelineRun): number | undefined {
   return workspaces.namedPipelineRunById(live.pipelineRunId)?.pipelineId;
 }
 
+/**
+ * The park reason for a start the workspace refused, or null when the failure
+ * is the provider's.
+ *
+ * `startExecute` throws for two unrelated kinds of reason. A provider that is
+ * missing, at capacity or failing to launch is worth a fallback. A working tree
+ * with changes no run accounts for, a repository another writer holds, a busy
+ * workspace — those refuse every provider alike, so walking the fallback list
+ * only cooled each one in turn and parked the run as `no_provider_available`,
+ * which named the wrong problem and left Resume with nobody to start.
+ */
+export function startRefusalReason(error: unknown): string | null {
+  if (!(error instanceof WorkspaceError) || error.code === "provider_unavailable") return null;
+  return error.code === "git_worktree_dirty" ? "worktree_dirty" : `start_refused:${error.code}`;
+}
+
+/** Parks where nothing ran: the station is exactly as it was before the start. */
+function isStartPark(waitReason: string | null): boolean {
+  return waitReason === "no_provider_available"
+    || waitReason === "worktree_dirty"
+    || (waitReason !== null && waitReason.startsWith("start_refused:"));
+}
+
 type StartStationOpts = {
   preferPlayTarget?: boolean;
   /** Force a specific provider (fallback path). Model null → that provider's default. */
@@ -249,6 +272,12 @@ async function startCurrentStation(
     return updated;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const refusal = startRefusalReason(error);
+    if (refusal !== null) {
+      const detail = error instanceof WorkspaceError && typeof error.details?.detail === "string" ? ` detail=${error.details.detail.slice(0, 400)}` : "";
+      log.warn(`start refused suite=${live.suiteId} prompt=${promptId} provider=${target.provider} reason=${refusal} message=${message}${detail}`);
+      return park(live, promptId, refusal);
+    }
     const failure = classifyFailure({ errorText: message, toolCalls: 0, startFailed: true });
     markCooling(target.provider, failure.id ?? "start_failed", undefined, failure.because);
     const list = resolveFallbackProviders({
@@ -592,6 +621,19 @@ async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | nul
         : "You resumed after unfinished continuations ran out; the station gets a fresh allowance.",
     );
   }
+  if (isStartPark(priorWait)) {
+    // Resume is the operator saying "try now", so it has to be a real attempt:
+    // providers get a fresh try rather than the rest of a cooling timer, and a
+    // station whose last run died on the way here goes back on the queue
+    // instead of failing the ready check that made Resume refuse outright.
+    if (priorWait === "no_provider_available") clearCooling();
+    if (stationId !== null && workspaces.endedWithoutAgentStatus(stationId)) {
+      workspaces.grantFreshContinuations(
+        stationId,
+        "You resumed after the station could not be started; it was re-queued on the same working tree.",
+      );
+    }
+  }
   const patch: { state: "PLAYING"; playProvider?: ProviderId | null; playModel?: string | null; endedAt: null; stopReason: null; waitReason: null } = {
     state: "PLAYING",
     endedAt: null,
@@ -641,7 +683,10 @@ function notReadyReason(
     return `${label} is parked by its station rule (on unfinished = wait). Resume or change the rule, then play again.`;
   }
   if (waitReason === "no_provider_available") {
-    return `${label} could not start: every configured provider is unavailable or cooling. Wait for one to recover, or assign another, then Resume.`;
+    return `${label} could not start: every configured provider is unavailable or cooling. Resume tries them again now; assign another first if they are still out.`;
+  }
+  if (waitReason === "worktree_dirty") {
+    return `${label} could not start: the working tree has changes no agent run accounts for. Commit or stash them, then Resume.`;
   }
   if (prompt.recoverable) {
     return `${label} needs recovery before this pipeline can continue — its last run stopped without posting a status. Retry or skip it, then play again.`;
@@ -696,8 +741,11 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
         // Exhaust / review parks are resumed by writing a USER ledger row that
         // resets the unfinished allowance and forces TODO. That happens inside
         // resume(); the ready gate below would 422 on UNREPORTED/FAILED first.
+        // A start park is the same shape: the station may still carry the
+        // FAILED its last run died with, and resume() re-queues it.
         const exhaustPark = active.waitReason === "continuations_exhausted"
-          || active.waitReason === "review_running";
+          || active.waitReason === "review_running"
+          || isStartPark(active.waitReason);
         if (!exhaustPark) {
           // The waiting item may be a sub-step, which never appears in the
           // station list — ask the prompt itself as well.

@@ -18,7 +18,7 @@ import type {
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, PROVIDER_IDS } from "@agent-console/shared";
+import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, describeStopReason, PROVIDER_IDS } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -519,16 +519,20 @@ export function PipelineBoard({
   });
   const statusBlocked = status.primary === "pause" || status.primary === "stop" ? null : playBlocked;
 
-  const act = async (operation: () => Promise<void>, success?: string) => {
+  // An operation that returns a sentence did not do what its button promised;
+  // the sentence is shown in place of the success toast, after the refresh so
+  // the board already shows the state it describes.
+  const act = async (operation: () => Promise<string | void>, success?: string) => {
     setBusy(true);
     try {
-      await operation();
+      const shortfall = await operation();
       await refreshCatalog();
       if (pipelineId !== null) {
         const items = await workspaceApi.pipelineRuns(SERVER_URL, pipelineId);
         setRuns(items);
       }
-      if (success !== undefined) toast.success(success);
+      if (typeof shortfall === "string") toast.error("The pipeline did not start", shortfall);
+      else if (success !== undefined) toast.success(success);
     } catch (error) {
       toast.error("That did not work", error instanceof Error ? error.message : String(error));
     } finally {
@@ -589,7 +593,13 @@ export function PipelineBoard({
     // Resume resumes: the continuation loop carries prior-run notes itself, so
     // there is no handoff dialog between the operator and the next station start.
     void act(async () => {
-      await workspaceApi.playPipeline(SERVER_URL, pipelineId);
+      const run = await workspaceApi.playPipeline(SERVER_URL, pipelineId);
+      // Play answers 200 even when the station could not be started and the
+      // run parked again on the way in. Announcing "running" over that is the
+      // Resume button that says it resumed and then does nothing.
+      if (run.state === "WAITING_HUMAN") {
+        return describeStopReason(run.waitReason) ?? "It parked again before any agent started.";
+      }
     }, control === "newRun" ? "New run started" : "Pipeline is running");
   };
 

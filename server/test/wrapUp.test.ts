@@ -412,3 +412,77 @@ test("the pipeline hears about the stopped run only once the wrap-up has finishe
     ctx.cleanup();
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* A wrap-up that never launches must not strand the station           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Observed: a Kilo run died on "Credits Required", the wrap-up fell back to
+ * Claude with no model under a restricted model tier, and the runner threw
+ * before launching. The wrap-up's row had already been inserted STARTING and
+ * nothing closed it, so the work item had an "active run" for the next two
+ * hours: every start was refused `prompt_run_active`, and every Resume parked
+ * the pipeline again on that refusal while the button reported success.
+ */
+test("a wrap-up that cannot launch closes its own run row", async () => {
+  const ctx = fixture();
+  const real = pipelineScheduler.onExecuteEnded;
+  const told: string[] = [];
+  pipelineScheduler.onExecuteEnded = async (args) => { told.push(args.runId); };
+  try {
+    await runToBudgetStop(ctx, [
+      {
+        sessionId: "sess-doomed",
+        toolCalls: 6,
+        // Swapped while the source run is under way, so only the wrap-up's
+        // launch meets it. Reading `id` is the first thing the runner does.
+        bank: () => {
+          setAdapterOverride("claude", {
+            get id(): never { throw new Error("No professional model is available for claude"); },
+          } as unknown as AgentAdapter);
+        },
+      },
+    ]);
+
+    const runs = runsFor(ctx.prompt.id);
+    assert.equal(runs.length, 2, "expected the source run and the wrap-up that failed to launch");
+    const [wrapUp, source] = runs;
+    assert.equal(wrapUp!.state, "ERROR", "the wrap-up row was left open");
+    assert.equal(workspaces.agentRunActive(wrapUp!.id), false);
+    // The item lands where it would have without a wrap-up, on the source run.
+    assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "UNREPORTED");
+    assert.deepEqual(told, [source!.id], "the pipeline was not told the station ended");
+  } finally {
+    pipelineScheduler.onExecuteEnded = real;
+    setAdapterOverride("claude", null);
+    ctx.cleanup();
+  }
+});
+
+test("a run row with no live process behind it does not refuse the next start", async () => {
+  const ctx = fixture();
+  const adapter = scriptedProvider([{ finish: true }]);
+  setAdapterOverride("claude", adapter);
+  try {
+    // A row some earlier failure left STARTING: on record, but never handed to
+    // the run hub, so no process will ever end it.
+    const abandoned = unique("run-abandoned");
+    workspaces.beginWrapUpRun({
+      runId: abandoned, workspaceId: ctx.workspace.id, promptId: ctx.prompt.id, provider: "claude", model: null,
+      tokenHash: "x", expiresAt: new Date(Date.now() + 60_000).toISOString(), sourceRunId: unique("run-source"), sessionId: null,
+    });
+    assert.equal(workspaces.agentRunActive(abandoned), true);
+
+    const { runId } = await startExecute({ workspaceId: ctx.workspace.id, provider: "claude", model: null, promptId: ctx.prompt.id });
+    await settle(ctx.workspace.id);
+
+    assert.notEqual(runId, abandoned);
+    assert.equal(workspaces.agentRunActive(abandoned), false, "the abandoned row was left holding the work item");
+    assert.equal(runsFor(ctx.prompt.id).find((run) => run.id === abandoned)!.state, "INTERRUPTED");
+    assert.equal(adapter.seen.length, 1, "the new run never reached the provider");
+  } finally {
+    setAdapterOverride("claude", null);
+    ctx.cleanup();
+  }
+});

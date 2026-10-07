@@ -212,7 +212,10 @@ export const STOP_REASON: Record<string, string> = {
   no_provider: "A station had no agent assigned.",
   start_failed: "The agent process failed to start.",
   no_provider_available:
-    "Every configured provider is unavailable or cooling. Wait for one to recover, or assign another, then Resume.",
+    "Every configured provider is unavailable or cooling. Resume tries them again now; assign another first if they are still out.",
+  worktree_dirty:
+    "The working tree has changes no agent run accounts for. Commit or stash them, then Resume.",
+  start_refused: "The workspace refused the start before any agent ran.",
   human_question: "The agent asked a question only you can answer.",
   station_rule_wait: "This station's rule is to wait for you when it does not finish.",
   review_running: "A read-only reviewer is checking the station after its continuations ran out.",
@@ -226,7 +229,35 @@ export const STOP_REASON: Record<string, string> = {
  */
 export function describeStopReason(reason: string | null): string | null {
   if (reason === null) return null;
+  if (reason.startsWith(START_REFUSED_PREFIX)) {
+    const code = reason.slice(START_REFUSED_PREFIX.length);
+    return START_REFUSAL[code] ?? `${STOP_REASON.start_refused} (${code})`;
+  }
   return STOP_REASON[reason] ?? reason;
+}
+
+/**
+ * `start_refused:<code>` carries the error that refused the start, so the park
+ * can say which one it was. Rows match on the kind alone.
+ */
+const START_REFUSED_PREFIX = "start_refused:";
+
+/** The refusals worth a sentence of their own; any other shows its code. */
+const START_REFUSAL: Record<string, string> = {
+  git_repository_busy: "Another agent is still writing in this Git repository.",
+  workspace_busy: "Another run is already in progress in this workspace.",
+  prompt_run_active: "This work item still has a live agent session. Stop it on the Sessions page, then Resume.",
+  git_operation_failed:
+    "Git could not commit the work the last run left behind — a commit hook rejecting it, most likely. Commit it by hand in the workspace.",
+  git_history_rewritten:
+    "The branch no longer descends from where the last run started, so its leftover work cannot be committed for it. Restore the branch or commit by hand.",
+  git_repository_required: "The workspace directory is not a Git repository.",
+  git_initial_commit_required: "The workspace's Git repository has no commits yet.",
+  invalid_directory: "The workspace directory no longer exists.",
+};
+
+function waitKind(reason: string | null): string | null {
+  return reason !== null && reason.startsWith(START_REFUSED_PREFIX) ? "start_refused" : reason;
 }
 
 /** Where the run sits, in a form safe to drop into a sentence. */
@@ -449,12 +480,54 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     secondary: ["stop"],
     headline: (ctx) =>
       `${where(ctx)} could not start: every configured provider is unavailable or cooling.`,
-    hint: () => "Wait for a provider to recover, or assign another, then Resume.",
+    hint: () => "Resume tries every provider again now. If they are still out, assign another first.",
     because: () =>
       "The station's provider and every fallback on its list are cooling or unavailable, so nothing could be started.",
     policy: {
       kind: "locked",
       reason: "With no agent that can run, the rail has nowhere to go until a provider recovers or you change the list.",
+    },
+  },
+  /*
+   * The two parks where the workspace, not a provider, refused the start. No
+   * run happened, so nothing is said about how the station "ended", and no
+   * provider is blamed — which is why they are not `no_provider_available`.
+   */
+  {
+    id: "waiting-human-worktree-dirty",
+    when: { runState: "WAITING_HUMAN", waitReason: "worktree_dirty" },
+    condition: "Blocked · the working tree has changes no run accounts for",
+    label: "Needs you",
+    tone: "warning",
+    pulse: true,
+    primary: "resume",
+    secondary: ["stop"],
+    headline: (ctx) =>
+      `${where(ctx)} could not start: the working tree has changes no agent run accounts for.`,
+    hint: () => "Commit or stash them in the workspace, then Resume.",
+    because: () =>
+      "Every run starts from a clean tree so that its commits are its own. Work an interrupted run left behind is committed for it automatically; these changes were made outside any run.",
+    policy: {
+      kind: "locked",
+      reason: "A run started on top of someone else's uncommitted changes could not say which changes were its own.",
+    },
+  },
+  {
+    id: "waiting-human-start-refused",
+    when: { runState: "WAITING_HUMAN", waitReason: "start_refused" },
+    condition: "Blocked · the workspace refused the start",
+    label: "Needs you",
+    tone: "warning",
+    pulse: true,
+    primary: "resume",
+    secondary: ["stop"],
+    headline: (ctx) => `${where(ctx)} could not start. ${describeStopReason(ctx.waitReason) ?? STOP_REASON.start_refused}`,
+    hint: () => "Clear what is in the way, then Resume — it is tried again from this station.",
+    because: (ctx) =>
+      `The workspace refused the start before any agent ran, so no provider was at fault and none was swapped. ${describeStopReason(ctx.waitReason) ?? ""}`.trim(),
+    policy: {
+      kind: "locked",
+      reason: "Nothing can run in a workspace that refuses a writer, whichever provider is asked.",
     },
   },
   {
@@ -632,7 +705,7 @@ function matches(row: TransitionRow, ctx: RuleContext): boolean {
   if (when.agentActive !== undefined && when.agentActive !== ctx.agentActive) return false;
   if (when.awaitingHuman !== undefined && when.awaitingHuman !== ctx.awaitingHuman) return false;
   if (when.stationState !== undefined && when.stationState !== ctx.stationState) return false;
-  if (when.waitReason !== undefined && when.waitReason !== ctx.waitReason) return false;
+  if (when.waitReason !== undefined && when.waitReason !== waitKind(ctx.waitReason)) return false;
   if (when.onRestart !== undefined && when.onRestart !== ctx.policy.onRestart) return false;
   return true;
 }

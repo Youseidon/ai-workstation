@@ -348,6 +348,8 @@ test("every stopReason the scheduler writes has a human sentence", () => {
     "no_provider",
     "start_failed",
     "no_provider_available",
+    "worktree_dirty",
+    "start_refused",
     "human_question",
     "station_rule_wait",
     "review_running",

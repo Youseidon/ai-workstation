@@ -81,6 +81,8 @@ const WAIT_REASONS: Array<string | null> = [
   "review_running",
   "continuations_exhausted",
   "no_provider_available",
+  "worktree_dirty",
+  "start_refused:git_repository_busy",
 ];
 
 function everyContext(): RuleContext[] {
@@ -425,6 +427,9 @@ test("stop reasons: known translated, unknown passed through, null omitted", () 
     STOP_REASON.continuations_exhausted,
   );
   assert.equal(describeStopReason("unexpected_status:WEIRD"), "unexpected_status:WEIRD");
+  // A refused start names what refused it; an unlisted code is shown, not dropped.
+  assert.match(describeStopReason("start_refused:git_repository_busy")!, /still writing in this Git repository/);
+  assert.equal(describeStopReason("start_refused:odd_code"), `${STOP_REASON.start_refused} (odd_code)`);
   assert.equal(describeStopReason(null), null);
 });
 
@@ -442,6 +447,8 @@ test("every stopReason the scheduler writes has a human sentence", () => {
     "no_provider",
     "start_failed",
     "no_provider_available",
+    "worktree_dirty",
+    "start_refused",
     "human_question",
     "station_rule_wait",
     "review_running",

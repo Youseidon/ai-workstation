@@ -175,6 +175,24 @@ test("protocol and progress sections stay under their byte bounds", () => {
   assert.match(progress, /requestId must be unique/);
 });
 
+test("operator-started runs are not told to checkpoint the working tree", () => {
+  const shim = progressApiMarkdown({
+    runId: "manual", token: "tok", port: 4000, canDecompose: true,
+    canCheckpoint: false, shimPath: "/tmp/x/agent-step",
+  });
+  assert.doesNotMatch(shim, /checkpoint/);
+  assert.match(shim, /remark --kind PROGRESS/);
+  assert.match(shim, /done --verification/);
+
+  const curl = progressApiMarkdown({
+    runId: "manual", token: "tok", port: 4000, canDecompose: true,
+    canCheckpoint: false, shimPath: null,
+  });
+  assert.doesNotMatch(curl, /\/checkpoint/);
+  assert.match(curl, /\/remarks/);
+  assert.match(curl, /\/status/);
+});
+
 test("a resumed parent gets ## Sub-steps; a station without children does not", () => {
   const withChildren = contextMarkdown(baseContext({
     children: [

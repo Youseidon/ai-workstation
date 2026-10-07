@@ -13,7 +13,7 @@ import {
   permissionForRun,
   settings,
 } from "../src/settings.ts";
-import { claudePermissionConfig } from "../src/adapters/claude.ts";
+import { claudeEffortExtraArgs, claudePermissionConfig } from "../src/adapters/claude.ts";
 import { CursorAdapter, cursorAgentArgs, cursorModelWithEffort } from "../src/adapters/cursor.ts";
 import { createLogger } from "../src/lib/logger.ts";
 
@@ -214,11 +214,18 @@ test("cursor adapter uses the supported long model flag", () => {
   assert.equal(args.includes("-m"), false);
 });
 
-test("cursor effort is added to default and parameterized models", () => {
-  assert.equal(cursorModelWithEffort(null, "medium"), "auto[effort=medium]");
-  assert.equal(cursorModelWithEffort("composer-2", "low"), "composer-2[effort=low]");
+test("cursor effort is limited to parameterizable vendor models", () => {
+  assert.equal(cursorModelWithEffort(null, "medium"), "auto");
+  assert.equal(cursorModelWithEffort("composer-2.5", "low"), "composer-2.5");
+  assert.equal(cursorModelWithEffort("cursor-grok-4.6-high", "low"), "cursor-grok-4.6-high");
+  assert.equal(cursorModelWithEffort("claude-sonnet-5", "high"), "claude-sonnet-5[effort=high]");
   assert.equal(
     cursorModelWithEffort("claude-opus[context=1m,effort=low,fast=false]", "high"),
     "claude-opus[context=1m,fast=false,effort=high]",
   );
+});
+
+test("claude effort is only forwarded when the bundled CLI supports it", () => {
+  assert.deepEqual(claudeEffortExtraArgs("high", false), {});
+  assert.deepEqual(claudeEffortExtraArgs("high", true), { effort: "high" });
 });

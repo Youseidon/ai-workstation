@@ -17,10 +17,16 @@ import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 
 interface Props {
+  /** False while this composer belongs to a hidden work tab. */
+  active?: boolean;
   /** Hard lock on the textarea: connection, workspace, missing directory. */
   disabled: boolean;
   /** True when an execute writer owns this workspace. */
   running: boolean;
+  /** True after submission while the server is preparing the run. */
+  starting?: boolean;
+  /** True when that writer was launched from this work tab. */
+  ownsWriter?: boolean;
   writer: { provider: ProviderId; model: string | null } | null;
   providers: ProviderInfo[];
   models: ModelSelection;
@@ -47,8 +53,11 @@ interface Props {
  * Context chips live in the header so choosing what to run sits next to the box.
  */
 export function Composer({
+  active: tabActive = true,
   disabled,
   running,
+  starting = false,
+  ownsWriter = true,
   writer,
   providers,
   models,
@@ -80,6 +89,7 @@ export function Composer({
   }, [value]);
 
   useEffect(() => {
+    if (!tabActive) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
@@ -89,7 +99,7 @@ export function Composer({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [tabActive]);
 
   const mention = savedPrompt !== null || mentionDismissed ? null : findMention(value, caret);
 
@@ -132,7 +142,7 @@ export function Composer({
   };
 
   const hasAskText = savedPrompt !== null || value.trim() !== "" || askQuestion.trim() !== "";
-  const canRun = !running && runBlockedReason === null && (savedPrompt !== null || value.trim() !== "");
+  const canRun = !running && !starting && runBlockedReason === null && (savedPrompt !== null || value.trim() !== "");
   const canAsk = askBlockedReason === null && hasAskText;
 
   const ask = () => {
@@ -266,7 +276,7 @@ export function Composer({
         {writer !== null && writerLabel !== null && (
           <div className="mb-2 rounded-md bg-caution/10 px-2.5 py-1.5 text-[11px] text-caution ring-1 ring-inset ring-caution/30">
             A writer ({writerLabel}) is in this workspace. You are reading a live tree. Files may be
-            mid-edit. Do not treat a partial file as final.
+            mid-edit. Only Ask (read-only research) can start here until the writer finishes.
           </div>
         )}
 
@@ -309,7 +319,7 @@ export function Composer({
             ref={textareaRef}
             rows={3}
             value={value}
-            disabled={disabled}
+            disabled={disabled || starting}
             aria-label="Prompt"
             placeholder={placeholder}
             onChange={(event) => sync(event.target)}
@@ -364,15 +374,15 @@ export function Composer({
         )}
 
         <div className="mt-3 flex items-center justify-end gap-2 pb-1">
-          {running ? (
+          {running && ownsWriter ? (
             <Button variant="danger" onClick={onInterrupt}>
               ■ Stop
             </Button>
-          ) : (
-            <Button variant="primary" size="lg" onClick={submit} disabled={!canRun}>
-              {savedPrompt === null ? "Run" : "Run work item"}
+          ) : !running ? (
+            <Button variant="primary" size="lg" onClick={submit} disabled={!canRun} loading={starting}>
+              {starting ? "Starting" : savedPrompt === null ? "Run" : "Run work item"}
             </Button>
-          )}
+          ) : null}
           <span className="inline-flex" title={askBlockedReason ?? undefined}>
             <Button
               variant="secondary"
@@ -381,7 +391,7 @@ export function Composer({
               disabled={!canAsk}
               className={canAsk ? theme.active : undefined}
             >
-              Ask
+              Ask / research
             </Button>
           </span>
         </div>

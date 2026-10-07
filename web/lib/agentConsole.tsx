@@ -44,6 +44,12 @@ export interface RunStatus {
   startedAt: string;
 }
 
+export interface PendingLaunch {
+  requestId: string;
+  tabId: string;
+  role: RunRole;
+}
+
 interface ConsoleState {
   connection: ConnectionState;
   providers: ProviderInfo[];
@@ -54,8 +60,20 @@ interface ConsoleState {
   lastRun: RunStatus | null;
   /** Last consult that ended, so the briefing pane can stay open. */
   lastConsult: RunStatus | null;
+  /** Last completed consult per workspace, so another tab finishing cannot erase this tab's briefing. */
+  lastConsults: Record<number, RunStatus>;
   /** Every consult runId seen this session — writer LogPanel excludes these. */
   consultIds: string[];
+  /** Stable run ownership used to keep workspace transcripts isolated after a run ends. */
+  runWorkspaceIds: Record<string, number>;
+  /** Browser-local work tab that launched or adopted each run. */
+  runTabIds: Record<string, string>;
+  /** Last completed research run in each browser-local work tab. */
+  lastConsultsByTab: Record<string, RunStatus>;
+  /** Requests accepted by the socket that have not produced a run yet. */
+  pendingLaunches: PendingLaunch[];
+  /** Launch failures keyed by the browser-local tab that submitted them. */
+  launchFailuresByTab: Record<string, string>;
   /** Advances whenever durable operations/prompt data should be re-read. */
   operationsRevision: number;
 }
@@ -63,8 +81,12 @@ interface ConsoleState {
 type Action =
   | { type: "connection"; value: ConnectionState }
   | { type: "providers"; providers: ProviderInfo[] }
-  | { type: "server"; message: ServerMessage }
-  | { type: "clear" };
+  | { type: "server"; message: ServerMessage; tabId?: string; requestId?: string }
+  | { type: "launch_queued"; launch: PendingLaunch }
+  | { type: "launch_send_failed"; requestId: string }
+  | { type: "dismiss_launch_failure"; tabId: string }
+  | { type: "claim_workspace"; workspaceId: number; tabId: string }
+  | { type: "clear"; workspaceId?: number; tabId?: string };
 
 const initialState: ConsoleState = {
   connection: "connecting",
@@ -73,7 +95,13 @@ const initialState: ConsoleState = {
   runs: [],
   lastRun: null,
   lastConsult: null,
+  lastConsults: {},
   consultIds: [],
+  runWorkspaceIds: {},
+  runTabIds: {},
+  lastConsultsByTab: {},
+  pendingLaunches: [],
+  launchFailuresByTab: {},
   operationsRevision: 0,
 };
 
@@ -128,6 +156,36 @@ function toRunStatus(snapshot: RunSnapshot): RunStatus {
 
 function reducer(state: ConsoleState, action: Action): ConsoleState {
   switch (action.type) {
+    case "launch_queued": {
+      const launchFailuresByTab = { ...state.launchFailuresByTab };
+      delete launchFailuresByTab[action.launch.tabId];
+      return {
+        ...state,
+        pendingLaunches: [...state.pendingLaunches, action.launch],
+        launchFailuresByTab,
+      };
+    }
+
+    case "launch_send_failed": {
+      const launch = state.pendingLaunches.find((item) => item.requestId === action.requestId);
+      if (launch === undefined) return state;
+      return {
+        ...state,
+        pendingLaunches: state.pendingLaunches.filter((item) => item.requestId !== action.requestId),
+        launchFailuresByTab: {
+          ...state.launchFailuresByTab,
+          [launch.tabId]: "The agent connection closed before the run could be sent.",
+        },
+      };
+    }
+
+    case "dismiss_launch_failure": {
+      if (state.launchFailuresByTab[action.tabId] === undefined) return state;
+      const launchFailuresByTab = { ...state.launchFailuresByTab };
+      delete launchFailuresByTab[action.tabId];
+      return { ...state, launchFailuresByTab };
+    }
+
     case "connection":
       // A dropped socket must not leave the UI asserting a run is live — but it
       // is not evidence the run stopped, either. The next `hello` is what
@@ -135,12 +193,29 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       if (action.value === "disconnected" && state.runs.length > 0) {
         const lastExecute = [...state.runs].reverse().find((run) => run.role === "execute");
         const lastConsultLive = [...state.runs].reverse().find((run) => run.role === "consult");
+        const lastConsults = state.runs.reduce<Record<number, RunStatus>>(
+          (byWorkspace, run) => run.role === "consult"
+            ? { ...byWorkspace, [run.workspace.id]: run }
+            : byWorkspace,
+          state.lastConsults,
+        );
+        const lastConsultsByTab = state.runs.reduce<Record<string, RunStatus>>(
+          (byTab, run) => {
+            const tabId = state.runTabIds[run.runId];
+            return run.role === "consult" && tabId !== undefined
+              ? { ...byTab, [tabId]: run }
+              : byTab;
+          },
+          state.lastConsultsByTab,
+        );
         return {
           ...state,
           connection: action.value,
           runs: [],
           lastRun: lastExecute ?? state.lastRun,
           lastConsult: lastConsultLive ?? state.lastConsult,
+          lastConsults,
+          lastConsultsByTab,
         };
       }
       return { ...state, connection: action.value };
@@ -154,10 +229,36 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
     case "clear":
       // Only drops transcript lines from runs that have finished; clearing the
       // log must not erase the run you are currently watching.
+      const lastConsultsByTab = { ...state.lastConsultsByTab };
+      if (action.tabId !== undefined) delete lastConsultsByTab[action.tabId];
       return {
         ...state,
-        items: state.items.filter((item) => state.runs.some((run) => run.runId === item.runId)),
+        lastConsultsByTab,
+        items: state.items.filter((item) => {
+          if (state.runs.some((run) => run.runId === item.runId)) return true;
+          if (action.tabId !== undefined) return state.runTabIds[item.runId] !== action.tabId;
+          return action.workspaceId !== undefined && state.runWorkspaceIds[item.runId] !== action.workspaceId;
+        }),
       };
+
+    case "claim_workspace": {
+      const runTabIds = { ...state.runTabIds };
+      for (const [runId, workspaceId] of Object.entries(state.runWorkspaceIds)) {
+        if (workspaceId === action.workspaceId && runTabIds[runId] === undefined) {
+          runTabIds[runId] = action.tabId;
+        }
+      }
+      const previousConsult = state.lastConsults[action.workspaceId];
+      const ownsPreviousConsult = previousConsult !== undefined
+        && runTabIds[previousConsult.runId] === action.tabId;
+      return {
+        ...state,
+        runTabIds,
+        lastConsultsByTab: !ownsPreviousConsult
+          ? state.lastConsultsByTab
+          : { ...state.lastConsultsByTab, [action.tabId]: previousConsult },
+      };
+    }
 
     case "server": {
       const message = action.message;
@@ -185,6 +286,10 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             providers: message.providers,
             items: [...finished, ...replayed],
             runs: message.activeRuns.map(toRunStatus),
+            runWorkspaceIds: message.activeRuns.reduce<Record<string, number>>(
+              (owners, snapshot) => ({ ...owners, [snapshot.runId]: snapshot.workspace.id }),
+              state.runWorkspaceIds,
+            ),
             consultIds: message.activeRuns.reduce(
               (ids, snapshot) =>
                 (snapshot.role ?? "execute") === "consult" ? rememberConsultId(ids, snapshot.runId) : ids,
@@ -205,11 +310,20 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           return { ...state, operationsRevision: state.operationsRevision + 1 };
 
         case "run_started": {
-          // `hello` may already have replayed this run; keep one entry.
-          if (state.runs.some((run) => run.runId === message.runId)) return state;
           const role = message.role ?? "execute";
+          const pendingLaunches = action.requestId === undefined
+            ? state.pendingLaunches
+            : state.pendingLaunches.filter((launch) => launch.requestId !== action.requestId);
+          const launchFailuresByTab = { ...state.launchFailuresByTab };
+          if (action.tabId !== undefined) delete launchFailuresByTab[action.tabId];
+          // `hello` may already have replayed this run; still settle its pending request.
+          if (state.runs.some((run) => run.runId === message.runId)) {
+            return { ...state, pendingLaunches, launchFailuresByTab };
+          }
           return {
             ...state,
+            pendingLaunches,
+            launchFailuresByTab,
             items: appendPrompt(state.items, {
               runId: message.runId,
               provider: message.provider,
@@ -234,6 +348,26 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
               },
             ],
             consultIds: role === "consult" ? rememberConsultId(state.consultIds, message.runId) : state.consultIds,
+            runWorkspaceIds: {
+              ...state.runWorkspaceIds,
+              [message.runId]: message.workspace.id,
+            },
+            runTabIds: action.tabId === undefined
+              ? state.runTabIds
+              : { ...state.runTabIds, [message.runId]: action.tabId },
+          };
+        }
+
+        case "run_rejected": {
+          const launch = state.pendingLaunches.find((item) => item.requestId === message.clientRequestId);
+          if (launch === undefined) return state;
+          return {
+            ...state,
+            pendingLaunches: state.pendingLaunches.filter((item) => item.requestId !== message.clientRequestId),
+            launchFailuresByTab: {
+              ...state.launchFailuresByTab,
+              [launch.tabId]: message.detail === null ? message.message : `${message.message} ${message.detail}`,
+            },
           };
         }
 
@@ -261,7 +395,16 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           const remaining = state.runs.filter((run) => run.runId !== message.runId);
           const closed = { ...ended, state: message.state, detail: null };
           if (ended.role === "consult") {
-            return { ...state, runs: remaining, lastConsult: closed };
+            const tabId = state.runTabIds[ended.runId];
+            return {
+              ...state,
+              runs: remaining,
+              lastConsult: closed,
+              lastConsults: { ...state.lastConsults, [closed.workspace.id]: closed },
+              lastConsultsByTab: tabId === undefined
+                ? state.lastConsultsByTab
+                : { ...state.lastConsultsByTab, [tabId]: closed },
+            };
           }
           return { ...state, runs: remaining, lastRun: closed };
         }
@@ -284,17 +427,23 @@ interface AgentConsoleApi extends ConsoleState {
   run: RunStatus | null;
   /** Transcript lines belonging to one run. */
   itemsFor(runId: string): LogItem[];
+  /** Transcript lines belonging to one workspace, including completed runs. */
+  itemsForWorkspace(workspaceId: number): LogItem[];
+  /** Transcript lines launched from one browser-local work tab. */
+  itemsForTab(tabId: string): LogItem[];
   startRun(
     workspaceId: number,
     provider: ProviderId,
     source: { prompt: string } | { promptId: number },
     model: string | null,
+    tabId?: string,
   ): boolean;
   startConsult(
     workspaceId: number,
     provider: ProviderId,
     source: { prompt: string } | { promptId: number } | { prompt: string; promptId: number },
     model: string | null,
+    tabId?: string,
   ): boolean;
   askClarification(
     workspaceId: number,
@@ -308,6 +457,10 @@ interface AgentConsoleApi extends ConsoleState {
   /** Stops a run by id, or the primary run when called with no argument. */
   interrupt(runId?: string): boolean;
   clearLog(): void;
+  clearWorkspaceLog(workspaceId: number): void;
+  clearTabLog(tabId: string): void;
+  claimWorkspaceRuns(tabId: string, workspaceId: number): void;
+  dismissLaunchFailure(tabId: string): void;
   refreshProviders(): Promise<void>;
 }
 
@@ -325,6 +478,13 @@ const AgentConsoleContext = createContext<AgentConsoleApi | null>(null);
 export function AgentConsoleProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const socketRef = useRef<WebSocket | null>(null);
+  const pendingTabsRef = useRef<Array<{
+    workspaceId: number;
+    provider: ProviderId;
+    role: RunRole;
+    tabId: string;
+    requestId: string;
+  }>>([]);
 
   const wsUrl = useMemo(() => {
     const url = new URL("/ws", SERVER_URL);
@@ -368,7 +528,25 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
 
       socket.onmessage = (raw) => {
         try {
-          dispatch({ type: "server", message: JSON.parse(String(raw.data)) as ServerMessage });
+          const message = JSON.parse(String(raw.data)) as ServerMessage;
+          let tabId: string | undefined;
+          let requestId: string | undefined;
+          if (message.kind === "run_started") {
+            const index = pendingTabsRef.current.findIndex((pending) =>
+              pending.workspaceId === message.workspace.id
+              && pending.provider === message.provider
+              && pending.role === (message.role ?? "execute"));
+            if (index !== -1) {
+              const pending = pendingTabsRef.current[index]!;
+              tabId = pending.tabId;
+              requestId = pending.requestId;
+              pendingTabsRef.current.splice(index, 1);
+            }
+          } else if (message.kind === "run_rejected") {
+            const index = pendingTabsRef.current.findIndex((pending) => pending.requestId === message.clientRequestId);
+            if (index !== -1) pendingTabsRef.current.splice(index, 1);
+          }
+          dispatch({ type: "server", message, tabId, requestId });
         } catch {
           // Ignore frames we cannot parse rather than tearing down the socket.
         }
@@ -406,14 +584,38 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AgentConsoleApi>(() => {
     const run = state.runs.find((entry) => entry.role === "execute") ?? state.runs[0] ?? null;
+    const startOwnedRun = (message: Extract<ClientMessage, { kind: "run" }>, tabId?: string) => {
+      const requestId = `launch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      if (tabId !== undefined) {
+        const launch = { requestId, tabId, role: message.role ?? "execute" };
+        dispatch({ type: "launch_queued", launch });
+        pendingTabsRef.current.push({
+          workspaceId: message.workspaceId,
+          provider: message.provider,
+          role: message.role ?? "execute",
+          tabId,
+          requestId,
+        });
+      }
+      const started = send({ ...message, clientRequestId: requestId });
+      if (!started && tabId !== undefined) {
+        const index = pendingTabsRef.current.findIndex((pending) => pending.requestId === requestId);
+        if (index !== -1) pendingTabsRef.current.splice(index, 1);
+        dispatch({ type: "launch_send_failed", requestId });
+      }
+      return started;
+    };
     return {
       ...state,
       run,
       itemsFor: (runId) => state.items.filter((item) => item.runId === runId),
-      startRun: (workspaceId, provider, source, model) =>
-        send({ kind: "run", workspaceId, provider, ...source, model, role: "execute" }),
-      startConsult: (workspaceId, provider, source, model) =>
-        send({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }),
+      itemsForWorkspace: (workspaceId) =>
+        state.items.filter((item) => state.runWorkspaceIds[item.runId] === workspaceId),
+      itemsForTab: (tabId) => state.items.filter((item) => state.runTabIds[item.runId] === tabId),
+      startRun: (workspaceId, provider, source, model, tabId) =>
+        startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "execute" }, tabId),
+      startConsult: (workspaceId, provider, source, model, tabId) =>
+        startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }, tabId),
       askClarification: (workspaceId, provider, promptId, question, model) =>
         send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model, role: "execute" }),
       verifySuite: (suiteId, provider, model, promptId) =>
@@ -424,6 +626,10 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
         return send({ kind: "interrupt", runId: target });
       },
       clearLog: () => dispatch({ type: "clear" }),
+      clearWorkspaceLog: (workspaceId) => dispatch({ type: "clear", workspaceId }),
+      clearTabLog: (tabId) => dispatch({ type: "clear", tabId }),
+      claimWorkspaceRuns: (tabId, workspaceId) => dispatch({ type: "claim_workspace", tabId, workspaceId }),
+      dismissLaunchFailure: (tabId) => dispatch({ type: "dismiss_launch_failure", tabId }),
       refreshProviders,
     };
   }, [refreshProviders, send, state]);

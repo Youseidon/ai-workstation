@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
 import type { ProviderId, RunChangeDetail, RunChangedFile, RunCommit, RunFileDiff } from "@agent-console/shared";
+import { createLogger } from "./lib/logger.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
+
+const log=createLogger("changes");
 
 const GIT_TIMEOUT_MS = 15_000;
 const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
@@ -31,11 +34,64 @@ export function prepareChangeCapture(cwd:string,runId?:string):PreparedChangeCap
   if(runId!==undefined&&owner!==undefined&&owner!==runId)throw new WorkspaceError(409,"git_repository_busy","Another agent is already writing in this Git repository.");
   const head=git(repositoryRoot,["rev-parse","--verify","HEAD"],true).stdout.trim();
   if(head==="")throw new WorkspaceError(409,"git_initial_commit_required","Create the repository's initial commit before starting a writable agent run.");
-  const status=git(repositoryRoot,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
+  let baseCommit=head;
+  let status=worktreeStatus(repositoryRoot);
+  if(status!==""&&adoptAbandonedChanges(repositoryRoot,head)){baseCommit=currentHead(repositoryRoot);status=worktreeStatus(repositoryRoot);}
   if(status!=="")throw new WorkspaceError(409,"git_worktree_dirty","Commit or stash the existing working-tree changes before starting an agent.",undefined,{detail:status.slice(0,8000)});
   const branch=git(repositoryRoot,["symbolic-ref","--quiet","--short","HEAD"],true).stdout.trim()||null;
   if(runId!==undefined)repositoryWriters.set(repositoryRoot,runId);
-  return{repositoryRoot,branch,baseCommit:head};
+  return{repositoryRoot,branch,baseCommit};
+}
+
+function worktreeStatus(root:string):string {
+  return git(root,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
+}
+
+function commitWorkingTree(root:string,provider:ProviderId,subject:string,trailers:string[]):void {
+  git(root,["add","-A"]);
+  const providerLabel=provider[0]!.toUpperCase()+provider.slice(1);
+  git(root,[
+    "-c",`user.name=${providerLabel} via Agent Console`,
+    "-c","user.email=agent@agent-console.local",
+    "commit","-m",subject,"-m",trailers.join("\n"),
+  ]);
+}
+
+/**
+ * Commits what the last writer in this repository left behind, under that
+ * run's name, so the next run has a clean baseline.
+ *
+ * A run that dies — its provider out of allowance, the server restarted under
+ * it — cannot checkpoint, and the wrap-up turn sent to do it dies the same way.
+ * Its edits then sat in the tree and every later start was refused as a dirty
+ * baseline: the pipeline could not be resumed, retried or handed to a fallback
+ * provider until someone committed by hand in the workspace.
+ *
+ * The baseline is only ambiguous when nobody can say whose the changes are.
+ * Here the capsule says: the newest capture for this repository ended
+ * NEEDS_COMMIT (or never ended at all), its run is gone, and HEAD is where that
+ * run left it. Anything else is a change no run accounts for, and is still
+ * refused.
+ */
+function adoptAbandonedChanges(root:string,head:string):boolean {
+  const last=workspaces.latestRunChangeSet(root);
+  if(last===null||workspaces.agentRunActive(last.runId))return false;
+  if(last.state==="NEEDS_COMMIT"){
+    if((last.headCommit??last.baseCommit)!==head)return false;
+  }else if(last.state==="PENDING"){
+    // Never reconciled: the process died with the run. Its own checkpoints may
+    // have moved HEAD, which is fine as long as history still descends from
+    // where it started.
+    const descends=spawnSync("git",["merge-base","--is-ancestor",last.baseCommit,head],{cwd:root,encoding:"utf8",timeout:GIT_TIMEOUT_MS});
+    if(descends.status!==0)return false;
+  }else return false;
+  const run=workspaces.runSummary(last.runId);
+  commitWorkingTree(root,run.provider,"Checkpoint work left by an interrupted run",[
+    `Agent-Run: ${last.runId}`,"Agent-Checkpoint: orchestrator",`Agent-Provider: ${run.provider}`,...(run.model===null?[]:[`Agent-Model: ${run.model}`]),
+  ]);
+  refreshChangeCapture(last.runId);
+  log.info(`checkpointed work left uncommitted by ${last.runId} in ${root}`);
+  return true;
 }
 
 export function releaseChangeCapture(runId:string):void {
@@ -94,13 +150,8 @@ export function checkpointRun(runId:string,message:unknown,provider:ProviderId,m
   const before=currentHead(capture.repositoryRoot);ensureDescendant(capture.repositoryRoot,capture.baseCommit,before);
   const dirty=git(capture.repositoryRoot,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
   if(dirty==="")return refreshChangeCapture(captureId);
-  git(capture.repositoryRoot,["add","-A"]);
-  const providerLabel=provider[0]!.toUpperCase()+provider.slice(1);
-  const body=[`Agent-Run: ${captureId}`,...(captureId===runId?[]:[`Agent-Finalizer-Run: ${runId}`]),`Agent-Provider: ${provider}`,...(model===null?[]:[`Agent-Model: ${model}`])].join("\n");
-  git(capture.repositoryRoot,[
-    "-c",`user.name=${providerLabel} via Agent Console`,
-    "-c","user.email=agent@agent-console.local",
-    "commit","-m",message.trim(),"-m",body,
+  commitWorkingTree(capture.repositoryRoot,provider,message.trim(),[
+    `Agent-Run: ${captureId}`,...(captureId===runId?[]:[`Agent-Finalizer-Run: ${runId}`]),`Agent-Provider: ${provider}`,...(model===null?[]:[`Agent-Model: ${model}`]),
   ]);
   return refreshChangeCapture(captureId);
 }

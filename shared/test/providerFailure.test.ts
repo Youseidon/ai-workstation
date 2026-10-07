@@ -40,6 +40,37 @@ const CASES: Array<{
     expectClass: "transient_provider",
     expectId: "quota",
   },
+  // The four below are verbatim from one afternoon in which every provider ran
+  // out in turn. Three of them matched nothing, so the run was read as a crash
+  // about the work and continued on the provider that had just refused it.
+  {
+    id: "quota-codex",
+    errorText: "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 5:22 PM.",
+    toolCalls: 29,
+    expectClass: "transient_provider",
+    expectId: "quota",
+  },
+  {
+    id: "quota-kilo",
+    errorText: "Payment Required: {\"error\":{\"title\":\"Paid Model - Credits Required\",\"message\":\"Add credits to continue, or switch to a free model\",\"balance\":-0.054359},\"error_type\":\"usage_limit_exceeded\"}",
+    toolCalls: 154,
+    expectClass: "transient_provider",
+    expectId: "quota",
+  },
+  {
+    id: "quota-cursor",
+    errorText: "cursor-agent exited unexpectedly (code 1)\nActionRequiredError: Increase limits for faster responses You're out of usage. Switch to Auto, or ask your admin to increase your limit to continue.",
+    toolCalls: 12,
+    expectClass: "transient_provider",
+    expectId: "quota",
+  },
+  {
+    id: "rate_limit-claude",
+    errorText: "Claude Code run failed\nError: Claude Code process exited with code 1\nClaude reported: rate_limit",
+    toolCalls: 60,
+    expectClass: "transient_provider",
+    expectId: "rate_limit",
+  },
   {
     id: "rate_limit",
     errorText: "Error 429: rate limit exceeded — too many requests",

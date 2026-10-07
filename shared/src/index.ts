@@ -1329,6 +1329,7 @@ export type RunChangeState = (typeof RUN_CHANGE_STATES)[number];
 
 export interface RunChangeSummary {
   runId:string;
+  promptTitle:string;
   workspaceId:number;
   repositoryRoot:string;
   branch:string|null;
@@ -1342,6 +1343,8 @@ export interface RunChangeSummary {
   message:string|null;
   capturedAt:string;
   updatedAt:string;
+  /** The pipeline holding this run's work item as a step. Null for ad-hoc runs. */
+  pipeline:{id:number;name:string}|null;
 }
 
 export interface RunCommit {
@@ -1929,6 +1932,8 @@ export interface ApiErrorBody {
 
 export interface ClientRunMessage {
   kind: "run";
+  /** Browser-local correlation id used to return a rejected launch to its tab. */
+  clientRequestId?: string;
   provider: ProviderId;
   workspaceId: number;
   /** Exactly one of prompt and promptId must be supplied. */
@@ -2061,6 +2066,14 @@ export interface ServerRunEndedMessage {
   state: Extract<RunState, "done" | "interrupted" | "error">;
 }
 
+/** A run request failed before a run id existed. Sent only to its requesting socket. */
+export interface ServerRunRejectedMessage {
+  kind: "run_rejected";
+  clientRequestId: string;
+  message: string;
+  detail: string | null;
+}
+
 export interface ServerPongMessage {
   kind: "pong";
 }
@@ -2088,6 +2101,7 @@ export type ServerMessage =
   | ServerEventMessage
   | ServerRunStartedMessage
   | ServerRunEndedMessage
+  | ServerRunRejectedMessage
   | ServerSettingsUpdatedMessage
   | ServerOperationsChangedMessage
   | ServerPongMessage;

@@ -1,291 +1,199 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { RunSource } from "@agent-console/shared";
 import Link from "next/link";
-import type { PromptOption } from "@agent-console/shared";
-import { Composer } from "@/components/Composer";
-import { ConsultBriefing } from "@/components/ConsultBriefing";
-import { ContextPicker } from "@/components/ContextPicker";
-import { LogPanel } from "@/components/LogPanel";
+import { ChatWorkspace } from "@/components/chat/ChatWorkspace";
 import { PageChrome } from "@/components/shell/chrome";
 import { Button } from "@/components/ui/Button";
-import { useDialogs } from "@/components/ui/Dialogs";
-import { useToast } from "@/components/ui/Toast";
+import { cn } from "@/lib/cn";
 import { useAgentConsole } from "@/lib/useAgentConsole";
-import { useModelSelection } from "@/lib/useModelSelection";
-import { usePreferredProvider } from "@/lib/usePreferredProvider";
-import { SERVER_URL } from "@/lib/serverUrl";
 import { useWorkspace } from "@/lib/workspaceContext";
-import { workspaceApi } from "@/lib/workspacesApi";
 
-/** Matches server/src/runService.ts CONSULT_LIMIT. */
-const CONSULT_LIMIT = 3;
+function readPromptId(): number | null {
+  if (typeof window === "undefined") return null;
+  const requested = Number(new URLSearchParams(window.location.search).get("prompt"));
+  return Number.isSafeInteger(requested) && requested > 0 ? requested : null;
+}
 
-const EXAMPLES = [
-  "Summarise the repo layout and the main entry points.",
-  "Run the test suite and report anything that fails.",
-  "Find TODOs and open questions in the latest work items.",
-];
+interface WorkTab {
+  id: string;
+  workspaceId: number;
+  title: string | null;
+}
+
+function runTitle(input: string): string {
+  const compact = input.replace(/\s+/g, " ").trim();
+  if (compact.length <= 52) return compact;
+  return `${compact.slice(0, 49).trimEnd()}…`;
+}
+
+function sourceTitle(source: RunSource): string {
+  switch (source.type) {
+    case "custom": return source.displayText;
+    case "saved": return source.title;
+    case "consult": return source.title ?? source.question;
+    case "clarification": return source.title;
+    case "verification": return source.promptKey ?? source.suiteName;
+    case "audit": return source.title;
+    case "wrapup": return source.title;
+    case "author": return source.programName ?? source.goal;
+    case "instructions": return source.goal;
+  }
+}
 
 export default function Page() {
   const console_ = useAgentConsole();
-  const { providers, connection, items, operationsRevision } = console_;
-  const toast = useToast();
-  const dialogs = useDialogs();
-  const { selected, setPreferred } = usePreferredProvider(providers);
-  const {
-    workspaceId,
-    workspace: activeWorkspace,
-    status: workspaceStatus,
-    error: workspaceError,
-    refresh: refreshWorkspaces,
-  } = useWorkspace();
-  const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
-  const [savedPromptId, setSavedPromptId] = useState<number | null>(() => {
-    if (typeof window === "undefined") return null;
-    const requested = Number(new URLSearchParams(window.location.search).get("prompt"));
-    return Number.isSafeInteger(requested) && requested > 0 ? requested : null;
-  });
-  const lastWorkspaceId = useRef<number | null>(null);
+  const { workspaces, workspaceId, status, error, setWorkspaceId, refresh } = useWorkspace();
+  const [tabs, setTabs] = useState<WorkTab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [deepLinkedPrompt] = useState(readPromptId);
+  const [deepLinkTabId, setDeepLinkTabId] = useState<string | null>(null);
+  const nextTabNumber = useRef(1);
 
-  const refreshPrompts = useCallback(
-    (id: number) =>
-      workspaceApi
-        .prompts(SERVER_URL, id)
-        .then(setPromptOptions)
-        .catch(() => {}),
-    [],
-  );
-
+  // On Chat, the app-wide workspace picker opens or focuses the workspace's tab.
   useEffect(() => {
-    /* Prompt catalog for the selected workspace; reset when the beacon changes. */
-    /* eslint-disable react-hooks/set-state-in-effect -- scoped catalog sync */
-    if (workspaceId === null) {
-      setPromptOptions([]);
+    /* eslint-disable react-hooks/set-state-in-effect -- synchronize the external workspace context into Chat's tab set */
+    if (workspaceId === null) return;
+    const activeTab = tabs.find((tab) => tab.id === activeId);
+    if (activeTab?.workspaceId === workspaceId) return;
+    const existing = [...tabs].reverse().find((tab) => tab.workspaceId === workspaceId);
+    if (existing !== undefined) {
+      setActiveId(existing.id);
       return;
     }
-    if (lastWorkspaceId.current !== null && lastWorkspaceId.current !== workspaceId) {
-      setSavedPromptId(null);
-      setPromptOptions([]);
-    }
-    lastWorkspaceId.current = workspaceId;
-    void refreshPrompts(workspaceId);
+    const id = `work-${nextTabNumber.current++}`;
+    setTabs((current) => [...current, { id, workspaceId, title: null }]);
+    setActiveId(id);
+    if (deepLinkedPrompt !== null) setDeepLinkTabId((current) => current ?? id);
     /* eslint-enable react-hooks/set-state-in-effect */
-    const timer = setInterval(() => void refreshPrompts(workspaceId), 60_000);
-    return () => clearInterval(timer);
-  }, [workspaceId, refreshPrompts, operationsRevision]);
+  }, [workspaceId, deepLinkedPrompt, tabs, activeId]);
 
-  const workspaceLoading = workspaceStatus === "loading";
-  const savedPrompt = promptOptions.find((p) => p.id === savedPromptId) ?? null;
+  // A workspace can be deleted from another page or browser window.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- reconcile tabs after an external workspace deletion */
+    if (status !== "ready") return;
+    const available = new Set(workspaces.map((workspace) => workspace.id));
+    setTabs((current) => current.filter((tab) => available.has(tab.workspaceId)));
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [status, workspaces]);
 
-  const selectedInfo = useMemo(
-    () => providers.find((provider) => provider.id === selected),
-    [providers, selected],
+  const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeTab?.workspaceId) ?? null;
+  const activeItems = activeId === null ? [] : console_.itemsForTab(activeId);
+  const tabWorkspaces = useMemo(
+    () => tabs.flatMap((tab) => {
+      const workspace = workspaces.find((item) => item.id === tab.workspaceId);
+      return workspace === undefined ? [] : [{ tab, workspace }];
+    }),
+    [tabs, workspaces],
   );
 
-  const models = useModelSelection(providers);
-
-  // Scoped to the selected workspace: the server allows concurrent runs in
-  // different workspaces, so a run elsewhere must not disable this composer.
-  // A consult in this workspace does not own the writer slot.
-  const writerRun =
-    workspaceId === null
-      ? null
-      : console_.runs.find((item) => item.workspace.id === workspaceId && item.role === "execute") ?? null;
-  const consults =
-    workspaceId === null
-      ? []
-      : console_.runs.filter((item) => item.workspace.id === workspaceId && item.role === "consult");
-  const lastConsult =
-    console_.lastConsult !== null && console_.lastConsult.workspace.id === workspaceId
-      ? console_.lastConsult
-      : null;
-  const running = writerRun !== null;
-  const inputDisabled =
-    connection !== "open" || workspaceId === null || activeWorkspace?.workDirectoryExists === false;
-
-  /** Why Run cannot start. A live writer is Stop, not a blocked reason. */
-  const runBlockedReason = useMemo<string | null>(() => {
-    if (connection !== "open") return "backend disconnected";
-    if (workspaceId === null) return "choose a workspace";
-    if (activeWorkspace?.workDirectoryExists === false) return "working directory is missing";
-    if (selectedInfo?.available !== true) return `${selected} is not available`;
-    if (savedPrompt !== null && !savedPrompt.ready) {
-      return savedPrompt.blockedBy.length > 0
-        ? `waiting on ${savedPrompt.blockedBy.join(", ")}`
-        : `work item is ${savedPrompt.status.toLowerCase()}`;
-    }
-    return null;
-  }, [connection, workspaceId, activeWorkspace, selectedInfo, selected, savedPrompt]);
-
-  /** Ask is independent of the writer lock and of prompt `ready`. */
-  const askBlockedReason = useMemo<string | null>(() => {
-    if (connection !== "open") return "backend disconnected";
-    if (workspaceId === null) return "choose a workspace";
-    if (activeWorkspace?.workDirectoryExists === false) return "working directory is missing";
-    if (selected === "cursor") return "Cursor has no sandbox, so it cannot Ask.";
-    if (selectedInfo?.available !== true) return `${selected} is not available`;
-    if (consults.length >= CONSULT_LIMIT) return "3 consults already running";
-    return null;
-  }, [connection, workspaceId, activeWorkspace, selected, selectedInfo, consults.length]);
-
-  const writerItems = useMemo(
-    () => console_.items.filter((item) => !console_.consultIds.includes(item.runId)),
-    [console_.items, console_.consultIds],
-  );
-
-  const empty = writerItems.length === 0 && consults.length === 0 && lastConsult === null;
-
-  const recover = async () => {
-    if (savedPrompt === null || workspaceId === null) return;
-    const confirmed = await dialogs.confirm({
-      title: "Recover this interrupted run?",
-      description:
-        "The previous run's logs and any changes it made to the working tree are preserved. The work item returns to READY so it can be run again.",
-      confirmLabel: "Recover",
-    });
-    if (!confirmed) return;
-    try {
-      await workspaceApi.recover(SERVER_URL, savedPrompt.id);
-      await refreshPrompts(workspaceId);
-      toast.success("Run recovered", "The work item is ready to run again.");
-    } catch (error) {
-      toast.error("Recovery failed", error instanceof Error ? error.message : String(error));
-    }
+  const selectTab = (tab: WorkTab) => {
+    setActiveId(tab.id);
+    setWorkspaceId(tab.workspaceId);
+    setPickerOpen(false);
   };
 
-  const send = (prompt: string) => {
-    if (workspaceId === null) return;
-    const started = console_.startRun(
-      workspaceId,
-      selected,
-      savedPrompt !== null ? { promptId: savedPrompt.id } : { prompt },
-      models.resolve(selected),
-    );
-    if (!started) toast.error("Could not start the run", "The agent connection is unavailable.");
+  const openTab = (workspaceIdToOpen: number) => {
+    const tab = { id: `work-${nextTabNumber.current++}`, workspaceId: workspaceIdToOpen, title: null };
+    setTabs((current) => [...current, tab]);
+    setActiveId(tab.id);
+    setWorkspaceId(workspaceIdToOpen);
+    setPickerOpen(false);
   };
 
-  const ask = (prompt: string) => {
-    if (workspaceId === null) return;
-    const source =
-      savedPrompt !== null
-        ? prompt !== ""
-          ? { promptId: savedPrompt.id, prompt }
-          : { promptId: savedPrompt.id }
-        : { prompt };
-    const started = console_.startConsult(workspaceId, selected, source, models.resolve(selected));
-    if (!started) toast.error("Could not start the consult", "The agent connection is unavailable.");
+  const titleTab = (id: string, title: string) => {
+    const nextTitle = runTitle(title);
+    if (nextTitle === "") return;
+    setTabs((current) => current.map((tab) => tab.id === id ? { ...tab, title: nextTitle } : tab));
   };
 
-  const context = (
-    <ContextPicker
-      workspaceId={workspaceId}
-      prompts={promptOptions}
-      savedPromptId={savedPromptId}
-      onPrompt={setSavedPromptId}
-      disabled={false}
-      activeWorkspace={activeWorkspace}
-      onRecover={() => void recover()}
-    />
-  );
-
-  const composer = (
-    <Composer
-      disabled={inputDisabled}
-      running={running}
-      writer={writerRun === null ? null : { provider: writerRun.provider, model: writerRun.model }}
-      providers={providers}
-      models={models}
-      selected={selected}
-      runBlockedReason={runBlockedReason}
-      askBlockedReason={askBlockedReason}
-      savedPrompt={savedPrompt}
-      context={context}
-      workdir={activeWorkspace?.workDirectory ?? null}
-      onSubmit={send}
-      onAsk={ask}
-      onInterrupt={() => console_.interrupt(writerRun?.runId)}
-      onClearSavedPrompt={() => setSavedPromptId(null)}
-      onTarget={(provider, model) => {
-        setPreferred(provider);
-        // A bare `@grok` picks the provider at the model it was already going
-        // to use — that should not turn an inherited setting into a pin.
-        if (model !== models.resolve(provider)) models.select(provider, model);
-      }}
-    />
-  );
+  const closeTab = (id: string) => {
+    if (tabs.length <= 1) return;
+    if (console_.runs.some((run) => console_.runTabIds[run.runId] === id)) return;
+    if (console_.pendingLaunches.some((launch) => launch.tabId === id)) return;
+    const index = tabs.findIndex((tab) => tab.id === id);
+    const nextTabs = tabs.filter((tab) => tab.id !== id);
+    setTabs(nextTabs);
+    if (activeId !== id) return;
+    selectTab(nextTabs[Math.min(index, nextTabs.length - 1)]!);
+  };
 
   return (
     <main className="flex h-full flex-col bg-surface-0">
       <PageChrome
         title="Chat"
         actions={
-          <Button size="sm" variant="ghost" onClick={console_.clearLog} disabled={items.length === 0}>
-            Clear log
+          <Button size="sm" variant="ghost" onClick={() => activeId !== null && console_.clearTabLog(activeId)} disabled={activeItems.length === 0}>
+            Clear tab log
           </Button>
         }
       />
 
-      {workspaceError !== null && (
+      {error !== null && (
         <div role="alert" className="flex items-center gap-3 border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
-          <span className="min-w-0 flex-1">The workspace library is unavailable: {workspaceError}</span>
-          <Button size="sm" variant="secondary" onClick={() => void refreshWorkspaces()}>Retry</Button>
+          <span className="min-w-0 flex-1">The workspace library is unavailable: {error}</span>
+          <Button size="sm" variant="secondary" onClick={() => void refresh()}>Retry</Button>
         </div>
       )}
 
-      {!workspaceLoading && workspaceStatus === "empty" && (
+      {status === "empty" && (
         <div role="status" className="border-b border-line bg-surface-1 px-4 py-2 text-xs text-fg-muted">
-          No workspaces yet.{" "}
-          <Link href="/workspaces" className="text-accent hover:underline">
-            Create one
-          </Link>{" "}
+          No workspaces yet. <Link href="/workspaces" className="text-accent hover:underline">Create one</Link>{" "}
           before starting an agent.
         </div>
       )}
 
-      {empty ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4 pb-8">
-          <div className="max-w-xl text-center">
-            <h2 className="text-xl font-semibold text-fg">Talk to an agent</h2>
-            <p className="mt-1.5 text-sm text-fg-muted">
-              Run a custom prompt, or attach a work item and send it into the working tree.
-            </p>
+      {tabWorkspaces.length > 0 && (
+        <div className="flex shrink-0 items-center gap-1 border-b border-line bg-surface-1 px-3 py-2" role="tablist" aria-label="Agent runs">
+          <div className="flex min-w-0 max-w-[calc(100%-2.5rem)] gap-1 overflow-x-auto">
+            {tabWorkspaces.map(({ tab, workspace }) => {
+              const active = tab.id === activeId;
+              const tabRuns = console_.runs.filter((run) => console_.runTabIds[run.runId] === tab.id);
+              const tabStarting = console_.pendingLaunches.some((launch) => launch.tabId === tab.id);
+              const writer = tabRuns.some((run) => run.role === "execute");
+              const researching = tabRuns.some((run) => run.role === "consult");
+              const label = runTitle(tab.title ?? (tabRuns[0] === undefined ? "New run" : sourceTitle(tabRuns[0].source)));
+              return (
+                <div key={tab.id} title={`${label} — ${workspace.name}`} className={cn("group flex h-8 max-w-64 shrink-0 items-center rounded-lg border px-1 shadow-sm transition", active ? "border-line-strong bg-surface-0 text-fg" : "border-transparent bg-surface-2/60 text-fg-muted hover:border-line hover:bg-surface-2 hover:text-fg") }>
+                  <button type="button" role="tab" aria-selected={active} onClick={() => selectTab(tab)} className="flex min-w-0 items-center gap-2 px-2 text-xs">
+                    <span className={cn("size-1.5 shrink-0 rounded-full", writer || tabStarting ? "animate-pulse bg-caution" : researching ? "animate-pulse bg-accent" : "bg-fg-dim/40")} />
+                    <span className="truncate">{label}</span>
+                  </button>
+                  <button type="button" aria-label={`Close ${label} tab`} title={tabRuns.length > 0 || tabStarting ? "Stop or wait for active runs before closing this tab" : tabs.length <= 1 ? "Keep at least one work tab open" : "Close tab"} disabled={tabs.length <= 1 || tabRuns.length > 0 || tabStarting} onClick={() => closeTab(tab.id)} className="rounded p-1 text-fg-dim opacity-0 transition hover:bg-surface-3 hover:text-fg group-hover:opacity-100 focus:opacity-100 disabled:hidden">
+                    ×
+                  </button>
+                </div>
+              );
+            })}
           </div>
-          <div className="flex max-w-2xl flex-wrap justify-center gap-2">
-            {EXAMPLES.map((example) => (
-              <button
-                key={example}
-                type="button"
-                disabled={inputDisabled || runBlockedReason !== null}
-                onClick={() => {
-                  setSavedPromptId(null);
-                  send(example);
-                }}
-                className="rounded-full bg-surface-2 px-3 py-1.5 text-left text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-3 hover:text-fg disabled:opacity-40"
-              >
-                {example}
-              </button>
-            ))}
-          </div>
-          <div className="w-full max-w-3xl">{composer}</div>
-        </div>
-      ) : (
-        <>
-          <LogPanel items={writerItems} workdir={activeWorkspace?.workDirectory ?? null} />
-          <div className="flex flex-col gap-2 px-3 pb-3 pt-1">
-            {(consults.length > 0 || lastConsult !== null) && (
-              <ConsultBriefing
-                consults={consults}
-                lastConsult={lastConsult}
-                itemsFor={console_.itemsFor}
-                workdir={activeWorkspace?.workDirectory ?? null}
-                onStop={(runId) => console_.interrupt(runId)}
-              />
+
+          <div className="relative shrink-0">
+            <button type="button" aria-label="New run" title="New run" aria-expanded={pickerOpen} onClick={() => setPickerOpen((open) => !open)} className="flex size-8 items-center justify-center rounded-lg border border-dashed border-line-strong bg-surface-0 text-lg text-fg-muted transition hover:border-accent/60 hover:bg-accent/10 hover:text-accent">+</button>
+            {pickerOpen && (
+              <div className="glass absolute right-0 top-full z-40 mt-1 w-72 overflow-hidden rounded-lg p-1.5 shadow-xl">
+                <p className="px-2 py-1 text-[10px] uppercase tracking-wider text-fg-dim">Open workspace tab</p>
+                {workspaces.map((workspace) => (
+                  <button key={workspace.id} type="button" onClick={() => openTab(workspace.id)} className="block w-full rounded-md px-2 py-2 text-left hover:bg-surface-3">
+                    <span className="block truncate text-xs text-fg">{workspace.name}</span>
+                    <span className="block truncate text-[10px] text-fg-dim">{workspace.workDirectory}</span>
+                  </button>
+                ))}
+              </div>
             )}
-            {composer}
           </div>
-        </>
+        </div>
       )}
+
+      {activeWorkspace === null && status === "loading" && (
+        <div className="flex flex-1 items-center justify-center text-sm text-fg-dim">Loading workspace…</div>
+      )}
+
+      {tabWorkspaces.map(({ tab, workspace }) => (
+        <ChatWorkspace key={tab.id} tabId={tab.id} workspace={workspace} visible={tab.id === activeId} initialPromptId={tab.id === deepLinkTabId ? deepLinkedPrompt : null} onTitle={(title) => titleTab(tab.id, title)} />
+      ))}
     </main>
   );
 }

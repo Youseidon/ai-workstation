@@ -10,7 +10,7 @@ import { decideExecuteEnded, pipelineScheduler, resolveExecuteTarget, resolveFal
 import { resetSettings, updateSettings } from "../src/settings.ts";
 import { runContexts } from "../src/runContext.ts";
 import type { StartExecuteArgs } from "../src/runService.ts";
-import { workspaces } from "../src/workspaces.ts";
+import { WorkspaceError, workspaces } from "../src/workspaces.ts";
 
 let seq = 0;
 
@@ -454,6 +454,158 @@ test("when every fallback is cooling, a continuation that cannot start parks no_
   } finally {
     setAdapterOverride("claude", null);
     setAdapterOverride("codex", null);
+    resetProviderHealth();
+    ctx.cleanup();
+  }
+});
+
+/** Adapters that report themselves installed, so the fallback list is not empty by accident. */
+async function stubProviders(ids: Array<"claude" | "codex" | "cursor">): Promise<() => void> {
+  const { setAdapterOverride } = await import("../src/adapters/registry.ts");
+  const available = { available: true, reason: null, version: null, binary: null };
+  for (const id of ids) {
+    setAdapterOverride(id, {
+      id,
+      label: id,
+      transport: "sdk" as const,
+      reportsTokens: true,
+      permissionMode: "bypass",
+      model: null,
+      checkAvailability: async () => available,
+      isAvailable: async () => true,
+      getVersion: async () => null,
+      getAccountUsage: async () => ({ provider: id, available: false, reason: null, windows: [] }) as never,
+      async *run() {},
+      interrupt: async () => {},
+    });
+  }
+  return () => { for (const id of ids) setAdapterOverride(id, null); };
+}
+
+/*
+ * The incident: Codex ran out of allowance mid-work and left the tree dirty.
+ * Every fallback was then refused by the dirty tree, each refusal was booked as
+ * that provider failing to start, and the run parked `no_provider_available`
+ * with all of them cooling — so neither Resume nor Retry could start anything.
+ */
+test("a start the workspace refuses parks with its own reason and blames no provider", async () => {
+  const { resetProviderHealth, coolingFor } = await import("../src/providerHealth.ts");
+  resetProviderHealth();
+  const restore = await stubProviders(["claude", "codex", "cursor"]);
+  const ctx = fixture(1);
+  const attempts: string[] = [];
+  let dirty = true;
+  const ok = stubStarts();
+  const startOk = async (args: StartExecuteArgs) => {
+    // `stubStarts` installed the working starter; borrow it once the tree is clean.
+    const runId = newId("run");
+    const credential = runContexts.create(runId, args.workspaceId, args.promptId!);
+    workspaces.beginAgentRun({ runId, workspaceId: args.workspaceId, promptId: args.promptId!, provider: args.provider, model: args.model, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    workspaces.markAgentRunRunning(runId);
+    ok.push({ ...args });
+    return { runId };
+  };
+  setPipelineStationStarter(async (args) => {
+    attempts.push(args.provider);
+    if (dirty) throw new WorkspaceError(409, "git_worktree_dirty", "Commit or stash the existing working-tree changes before starting an agent.", undefined, { detail: " M app.ts" });
+    return startOk(args);
+  });
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    workspaces.upsertNamedPipelineRule(ctx.pipeline.id, promptId, { provider: "claude", fallbackProviders: ["codex", "cursor"] });
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const parked = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(parked.state, "WAITING_HUMAN");
+    assert.equal(parked.waitReason, "worktree_dirty");
+    assert.equal(workspaces.activeNamedPipelineRun(ctx.pipeline.id)?.waitReason, "worktree_dirty");
+    // One attempt, no fallback walk, nobody cooled, and the station untouched.
+    assert.deepEqual(attempts, ["claude"]);
+    for (const id of ["claude", "codex", "cursor"] as const) assert.equal(coolingFor(id), null, `${id} was blamed`);
+    assert.equal(workspaces.promptOutcome(promptId).status, "TODO");
+    const events = workspaces.promptHistory(promptId).events as Array<{ trigger: string | null }>;
+    assert.equal(events.some((event) => event.trigger === "provider_fallback"), false);
+
+    // Still dirty: Resume tries again and parks again, rather than refusing.
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.equal(workspaces.activePipeline(ctx.suite.id)!.waitReason, "worktree_dirty");
+
+    dirty = false;
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const live = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(live.state, "PLAYING");
+    assert.equal(live.waitReason, null);
+    assert.equal(ok.at(-1)?.provider, "claude");
+  } finally {
+    restore();
+    resetProviderHealth();
+    ctx.cleanup();
+  }
+});
+
+test("any other workspace refusal parks start_refused with the code that refused it", async () => {
+  const { resetProviderHealth, coolingFor } = await import("../src/providerHealth.ts");
+  resetProviderHealth();
+  const ctx = fixture(1);
+  setPipelineStationStarter(async () => {
+    throw new WorkspaceError(409, "git_repository_busy", "Another agent is already writing in this Git repository.");
+  });
+  try {
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const parked = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(parked.state, "WAITING_HUMAN");
+    assert.equal(parked.waitReason, "start_refused:git_repository_busy");
+    assert.equal(coolingFor("claude"), null);
+  } finally {
+    resetProviderHealth();
+    ctx.cleanup();
+  }
+});
+
+test("Resume after no_provider_available is a real retry: cooling is cleared and a FAILED station re-queued", async () => {
+  const { resetProviderHealth, markCooling, coolingFor } = await import("../src/providerHealth.ts");
+  resetProviderHealth();
+  const restore = await stubProviders(["claude", "codex", "cursor"]);
+  markCooling("codex", "quota", 60, "test");
+  markCooling("cursor", "capacity", 60, "test");
+  const ctx = fixture(1);
+  const started: StartExecuteArgs[] = [];
+  let outOfAllowance = true;
+  setPipelineStationStarter(async (args) => {
+    started.push({ ...args });
+    const runId = newId("run");
+    const credential = runContexts.create(runId, args.workspaceId, args.promptId!);
+    workspaces.beginAgentRun({ runId, workspaceId: args.workspaceId, promptId: args.promptId!, provider: args.provider, model: args.model, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
+    if (outOfAllowance) {
+      // Died after the run row existed, so the station is left FAILED.
+      workspaces.finishAgentRun(runId, "error");
+      throw new Error("You've hit your usage limit. Try again at 5:22 PM.");
+    }
+    workspaces.markAgentRunRunning(runId);
+    return { runId };
+  });
+  try {
+    const promptId = ctx.prompts[0]!.id;
+    workspaces.upsertNamedPipelineRule(ctx.pipeline.id, promptId, { provider: "claude", fallbackProviders: ["codex", "cursor"] });
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const parked = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(parked.state, "WAITING_HUMAN");
+    assert.equal(parked.waitReason, "no_provider_available");
+    assert.equal(workspaces.promptOutcome(promptId).status, "FAILED");
+    assert.equal(coolingFor("claude")?.id, "start_failed");
+
+    // The operator topped up and pressed Resume. Nothing else changed.
+    outOfAllowance = false;
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const live = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(live.state, "PLAYING");
+    assert.equal(live.currentRunId !== null, true);
+    assert.equal(started.at(-1)?.provider, "claude");
+    assert.equal(coolingFor("claude"), null);
+    assert.equal(coolingFor("codex"), null);
+    const events = workspaces.promptHistory(promptId).events as Array<{ trigger: string | null; actorType?: string }>;
+    assert.ok(events.some((event) => event.trigger === "operator_resume"));
+  } finally {
+    restore();
     resetProviderHealth();
     ctx.cleanup();
   }

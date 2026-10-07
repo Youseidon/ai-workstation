@@ -194,7 +194,7 @@ const httpServer = createServer((req, res) => {
         const budget=runHub.get(runId)?.handle.budget()??null;
         if(req.headers.accept?.includes("application/json"))sendJson(res,200,{...context,budget,full});
         else{
-          const api=progressApiMarkdown({runId,token,port:config.port,canDecompose:depth<DECOMPOSE_MAX_DEPTH});
+          const api=progressApiMarkdown({runId,token,port:config.port,canDecompose:depth<DECOMPOSE_MAX_DEPTH,canCheckpoint:workspaces.runChangeSet(runId)!==null});
           res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
           res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH,full})}\n\n${api}${budgetMarkdown(budget)}`);
         }
@@ -472,6 +472,22 @@ wss.on("connection", (ws: WebSocket) => {
     }
   };
 
+  const rejectRun = (clientRequestId: string | undefined, error: unknown, fallback: string): void => {
+    if (clientRequestId === undefined) {
+      mapStartError(error, fallback);
+      return;
+    }
+    send({
+      kind: "run_rejected",
+      clientRequestId,
+      message: error instanceof Error ? error.message : fallback,
+      detail: error instanceof WorkspaceError ? error.fields?.detail ?? null : null,
+    });
+    if (error instanceof ProviderUnavailableError) {
+      send({ kind: "providers", providers: error.providers });
+    }
+  };
+
   const handleRun = async (
     workspaceId: number,
     prompt: string | undefined,
@@ -480,11 +496,12 @@ wss.on("connection", (ws: WebSocket) => {
     model: string | null,
     mode: "execute"|"clarify" = "execute",
     question?: string,
+    clientRequestId?: string,
   ): Promise<void> => {
     try {
       await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question });
     } catch (error) {
-      mapStartError(error, "Unable to resolve workspace");
+      rejectRun(clientRequestId, error, "Unable to resolve workspace");
     }
   };
 
@@ -495,11 +512,12 @@ wss.on("connection", (ws: WebSocket) => {
     providerId: string,
     model: string | null,
     question?: string,
+    clientRequestId?: string,
   ): Promise<void> => {
     try {
       await startConsult({ workspaceId, prompt, promptId, provider: providerId, model, question });
     } catch (error) {
-      mapStartError(error, "Unable to start consult");
+      rejectRun(clientRequestId, error, "Unable to start consult");
     }
   };
 
@@ -535,6 +553,10 @@ wss.on("connection", (ws: WebSocket) => {
         const hasPromptId = Number.isSafeInteger(parsed.promptId) && (parsed.promptId ?? 0) > 0;
         if (parsed.role !== undefined && !isRunRole(parsed.role)) { sendError("Unknown run role."); return; }
         const role = parsed.role ?? "execute";
+        if (parsed.clientRequestId !== undefined && (typeof parsed.clientRequestId !== "string" || parsed.clientRequestId.length > 100)) {
+          sendError("Invalid run request id.");
+          return;
+        }
         if (role === "consult") {
           if (!hasPrompt && !hasPromptId) { sendError("Supply a prompt or promptId."); return; }
         } else if (hasPrompt === hasPromptId) {
@@ -558,9 +580,9 @@ wss.on("connection", (ws: WebSocket) => {
           return;
         }
         if (role === "consult") {
-          void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question);
+          void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question, parsed.clientRequestId);
         } else {
-          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question);
+          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question,parsed.clientRequestId);
         }
         return;
       }

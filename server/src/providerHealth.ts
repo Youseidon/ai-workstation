@@ -66,7 +66,20 @@ export function coolingFor(provider: ProviderId, now = Date.now()): { until: str
   return { until: new Date(entry.until).toISOString(), because: entry.because, id: entry.id };
 }
 
-/** Test helper — production code never clears the table wholesale. */
-export function resetProviderHealth(): void {
+/**
+ * Forget every cooling entry.
+ *
+ * Cooling is the rail declining to waste a start on a provider that just
+ * failed. An operator pressing Resume on a run parked for want of a provider
+ * is the opposite instruction — they have topped up, signed in, or simply want
+ * it tried — and a Resume that silently re-parks until a timer nobody can see
+ * runs out is a button that does nothing.
+ */
+export function clearCooling(): void {
   coolingByProvider.clear();
+}
+
+/** Test helper. */
+export function resetProviderHealth(): void {
+  clearCooling();
 }
