@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PromptOption, WorkspaceRecord } from "@agent-console/shared";
+import { conversationTitle, type PromptOption, type WorkspaceRecord } from "@agent-console/shared";
 import { Composer } from "@/components/Composer";
-import { ConsultBriefing } from "@/components/ConsultBriefing";
+import { DecisionDeck } from "@/components/DecisionDeck";
 import { ContextPicker } from "@/components/ContextPicker";
 import { LogPanel } from "@/components/LogPanel";
+import { LaunchLoader, type LaunchStage } from "./LaunchLoader";
 import { useToast } from "@/components/ui/Toast";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { useAgentConsole } from "@/lib/useAgentConsole";
@@ -71,16 +72,21 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
     (run) => run.workspace.id === workspaceId && run.role === "consult",
   );
   const consults = workspaceConsults.filter((run) => console_.runTabIds[run.runId] === tabId);
-  const lastConsult = console_.lastConsultsByTab[tabId] ?? null;
   const running = writerRun !== null;
   const ownsWriter = writerRun !== null && console_.runTabIds[writerRun.runId] === tabId;
   const starting = console_.pendingLaunches.some((launch) => launch.tabId === tabId && launch.role === "execute");
+  // A tab holds one run at a time, so its single transcript never interleaves
+  // a writer with an Ask. Parallel research belongs in another tab.
+  const asking = consults.length > 0
+    || console_.pendingLaunches.some((launch) => launch.tabId === tabId && launch.role === "consult");
+  const writingHere = ownsWriter || starting;
   const launchFailure = console_.launchFailuresByTab[tabId] ?? null;
   const inputDisabled = connection !== "open" || !workspace.workDirectoryExists;
 
   const runBlockedReason = useMemo<string | null>(() => {
     if (connection !== "open") return "backend disconnected";
     if (!workspace.workDirectoryExists) return "working directory is missing";
+    if (asking) return "an Ask is running in this tab; wait for it or open another tab";
     if (running) return "a writer is already in progress; use Ask for read-only research";
     if (selectedInfo?.available !== true) return `${selected} is not available`;
     if (savedPrompt !== null && !savedPrompt.ready) {
@@ -89,23 +95,36 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
         : `work item is ${savedPrompt.status.toLowerCase()}`;
     }
     return null;
-  }, [connection, workspace.workDirectoryExists, running, selectedInfo, selected, savedPrompt]);
+  }, [connection, workspace.workDirectoryExists, asking, running, selectedInfo, selected, savedPrompt]);
 
   const askBlockedReason = useMemo<string | null>(() => {
     if (connection !== "open") return "backend disconnected";
     if (!workspace.workDirectoryExists) return "working directory is missing";
+    if (writingHere) return "a writer is running in this tab; open another tab to Ask";
+    if (asking) return "an Ask is already running in this tab";
     if (selected === "cursor") return "Cursor has no sandbox, so it cannot Ask.";
     if (selectedInfo?.available !== true) return `${selected} is not available`;
     if (workspaceConsults.length >= CONSULT_LIMIT) return "3 consults already running";
     return null;
-  }, [connection, workspace.workDirectoryExists, selected, selectedInfo, workspaceConsults.length]);
+  }, [connection, workspace.workDirectoryExists, writingHere, asking, selected, selectedInfo, workspaceConsults.length]);
 
   const tabItems = console_.itemsForTab(tabId);
+  const decisionRequests = Object.values(console_.inputRequests).filter((request) => console_.runTabIds[request.runId] === tabId);
   const writerItems = useMemo(
     () => tabItems.filter((item) => !console_.consultIds.includes(item.runId)),
     [tabItems, console_.consultIds],
   );
-  const empty = writerItems.length === 0 && consults.length === 0 && lastConsult === null;
+  // The gap between the click and the agent's first line: the request is in
+  // flight, or the run exists but has only echoed the prompt so far.
+  const pendingLaunch = console_.pendingLaunches.find((launch) => launch.tabId === tabId) ?? null;
+  const silentRun = console_.runs.find((run) =>
+    console_.runTabIds[run.runId] === tabId
+    && console_.inputRequests[run.runId] === undefined
+    && !tabItems.some((item) => item.runId === run.runId && item.kind !== "prompt")) ?? null;
+  const launchStage: LaunchStage | null = silentRun !== null
+    ? silentRun.state === "starting" ? "starting" : "waiting"
+    : pendingLaunch !== null ? "sending" : null;
+  const empty = tabItems.length === 0 && consults.length === 0 && launchStage === null;
 
   const recover = async () => {
     if (savedPrompt === null) return;
@@ -125,9 +144,13 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   };
 
   const send = (prompt: string) => {
-    // The socket can announce a writer between render and click; enforce the rule here too.
+    // The socket can announce a run between render and click; enforce the rules here too.
+    if (asking) {
+      toast.error("Ask already running in this tab", "Wait for it to finish, or open another tab.");
+      return;
+    }
     if (writerRun !== null) {
-      toast.error("Writer already in progress", "Use Ask for read-only research in this workspace.");
+      toast.error("Writer already in progress", "Use Ask for read-only research in another tab.");
       return;
     }
     const started = console_.startRun(
@@ -141,10 +164,16 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
       toast.error("Could not start the run", "The agent connection is unavailable.");
       return;
     }
-    onTitle(savedPrompt?.title ?? prompt);
+    // A thread keeps the title of its opening turn; follow-ups should not look
+    // like a newly opened tab merely because their question is different.
+    if (writerItems.length === 0) onTitle(savedPrompt?.title ?? conversationTitle(prompt));
   };
 
   const ask = (prompt: string) => {
+    if (writingHere || asking) {
+      toast.error("This tab is busy", "Open another tab to Ask while a run is in progress here.");
+      return;
+    }
     const source = savedPrompt !== null
       ? prompt !== "" ? { promptId: savedPrompt.id, prompt } : { promptId: savedPrompt.id }
       : { prompt };
@@ -153,7 +182,7 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
       toast.error("Could not start the consult", "The agent connection is unavailable.");
       return;
     }
-    onTitle(savedPrompt?.title ?? prompt);
+    onTitle(savedPrompt?.title ?? conversationTitle(prompt));
   };
 
   const composer = (
@@ -210,7 +239,21 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
         </div>
       ) : (
         <>
-          <LogPanel items={writerItems} workdir={workspace.workDirectory} />
+          {/* One transcript per tab: writer and Ask/Research runs share this pane. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            {tabItems.length > 0 ? <LogPanel items={tabItems} workdir={workspace.workDirectory} /> : <div className="flex-1" />}
+            {launchStage !== null && (
+              <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center p-4">
+                <LaunchLoader
+                  stage={launchStage}
+                  role={(silentRun ?? pendingLaunch)!.role}
+                  provider={silentRun?.provider ?? selected}
+                  model={silentRun?.model ?? models.resolve(selected)}
+                  detail={silentRun?.detail ?? null}
+                />
+              </div>
+            )}
+          </div>
           <div className="flex flex-col gap-2 px-3 pb-3 pt-1">
             {launchFailure !== null && (
               <div role="alert" className="flex items-start gap-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2 text-xs text-danger">
@@ -218,9 +261,12 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
                 <button type="button" onClick={() => console_.dismissLaunchFailure(tabId)} className="shrink-0 text-danger/70 hover:text-danger" aria-label="Dismiss launch error">×</button>
               </div>
             )}
-            {(consults.length > 0 || lastConsult !== null) && (
-              <ConsultBriefing consults={consults} lastConsult={lastConsult} itemsFor={console_.itemsFor} workdir={workspace.workDirectory} onStop={(runId) => console_.interrupt(runId)} />
-            )}
+            {decisionRequests.map((request) => {
+              const run = console_.runs.find((item) => item.runId === request.runId);
+              return run === undefined ? null : (
+                <DecisionDeck key={request.requestId} request={request} provider={run.provider} onSubmit={(answers) => console_.answerInput(request.runId, request.requestId, answers)} onCancel={() => console_.interrupt(request.runId)} />
+              );
+            })}
             {composer}
           </div>
         </>

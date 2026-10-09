@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientMessage, ServerMessage } from "@agent-console/shared";
+import type { AgentInputAnswer, ClientMessage, ServerMessage } from "@agent-console/shared";
 import { isRunRole } from "@agent-console/shared";
 import type { DbAccessPayload, NormalizedEvent } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
@@ -25,6 +25,7 @@ import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { scheduleRetentionSweep } from "./retention.ts";
 import { settings } from "./settings.ts";
 import { assertRunChangesCommitted, checkpointRun } from "./gitChanges.ts";
+import { answerAgentInput, normalizeAgentInputRequest, waitForAgentInput } from "./agentInput.ts";
 
 const log = createLogger("server");
 
@@ -59,6 +60,10 @@ const MAX_AUTHOR_BODY_BYTES = 1024 * 1024;
 
 /** A model id is a short slug; anything longer is a malformed or hostile frame. */
 const MAX_MODEL_LENGTH = 200;
+/** Provider session ids are opaque but bounded before reaching a CLI argv. */
+const MAX_SESSION_ID_LENGTH = 500;
+/** App-owned thread ids are UUID-like opaque values, not unbounded labels. */
+const MAX_THREAD_ID_LENGTH = 200;
 
 function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
@@ -148,7 +153,7 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program|input)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
@@ -166,6 +171,24 @@ const httpServer = createServer((req, res) => {
           : new WorkspaceError(403,"consult_read_only","Read-only runs cannot post remarks, status, or decompose.");
       }
       const startedAt=Date.now();
+      if(operation==="input"&&req.method==="POST"){
+        if(workspaces.suitePipelineForRun(runId)!==null)throw new WorkspaceError(409,"pipeline_input_disabled","Pipeline runs must proceed from their configured rules and cannot pause for conversational input.");
+        void readJsonBody(req,MAX_BODY_BYTES).then(async body=>{
+          const request=normalizeAgentInputRequest(body);
+          const live=runHub.get(runId);
+          if(live===undefined)throw new WorkspaceError(409,"run_not_active","The agent process is no longer active.");
+          // Registration is synchronous. Do it before broadcasting so a fast
+          // operator cannot answer in the gap between paint and the waiter.
+          const waiting=waitForAgentInput(runId,request);
+          const event:NormalizedEvent={id:newId("evt"),runId,provider:live.provider,model:live.model,timestamp:new Date().toISOString(),type:"input_request",payload:request};
+          workspaces.recordAgentEvent(runId,event);
+          runHub.event(runId,event);
+          recordDbAccess(runId,describeAcceptedWrite({operation:"input",before:null,after:null,requestId:request.requestId,durationMs:Date.now()-startedAt}));
+          const answers=await waiting;
+          sendJson(res,200,{requestId:request.requestId,answers});
+        }).catch(error=>sendJson(res,error instanceof WorkspaceError?error.status:409,{error:{code:error instanceof WorkspaceError?error.code:"input_cancelled",message:error instanceof Error?error.message:String(error)}}));
+        return;
+      }
       if(operation==="context"&&req.method==="GET"){
         if(persisted.role==="author"){
           const draft=workspaces.programDraftForRun(runId);
@@ -497,9 +520,11 @@ wss.on("connection", (ws: WebSocket) => {
     mode: "execute"|"clarify" = "execute",
     question?: string,
     clientRequestId?: string,
+    resumeSessionId?: string,
+    threadId?: string,
   ): Promise<void> => {
     try {
-      await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question });
+      await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question, resumeSessionId, threadId });
     } catch (error) {
       rejectRun(clientRequestId, error, "Unable to resolve workspace");
     }
@@ -566,6 +591,24 @@ wss.on("connection", (ws: WebSocket) => {
         const mode=parsed.mode??"execute";
         if(mode!=="execute"&&mode!=="clarify"){sendError("Unknown run mode.");return;}
         if(mode==="clarify"&&(!hasPromptId||typeof parsed.question!=="string"||parsed.question.trim()==="")){sendError("Clarification requires a saved prompt and a question.");return;}
+        const hasResumeSession = parsed.resumeSessionId !== undefined;
+        if (hasResumeSession && (typeof parsed.resumeSessionId !== "string" || parsed.resumeSessionId.trim() === "" || parsed.resumeSessionId.length > MAX_SESSION_ID_LENGTH)) {
+          sendError(`Session id must be a non-empty string of at most ${MAX_SESSION_ID_LENGTH} characters.`);
+          return;
+        }
+        if (hasResumeSession && (role !== "execute" || mode !== "execute" || !hasPrompt || hasPromptId)) {
+          sendError("Only a custom execute prompt can continue a session.");
+          return;
+        }
+        const hasThread = parsed.threadId !== undefined;
+        if (hasThread && (typeof parsed.threadId !== "string" || parsed.threadId.trim() === "" || parsed.threadId.length > MAX_THREAD_ID_LENGTH)) {
+          sendError(`Thread id must be a non-empty string of at most ${MAX_THREAD_ID_LENGTH} characters.`);
+          return;
+        }
+        if (hasThread && (role !== "execute" || mode !== "execute" || !hasPrompt || hasPromptId)) {
+          sendError("Only a custom execute prompt can belong to a Chat thread.");
+          return;
+        }
         const roleError = runRoleStartError(role, parsed.provider);
         if (roleError !== null) { sendError(roleError); return; }
         // An absent/blank model means "fall back to the configured one"; a
@@ -582,7 +625,7 @@ wss.on("connection", (ws: WebSocket) => {
         if (role === "consult") {
           void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question, parsed.clientRequestId);
         } else {
-          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question,parsed.clientRequestId);
+          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question,parsed.clientRequestId,parsed.resumeSessionId?.trim(),parsed.threadId?.trim());
         }
         return;
       }
@@ -609,6 +652,22 @@ wss.on("connection", (ws: WebSocket) => {
         // tab that started a run is often not the one watching it finish.
         if (typeof parsed.runId !== "string" || parsed.runId === "") return;
         void runHub.stop(parsed.runId);
+        return;
+      }
+      case "input_response": {
+        if(typeof parsed.runId!=="string"||parsed.runId===""||typeof parsed.requestId!=="string"||parsed.requestId===""||parsed.answers===null||typeof parsed.answers!=="object"||Array.isArray(parsed.answers)){
+          sendError("Invalid input response.");
+          return;
+        }
+        try{
+          const answers=parsed.answers as Record<string,AgentInputAnswer>;
+          const request=answerAgentInput(parsed.runId,parsed.requestId,answers);
+          const live=runHub.get(parsed.runId);
+          if(live===undefined)throw new WorkspaceError(409,"run_not_active","The agent process is no longer active.");
+          const event:NormalizedEvent={id:newId("evt"),runId:parsed.runId,provider:live.provider,model:live.model,timestamp:new Date().toISOString(),type:"input_response",payload:{requestId:request.requestId,answers}};
+          workspaces.recordAgentEvent(parsed.runId,event);
+          runHub.event(parsed.runId,event);
+        }catch(error){sendError(error instanceof Error?error.message:"Could not answer the agent.");}
         return;
       }
       case "refresh_providers": {

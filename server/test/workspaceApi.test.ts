@@ -287,7 +287,7 @@ test("a chat-box execute persists and activity keeps the typed prompt", async ()
     const listedSession = sessions.find((session) => session.id === runId);
     assert.ok(listedSession);
     assert.equal(listedSession.promptId, null);
-    assert.equal(listedSession.promptTitle, "rewrite the login form");
+    assert.equal(listedSession.promptTitle, "Rewrite the login form");
     assert.equal(listedSession.displayText, "rewrite the login form\nuse the existing theme");
     assert.equal(listedSession.events.length, 0);
 
@@ -300,12 +300,70 @@ test("a chat-box execute persists and activity keeps the typed prompt", async ()
       events: unknown[];
     };
     assert.equal(session.id, runId);
-    assert.equal(session.promptTitle, "rewrite the login form");
+    assert.equal(session.promptTitle, "Rewrite the login form");
     assert.equal(session.displayText, "rewrite the login form\nuse the existing theme");
     assert.equal(session.events.length, 1);
     assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "TODO");
   } finally {
     ctx.cleanup();
+  }
+});
+
+test("custom turns from different providers persist in one provider-neutral thread", async () => {
+  const ctx = fixture();
+  try {
+    const threadId = `thread-${randomUUID()}`;
+    const turns = [
+      { runId: `run-${randomUUID()}`, provider: "codex", text: "find the cause" },
+      { runId: `run-${randomUUID()}`, provider: "claude", text: "fix it" },
+    ];
+    for (const turn of turns) {
+      workspaces.beginCustomExecuteRun({
+        runId: turn.runId,
+        workspaceId: ctx.workspace.id,
+        provider: turn.provider,
+        model: null,
+        tokenHash: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        displayText: turn.text,
+        threadId,
+      });
+      workspaces.finishAgentRun(turn.runId, "done");
+    }
+
+    const listed = await call("GET", "/api/sessions");
+    assert.equal(listed.status, 200);
+    const sessions = listed.body.sessions as Array<{ id: string; provider: string; threadId: string | null; threadTitle: string | null }>;
+    const thread = sessions.filter((session) => session.threadId === threadId);
+    assert.deepEqual(new Set(thread.map((session) => session.id)), new Set(turns.map((turn) => turn.runId)));
+    assert.deepEqual(new Set(thread.map((session) => session.provider)), new Set(["codex", "claude"]));
+    assert.deepEqual(new Set(thread.map((session) => session.threadTitle)), new Set(["Find the cause"]));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a persisted Chat thread cannot merge runs from different workspaces", () => {
+  const first = fixture();
+  const second = fixture();
+  const threadId = `thread-${randomUUID()}`;
+  try {
+    const common = {
+      provider: "codex",
+      model: null,
+      tokenHash: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      displayText: "continue",
+      threadId,
+    };
+    workspaces.beginCustomExecuteRun({ ...common, runId: `run-${randomUUID()}`, workspaceId: first.workspace.id });
+    assert.throws(
+      () => workspaces.beginCustomExecuteRun({ ...common, runId: `run-${randomUUID()}`, workspaceId: second.workspace.id }),
+      (error: unknown) => error instanceof Error && error.message.includes("different workspace"),
+    );
+  } finally {
+    first.cleanup();
+    second.cleanup();
   }
 });
 

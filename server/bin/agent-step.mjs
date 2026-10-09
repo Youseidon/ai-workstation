@@ -31,6 +31,7 @@ const USAGE = `agent-step — record progress and status for this work item.
   agent-step state                          Everything recorded against it so far
   agent-step remark --kind KIND --text "…"  Bank what you just verified
   agent-step checkpoint --message "…"       Commit this run's workspace changes
+  agent-step ask --file questions.json       Pause and ask the operator 1–8 questions
   agent-step done --verification "…"        Finish: what you ran and what you observed
   agent-step repair-verify --file repair.json
                                             Replace one demonstrably broken Verify
@@ -135,6 +136,8 @@ const ADVICE = {
   draft_settled: "This draft was already applied or discarded. Stop; there is nothing to write.",
   draft_not_found: "This run has no draft to write to. Stop and report it.",
   body_too_large: "Split this into fewer work items per post and try again.",
+  pipeline_input_disabled: "Pipeline runs are unattended. Make a safe, reversible assumption, record it, and continue.",
+  input_already_pending: "Wait for the existing question set to be answered.",
 };
 
 /** One readable block per failing Verify command (409 verification_failed). */
@@ -209,6 +212,7 @@ async function post(path, body) {
   } else {
     process.stdout.write("ok\n");
   }
+  return parsed;
 }
 
 async function get(path) {
@@ -247,6 +251,20 @@ switch (command) {
     const message = args.message;
     if (typeof message !== "string" || message.trim() === "") fail("agent-step checkpoint needs --message \"Short imperative summary\"");
     await post("/checkpoint", { message });
+    break;
+  }
+  case "ask": {
+    if (typeof args.file !== "string") {
+      fail("agent-step ask needs --file questions.json\n  The file is {\"heading\":\"…\",\"questions\":[{\"id\":\"scope\",\"prompt\":\"…\",\"kind\":\"single\",\"options\":[{\"value\":\"a\",\"label\":\"…\"}],\"recommendation\":\"a\",\"why\":\"…\"}]}.");
+    }
+    let payload;
+    try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.questions)) {
+      fail("The file must be a JSON object with a questions array.");
+    }
+    process.stdout.write("Waiting for the operator…\n");
+    const result = await post("/input", payload);
+    process.stdout.write(`Operator answers:\n${JSON.stringify(result?.answers ?? {}, null, 2)}\n`);
     break;
   }
   case "done": {

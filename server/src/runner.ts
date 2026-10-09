@@ -10,10 +10,12 @@ import type {
 } from "@agent-console/shared";
 import {
   billableInputTokens,
+  eligibleModels,
   isMeaningfulUsage,
   mergeUsage,
   MODEL_CATALOG,
   modelAllowedInTier,
+  modelMatchesEffort,
   recommendedModel,
 } from "@agent-console/shared";
 import { permissionForRun, settings } from "./settings.ts";
@@ -149,11 +151,23 @@ export function startRun(args: StartRunArgs): RunHandle {
   // Resolved once: settings could change mid-run, but a run reports the model
   // it actually started with from its first event to its last.
   const requestedModel = args.model ?? adapter.model;
-  const model = args.preserveModel || settings.modelAccessTier === "all" || modelAllowedInTier(provider, requestedModel, settings.modelAccessTier)
+  const tier = settings.modelAccessTier;
+  const effort = settings.reasoningEffortFor(provider);
+  const allowed = modelAllowedInTier(provider, requestedModel, tier)
+    && modelMatchesEffort(provider, requestedModel, effort);
+  const fallbackTier = tier === "all" ? "frontier" : tier;
+  // Auto Select already resolved the model through the live account catalog.
+  // Replacing it from the bundled snapshot can swap in a retired Cursor id
+  // the operator cannot override.
+  const model = args.preserveModel || allowed || settings.modelSelectionMode === "auto"
     ? requestedModel
-    : recommendedModel(provider, MODEL_CATALOG[provider], settings.modelAccessTier);
-  if (settings.modelAccessTier !== "all" && model === null) {
-    throw new Error(`No ${settings.modelAccessTier} model is available for ${provider}`);
+    : recommendedModel(
+      provider,
+      eligibleModels(provider, MODEL_CATALOG[provider], fallbackTier, effort),
+      fallbackTier,
+    );
+  if (tier !== "all" && model === null) {
+    throw new Error(`No ${tier} model is available for ${provider}`);
   }
   const role = args.role ?? "execute";
   const permissionOverride: PermissionOverride =

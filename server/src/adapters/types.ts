@@ -89,6 +89,7 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     model: adapter.model,
     configuredModel: adapter.model,
     modelAccessTier: "all",
+    reasoningEffort: "medium",
     modelSelectionMode: "manual",
     tierDefaultModel: null,
     totalModels: models.length,

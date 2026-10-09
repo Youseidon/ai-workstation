@@ -13,10 +13,10 @@
 
 import type { DbAccessPayload } from "@agent-console/shared";
 
-export type DbOperation = "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program";
+export type DbOperation = "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input";
 
 /** The endpoints that change state. Everything else is a read. */
-const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"]);
+const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input"]);
 
 /**
  * What an accepted call touched.
@@ -38,6 +38,7 @@ const TABLES: Record<DbOperation, string[]> = {
   "propose-program": ["program_draft"],
   "propose-suite": ["program_draft"],
   "revise-program": ["program_draft"],
+  input: ["agent_run_event"],
 };
 
 export function isDbWrite(operation: DbOperation): boolean {
@@ -80,6 +81,8 @@ export function describeAcceptedWrite(args: AcceptedWrite): DbAccessPayload {
             ? "proposed a suite's work items"
             : args.operation === "revise-program"
               ? "proposed changes to a program"
+            : args.operation === "input"
+              ? "asked the operator for a decision"
             : `${args.before ?? "?"} → ${args.after ?? "?"}`;
   return {
     direction: "write",

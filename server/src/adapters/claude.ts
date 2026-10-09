@@ -17,7 +17,6 @@ import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions }
 export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "WebFetch",
   "WebSearch",
-  "Bash",
   "Write",
   "Edit",
   "NotebookEdit",

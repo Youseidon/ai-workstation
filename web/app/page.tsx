@@ -9,6 +9,10 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useWorkspace } from "@/lib/workspaceContext";
+import { workspaceApi } from "@/lib/workspacesApi";
+import { SERVER_URL } from "@/lib/serverUrl";
+
+const CHAT_TABS_STORAGE_KEY = "agent-console.chat-tabs.v1";
 
 function readPromptId(): number | null {
   if (typeof window === "undefined") return null;
@@ -16,10 +20,33 @@ function readPromptId(): number | null {
   return Number.isSafeInteger(requested) && requested > 0 ? requested : null;
 }
 
+function readThreadId(): string | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("thread")?.trim() ?? "";
+  return value !== "" && value.length <= 200 ? value : null;
+}
+
 interface WorkTab {
   id: string;
   workspaceId: number;
   title: string | null;
+}
+
+interface StoredTabs { tabs: WorkTab[]; activeId: string | null }
+
+function readStoredTabs(): StoredTabs {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CHAT_TABS_STORAGE_KEY) ?? "null") as Partial<StoredTabs> | null;
+    const tabs = Array.isArray(parsed?.tabs)
+      ? parsed.tabs.filter((tab): tab is WorkTab =>
+          typeof tab?.id === "string" && tab.id !== ""
+          && Number.isSafeInteger(tab.workspaceId) && tab.workspaceId > 0
+          && (tab.title === null || typeof tab.title === "string"))
+      : [];
+    return { tabs, activeId: typeof parsed?.activeId === "string" ? parsed.activeId : null };
+  } catch {
+    return { tabs: [], activeId: null };
+  }
 }
 
 function runTitle(input: string): string {
@@ -30,7 +57,7 @@ function runTitle(input: string): string {
 
 function sourceTitle(source: RunSource): string {
   switch (source.type) {
-    case "custom": return source.displayText;
+    case "custom": return source.title ?? source.displayText;
     case "saved": return source.title;
     case "consult": return source.title ?? source.question;
     case "clarification": return source.title;
@@ -50,12 +77,50 @@ export default function Page() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deepLinkedPrompt] = useState(readPromptId);
   const [deepLinkTabId, setDeepLinkTabId] = useState<string | null>(null);
+  const [tabsHydrated, setTabsHydrated] = useState(false);
   const nextTabNumber = useRef(1);
+  const restoredThreads = useRef(new Set<string>());
+
+  const newTabId = () => `work-${nextTabNumber.current++}-${crypto.randomUUID()}`;
+
+  // Tabs are browser workspace, not component state: recover them before the
+  // current workspace opens a default tab. An Activity deep link wins and is
+  // inserted into the same durable set.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- hydrate browser-owned tab state after SSR */
+    const stored = readStoredTabs();
+    const threadId = readThreadId();
+    const requestedWorkspace = Number(new URLSearchParams(window.location.search).get("workspace"));
+    let next = stored.tabs;
+    let nextActive = stored.activeId;
+    if (threadId !== null && Number.isSafeInteger(requestedWorkspace) && requestedWorkspace > 0) {
+      if (!next.some((tab) => tab.id === threadId)) {
+        next = [...next, { id: threadId, workspaceId: requestedWorkspace, title: null }];
+      }
+      nextActive = threadId;
+    }
+    setTabs(next);
+    setActiveId(next.some((tab) => tab.id === nextActive) ? nextActive : (next[0]?.id ?? null));
+    const active = next.find((tab) => tab.id === nextActive) ?? next[0];
+    if (active !== undefined) setWorkspaceId(active.workspaceId);
+    setTabsHydrated(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one browser-state bootstrap
+  }, []);
+
+  useEffect(() => {
+    if (!tabsHydrated) return;
+    try {
+      window.localStorage.setItem(CHAT_TABS_STORAGE_KEY, JSON.stringify({ tabs, activeId } satisfies StoredTabs));
+    } catch {
+      /* Tabs still work for this page lifetime when storage is unavailable. */
+    }
+  }, [tabs, activeId, tabsHydrated]);
 
   // On Chat, the app-wide workspace picker opens or focuses the workspace's tab.
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- synchronize the external workspace context into Chat's tab set */
-    if (workspaceId === null) return;
+    if (!tabsHydrated || workspaceId === null) return;
     const activeTab = tabs.find((tab) => tab.id === activeId);
     if (activeTab?.workspaceId === workspaceId) return;
     const existing = [...tabs].reverse().find((tab) => tab.workspaceId === workspaceId);
@@ -63,12 +128,12 @@ export default function Page() {
       setActiveId(existing.id);
       return;
     }
-    const id = `work-${nextTabNumber.current++}`;
+    const id = newTabId();
     setTabs((current) => [...current, { id, workspaceId, title: null }]);
     setActiveId(id);
     if (deepLinkedPrompt !== null) setDeepLinkTabId((current) => current ?? id);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [workspaceId, deepLinkedPrompt, tabs, activeId]);
+  }, [workspaceId, deepLinkedPrompt, tabs, activeId, tabsHydrated]);
 
   // A workspace can be deleted from another page or browser window.
   useEffect(() => {
@@ -90,6 +155,34 @@ export default function Page() {
     [tabs, workspaces],
   );
 
+  // A persisted tab knows the app thread id. Rehydrate its transcript and the
+  // latest native session for each provider, so the next message genuinely
+  // resumes instead of merely looking like the old conversation.
+  useEffect(() => {
+    if (!tabsHydrated || tabs.length === 0) return;
+    let cancelled = false;
+    void workspaceApi.sessions(SERVER_URL).then(async (summaries) => {
+      for (const tab of tabs) {
+        if (restoredThreads.current.has(tab.id)) continue;
+        restoredThreads.current.add(tab.id);
+        const matching = summaries.filter((session) => session.threadId === tab.id);
+        if (matching.length === 0) continue;
+        try {
+          const details = await Promise.all(matching.map((session) => workspaceApi.session(SERVER_URL, session.id)));
+          if (cancelled) return;
+          console_.restoreThread(tab.id, details);
+          const oldest = [...details].sort((left, right) => left.startedAt.localeCompare(right.startedAt))[0]!;
+          const restoredTitle = runTitle(oldest.threadTitle ?? oldest.promptTitle);
+          setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, title: restoredTitle } : item));
+        } catch {
+          restoredThreads.current.delete(tab.id);
+        }
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore each durable thread once per page load
+  }, [tabs, tabsHydrated]);
+
   const selectTab = (tab: WorkTab) => {
     setActiveId(tab.id);
     setWorkspaceId(tab.workspaceId);
@@ -97,7 +190,7 @@ export default function Page() {
   };
 
   const openTab = (workspaceIdToOpen: number) => {
-    const tab = { id: `work-${nextTabNumber.current++}`, workspaceId: workspaceIdToOpen, title: null };
+    const tab = { id: newTabId(), workspaceId: workspaceIdToOpen, title: null };
     setTabs((current) => [...current, tab]);
     setActiveId(tab.id);
     setWorkspaceId(workspaceIdToOpen);

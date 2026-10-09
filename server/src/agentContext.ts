@@ -287,6 +287,8 @@ export interface ProgressApiArgs {
   canDecompose: boolean;
   /** False for operator-started runs, which must not commit a pre-existing dirty tree. */
   canCheckpoint?: boolean;
+  /** Standalone runs may pause for decisions; pipeline-managed runs never may. */
+  canAsk?: boolean;
   /**
    * When true, emit the curl contract *instead of* the shim (providers that
    * cannot exec the launcher). Defaults to `shimPath == null`.
@@ -308,17 +310,24 @@ export function progressApiMarkdown(args: ProgressApiArgs): string {
     ? `${cmd} decompose --file children.json\n`
     : "";
   const checkpoint = args.canCheckpoint === false ? "" : `${cmd} checkpoint --message "Short imperative summary"\n`;
+  const ask = args.canAsk === true
+    ? `${cmd} ask --file questions.json\n`
+    : "";
+  const askGuidance = args.canAsk === true
+    ? `\nIf a user decision materially changes the result, put all questions in questions.json and run \`${cmd} ask --file questions.json\`. Each question has \`id\`, \`prompt\`, \`kind\` (\`single\`, \`multiple\`, or \`text\`), optional \`options\` (\`value\`, \`label\`, \`description\`), \`recommendation\`, and \`why\`. Ask once, only when the answer cannot be safely inferred; the command waits and returns every answer.\n`
+    : "\nThis is an unattended pipeline run. Do not ask conversational questions; make the safest reversible assumption, record it, and continue.\n";
   return `## Recording your progress
 
 ${cmd}
 
 ${cmd} remark --kind PROGRESS --text "What changed or was verified"
-${checkpoint}${cmd} done --verification "Commands run and observable results"
+${checkpoint}${ask}${cmd} done --verification "Commands run and observable results"
 ${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
 ${cmd} blocked --reason "Observed evidence" --action "Exact human action"
 ${decompose}Every requestId must be unique for this run.
 The launcher supplies one; do not reuse a requestId across calls.
+${askGuidance}
 `;
 }
 
@@ -331,17 +340,24 @@ function curlProgressApiMarkdown(args: ProgressApiArgs): string {
   const checkpoint = args.canCheckpoint === false
     ? ""
     : `curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Short imperative summary"}'\n`;
+  const ask = args.canAsk === true
+    ? `curl -fsS -X POST ${auth} ${base}/input -d @questions.json\n`
+    : "";
+  const askGuidance = args.canAsk === true
+    ? "\nIf a user decision materially changes the result, write questions.json with 1–8 typed questions and POST it to /input. The request waits and returns every answer. Ask once, only when the answer cannot be safely inferred.\n"
+    : "\nThis is an unattended pipeline run. Do not ask conversational questions; make the safest reversible assumption, record it, and continue.\n";
   return `## Recording your progress
 
 Post through the Progress API (no launcher available for this provider):
 
 curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"unique-remark-id","kind":"PROGRESS","content":"…"}'
-${checkpoint}curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
+${checkpoint}${ask}curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'
 curl -fsS -X POST ${auth} ${base}/repair-verify -d '{"requestId":"unique-repair-id","oldCommand":"exact failing command","newCommand":"corrected command","reason":"why the recipe itself is wrong"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'
 curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'
 ${decompose}Every requestId must be unique for this run.
 Do not reuse a requestId across calls.
+${askGuidance}
 `;
 }
 

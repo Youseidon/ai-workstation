@@ -175,7 +175,6 @@ test("Claude consult options do not set allowDangerouslySkipPermissions", () => 
     assert.deepEqual(consult.disallowedTools, [
       "WebFetch",
       "WebSearch",
-      "Bash",
       "Write",
       "Edit",
       "NotebookEdit",
@@ -218,6 +217,8 @@ test("cursor effort is limited to parameterizable vendor models", () => {
   assert.equal(cursorModelWithEffort(null, "medium"), "auto");
   assert.equal(cursorModelWithEffort("composer-2.5", "low"), "composer-2.5");
   assert.equal(cursorModelWithEffort("cursor-grok-4.6-high", "low"), "cursor-grok-4.6-high");
+  assert.equal(cursorModelWithEffort("claude-sonnet-5-medium", "medium"), "claude-sonnet-5-medium");
+  assert.equal(cursorModelWithEffort("gpt-5.6-sol-high", "high"), "gpt-5.6-sol-high");
   assert.equal(cursorModelWithEffort("claude-sonnet-5", "high"), "claude-sonnet-5[effort=high]");
   assert.equal(
     cursorModelWithEffort("claude-opus[context=1m,effort=low,fast=false]", "high"),

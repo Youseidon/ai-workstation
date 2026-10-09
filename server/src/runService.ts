@@ -32,6 +32,10 @@ export interface StartExecuteArgs {
   promptId?: number;
   mode?: "execute" | "clarify";
   question?: string;
+  /** Continue a provider-native custom chat session instead of starting cold. */
+  resumeSessionId?: string;
+  /** Provider-neutral Chat thread containing this custom turn. */
+  threadId?: string;
   pipelineRunId?: string;
 }
 
@@ -96,7 +100,13 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const prompt = args.prompt;
   const promptId = args.promptId;
   const question = args.question;
+  const resumeSessionId = args.resumeSessionId?.trim() || null;
+  const threadId = args.threadId?.trim() || null;
   const pipelineManaged = args.pipelineRunId !== undefined;
+
+  if (resumeSessionId !== null && (mode !== "execute" || typeof prompt !== "string" || prompt.trim() === "" || promptId !== undefined)) {
+    throw new WorkspaceError(422, "invalid_session_resume", "Only a custom execute prompt can continue a provider session.");
+  }
 
   const owner = workspaces.activePipelineForWorkspace(workspaceId);
   if (owner !== null) {
@@ -140,6 +150,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let resolvedPrompt: string;
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
   let customDisplay = "";
+  let customTitle = "";
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
   let executeShimPath: string | null = null;
@@ -210,7 +221,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         "",
         contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
         "",
-        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: pipelineManaged, shimPath:executeShimPath }),
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: pipelineManaged, canAsk: !pipelineManaged, shimPath:executeShimPath }),
       ].join("\n");
     }
   } else {
@@ -221,7 +232,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     if (pipelineManaged) capture = openCapture();
     const credential = runContexts.create(plannedRunId, workspaceId, null);
     try {
-      workspaces.beginCustomExecuteRun({
+      customTitle = workspaces.beginCustomExecuteRun({
         runId: plannedRunId,
         workspaceId,
         provider,
@@ -229,6 +240,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         tokenHash: credential.tokenHash,
         expiresAt: credential.expiresAt,
         displayText: customDisplay,
+        threadId: threadId ?? plannedRunId,
       });
     } catch (error) {
       runContexts.revoke(plannedRunId);
@@ -242,6 +254,10 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         ? `git add -A && git commit -m "Short imperative summary"`
         : `${JSON.stringify(executeShimPath)} checkpoint --message "Short imperative summary"`;
       resolvedPrompt += `\n\n## Git checkpoint\n\nBefore you finish, commit every workspace change with a meaningful imperative subject of 72 characters or fewer:\n\n\`\`\`bash\n${checkpoint}\n\`\`\`\n\nDo not reset or rewrite existing history. The run's code review is built from commits after its starting revision.`;
+    }
+    if (!pipelineManaged && executeShimPath !== null) {
+      const ask = JSON.stringify(executeShimPath);
+      resolvedPrompt += `\n\n## Decisions from the operator\n\nIf a user decision materially changes the result and cannot be safely inferred, put every question in \`questions.json\` and run \`${ask} ask --file questions.json\`. Use 1–8 questions with \`id\`, \`prompt\`, \`kind\` (\`single\`, \`multiple\`, or \`text\`), optional \`options\`, \`recommendation\`, and \`why\`. Ask once; the command waits and returns all answers, then continue this run.`;
     }
   }
 
@@ -278,6 +294,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       model,
       role: "execute",
       permissionOverride: "inherit",
+      resumeSessionId,
       onEvent: (event) => {
         if (event.type === "assistant_text" && event.payload.kind === "message") {
           if (clarificationId !== null) clarificationAnswer += event.payload.text;
@@ -414,7 +431,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     handle,
     workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
     source: savedPrompt === null
-      ? { type: "custom", displayText: customDisplay }
+      ? { type: "custom", displayText: customDisplay, threadId: threadId ?? plannedRunId, title: customTitle }
       : mode === "clarify"
         ? { type: "clarification", promptId: savedPrompt.id, promptKey: savedPrompt.externalKey, title: savedPrompt.title, question: question!.trim() }
         : { type: "saved", promptId: savedPrompt.id, promptKey: savedPrompt.externalKey, title: savedPrompt.title, programName: savedPrompt.programName, suiteName: savedPrompt.suiteName },
@@ -791,6 +808,11 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
   }
 
   materialize(workspace);
+  const consultShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  if (consultShimPath !== null) {
+    const ask = JSON.stringify(consultShimPath);
+    resolvedPrompt += `\n\n## Decisions from the operator\n\nIf the answer depends on a decision you cannot safely infer, put every question in \`questions.json\` and run \`${ask} ask --file questions.json\`. Questions may be \`single\`, \`multiple\`, or \`text\`, with optional choices, recommendation, and rationale. Ask once; the command waits for all answers. This is the only write-like command available to this read-only research run.`;
+  }
   const handle = startRun({
     runId: plannedRunId,
     adapter: getAdapter(provider),
@@ -806,6 +828,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     onEnd: (runId, state, metrics) => {
       workspaces.finishAgentRun(runId, state, "", metrics);
       runContexts.complete(runId);
+      removeAgentShim(runId);
       runHub.end(runId, state);
     },
   });
@@ -918,9 +941,13 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
     port: config.port,
     feedback: typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null,
   };
-  const prompt = revising
+  let prompt = revising
     ? programRevisionPrompt({ ...promptArgs, brief: workspaces.programBrief(draft.targetProgramId!) })
     : programAuthorPrompt(promptArgs);
+  if (shimPath !== null) {
+    const ask = JSON.stringify(shimPath);
+    prompt += `\n\n## Decisions from the operator\n\nIf a decision would materially change this proposal and cannot be inferred from the repository, put all questions in \`questions.json\` and run \`${ask} ask --file questions.json\`. Ask once; the command waits for the answers, then continue drafting.`;
+  }
 
   materialize(workspace);
   const handle = startRun({
@@ -1033,7 +1060,7 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
   if (reworking) writeFileSync(join(workspace.workDirectory, file), `${existing.content}\n`, "utf8");
 
   const feedback = typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null;
-  const prompt = instructionAuthorPrompt({
+  let prompt = instructionAuthorPrompt({
     workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
     field: proposal.field,
     goal: proposal.goal,
@@ -1041,6 +1068,11 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
     reworking,
     feedback,
   });
+  const instructionShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  if (instructionShimPath !== null) {
+    const ask = JSON.stringify(instructionShimPath);
+    prompt += `\n\nIf a user decision materially changes the instruction proposal and cannot be safely inferred, put all questions in \`questions.json\` and run \`${ask} ask --file questions.json\`. Ask once; the command waits for every answer.`;
+  }
 
   let handle: ReturnType<typeof startRun>;
   try {
@@ -1060,6 +1092,7 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
         captureInstructionRun(proposal.id, workspace.workDirectory, proposal.field, before);
         workspaces.finishAgentRun(runId, state, "", metrics);
         runContexts.complete(runId);
+        removeAgentShim(runId);
         runHub.end(runId, state);
       },
     });

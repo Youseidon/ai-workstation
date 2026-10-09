@@ -11,7 +11,11 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AgentSession,
+  AgentInputAnswer,
+  AgentInputRequestPayload,
   ClientMessage,
+  NormalizedEvent,
   ProviderId,
   ProviderInfo,
   RunRole,
@@ -50,6 +54,10 @@ export interface PendingLaunch {
   role: RunRole;
 }
 
+export interface PendingAgentInput extends AgentInputRequestPayload {
+  runId: string;
+}
+
 interface ConsoleState {
   connection: ConnectionState;
   providers: ProviderInfo[];
@@ -68,12 +76,18 @@ interface ConsoleState {
   runWorkspaceIds: Record<string, number>;
   /** Browser-local work tab that launched or adopted each run. */
   runTabIds: Record<string, string>;
+  /** Provider session announced by each run, retained across reconnect replay. */
+  runSessionIds: Record<string, string>;
+  /** Provider-native conversations retained independently in each work tab. */
+  tabSessions: Record<string, Partial<Record<ProviderId, { sessionId: string; workspaceId: number }>>>;
   /** Last completed research run in each browser-local work tab. */
   lastConsultsByTab: Record<string, RunStatus>;
   /** Requests accepted by the socket that have not produced a run yet. */
   pendingLaunches: PendingLaunch[];
   /** Launch failures keyed by the browser-local tab that submitted them. */
   launchFailuresByTab: Record<string, string>;
+  /** Unanswered decision decks, keyed by run id. */
+  inputRequests: Record<string, PendingAgentInput>;
   /** Advances whenever durable operations/prompt data should be re-read. */
   operationsRevision: number;
 }
@@ -86,6 +100,7 @@ type Action =
   | { type: "launch_send_failed"; requestId: string }
   | { type: "dismiss_launch_failure"; tabId: string }
   | { type: "claim_workspace"; workspaceId: number; tabId: string }
+  | { type: "restore_thread"; tabId: string; sessions: AgentSession[] }
   | { type: "clear"; workspaceId?: number; tabId?: string };
 
 const initialState: ConsoleState = {
@@ -99,14 +114,36 @@ const initialState: ConsoleState = {
   consultIds: [],
   runWorkspaceIds: {},
   runTabIds: {},
+  runSessionIds: {},
+  tabSessions: {},
   lastConsultsByTab: {},
   pendingLaunches: [],
   launchFailuresByTab: {},
+  inputRequests: {},
   operationsRevision: 0,
 };
 
 function rememberConsultId(ids: string[], runId: string): string[] {
   return ids.includes(runId) ? ids : [...ids, runId];
+}
+
+function sessionAnnouncedBy(events: NormalizedEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === "status" && typeof event.payload.sessionId === "string" && event.payload.sessionId !== "") {
+      return event.payload.sessionId;
+    }
+  }
+  return undefined;
+}
+
+function replayInputRequests(base: Record<string, PendingAgentInput>, events: NormalizedEvent[]): Record<string, PendingAgentInput> {
+  const next = { ...base };
+  for (const event of events) {
+    if (event.type === "input_request") next[event.runId] = { runId: event.runId, ...event.payload };
+    if (event.type === "input_response") delete next[event.runId];
+  }
+  return next;
 }
 
 /** The transcript line that stands in for a run's instruction. */
@@ -243,9 +280,20 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
 
     case "claim_workspace": {
       const runTabIds = { ...state.runTabIds };
+      const tabSessions = { ...state.tabSessions };
       for (const [runId, workspaceId] of Object.entries(state.runWorkspaceIds)) {
         if (workspaceId === action.workspaceId && runTabIds[runId] === undefined) {
           runTabIds[runId] = action.tabId;
+        }
+        if (workspaceId === action.workspaceId && runTabIds[runId] === action.tabId) {
+          const run = state.runs.find((candidate) => candidate.runId === runId);
+          const sessionId = state.runSessionIds[runId];
+          if (run?.role === "execute" && run.source.type === "custom" && sessionId !== undefined) {
+            tabSessions[action.tabId] = {
+              ...tabSessions[action.tabId],
+              [run.provider]: { sessionId, workspaceId: action.workspaceId },
+            };
+          }
         }
       }
       const previousConsult = state.lastConsults[action.workspaceId];
@@ -254,9 +302,52 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       return {
         ...state,
         runTabIds,
+        tabSessions,
         lastConsultsByTab: !ownsPreviousConsult
           ? state.lastConsultsByTab
           : { ...state.lastConsultsByTab, [action.tabId]: previousConsult },
+      };
+    }
+
+    case "restore_thread": {
+      const ordered = [...action.sessions].sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+      if (ordered.length === 0) return state;
+      const restoredIds = new Set(ordered.map((session) => session.id));
+      const liveIds = new Set(state.runs.map((run) => run.runId));
+      let restored = state.items.filter((item) => !restoredIds.has(item.runId) || liveIds.has(item.runId));
+      const runWorkspaceIds = { ...state.runWorkspaceIds };
+      const runTabIds = { ...state.runTabIds };
+      const runSessionIds = { ...state.runSessionIds };
+      const providerSessions = { ...state.tabSessions[action.tabId] };
+      for (const session of ordered) {
+        runWorkspaceIds[session.id] = session.workspaceId;
+        runTabIds[session.id] = action.tabId;
+        if (session.providerSessionId !== null) {
+          runSessionIds[session.id] = session.providerSessionId;
+          providerSessions[session.provider as ProviderId] = {
+            sessionId: session.providerSessionId,
+            workspaceId: session.workspaceId,
+          };
+        }
+        if (liveIds.has(session.id)) continue;
+        if (session.displayText !== null && session.displayText !== "") {
+          restored = appendPrompt(restored, {
+            runId: session.id,
+            provider: session.provider as ProviderId,
+            model: session.model,
+            text: session.displayText,
+            timestamp: session.startedAt,
+          });
+        }
+        for (const event of session.events) restored = applyEvent(restored, event);
+      }
+      return {
+        ...state,
+        items: restored,
+        runWorkspaceIds,
+        runTabIds,
+        runSessionIds,
+        tabSessions: { ...state.tabSessions, [action.tabId]: providerSessions },
       };
     }
 
@@ -281,6 +372,10 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             });
             for (const event of snapshot.events) replayed = applyEvent(replayed, event);
           }
+          // A hello is authoritative for live runs. Requests whose process
+          // vanished while the socket was down cannot still be answered.
+          let inputRequests = Object.fromEntries(Object.entries(state.inputRequests).filter(([runId]) => liveIds.has(runId)));
+          for (const snapshot of message.activeRuns) inputRequests = replayInputRequests(inputRequests, snapshot.events);
           return {
             ...state,
             providers: message.providers,
@@ -290,11 +385,25 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
               (owners, snapshot) => ({ ...owners, [snapshot.runId]: snapshot.workspace.id }),
               state.runWorkspaceIds,
             ),
+            runTabIds: message.activeRuns.reduce<Record<string, string>>(
+              (owners, snapshot) => snapshot.source.type === "custom" && snapshot.source.threadId !== undefined
+                ? { ...owners, [snapshot.runId]: snapshot.source.threadId }
+                : owners,
+              state.runTabIds,
+            ),
+            runSessionIds: message.activeRuns.reduce<Record<string, string>>(
+              (sessions, snapshot) => {
+                const sessionId = sessionAnnouncedBy(snapshot.events);
+                return sessionId === undefined ? sessions : { ...sessions, [snapshot.runId]: sessionId };
+              },
+              state.runSessionIds,
+            ),
             consultIds: message.activeRuns.reduce(
               (ids, snapshot) =>
                 (snapshot.role ?? "execute") === "consult" ? rememberConsultId(ids, snapshot.runId) : ids,
               state.consultIds,
             ),
+            inputRequests,
           };
         }
 
@@ -311,6 +420,8 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
 
         case "run_started": {
           const role = message.role ?? "execute";
+          const ownerTabId = action.tabId
+            ?? (message.source.type === "custom" ? message.source.threadId : undefined);
           const pendingLaunches = action.requestId === undefined
             ? state.pendingLaunches
             : state.pendingLaunches.filter((launch) => launch.requestId !== action.requestId);
@@ -352,9 +463,9 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
               ...state.runWorkspaceIds,
               [message.runId]: message.workspace.id,
             },
-            runTabIds: action.tabId === undefined
+            runTabIds: ownerTabId === undefined
               ? state.runTabIds
-              : { ...state.runTabIds, [message.runId]: action.tabId },
+              : { ...state.runTabIds, [message.runId]: ownerTabId },
           };
         }
 
@@ -374,6 +485,14 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
         case "event": {
           const event = message.event;
           const items = applyEvent(state.items, event);
+          if (event.type === "input_request") {
+            return { ...state, items, inputRequests: { ...state.inputRequests, [event.runId]: { runId: event.runId, ...event.payload } } };
+          }
+          if (event.type === "input_response") {
+            const inputRequests = { ...state.inputRequests };
+            delete inputRequests[event.runId];
+            return { ...state, items, inputRequests };
+          }
           if (event.type !== "status") return { ...state, items };
           const index = state.runs.findIndex((run) => run.runId === event.runId);
           if (index === -1) return { ...state, items };
@@ -386,18 +505,45 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             usage: mergeUsage(current.usage, event.payload.usage),
             detail: event.payload.detail ?? current.detail,
           };
-          return { ...state, items, runs };
+          const tabId = state.runTabIds[event.runId];
+          const announcedSession = event.payload.sessionId;
+          const shouldRememberSession =
+            current.role === "execute"
+            && current.source.type === "custom"
+            && tabId !== undefined
+            && typeof announcedSession === "string"
+            && announcedSession !== "";
+          return {
+            ...state,
+            items,
+            runs,
+            runSessionIds: typeof announcedSession === "string" && announcedSession !== ""
+              ? { ...state.runSessionIds, [event.runId]: announcedSession }
+              : state.runSessionIds,
+            tabSessions: !shouldRememberSession
+              ? state.tabSessions
+              : {
+                  ...state.tabSessions,
+                  [tabId]: {
+                    ...state.tabSessions[tabId],
+                    [current.provider]: { sessionId: announcedSession, workspaceId: current.workspace.id },
+                  },
+                },
+          };
         }
 
         case "run_ended": {
           const ended = state.runs.find((run) => run.runId === message.runId);
           if (ended === undefined) return state;
           const remaining = state.runs.filter((run) => run.runId !== message.runId);
+          const inputRequests = { ...state.inputRequests };
+          delete inputRequests[message.runId];
           const closed = { ...ended, state: message.state, detail: null };
           if (ended.role === "consult") {
             const tabId = state.runTabIds[ended.runId];
             return {
               ...state,
+              inputRequests,
               runs: remaining,
               lastConsult: closed,
               lastConsults: { ...state.lastConsults, [closed.workspace.id]: closed },
@@ -406,7 +552,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
                 : { ...state.lastConsultsByTab, [tabId]: closed },
             };
           }
-          return { ...state, runs: remaining, lastRun: closed };
+          return { ...state, runs: remaining, lastRun: closed, inputRequests };
         }
 
         case "pong":
@@ -456,9 +602,12 @@ interface AgentConsoleApi extends ConsoleState {
   verifySuite(suiteId: number, provider: ProviderId, model: string | null, promptId?: number | null): boolean;
   /** Stops a run by id, or the primary run when called with no argument. */
   interrupt(runId?: string): boolean;
+  answerInput(runId: string, requestId: string, answers: Record<string, AgentInputAnswer>): boolean;
   clearLog(): void;
   clearWorkspaceLog(workspaceId: number): void;
   clearTabLog(tabId: string): void;
+  /** Rebuild a persisted custom conversation in its original Chat tab. */
+  restoreThread(tabId: string, sessions: AgentSession[]): void;
   claimWorkspaceRuns(tabId: string, workspaceId: number): void;
   dismissLaunchFailure(tabId: string): void;
   refreshProviders(): Promise<void>;
@@ -613,7 +762,20 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
         state.items.filter((item) => state.runWorkspaceIds[item.runId] === workspaceId),
       itemsForTab: (tabId) => state.items.filter((item) => state.runTabIds[item.runId] === tabId),
       startRun: (workspaceId, provider, source, model, tabId) =>
-        startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "execute" }, tabId),
+        startOwnedRun({
+          kind: "run",
+          workspaceId,
+          provider,
+          ...source,
+          model,
+          role: "execute",
+          ...(tabId !== undefined
+            && "prompt" in source
+            && state.tabSessions[tabId]?.[provider]?.workspaceId === workspaceId
+            ? { resumeSessionId: state.tabSessions[tabId]![provider]!.sessionId }
+            : {}),
+          ...(tabId !== undefined && "prompt" in source ? { threadId: tabId } : {}),
+        }, tabId),
       startConsult: (workspaceId, provider, source, model, tabId) =>
         startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }, tabId),
       askClarification: (workspaceId, provider, promptId, question, model) =>
@@ -625,9 +787,11 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
         if (target === undefined) return false;
         return send({ kind: "interrupt", runId: target });
       },
+      answerInput: (runId, requestId, answers) => send({ kind: "input_response", runId, requestId, answers }),
       clearLog: () => dispatch({ type: "clear" }),
       clearWorkspaceLog: (workspaceId) => dispatch({ type: "clear", workspaceId }),
       clearTabLog: (tabId) => dispatch({ type: "clear", tabId }),
+      restoreThread: (tabId, sessions) => dispatch({ type: "restore_thread", tabId, sessions }),
       claimWorkspaceRuns: (tabId, workspaceId) => dispatch({ type: "claim_workspace", tabId, workspaceId }),
       dismissLaunchFailure: (tabId) => dispatch({ type: "dismiss_launch_failure", tabId }),
       refreshProviders,

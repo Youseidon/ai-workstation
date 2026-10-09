@@ -1,5 +1,5 @@
 import type { ProviderId, ProviderInfo, ProviderUsage } from "@agent-console/shared";
-import { automaticModel, eligibleModels, modelAllowedInTier, PROVIDER_IDS, recommendedModel } from "@agent-console/shared";
+import { automaticModel, eligibleModels, modelAllowedInTier, modelMatchesEffort, PROVIDER_IDS, recommendedModel } from "@agent-console/shared";
 import { settings } from "../settings.ts";
 import { providerUsageUnavailable } from "./accountUsage.ts";
 import { ClaudeAdapter } from "./claude.ts";
@@ -51,27 +51,28 @@ export function getAdapter(id: ProviderId): AgentAdapter {
 /** Settings toggles override detection so a disabled agent never starts a run. */
 function applyEnabledGate(info: ProviderInfo): ProviderInfo {
   const tier = settings.modelAccessTier;
+  const effort = settings.reasoningEffortFor(info.id);
   const selectionMode = settings.modelSelectionMode;
-  const models = eligibleModels(info.id, info.models, tier);
-  const tierDefaultModel = recommendedModel(info.id, info.models, tier);
-  const autoModel = selectionMode === "auto" ? automaticModel(info.id, info.models, tier) : null;
+  const models = eligibleModels(info.id, info.models, tier, effort);
+  const tierDefaultModel = recommendedModel(info.id, models, tier);
+  const autoModel = selectionMode === "auto" ? automaticModel(info.id, models, tier) : null;
   const configuredModel = getAdapter(info.id).model;
   const configuredAllowed = configuredModel !== null
+    && modelMatchesEffort(info.id, configuredModel, effort)
     && (tier === "all" || (
       info.models.some((model) => model.id === configuredModel)
       && modelAllowedInTier(info.id, configuredModel, tier)
     ));
   const model = selectionMode === "auto"
     ? autoModel
-    : tier === "all"
+    : configuredAllowed
       ? configuredModel
-      : configuredAllowed
-        ? configuredModel
-        : tierDefaultModel;
+      : tierDefaultModel;
   const common = {
     ...info,
     configuredModel,
     modelAccessTier: tier,
+    reasoningEffort: effort,
     modelSelectionMode: selectionMode,
     tierDefaultModel,
     totalModels: info.models.length,
@@ -101,8 +102,13 @@ function applyEnabledGate(info: ProviderInfo): ProviderInfo {
 export function resolveProviderModel(info: ProviderInfo, requested: string | null): string | null {
   if (info.modelSelectionMode === "auto") return info.model;
   if (requested === null) return info.model;
-  if (info.modelAccessTier === "all") return requested;
-  return info.models.some((model) => model.id === requested) ? requested : info.model;
+  if (info.models.some((model) => model.id === requested)) return requested;
+  // All models still accepts typed custom ids, but not Cursor variants that
+  // the effort filter already removed from the picker.
+  if (info.modelAccessTier === "all" && modelMatchesEffort(info.id, requested, info.reasoningEffort)) {
+    return requested;
+  }
+  return info.model;
 }
 
 export async function detectProviders(force = false): Promise<ProviderInfo[]> {

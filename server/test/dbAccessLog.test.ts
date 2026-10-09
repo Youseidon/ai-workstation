@@ -10,10 +10,10 @@ import {
 } from "../src/dbAccessLog.ts";
 import type { DbOperation } from "../src/dbAccessLog.ts";
 
-const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"];
+const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input"];
 
 test("reads and writes are told apart, and only writes name tables", () => {
-  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program"]);
+  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input"]);
   for (const operation of OPERATIONS) {
     // A read that claimed to have changed a table would be the worst kind of
     // wrong here: the log exists precisely so the operator does not have to
@@ -99,5 +99,5 @@ test("every agent endpoint is instrumented", () => {
   assert.match(handler, /describeAcceptedWrite\(/, "accepted writes are not logged");
   assert.match(handler, /describeRejectedWrite\(/, "refused writes are not logged");
   assert.match(handler, /verification_failed/, "Verify refusals are not logged");
-  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 8);
+  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 9);
 });

@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import {
   MODEL_CATALOG,
   automaticModel,
+  bakedModelEffort,
   classifyModel,
   eligibleModels,
   modelAllowedInTier,
+  modelMatchesEffort,
   MODEL_POOLS,
   MODEL_POOL_LABEL,
   PROVIDER_IDS,
@@ -86,11 +88,10 @@ test("a catalog id resolves to its label and pool; anything else is custom", () 
   assert.equal(modelPool("cursor", "claude-opus-5-high"), "vendor");
   assert.equal(modelPool("claude", "claude-opus-5"), null);
 
-  // The id that broke the pipeline: retired by Cursor, so it must not read as
-  // a catalog entry any more.
-  assert.equal(isCustomModel("cursor", "cursor-grok-4.5-medium"), true);
-  assert.equal(modelPool("cursor", "cursor-grok-4.5-medium"), null);
-  assert.equal(modelLabel("cursor", "cursor-grok-4.5-medium"), "cursor-grok-4.5-medium");
+  // An id Cursor no longer lists must not read as a catalog entry.
+  assert.equal(isCustomModel("cursor", "cursor-grok-4.4-medium"), true);
+  assert.equal(modelPool("cursor", "cursor-grok-4.4-medium"), null);
+  assert.equal(modelLabel("cursor", "cursor-grok-4.4-medium"), "cursor-grok-4.4-medium");
 });
 
 test("model access tiers are cumulative spending ceilings", () => {
@@ -115,8 +116,47 @@ test("automatic selection uses Kilo routers and concrete models elsewhere", () =
   assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "efficient"), "kilo-auto/efficient");
   assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "frontier"), "kilo-auto/frontier");
   assert.equal(automaticModel("kilocode", MODEL_CATALOG.kilocode, "all"), "kilo-auto/frontier");
+  assert.equal(automaticModel("cursor", MODEL_CATALOG.cursor, "all"), "auto");
+  assert.equal(automaticModel("cursor", MODEL_CATALOG.cursor, "professional"), "auto");
+  assert.equal(automaticModel("cursor", MODEL_CATALOG.cursor, "frontier"), "auto");
+  assert.notEqual(automaticModel("cursor", MODEL_CATALOG.cursor, "efficient"), "auto");
   assert.match(automaticModel("claude", MODEL_CATALOG.claude, "efficient") ?? "", /haiku/i);
   assert.match(automaticModel("claude", MODEL_CATALOG.claude, "all") ?? "", /opus|fable/i);
+});
+
+test("Cursor model ids expose a baked effort token", () => {
+  assert.equal(bakedModelEffort("claude-sonnet-5-medium-fast"), "medium");
+  assert.equal(bakedModelEffort("claude-opus-5-thinking-medium"), "medium");
+  assert.equal(bakedModelEffort("claude-4.6-sonnet-medium-thinking"), "medium");
+  assert.equal(bakedModelEffort("cursor-grok-4.6-high"), "high");
+  assert.equal(bakedModelEffort("cursor-grok-4.6-xhigh-fast"), "xhigh");
+  assert.equal(bakedModelEffort("gpt-5.5-extra-high"), "xhigh");
+  assert.equal(bakedModelEffort("gpt-5.6-sol-none"), "none");
+  assert.equal(bakedModelEffort("composer-2.5"), null);
+  assert.equal(bakedModelEffort("composer-2.5-fast"), null);
+  assert.equal(bakedModelEffort("auto"), null);
+});
+
+test("Cursor's picker keeps only models at the selected reasoning effort", () => {
+  assert.equal(modelMatchesEffort("claude", "claude-opus-5-high", "medium"), true);
+  assert.equal(modelMatchesEffort("cursor", "composer-2.5", "medium"), true);
+  assert.equal(modelMatchesEffort("cursor", "cursor-grok-4.6-medium-fast", "medium"), true);
+  assert.equal(modelMatchesEffort("cursor", "cursor-grok-4.6-high", "medium"), false);
+  assert.equal(modelMatchesEffort("cursor", "cursor-grok-4.6-low", "medium"), false);
+  assert.equal(modelMatchesEffort("cursor", "cursor-grok-4.6-xhigh", "high"), true);
+  assert.equal(modelMatchesEffort("cursor", "gpt-5.6-sol-none", "low"), true);
+
+  const medium = eligibleModels("cursor", MODEL_CATALOG.cursor, "all", "medium");
+  assert.ok(medium.length < MODEL_CATALOG.cursor.length, "effort filter must drop other variants");
+  assert.ok(medium.some((model) => model.id === "composer-2.5"));
+  assert.ok(medium.some((model) => model.id === "cursor-grok-4.6-medium"));
+  assert.equal(medium.some((model) => model.id === "cursor-grok-4.6-high"), false);
+  assert.equal(medium.some((model) => model.id === "cursor-grok-4.6-low"), false);
+  assert.equal(medium.some((model) => model.id === "claude-opus-5-high"), false);
+  for (const model of medium) {
+    const baked = bakedModelEffort(model.id);
+    assert.ok(baked === null || baked === "medium", `${model.id} leaked into the medium list`);
+  }
 });
 
 test("restricted catalogs remove provider defaults and unknown custom ids", () => {

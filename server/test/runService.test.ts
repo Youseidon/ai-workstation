@@ -89,6 +89,20 @@ test("runService starts without a socket and does not interrupt", () => {
   assert.doesNotMatch(source, /\brunHub\.stop\b|\.interrupt\s*\(/);
 });
 
+test("custom execute forwards a provider session for follow-up turns", () => {
+  const body = functionBody(readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8"), "startExecute");
+  assert.match(body, /const resumeSessionId = args\.resumeSessionId\?\.trim\(\) \|\| null/);
+  assert.match(body, /invalid_session_resume/);
+  const launch = body.slice(firstIndex(body, "startRun("));
+  assert.match(launch, /permissionOverride:\s*"inherit",\s*resumeSessionId,/);
+});
+
+test("custom execute persists an app-owned thread independently of provider sessions", () => {
+  const body = functionBody(readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8"), "startExecute");
+  assert.match(body, /const threadId = args\.threadId\?\.trim\(\) \|\| null/);
+  assert.match(body, /threadId: threadId \?\? plannedRunId/);
+});
+
 test("startExecute lock, persist, launch, and finish happen in order", () => {
   const body = functionBody(readFileSync(new URL("../src/runService.ts", import.meta.url), "utf8"), "startExecute");
   const pipelineLock = firstIndex(body, "activePipelineForWorkspace");

@@ -2,7 +2,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { ProviderId, ProviderInfo } from "@agent-console/shared";
-import { isProviderId } from "@agent-console/shared";
+import { isProviderId, modelMatchesEffort } from "@agent-console/shared";
 
 /**
  * Which model each provider should run with. A key that is *present* with the
@@ -120,10 +120,14 @@ export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
       if (info?.modelSelectionMode === "auto") return info.model;
       if (!(provider in choices)) return info?.model ?? null;
       const requested = choices[provider] ?? null;
-      if (info === undefined || info.modelAccessTier === "all") return requested;
-      // Keep the pin in storage so changing back to All restores it, but never
-      // let a stale/out-of-tier browser preference escape the global policy.
-      return info.models.some((model) => model.id === requested) ? requested : info.model;
+      if (info === undefined) return requested;
+      if (info.models.some((model) => model.id === requested)) return requested;
+      // Keep the pin in storage so changing effort or tier restores it, but
+      // never let a filtered-out catalog id escape the picker.
+      if (info.modelAccessTier === "all" && modelMatchesEffort(info.id, requested, info.reasoningEffort)) {
+        return requested;
+      }
+      return info.model;
     },
     [choices, providers],
   );

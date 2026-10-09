@@ -550,8 +550,9 @@ authentication mechanism.
 ## Known limits
 
 - One run at a time per WebSocket connection (per browser tab).
-- No session persistence: each run is an independent turn, and no context is
-  carried across providers. Nothing is stored in a database; the log lives in
-  the page and clears on reload.
+- Custom prompts sent from the same Chat tab continue that provider's native
+  session. Each provider keeps its own session within the tab; `+` opens a new
+  thread. Saved work-item executions and read-only consults remain independent
+  runs, and browser-local Chat tabs are recreated on reload.
 - Cursor's headless output does not reliably include token usage, so the token
   stat is omitted for Cursor runs rather than showing a made-up number.

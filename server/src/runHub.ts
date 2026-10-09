@@ -11,6 +11,7 @@ import type {
 } from "@agent-console/shared";
 import type { RunHandle } from "./runner.ts";
 import { createLogger } from "./lib/logger.ts";
+import { cancelAgentInput } from "./agentInput.ts";
 
 const log = createLogger("runhub");
 
@@ -202,6 +203,7 @@ export const runHub = {
 
   /** Removes a finished run and announces its terminal state. */
   end(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">): void {
+    cancelAgentInput(runId);
     runs.delete(runId);
     this.broadcast({ kind: "run_ended", runId, state });
     this.operationsChanged();

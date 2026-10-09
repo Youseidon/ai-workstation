@@ -180,7 +180,7 @@ export function AgentsView() {
             ? "No changes to save."
             : `Saved ${result.changed.length} setting${result.changed.length === 1 ? "" : "s"}.`,
         );
-        if (keys.some((key) => key.endsWith(".enabled") || key === "hostAccess")) {
+        if (keys.some((key) => key.endsWith(".enabled") || key.endsWith(".reasoningEffort") || key === "hostAccess")) {
           await refreshProviders();
         }
       }
@@ -271,7 +271,8 @@ export function AgentsView() {
               setNotice(result.errors[0] ?? "Could not change reasoning effort.");
               return;
             }
-            setNotice(`Global reasoning effort changed to ${effort}. Provider overrides still take precedence.`);
+            await refreshProviders();
+            setNotice(`Global reasoning effort changed to ${effort}. Cursor's model list now shows ${effort} variants. Provider overrides still take precedence.`);
           }}
         />
 
@@ -447,7 +448,7 @@ function ModelAccessPanel({
           <div>
             <div className="text-xs font-semibold text-fg">Reasoning effort</div>
             <p className="mt-0.5 text-[10px] leading-snug text-fg-dim">
-              Default for every agent unless its settings override it.
+              Default for every agent unless its settings override it. Cursor only lists models at this effort.
             </p>
           </div>
           <div className="flex rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line">
@@ -904,6 +905,11 @@ function ModelRow({
         <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
           {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
         </span>
+        {provider.id === "cursor" && (
+          <span className="rounded bg-surface-3 px-1.5 py-0.5 capitalize text-fg-muted">
+            {provider.reasoningEffort} effort
+          </span>
+        )}
         <span>{provider.models.length}{provider.totalModels !== provider.models.length ? ` of ${provider.totalModels}` : ""} models</span>
       </div>
       {provider.models.length > 8 && (

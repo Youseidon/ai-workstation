@@ -69,6 +69,32 @@ test("Kilo's model list lines are already valid -m values", () => {
 });
 
 test("Auto Select ignores caller model overrides on the server", () => {
+  const cursor: ProviderInfo = {
+    id: "cursor",
+    label: "Cursor CLI",
+    available: true,
+    reason: null,
+    version: null,
+    transport: "spawn",
+    binary: "cursor-agent",
+    reportsTokens: true,
+    permissionMode: "auto",
+    model: "auto",
+    configuredModel: "claude-opus-5-medium",
+    modelAccessTier: "all",
+    reasoningEffort: "medium",
+    modelSelectionMode: "auto",
+    tierDefaultModel: "claude-opus-5-medium",
+    totalModels: 2,
+    models: [
+      { id: "auto", label: "auto", hint: "Auto (default)", pool: "cursor" },
+      { id: "claude-opus-5-medium", label: "opus 5 medium", hint: "Claude Opus 5 1M Medium", pool: "vendor" },
+    ],
+    cooling: null,
+  };
+  assert.equal(resolveProviderModel(cursor, "claude-opus-5-medium"), "auto");
+  assert.equal(resolveProviderModel(cursor, null), "auto");
+
   const info: ProviderInfo = {
     id: "kilocode",
     label: "Kilo Code",
@@ -82,6 +108,7 @@ test("Auto Select ignores caller model overrides on the server", () => {
     model: "kilo-auto/efficient",
     configuredModel: "kilo/anthropic/claude-opus-5",
     modelAccessTier: "efficient",
+    reasoningEffort: "medium",
     modelSelectionMode: "auto",
     tierDefaultModel: "kilo/~anthropic/claude-haiku-latest",
     totalModels: 3,
@@ -91,4 +118,34 @@ test("Auto Select ignores caller model overrides on the server", () => {
 
   assert.equal(resolveProviderModel(info, "kilo/anthropic/claude-opus-5"), "kilo-auto/efficient");
   assert.equal(resolveProviderModel(info, null), "kilo-auto/efficient");
+});
+
+test("Cursor effort filtering rejects other-effort catalog ids", () => {
+  const info: ProviderInfo = {
+    id: "cursor",
+    label: "Cursor CLI",
+    available: true,
+    reason: null,
+    version: null,
+    transport: "spawn",
+    binary: "cursor-agent",
+    reportsTokens: true,
+    permissionMode: "auto",
+    model: "composer-2.5",
+    configuredModel: "composer-2.5",
+    modelAccessTier: "all",
+    reasoningEffort: "medium",
+    modelSelectionMode: "manual",
+    tierDefaultModel: "composer-2.5",
+    totalModels: 4,
+    models: [
+      { id: "composer-2.5", label: "composer 2.5", hint: "Composer 2.5", pool: "cursor" },
+      { id: "cursor-grok-4.6-medium", label: "grok 4.6 medium", hint: "Cursor Grok 4.6 Medium", pool: "cursor" },
+    ],
+    cooling: null,
+  };
+
+  assert.equal(resolveProviderModel(info, "cursor-grok-4.6-medium"), "cursor-grok-4.6-medium");
+  assert.equal(resolveProviderModel(info, "cursor-grok-4.6-high"), "composer-2.5");
+  assert.equal(resolveProviderModel(info, "my-custom-model"), "my-custom-model");
 });

@@ -130,10 +130,12 @@ export function AgentPicker({
           disabled && "opacity-50",
         )}
       >
+        {/* Opacity only: a ring that scales past the button overflows the
+            viewport from this corner and flashes page scrollbars. */}
         {busy && (
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-current animate-pulse-ring"
+            className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-current animate-pulse"
           />
         )}
         <AgentAvatar
@@ -384,6 +386,11 @@ function ModelList({
         <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
           {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
         </span>
+        {provider.id === "cursor" && (
+          <span className="rounded bg-surface-3 px-1.5 py-0.5 capitalize text-fg-muted">
+            {provider.reasoningEffort} effort
+          </span>
+        )}
         <span>{provider.models.length}{provider.totalModels !== provider.models.length ? ` of ${provider.totalModels}` : ""} models</span>
       </div>
       {provider.models.length > 8 && (

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
-import { oneLine } from "@agent-console/shared";
+import { bakedModelEffort, oneLine } from "@agent-console/shared";
 import {
   cursorAuthJsonPath,
   cursorLoginPresent,
@@ -96,10 +96,18 @@ export function cursorModelWithEffort(model: string | null, effort: "low" | "med
   const open = selected.lastIndexOf("[");
   const base = open < 0 || !selected.endsWith("]") ? selected : selected.slice(0, open);
 
-  // Cursor-native routing/model ids do not expose the vendor parameter surface.
-  // Passing `composer-2.5[effort=high]`, for example, makes the CLI reject the
-  // otherwise valid model before it starts a session.
-  if (base === "auto" || base.startsWith("composer-") || base.startsWith("cursor-")) return selected;
+  // Cursor-native routing/model ids, and every catalog id that already bakes
+  // effort into the slug (`claude-opus-5-medium`, `gpt-5.6-sol-high`, …),
+  // reject `[effort=…]`. Passing it makes `cursor-agent` exit 1 with the
+  // whole model list on stderr before a session starts.
+  if (
+    base === "auto"
+    || base.startsWith("composer-")
+    || base.startsWith("cursor-")
+    || bakedModelEffort(base) !== null
+  ) {
+    return selected;
+  }
 
   if (open < 0 || !selected.endsWith("]")) return `${selected}[effort=${effort}]`;
 

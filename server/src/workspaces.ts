@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync,
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { INSTRUCTION_CONTENT_MAX, INSTRUCTION_FILE_NAMES, isInstructionField, type InstructionProposalOrigin, type InstructionProposalRecord, type InstructionProposalState, type WorkspaceInstructionField } from "@agent-console/shared";
-import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, conversationTitle, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -1384,6 +1384,38 @@ if (afterThirtySix < 37) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(37,?)").run(new Date().toISOString());
 }
 
+const afterThirtySeven = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtySeven < 38) {
+  // A provider session is not a Chat thread: changing from Claude to Codex (or
+  // simply starting a fresh native session) must not split the operator's
+  // conversation. Persist the app-owned identity on each custom execute turn.
+  // Existing resumptions can be recovered from their native session id; all
+  // other historical custom turns remain single-turn threads.
+  const migrate38 = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE agent_run ADD COLUMN thread_id TEXT;
+      UPDATE agent_run
+      SET thread_id = CASE
+        WHEN session_id IS NOT NULL AND session_id <> ''
+          THEN 'legacy-session:' || workspace_id || ':' || provider || ':' || session_id
+        ELSE 'legacy-run:' || id
+      END
+      WHERE role = 'execute' AND prompt_id IS NULL;
+      CREATE INDEX agent_run_thread_idx ON agent_run(thread_id, started_at);
+    `);
+  });
+  migrate38();
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(38,?)").run(new Date().toISOString());
+}
+
+const afterThirtyEight = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyEight < 39) {
+  // A thread name belongs to the conversation, not to a browser tab. Keeping
+  // it on every turn makes Activity and a restored Chat agree after reloads.
+  db.exec("ALTER TABLE agent_run ADD COLUMN thread_title TEXT;");
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(39,?)").run(new Date().toISOString());
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1879,12 +1911,16 @@ const beginConsultTransaction=db.transaction((args:{runId:string;workspaceId:num
 });
 
 /** Chat-box execute: no work item, so no status transition and no per-prompt lock. */
-const beginCustomExecuteTransaction=db.transaction((args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string})=>{
+const beginCustomExecuteTransaction=db.transaction((args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string;threadId:string})=>{
   if(!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(args.workspaceId))throw new WorkspaceError(404,"not_found","Workspace not found");
+  const existingThread=db.prepare("SELECT workspace_id workspaceId,thread_title threadTitle,display_text displayText FROM agent_run WHERE thread_id=? ORDER BY started_at LIMIT 1").get(args.threadId) as {workspaceId:number;threadTitle:string|null;displayText:string|null}|undefined;
+  if(existingThread!==undefined&&existingThread.workspaceId!==args.workspaceId)throw new WorkspaceError(409,"thread_workspace_mismatch","This Chat thread belongs to a different workspace");
   const displayText=clipDisplayText(args.displayText);
   if(displayText===null)throw new WorkspaceError(422,"validation_error","Prompt is empty");
+  const threadTitle=existingThread?.threadTitle??conversationTitle(existingThread?.displayText??displayText);
   const now=new Date().toISOString();
-  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text) VALUES(?,?,NULL,?,?,'STARTING',?,?,?,'execute',?)").run(args.runId,args.workspaceId,args.provider,args.model,now,args.tokenHash,args.expiresAt,displayText);
+  db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text,thread_id,thread_title) VALUES(?,?,NULL,?,?,'STARTING',?,?,?,'execute',?,?,?)").run(args.runId,args.workspaceId,args.provider,args.model,now,args.tokenHash,args.expiresAt,displayText,args.threadId,threadTitle);
+  return threadTitle;
 });
 
 const agentRemarkTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"remark",()=>{
@@ -3191,10 +3227,10 @@ function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
   return { enforcement: definition.enforcement, satisfied, blocking: definition.enforcement === "block", criteria };
 }
 
-function sessionPromptTitle(savedTitle:string|null, displayText:string|null, role:string):string {
+function sessionPromptTitle(savedTitle:string|null, displayText:string|null, role:string, threadTitle:string|null=null):string {
   if(typeof savedTitle==="string"&&savedTitle.trim()!=="")return savedTitle;
-  const line=(displayText??"").split("\n")[0]?.trim()??"";
-  if(line!=="")return line.slice(0,80);
+  if(typeof threadTitle==="string"&&threadTitle.trim()!=="")return threadTitle;
+  if(typeof displayText==="string"&&displayText.trim()!=="")return conversationTitle(displayText);
   return role==="consult"?"(research)":"(custom)";
 }
 
@@ -3232,7 +3268,7 @@ type SessionQueryRow = Omit<AgentSession,"events"|"promptTitle"|"changes"> & {
 
 function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSession {
   const {savedTitle, displayText, changeRunId, changeWorkspaceId, repositoryRoot, changeBranch, baseCommit, headCommit, changeState, filesChanged, additions, deletions, commitCount, changeMessage, capturedAt, changeUpdatedAt, pipelineId, pipelineName, ...rest}=row;
-  const promptTitle=sessionPromptTitle(savedTitle,displayText,rest.role);
+  const promptTitle=sessionPromptTitle(savedTitle,displayText,rest.role,rest.threadTitle);
   return {
     ...rest,
     displayText: displayText ?? null,
@@ -3247,7 +3283,7 @@ function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSess
   };
 }
 
-const SESSION_SELECT=`SELECT r.id,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt,pl.id pipelineId,pl.name pipelineName FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id ${RUN_PIPELINE_JOIN}`;
+const SESSION_SELECT=`SELECT r.id,r.thread_id threadId,r.thread_title threadTitle,r.session_id providerSessionId,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt,pl.id pipelineId,pl.name pipelineName FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id ${RUN_PIPELINE_JOIN}`;
 
 export const workspaces = {
   databasePath,
@@ -4006,7 +4042,7 @@ export const workspaces = {
   }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
   beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
-  beginCustomExecuteRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string}):void { sqliteGuard(()=>beginCustomExecuteTransaction(args)); },
+  beginCustomExecuteRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string;threadId?:string}):string { return sqliteGuard(()=>beginCustomExecuteTransaction({...args,threadId:args.threadId?.trim()||args.runId})); },
   beginRunChangeSet(args:{runId:string;workspaceId:number;repositoryRoot:string;branch:string|null;baseCommit:string}):RunChangeSummary {
     const now=new Date().toISOString();
     db.prepare("INSERT INTO run_change_set(run_id,workspace_id,repository_root,branch,base_commit,state,captured_at,updated_at) VALUES(?,?,?,?,?,'PENDING',?,?)")

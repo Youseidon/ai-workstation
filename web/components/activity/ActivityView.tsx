@@ -37,6 +37,10 @@ const SESSION_STATES = ["STARTING", "RUNNING", "DONE", "INTERRUPTED", "ERROR"] a
 /** One row in the activity browser — a persisted session and/or a live run. */
 interface ActivityRow {
   id: string;
+  threadId: string | null;
+  runIds: string[];
+  turnCount: number;
+  providers: string[];
   live: boolean;
   workspaceId: number;
   workspaceName: string;
@@ -136,6 +140,10 @@ function displayTextFromSource(source: RunSource): string | null {
 function rowFromSession(session: AgentSession, run: RunStatus | null): ActivityRow {
   return {
     id: session.id,
+    threadId: session.threadId,
+    runIds: [session.id],
+    turnCount: 1,
+    providers: [run?.provider ?? session.provider],
     live: run !== null,
     workspaceId: session.workspaceId,
     workspaceName: session.workspaceName,
@@ -163,6 +171,10 @@ function rowFromLiveRun(run: RunStatus): ActivityRow {
   const title = titleFromSource(run.source);
   return {
     id: run.runId,
+    threadId: run.source.type === "custom" ? (run.source.threadId ?? null) : null,
+    runIds: [run.runId],
+    turnCount: 1,
+    providers: [run.provider],
     live: true,
     workspaceId: run.workspace.id,
     workspaceName: run.workspace.name,
@@ -178,7 +190,7 @@ function rowFromLiveRun(run: RunStatus): ActivityRow {
       run.source.type === "saved" || run.source.type === "clarification" || run.source.type === "consult"
         ? run.source.promptKey
         : null,
-    promptTitle: title,
+    promptTitle: run.source.type === "custom" ? (run.source.title ?? title) : title,
     displayText: displayTextFromSource(run.source),
     programName: run.source.type === "saved" ? run.source.programName : "",
     suiteName:
@@ -237,20 +249,30 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     return () => clearInterval(timer);
   }, [refresh, operationsRevision, runs.length]);
 
-  const selectedDetail = selectedId === null ? undefined : detailById[selectedId];
-  const selectedIsLive = selectedId !== null && runs.some((run) => run.runId === selectedId);
+  const selectedSummary = selectedId === null ? undefined : (sessions ?? []).find((session) => session.id === selectedId);
+  const selectedRunIds = selectedId === null
+    ? []
+    : selectedSummary?.threadId == null
+      ? [selectedId]
+      : (sessions ?? []).filter((session) => session.threadId === selectedSummary.threadId).map((session) => session.id);
+  const selectedRunKey = selectedRunIds.join(":");
 
   // List responses omit transcripts so a 30s poll cannot OOM the server. Load
   // one session's events only when the operator opens it (and it is not live).
   useEffect(() => {
-    if (selectedId === null || selectedIsLive || selectedDetail !== undefined) return;
+    const missing = selectedRunIds.filter(
+      (runId) => !runs.some((run) => run.runId === runId) && detailById[runId] === undefined,
+    );
+    if (missing.length === 0) return;
     let cancelled = false;
     setDetailError(null);
-    void workspaceApi
-      .session(SERVER_URL, selectedId)
-      .then((session) => {
+    void Promise.all(missing.map((runId) => workspaceApi.session(SERVER_URL, runId)))
+      .then((loaded) => {
         if (cancelled) return;
-        setDetailById((prev) => ({ ...prev, [session.id]: session }));
+        setDetailById((prev) => ({
+          ...prev,
+          ...Object.fromEntries(loaded.map((session) => [session.id, session])),
+        }));
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -259,7 +281,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     return () => {
       cancelled = true;
     };
-  }, [selectedId, selectedIsLive, selectedDetail]);
+  }, [selectedRunKey, selectedRunIds, runs, detailById]);
 
   const rows = useMemo<ActivityRow[]>(() => {
     const byId = new Map((sessions ?? []).map((session) => [session.id, session]));
@@ -277,43 +299,80 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
         return rowFromSession(detail===undefined?session:{...detail,changes:session.changes}, null);
       });
 
-    return [...liveRows, ...historical];
+    const grouped = new Map<string, ActivityRow>();
+    const standalone: ActivityRow[] = [];
+    for (const row of [...liveRows, ...historical]) {
+      if (row.threadId === null) {
+        standalone.push(row);
+        continue;
+      }
+      const previous = grouped.get(row.threadId);
+      if (previous === undefined) {
+        grouped.set(row.threadId, row);
+        continue;
+      }
+      const rowIsOlder = row.startedAt < previous.startedAt;
+      grouped.set(row.threadId, {
+        ...previous,
+        promptTitle: rowIsOlder ? row.promptTitle : previous.promptTitle,
+        displayText: rowIsOlder ? row.displayText : previous.displayText,
+        runIds: [...previous.runIds, ...row.runIds],
+        turnCount: previous.turnCount + row.turnCount,
+        providers: [...new Set([...previous.providers, ...row.providers])],
+        events: [...previous.events, ...row.events].sort((left, right) => left.timestamp.localeCompare(right.timestamp)),
+        live: previous.live || row.live,
+        run: previous.run ?? row.run,
+        changes: previous.changes ?? row.changes,
+      });
+    }
+    return [...grouped.values(), ...standalone]
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   }, [sessions, runs, detailById]);
 
   const filtered = useMemo(() => {
     return rows.filter((row) => {
       if (workspaceId !== null && row.workspaceId !== workspaceId) return false;
       if (workspaceId === null) return false;
-      if (providerFilter !== "all" && row.provider !== providerFilter) return false;
+      if (providerFilter !== "all" && !row.providers.includes(providerFilter)) return false;
       if (stateFilter !== "all" && normalizeState(row.state) !== stateFilter) return false;
       if (roleFilter !== "all" && row.role !== roleFilter) return false;
       return true;
     });
   }, [rows, workspaceId, providerFilter, stateFilter, roleFilter]);
 
-  const activeId =
-    filtered.some((row) => row.id === selectedId) ? selectedId : filtered[0]?.id ?? null;
-  const selected = filtered.find((row) => row.id === activeId) ?? null;
+  const selected = filtered.find((row) => row.id === selectedId || (selectedId !== null && row.runIds.includes(selectedId)))
+    ?? filtered[0]
+    ?? null;
+  const activeId = selected?.id ?? null;
 
   const logs = useMemo<LogItem[]>(() => {
     if (selected === null) return [];
-    if (selected.live) return itemsFor(selected.id);
-    const seed =
-      selected.displayText !== null && selected.displayText !== ""
-        ? appendPrompt([], {
-            runId: selected.id,
-            provider: selected.provider as ProviderId,
-            model: selected.model,
-            text: selected.displayText,
-            timestamp: selected.startedAt,
-          })
-        : [];
-    return selected.events.reduce<LogItem[]>((items, event) => applyEvent(items, event), seed);
-  }, [selected, itemsFor]);
+    const summaries = (sessions ?? [])
+      .filter((session) => selected.runIds.includes(session.id))
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+    return summaries.reduce<LogItem[]>((items, summary) => {
+      const liveItems = runs.some((run) => run.runId === summary.id) ? itemsFor(summary.id) : null;
+      if (liveItems !== null) return [...items, ...liveItems];
+      const detail = detailById[summary.id];
+      const seeded = summary.displayText === null || summary.displayText === ""
+        ? items
+        : appendPrompt(items, {
+            runId: summary.id,
+            provider: summary.provider as ProviderId,
+            model: summary.model,
+            text: summary.displayText,
+            timestamp: summary.startedAt,
+          });
+      return (detail?.events ?? []).reduce<LogItem[]>((next, event) => applyEvent(next, event), seeded);
+    }, []);
+  }, [selected, sessions, runs, detailById, itemsFor]);
 
   const selectedUsage = useMemo(() => (selected === null ? null : usageForRow(selected)), [selected]);
   const selectedCost =
     selected === null ? null : estimateCost(selectedUsage, selected.provider, selected.model);
+  const selectedLoaded = selected === null || selected.runIds.every(
+    (runId) => runs.some((run) => run.runId === runId) || detailById[runId] !== undefined,
+  );
 
   const href = selected === null ? null : workItemHref(selected);
 
@@ -343,7 +402,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
               pane === option ? "bg-surface-3 text-fg" : "text-fg-dim hover:bg-surface-2 hover:text-fg",
             )}
           >
-            {option === "list" ? "Sessions" : "Detail"}
+            {option === "list" ? "Activity" : "Detail"}
           </button>
         ))}
       </div>
@@ -395,7 +454,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
           </div>
 
           <div className="flex items-center justify-between px-3 py-2 text-[10px] uppercase tracking-wider text-fg-dim">
-            <span>Sessions</span>
+            <span>Conversations &amp; runs</span>
             <span>{filtered.length}</span>
           </div>
 
@@ -437,6 +496,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                       )}
                       <Badge tone={stateTone(row.state)}>{normalizeState(row.state).toLowerCase()}</Badge>
                       <Badge tone="neutral">{row.role}</Badge>
+                      {row.turnCount > 1 && <Badge tone="info">{row.turnCount} turns</Badge>}
                       {row.changes !== null && row.changes.state === "COMMITTED" && row.changes.filesChanged > 0 && (
                         <Badge tone="success">{row.changes.filesChanged} files</Badge>
                       )}
@@ -449,7 +509,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                     </span>
                   </div>
                   <div className="mt-1 truncate text-xs text-fg-muted">
-                    {row.workspaceName} · {row.provider}
+                    {row.workspaceName} · {row.providers.join(" + ")}
                     {row.model !== null && ` · ${row.model}`}
                     {` · ${row.role}`}
                   </div>
@@ -479,6 +539,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                       {normalizeState(selected.state).toLowerCase()}
                     </Badge>
                     <Badge tone="neutral">{selected.role}</Badge>
+                    {selected.turnCount > 1 && <Badge tone="info">{selected.turnCount} turns</Badge>}
                     {sessionEndReason(selected.state, selected.events) !== null && (
                       <Badge tone="neutral">{sessionEndReason(selected.state, selected.events)}</Badge>
                     )}
@@ -504,7 +565,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                 <div className="ml-auto flex flex-wrap items-center gap-2">
                   {selected.changes !== null && selected.changes.filesChanged > 0 && (
                     <Link
-                      href={`/changes/${encodeURIComponent(selected.id)}`}
+                      href={`/changes/${encodeURIComponent(selected.changes.runId)}`}
                       className="rounded-md bg-accent px-3 py-1.5 text-xs text-white transition-colors hover:opacity-90"
                     >
                       Review changes
@@ -519,16 +580,16 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                     </Link>
                   )}
                   <Link
-                    href={`/?workspace=${selected.workspaceId}${selected.promptId !== null ? `&prompt=${selected.promptId}` : ""}`}
+                    href={`/?workspace=${selected.workspaceId}${selected.threadId !== null ? `&thread=${encodeURIComponent(selected.threadId)}` : selected.promptId !== null ? `&prompt=${selected.promptId}` : ""}`}
                     className="rounded-md px-3 py-1.5 text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
                   >
-                    Open in Console
+                    {selected.threadId === null ? "Open in Chat" : "Continue in Chat"}
                   </Link>
                 </div>
               </div>
 
               <dl className="grid gap-3 rounded-panel border border-line bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-3">
-                <Meta label="Provider" value={selected.provider} />
+                <Meta label={selected.providers.length > 1 ? "Agents" : "Agent"} value={selected.providers.join(", ")} />
                 <Meta label="Model" value={selected.model ?? "default"} />
                 {sessionEndReason(selected.state, selected.events) !== null && (
                   <Meta label="End reason" value={sessionEndReason(selected.state, selected.events)!} />
@@ -557,14 +618,15 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                   value={selectedCost?.usd == null ? "—" : formatUsd(selectedCost.usd)}
                   hint={selectedCost?.usd == null ? "Provider did not report usage" : "API list-rate estimate"}
                 />
-                <Meta label="Run id" value={selected.id} mono />
+                {selected.threadId !== null && <Meta label="Thread id" value={selected.threadId} mono />}
+                <Meta label={selected.runIds.length > 1 ? "Latest run id" : "Run id"} value={selected.id} mono />
                 <Meta label="Working directory" value={selected.workDirectory} mono />
               </dl>
 
               <section className="flex min-h-0 flex-1 flex-col">
                 <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
                   <div className="text-xs uppercase tracking-wider text-fg-dim">
-                    Session log · {selected.provider} · {normalizeState(selected.state).toLowerCase()}
+                    {selected.threadId === null ? "Run" : "Conversation"} log · {selected.providers.join(" + ")} · {normalizeState(selected.state).toLowerCase()}
                   </div>
                   <div className="numeric text-xs text-fg-muted">
                     {selectedUsage === null ? (
@@ -587,9 +649,9 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                   <p role="alert" className="rounded-panel border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
                     Session log is unavailable: {detailError}
                   </p>
-                ) : logs.length === 0 && !selected.live && detailById[selected.id] === undefined ? (
+                ) : logs.length === 0 && !selected.live && !selectedLoaded ? (
                   <p className="rounded-panel border border-line p-4 text-sm text-fg-dim">
-                    Loading session log…
+                    Loading conversation log…
                   </p>
                 ) : logs.length === 0 ? (
                   <p className="rounded-panel border border-line p-4 text-sm text-fg-dim">

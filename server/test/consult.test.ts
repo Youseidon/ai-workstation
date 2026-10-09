@@ -261,7 +261,7 @@ test("a chat-box consult keeps the question as its activity title", () => {
     });
     const session = workspaces.sessions().find((item) => item.id === runId);
     assert.equal(session?.promptId, null);
-    assert.equal(session?.promptTitle, "what owns auth?");
+    assert.equal(session?.promptTitle, "What owns auth");
     assert.equal(session?.displayText, "what owns auth?");
     assert.equal(session?.role, "consult");
   } finally {

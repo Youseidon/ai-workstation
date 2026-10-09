@@ -100,7 +100,7 @@ const FIELDS: FieldDef[] = [
     envVar: "MODELS_REASONING_EFFORT",
     fallback: "medium",
     description:
-      "Default reasoning effort for every provider. A provider-specific choice overrides it for that agent.",
+      "Default reasoning effort for every provider. A provider-specific choice overrides it for that agent. Cursor's model list shows only ids at this effort.",
     options: [
       option("low", "Low", "Faster and less expensive"),
       option("medium", "Medium", "Balanced reasoning and speed"),

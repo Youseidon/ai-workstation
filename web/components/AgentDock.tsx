@@ -12,6 +12,7 @@ import type { LogItem } from "@/lib/log";
 import { Button } from "./ui/Button";
 import { StatusDot } from "./ui/Badge";
 import { AgentAvatar } from "./AgentAvatar";
+import { DecisionDeck } from "./DecisionDeck";
 import { agentState, ACTIVITY_LABEL, consultQuestion } from "@/lib/agentState";
 
 /**
@@ -25,16 +26,23 @@ import { agentState, ACTIVITY_LABEL, consultQuestion } from "@/lib/agentState";
  * is actually doing something.
  */
 export function AgentDock() {
-  const { runs, items, interrupt, connection, providers, lastRun } = useAgentConsole();
+  const { runs, items, interrupt, connection, providers, lastRun, inputRequests, answerInput } = useAgentConsole();
   const pathname = usePathname();
 
   if (runs.length === 0) return null;
 
   const executes = runs.filter((run) => run.role === "execute");
   const consults = runs.filter((run) => run.role === "consult");
+  const globalRequest = pathname === "/" ? null : Object.values(inputRequests)[0] ?? null;
+  const globalRequestRun = globalRequest === null ? null : runs.find((run) => run.runId === globalRequest.runId) ?? null;
 
   return (
     <div className="relative z-30 border-t border-line bg-surface-1/80 backdrop-blur-md">
+      {globalRequest !== null && globalRequestRun !== null && (
+        <div className="mx-auto max-w-4xl p-3 pb-0">
+          <DecisionDeck request={globalRequest} provider={globalRequestRun.provider} onSubmit={(answers) => answerInput(globalRequest.runId, globalRequest.requestId, answers)} onCancel={() => interrupt(globalRequest.runId)} />
+        </div>
+      )}
       <div className="flex flex-col divide-y divide-line">
         {executes.map((run) => (
           <DockRow
@@ -45,6 +53,7 @@ export function AgentDock() {
             lastRun={lastRun}
             onStop={() => interrupt(run.runId)}
             stale={connection !== "open"}
+            waiting={inputRequests[run.runId] !== undefined}
             showTranscriptLink={pathname !== "/"}
           />
         ))}
@@ -56,6 +65,7 @@ export function AgentDock() {
                 run={run}
                 onStop={() => interrupt(run.runId)}
                 stale={connection !== "open"}
+                waiting={inputRequests[run.runId] !== undefined}
               />
             ))}
           </div>
@@ -72,6 +82,7 @@ function DockRow({
   lastRun,
   onStop,
   stale,
+  waiting,
   showTranscriptLink,
 }: {
   run: RunStatus;
@@ -80,6 +91,7 @@ function DockRow({
   lastRun: RunStatus | null;
   onStop(): void;
   stale: boolean;
+  waiting: boolean;
   showTranscriptLink: boolean;
 }) {
   const theme = providerTheme[run.provider];
@@ -88,7 +100,7 @@ function DockRow({
     () => (info === undefined ? null : agentState(info, [run], items, lastRun)),
     [info, run, items, lastRun],
   );
-  const activity = state?.caption ?? describeActivity(items, run);
+  const activity = waiting ? "needs your input" : state?.caption ?? describeActivity(items, run);
   const model = modelLabel(run.provider, run.model);
 
   return (
@@ -108,7 +120,7 @@ function DockRow({
 
       {/* What it is doing right now, in words. */}
       <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-muted">
-        <StatusDot tone={stale ? "warning" : "accent"} pulse={!stale} />
+        <StatusDot tone={stale || waiting ? "warning" : "accent"} pulse={!stale && !waiting} />
         <span className="truncate" title={activity}>
           {stale ? "reconnecting — the agent is still running" : activity}
         </span>
@@ -153,10 +165,12 @@ export function AskChip({
   run,
   onStop,
   stale = false,
+  waiting = false,
 }: {
   run: RunStatus;
   onStop(): void;
   stale?: boolean;
+  waiting?: boolean;
 }) {
   const theme = providerTheme[run.provider];
   const question = consultQuestion(run);
@@ -171,8 +185,8 @@ export function AskChip({
           window.dispatchEvent(new CustomEvent("agent-console:focus-consult", { detail: { runId: run.runId } }));
         }}
       >
-        <AgentAvatar provider={run.provider} activity="thinking" size={16} title={`${run.provider} asking`} />
-        <span className="min-w-0 truncate">asking · {question || "research"}</span>
+        <AgentAvatar provider={run.provider} activity={waiting ? "idle" : "thinking"} size={16} title={`${run.provider} ${waiting ? "needs input" : "asking"}`} />
+        <span className="min-w-0 truncate">{waiting ? "needs input" : `asking · ${question || "research"}`}</span>
       </Link>
       <button
         type="button"

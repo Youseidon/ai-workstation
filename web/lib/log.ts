@@ -231,6 +231,12 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
     case "status":
       // Status drives the status bar only; it would drown the transcript.
       return items;
+
+    case "input_request":
+    case "input_response":
+      // Decision cards are projected separately from the transcript so they
+      // remain interactive without masquerading as provider prose.
+      return items;
   }
 }
 
