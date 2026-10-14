@@ -1,4 +1,4 @@
-import type { NormalizedEvent, ProviderId, RunState, TokenUsage } from "@agent-console/shared";
+import type { AgentInputAnswer, AgentQuestion, NormalizedEvent, ProviderId, RunState, TokenUsage } from "@agent-console/shared";
 
 /**
  * The log is a projection of the normalized event stream: text deltas collapse
@@ -56,6 +56,14 @@ export type LogItem =
       changed: string[];
       errorCode: string | null;
       durationMs: number;
+    })
+  | (LogItemBase & {
+      kind: "decision";
+      requestId: string;
+      heading: string;
+      questions: AgentQuestion[];
+      answers: Record<string, AgentInputAnswer> | null;
+      answeredAt: string | null;
     })
   | (LogItemBase & {
       kind: "result";
@@ -233,10 +241,36 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
       return items;
 
     case "input_request":
-    case "input_response":
-      // Decision cards are projected separately from the transcript so they
-      // remain interactive without masquerading as provider prose.
-      return items;
+      return [
+        ...items,
+        {
+          id: event.id,
+          provider: event.provider,
+          model: event.model,
+          runId: event.runId,
+          timestamp: event.timestamp,
+          kind: "decision",
+          requestId: event.payload.requestId,
+          heading: event.payload.heading,
+          questions: event.payload.questions,
+          answers: null,
+          answeredAt: null,
+        },
+      ];
+
+    case "input_response": {
+      const index = findLastIndex(
+        items,
+        (item) => item.kind === "decision"
+          && item.runId === event.runId
+          && item.requestId === event.payload.requestId,
+      );
+      if (index === -1) return items;
+      const next = [...items];
+      const decision = items[index] as Extract<LogItem, { kind: "decision" }>;
+      next[index] = { ...decision, answers: event.payload.answers, answeredAt: event.timestamp };
+      return next;
+    }
   }
 }
 

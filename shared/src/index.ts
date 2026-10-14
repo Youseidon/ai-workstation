@@ -730,6 +730,15 @@ export interface ProviderInfo {
   cooling: { until: string; because: string } | null;
 }
 
+/** Outcome of updating one provider's SDK or CLI from the Agents page. */
+export interface ProviderUpdateResult {
+  provider: ProviderId;
+  /** False when the installed version was already the latest. */
+  updated: boolean;
+  before: string | null;
+  after: string | null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Account usage credits                                                       */
 /* -------------------------------------------------------------------------- */
@@ -927,6 +936,22 @@ export function billableInputTokens(usage: TokenUsage | null, provider: string, 
   // than silently handing an unpriced run a larger allowance.
   if (rates === null || rates.inputPerMTok <= 0) return usage.inputTokens;
   return Math.round(uncached + cached * (rates.cachedInputPerMTok / rates.inputPerMTok));
+}
+
+/**
+ * A spend cap in dollars, turned into the cost-weighted input-token allowance
+ * it buys on one provider and model. This is what lets a single budget mean the
+ * same money everywhere: $100 is 6.7M tokens on an Opus-class model and 40M on
+ * a mid-tier one, and each run is held to its own figure.
+ *
+ * Null (no cap) stays null. A provider with no rate table gets no cap rather
+ * than an invented one.
+ */
+export function inputTokenAllowance(spendUsd: number | null, provider: string, modelId: string | null): number | null {
+  if (spendUsd === null || spendUsd <= 0) return null;
+  const rates = ratesForModel(provider, modelId)?.rates ?? null;
+  if (rates === null || rates.inputPerMTok <= 0) return null;
+  return Math.round((spendUsd / rates.inputPerMTok) * 1_000_000);
 }
 
 export function formatUsd(amount: number, digits = 2): string {
@@ -1237,6 +1262,61 @@ export interface SettingOption {
   danger: boolean;
 }
 
+/** What a numeric setting measures, so every surface words it the same way. */
+export type SettingUnit = "usd" | "minutes" | "ms" | "days" | "bytes" | "count";
+
+/**
+ * How a numeric setting is offered: a short ladder of sensible values instead
+ * of a bare number box. Any other value is still legal — the ladder is a
+ * presentation, not a validation rule.
+ */
+export interface SettingScale {
+  unit: SettingUnit;
+  /** Ascending. A 0 here is the "no limit" stop and is listed last. */
+  stops: number[];
+  /** What 0 means for this field, when 0 is meaningful. */
+  zeroLabel: string | null;
+  /** Singular noun for a `count`, e.g. "call". */
+  noun: string | null;
+}
+
+/**
+ * A numeric setting in words. `short` is the form for slider ticks and chips,
+ * where "1,000 calls" has to fit in the width of "1k".
+ */
+export function formatSettingValue(value: number, scale: SettingScale, short = false): string {
+  if (value === 0 && scale.zeroLabel !== null) return short ? "∞" : scale.zeroLabel;
+  const trim = (amount: number): string => String(Math.round(amount * 10) / 10);
+  switch (scale.unit) {
+    case "usd":
+      return `$${value.toLocaleString("en-US")}`;
+    case "minutes": {
+      if (value < 60) return short ? `${value}m` : `${value} min`;
+      const hours = Math.floor(value / 60);
+      const minutes = value % 60;
+      if (short) return `${trim(value / 60)}h`;
+      return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+    }
+    case "ms":
+      return value < 1000 ? (short ? `${value}ms` : `${value} ms`) : `${trim(value / 1000)}s`;
+    case "days": {
+      if (value % 365 === 0) return short ? `${value / 365}y` : value === 365 ? "1 year" : `${value / 365} years`;
+      return short ? `${value}d` : value === 1 ? "1 day" : `${value} days`;
+    }
+    case "bytes": {
+      const space = short ? "" : " ";
+      if (value >= 1_048_576) return `${trim(value / 1_048_576)}${space}MB`;
+      if (value >= 1024) return `${trim(value / 1024)}${space}KB`;
+      return `${value}${space}B`;
+    }
+    case "count": {
+      if (short) return value >= 1000 ? `${trim(value / 1000)}k` : String(value);
+      const amount = value.toLocaleString("en-US");
+      return scale.noun === null ? amount : `${amount} ${scale.noun}${value === 1 ? "" : "s"}`;
+    }
+  }
+}
+
 export interface SettingField {
   key: string;
   label: string;
@@ -1264,6 +1344,8 @@ export interface SettingField {
   dangerWhenTrue: boolean;
   /** Changing this only takes effect after a server restart. */
   requiresRestart: boolean;
+  /** For `number` fields offered as a ladder of values; null for a free number. */
+  scale: SettingScale | null;
 }
 
 export interface SettingsSnapshot {

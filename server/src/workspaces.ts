@@ -4350,15 +4350,22 @@ export const workspaces = {
   },
   /**
    * Newest transcript events for one run, capped so a single detail view cannot
-   * pull tens of thousands of rows into the heap. Older events beyond the cap
-   * stay in the database for retention sweeps; the live WebSocket replay uses
-   * the same bound.
+   * pull tens of thousands of rows into the heap. Decision exchanges are the
+   * exception: they remain visible even when the question predates the cap, so
+   * the operator can always audit what the agent asked and what they answered.
    */
   runEvents(runId:string,limit=MAX_SESSION_EVENTS):NormalizedEvent[] {
     const rows=db.prepare(
-      "SELECT event_json FROM agent_run_event WHERE run_id=? ORDER BY id DESC LIMIT ?",
-    ).all(runId,Math.max(0,limit)) as Array<{event_json:string}>;
-    return rows.reverse().map((row)=>JSON.parse(row.event_json) as NormalizedEvent);
+      "SELECT id,event_json FROM agent_run_event WHERE run_id=? ORDER BY id DESC LIMIT ?",
+    ).all(runId,Math.max(0,limit)) as Array<{id:number;event_json:string}>;
+    const oldestId=rows.at(-1)?.id;
+    const olderDecisions=oldestId===undefined?[]:db.prepare(`
+      SELECT id,event_json FROM agent_run_event
+      WHERE run_id=? AND id<?
+        AND (event_json LIKE '%"type":"input_request"%' OR event_json LIKE '%"type":"input_response"%')
+      ORDER BY id
+    `).all(runId,oldestId) as Array<{id:number;event_json:string}>;
+    return [...olderDecisions,...rows.reverse()].map((row)=>JSON.parse(row.event_json) as NormalizedEvent);
   },
   latestRunActivity(promptId:number):AgentRunActivity|null {
     const run=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as Omit<AgentRunActivity,"events">|undefined;

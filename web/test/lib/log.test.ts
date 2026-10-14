@@ -79,3 +79,23 @@ test("a status heartbeat still stays out of the transcript", () => {
   };
   assert.deepEqual(applyEvent([], status), []);
 });
+
+test("questions and their answers remain together in the transcript", () => {
+  const request: NormalizedEvent = {
+    id: "q-1", runId: "run-1", provider: "claude", model: "opus-5", timestamp: "2026-09-04T00:00:00.000Z",
+    type: "input_request", payload: {
+      requestId: "input-1", heading: "Choose defaults",
+      questions: [{ id: "scope", prompt: "Which scope?", kind: "single", options: [{ value: "a", label: "Small", description: null }], required: true, recommendation: null, why: null }],
+    },
+  };
+  const response: NormalizedEvent = {
+    id: "a-1", runId: "run-1", provider: "claude", model: "opus-5", timestamp: "2026-09-04T00:01:00.000Z",
+    type: "input_response", payload: { requestId: "input-1", answers: { scope: "a" } },
+  };
+  const items = applyEvent(applyEvent([], request), response);
+  const decision = items[0] as Extract<LogItem, { kind: "decision" }>;
+  assert.equal(decision.kind, "decision");
+  assert.equal(decision.questions[0]?.prompt, "Which scope?");
+  assert.deepEqual(decision.answers, { scope: "a" });
+  assert.equal(decision.answeredAt, "2026-09-04T00:01:00.000Z");
+});

@@ -18,7 +18,7 @@
  * Usage is printed by `agent-step` with no arguments.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const BASE = process.env.AGENT_CONSOLE_RUN_URL ?? "";
@@ -261,6 +261,13 @@ switch (command) {
     try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
     if (payload === null || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.questions)) {
       fail("The file must be a JSON object with a questions array.");
+    }
+    // A provider may kill a foreground tool after a few minutes even though
+    // the operator is still answering. A content-derived id lets the next
+    // invocation reattach to the same wait (or collect its completed answer)
+    // instead of opening a second question set.
+    if (typeof payload.requestId !== "string" || payload.requestId.trim() === "") {
+      payload.requestId = `input_${createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 24)}`;
     }
     process.stdout.write("Waiting for the operator…\n");
     const result = await post("/input", payload);

@@ -22,8 +22,9 @@ test("holds a run until its complete answer set arrives", async () => {
     questions: [{ id: "target", prompt: "Choose a target", kind: "single", options: ["web", "server"] }],
   });
   const waiting = waitForAgentInput("run-input-one", request);
+  assert.equal(waiting.registered, true);
   answerAgentInput("run-input-one", request.requestId, { target: "web" });
-  assert.deepEqual(await waiting, { target: "web" });
+  assert.deepEqual(await waiting.answers, { target: "web" });
 });
 
 test("accepts an explicit best-judgment delegation", async () => {
@@ -33,7 +34,26 @@ test("accepts an explicit best-judgment delegation", async () => {
   });
   const waiting = waitForAgentInput("run-input-two", request);
   answerAgentInput("run-input-two", request.requestId, { target: "__agent_decide__" });
-  assert.deepEqual(await waiting, { target: "__agent_decide__" });
+  assert.deepEqual(await waiting.answers, { target: "__agent_decide__" });
+});
+
+test("a timed-out caller can reattach before or after the operator answers", async () => {
+  const request = normalizeAgentInputRequest({
+    requestId: "input-durable",
+    questions: [{ id: "target", prompt: "Choose a target", kind: "single", options: ["web", "server"] }],
+  });
+  const first = waitForAgentInput("run-input-durable", request);
+  const attached = waitForAgentInput("run-input-durable", request);
+  assert.equal(first.registered, true);
+  assert.equal(attached.registered, false);
+  assert.equal(first.answers, attached.answers);
+
+  answerAgentInput("run-input-durable", request.requestId, { target: "server" });
+  assert.deepEqual(await attached.answers, { target: "server" });
+
+  const replay = waitForAgentInput("run-input-durable", request);
+  assert.equal(replay.registered, false);
+  assert.deepEqual(await replay.answers, { target: "server" });
 });
 
 test("the agent contract exposes questions only for standalone runs", () => {

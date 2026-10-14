@@ -3,12 +3,16 @@
 import { useState } from "react";
 import type { SettingValue } from "@agent-console/shared";
 import { SettingRow } from "@/components/SettingField";
+import { SpendMap } from "@/components/settings/SpendMap";
 import { Button } from "@/components/ui/Button";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { Skeleton } from "@/components/ui/Spinner";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useSettings } from "@/lib/useSettings";
 import { GROUP_BLURB, GROUP_TITLE } from "@/lib/settingsGroups";
+
+/** The one budget that is money, and so reads differently on every agent. */
+const SPEND_CAP_KEY = "budget.maxSpendUsd";
 
 /**
  * Inline editor for one settings group. Used by the Agents page dialog and by
@@ -18,11 +22,14 @@ export function SettingsGroupPanel({
   group,
   onSaved,
   compact = false,
+  header = true,
 }: {
   group: string;
   onSaved?(): void;
   /** Tighter layout for side drawers. */
   compact?: boolean;
+  /** Off when the surrounding dialog already carries the title and blurb. */
+  header?: boolean;
 }) {
   const settings = useSettings(SERVER_URL);
   const dialogs = useDialogs();
@@ -79,13 +86,13 @@ export function SettingsGroupPanel({
 
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
-      {!compact && (
+      {header && !compact && (
         <div>
           <h3 className="text-sm font-medium text-fg">{title}</h3>
           {blurb !== undefined && <p className="mt-1 text-[11px] leading-5 text-fg-dim">{blurb}</p>}
         </div>
       )}
-      {compact && blurb !== undefined && (
+      {header && compact && blurb !== undefined && (
         <p className="text-[11px] leading-5 text-fg-dim">{blurb}</p>
       )}
 
@@ -105,6 +112,11 @@ export function SettingsGroupPanel({
               field={field}
               draft={drafts[field.key]}
               disabled={settings.saving}
+              footer={
+                field.key === SPEND_CAP_KEY
+                  ? <SpendMap usd={Number(drafts[field.key] ?? field.value) || 0} />
+                  : undefined
+              }
               onChange={(key, value) => {
                 setNotice(null);
                 setDrafts((current) => ({ ...current, [key]: value }));
@@ -121,7 +133,13 @@ export function SettingsGroupPanel({
               <Button variant="ghost" size="sm" onClick={() => clear(dirty)} disabled={settings.saving}>
                 Discard
               </Button>
-              <Button variant="success" size="sm" onClick={() => void saveDirty()} loading={settings.saving}>
+              <Button
+                variant="success"
+                size="sm"
+                onClick={() => void saveDirty()}
+                loading={settings.saving}
+                title={`Saved to ${settings.snapshot?.storagePath ?? "the server"}`}
+              >
                 Save {dirty.length}
               </Button>
             </div>
@@ -134,9 +152,6 @@ export function SettingsGroupPanel({
               {settings.errors.length > 0 ? settings.errors.join(" · ") : notice}
             </p>
           )}
-          <p className="text-[11px] leading-4 text-fg-dim">
-            Saved to {settings.snapshot?.storagePath ?? "the server"}.
-          </p>
         </>
       )}
     </div>

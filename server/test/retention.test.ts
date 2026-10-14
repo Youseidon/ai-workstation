@@ -114,3 +114,29 @@ test("an aged run is thinned to keepFinalEvents only", async () => {
     ctx.cleanup();
   }
 });
+
+test("session history keeps decision exchanges that predate the transcript cap", () => {
+  const ctx = fixture();
+  try {
+    const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
+    workspaces.recordAgentEvent(runId, {
+      id: "decision-request", runId, provider: "claude", model: null,
+      type: "input_request", timestamp: new Date(1_700_000_000_000).toISOString(),
+      payload: {
+        requestId: "input-history", heading: "Choose a default",
+        questions: [{ id: "scope", prompt: "Which scope?", kind: "text", options: [], required: true, recommendation: null, why: null }],
+      },
+    });
+    workspaces.recordAgentEvent(runId, {
+      id: "decision-response", runId, provider: "claude", model: null,
+      type: "input_response", timestamp: new Date(1_700_000_000_001).toISOString(),
+      payload: { requestId: "input-history", answers: { scope: "Small" } },
+    });
+    for (let i = 0; i < 3; i += 1) workspaces.recordAgentEvent(runId, event(i + 10, runId));
+
+    const history = workspaces.runEvents(runId, 2);
+    assert.deepEqual(history.map((entry) => entry.type), ["input_request", "input_response", "assistant_text", "assistant_text"]);
+  } finally {
+    ctx.cleanup();
+  }
+});

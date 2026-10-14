@@ -1,10 +1,10 @@
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { mergeUsage, oneLine } from "@agent-console/shared";
-import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { loadClaudeSdk } from "../lib/claudeSdk.ts";
 import {
   describeEffectiveAccess,
   effectiveClaudePermissionMode,
@@ -22,28 +22,14 @@ export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "NotebookEdit",
 ] as const;
 
-let bundledClaudeEffortSupport: boolean | null = null;
-
 /**
- * The Agent SDK launches its bundled Claude Code, not the `claude` binary on
- * PATH. Older SDK bundles reject the newer `--effort` flag before a session is
- * created, so inspect the executable that will actually receive the argument.
+ * The Agent SDK launches its own Claude Code, not the `claude` binary on PATH.
+ * Older SDK bundles reject the newer `--effort` flag before a session is
+ * created, so `supportsEffort` describes the SDK that will receive the argument.
  */
-function bundledClaudeSupportsEffort(): boolean {
-  if (bundledClaudeEffortSupport !== null) return bundledClaudeEffortSupport;
-  try {
-    const require = createRequire(import.meta.url);
-    const packagePath = require.resolve("@anthropic-ai/claude-agent-sdk/package.json");
-    bundledClaudeEffortSupport = readFileSync(join(dirname(packagePath), "cli.js"), "utf8").includes("--effort");
-  } catch {
-    bundledClaudeEffortSupport = false;
-  }
-  return bundledClaudeEffortSupport;
-}
-
 export function claudeEffortExtraArgs(
   effort: "low" | "medium" | "high",
-  supportsEffort = bundledClaudeSupportsEffort(),
+  supportsEffort: boolean,
 ): Record<string, string | null> {
   return supportsEffort ? { effort } : {};
 }
@@ -215,9 +201,8 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async getVersion(): Promise<string | null> {
     try {
-      const require = createRequire(import.meta.url);
-      const pkg = require("@anthropic-ai/claude-agent-sdk/package.json") as { version?: string };
-      return pkg.version ? `agent-sdk ${pkg.version}` : null;
+      const { version } = await loadClaudeSdk();
+      return version ? `agent-sdk ${version}` : null;
     } catch {
       return null;
     }
@@ -275,9 +260,6 @@ export class ClaudeAdapter implements AgentAdapter {
       includePartialMessages: true,
       permissionMode: permission.permissionMode as Options["permissionMode"],
       settingSources: settings.claude.settingSources as Options["settingSources"],
-      // extraArgs reach the SDK's bundled CLI, which may be older than the
-      // system `claude` command and therefore not know the current flag.
-      extraArgs: claudeEffortExtraArgs(settings.reasoningEffortFor("claude")),
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
     };
     if (permission.allowDangerouslySkipPermissions) {
@@ -322,7 +304,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
     let session: Query;
     try {
-      session = query({ prompt: promptStream(), options });
+      // Loaded per run, so an SDK updated from the Agents page is picked up
+      // without a restart.
+      const sdk = await loadClaudeSdk();
+      // extraArgs reach the SDK's own CLI, which may be older than the system
+      // `claude` command and therefore not know the current flag.
+      options.extraArgs = claudeEffortExtraArgs(settings.reasoningEffortFor("claude"), sdk.supportsEffort);
+      session = sdk.query({ prompt: promptStream(), options }) as Query;
     } catch (error) {
       opts.signal.removeEventListener("abort", onAbort);
       yield {

@@ -10,6 +10,7 @@ import type {
 } from "@agent-console/shared";
 import {
   billableInputTokens,
+  inputTokenAllowance,
   eligibleModels,
   isMeaningfulUsage,
   mergeUsage,
@@ -190,7 +191,10 @@ export function startRun(args: StartRunArgs): RunHandle {
   const budget: RunBudget = {
     maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : base.maxToolCalls,
     maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : base.maxWallClockMs,
-    maxInputTokens: args.budget?.maxInputTokens !== undefined ? args.budget.maxInputTokens : base.maxInputTokens,
+    // The spend cap, priced for this run's own provider and model.
+    maxInputTokens: args.budget?.maxInputTokens !== undefined
+      ? args.budget.maxInputTokens
+      : inputTokenAllowance(base.maxSpendUsd, provider, model),
     maxToolOutputBytes: args.budget?.maxToolOutputBytes !== undefined ? args.budget.maxToolOutputBytes : base.maxToolOutputBytes,
     noProgressToolCalls: args.budget?.noProgressToolCalls !== undefined ? args.budget.noProgressToolCalls : base.noProgressToolCalls,
     maxToolResultBytes: args.budget?.maxToolResultBytes ?? base.maxToolResultBytes,

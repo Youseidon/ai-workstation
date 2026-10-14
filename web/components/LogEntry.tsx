@@ -220,6 +220,51 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
     );
   }
 
+  if (item.kind === "decision") {
+    const answered = item.answers !== null;
+    const displayAnswer = (questionId: string): string => {
+      const answer = item.answers?.[questionId];
+      if (answer === "__agent_decide__" || (Array.isArray(answer) && answer.includes("__agent_decide__"))) {
+        return "Use your best judgment";
+      }
+      const values = Array.isArray(answer) ? answer : answer === undefined ? [] : [answer];
+      const question = item.questions.find((candidate) => candidate.id === questionId);
+      return values.map((value) => question?.options.find((option) => option.value === value)?.label ?? value).join(", ");
+    };
+    return (
+      <div className="mt-2 flex gap-3">
+        <Gutter item={item} />
+        <div className="min-w-0 flex-1 rounded-lg border border-accent/25 bg-accent/[0.04]">
+          <button type="button" onClick={() => setExpanded((value) => !value)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-accent/10 text-xs text-accent">?</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">{item.heading}</span>
+            <span className={answered ? "text-[10px] text-success" : "text-[10px] text-warning"}>
+              {answered && item.answeredAt !== null ? `answered ${clock(item.answeredAt)}` : "waiting"}
+            </span>
+            <span className="text-[10px] text-fg-dim">{expanded ? "▾" : "▸"}</span>
+          </button>
+          {expanded && (
+            <div className="space-y-3 border-t border-line px-3 py-3">
+              {item.questions.map((question, index) => (
+                <div key={question.id} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-2 text-xs">
+                  <span className="numeric text-[10px] text-fg-dim">{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <p className="whitespace-pre-wrap text-fg-muted">{question.prompt}</p>
+                    {answered && (
+                      <p className="mt-1 whitespace-pre-wrap font-medium text-fg">
+                        Answer: {displayAnswer(question.id) || "No answer"}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const tone =
     item.state === "done"
       ? "text-success/80"

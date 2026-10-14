@@ -20,6 +20,7 @@ import {
 import type {
   SettingField,
   SettingOption,
+  SettingScale,
   SettingType,
   SettingValue,
   SettingsPatch,
@@ -49,6 +50,8 @@ interface FieldDef {
   fallback: SettingValue;
   placeholder?: string;
   options?: SettingOption[];
+  /** The ladder of values a number field is offered as. */
+  scale?: SettingScale;
   requiresRestart?: boolean;
   /** Marks values that loosen a sandbox or permission check. */
   isDangerous?: (value: SettingValue) => boolean;
@@ -57,6 +60,13 @@ interface FieldDef {
 function option(value: string, label: string, hint: string | null, danger = false): SettingOption {
   return { value, label, hint, danger };
 }
+
+function scale(unit: SettingScale["unit"], stops: number[], extra: { zeroLabel?: string; noun?: string } = {}): SettingScale {
+  return { unit, stops, zeroLabel: extra.zeroLabel ?? null, noun: extra.noun ?? null };
+}
+
+const KB = 1024;
+const MB = 1024 * 1024;
 
 export const GROUPS = ["Model access", "General", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"] as const;
 
@@ -108,62 +118,68 @@ const FIELDS: FieldDef[] = [
     ],
   },
   {
-    key: "budget.maxToolResultBytes",
-    label: "Max tool result size (bytes)",
+    key: "budget.maxSpendUsd",
+    label: "Spend cap per run",
     group: "Run budgets",
     type: "number",
-    envVar: "BUDGET_MAX_TOOL_RESULT_BYTES",
-    fallback: 8192,
+    envVar: "BUDGET_MAX_SPEND_USD",
+    fallback: 100,
+    scale: scale("usd", [5, 10, 25, 50, 100, 150, 250, 500, 0], { zeroLabel: "No cap" }),
     description:
-      "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
-  },
-  {
-    key: "budget.maxToolCalls",
-    label: "Max tool calls per run",
-    group: "Run budgets",
-    type: "number",
-    envVar: "BUDGET_MAX_TOOL_CALLS",
-    fallback: 1000,
-    description:
-      "A safety ceiling, not a working limit. When it is reached the run gets a wrap-up turn to record its progress, then continues in a fresh run. 0 disables.",
+      "What one run may spend on input, in dollars at API list rates. Each run converts it into a token allowance at its own provider's and model's price, so the same cap is fewer tokens on an expensive model and more on a cheap one. Cache reads count at their discounted rate. Plan subscriptions are not billed this way; read it as relative spend.",
   },
   {
     key: "budget.maxWallClockMinutes",
-    label: "Max wall clock per run (minutes)",
+    label: "Time per run",
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_MAX_WALL_CLOCK_MINUTES",
     fallback: 90,
+    scale: scale("minutes", [15, 30, 45, 60, 90, 120, 180, 240, 360, 0], { zeroLabel: "No limit" }),
     description: "Hard time limit for one run. Reaching it earns a wrap-up turn, not a lost run. 0 disables.",
   },
   {
-    key: "budget.maxInputTokens",
-    label: "Max input tokens per run",
+    key: "budget.maxToolCalls",
+    label: "Tool calls per run",
     group: "Run budgets",
     type: "number",
-    envVar: "BUDGET_MAX_INPUT_TOKENS",
-    fallback: 8000000,
+    envVar: "BUDGET_MAX_TOOL_CALLS",
+    fallback: 1000,
+    scale: scale("count", [100, 250, 500, 1000, 2000, 5000, 0], { zeroLabel: "No limit", noun: "call" }),
     description:
-      "Cumulative input tokens, weighted by cost: cache reads count at their cache-read rate, not at full price. This is the number that turns into money — an agentic loop resends its whole transcript every turn, and almost all of that is cached. 0 disables.",
+      "A safety ceiling, not a working limit. When it is reached the run gets a wrap-up turn to record its progress, then continues in a fresh run. 0 disables.",
   },
   {
     key: "budget.maxToolOutputBytes",
-    label: "Max total tool output per run (bytes)",
+    label: "Total tool output per run",
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_MAX_TOOL_OUTPUT_BYTES",
     fallback: 8388608,
+    scale: scale("bytes", [1 * MB, 2 * MB, 4 * MB, 8 * MB, 16 * MB, 32 * MB, 64 * MB, 0], { zeroLabel: "No limit" }),
     description: "Cumulative size of every tool result in one run. A ceiling on context flooding, not a working limit. 0 disables.",
   },
   {
     key: "budget.noProgressToolCalls",
-    label: "No-progress tool calls",
+    label: "Identical calls before a loop is stopped",
     group: "Run budgets",
     type: "number",
     envVar: "BUDGET_NO_PROGRESS_TOOL_CALLS",
     fallback: 25,
+    scale: scale("count", [5, 10, 15, 25, 40, 60, 0], { zeroLabel: "Never stopped", noun: "repeat" }),
     description:
       "Stops a run repeating the same tool call with the same input this many times in a row — the signature of a thrash loop. 0 disables.",
+  },
+  {
+    key: "budget.maxToolResultBytes",
+    label: "Longest tool result kept whole",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_RESULT_BYTES",
+    fallback: 8192,
+    scale: scale("bytes", [2 * KB, 4 * KB, 8 * KB, 16 * KB, 32 * KB, 64 * KB, 0], { zeroLabel: "Never trimmed" }),
+    description:
+      "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
   },
   {
     key: "pipeline.pauseMode",
@@ -220,6 +236,7 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "PIPELINE_MAX_CONTINUATIONS",
     fallback: 4,
+    scale: scale("count", [1, 2, 3, 4, 5, 6, 8, 10], { noun: "continuation" }),
     description:
       "How many unfinished endings (crash, unreported, verification failure) one station may take "
       + "before a reviewer is sent and the rail parks. An agent's own continue does not spend this. "
@@ -305,11 +322,12 @@ const FIELDS: FieldDef[] = [
 
   {
     key: "statusIntervalMs",
-    label: "Status heartbeat (ms)",
+    label: "Status heartbeat",
     group: "General",
     type: "number",
     envVar: "STATUS_INTERVAL_MS",
     fallback: 1000,
+    scale: scale("ms", [250, 500, 1000, 2000, 5000]),
     description:
       "How often the server pushes elapsed time and token usage during a run. Lower is smoother, higher is quieter.",
   },
@@ -332,16 +350,18 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "RETENTION_EVENTS_PER_RUN",
     fallback: 4000,
+    scale: scale("count", [500, 1000, 2000, 4000, 8000, 16000], { noun: "event" }),
     description:
       "Ceiling on how many transcript events one run may keep. Older events are deleted first; the most recent ones stay so a station's \"what happened\" remains readable. Applies to runs that have not aged out.",
   },
   {
     key: "retention.eventAgeDays",
-    label: "Event age before thin keep (days)",
+    label: "Full transcript kept for",
     group: "Retention",
     type: "number",
     envVar: "RETENTION_EVENT_AGE_DAYS",
     fallback: 30,
+    scale: scale("days", [7, 14, 30, 60, 90, 180, 365, 0], { zeroLabel: "Forever" }),
     description:
       "After a run has been ended this many days, only the last \"final events\" count is kept. Live and recent runs still use the per-run ceiling. 0 disables age thinning.",
   },
@@ -352,6 +372,7 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "RETENTION_KEEP_FINAL_EVENTS",
     fallback: 200,
+    scale: scale("count", [50, 100, 200, 500, 1000], { noun: "event" }),
     description:
       "The last N events of every run are always kept, even after age thinning, so the end of a station's transcript stays readable.",
   },
@@ -438,6 +459,7 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "CLAUDE_MAX_TURNS",
     fallback: 0,
+    scale: scale("count", [10, 25, 50, 100, 200, 400, 0], { zeroLabel: "No limit", noun: "turn" }),
     description: "Stop the run after this many assistant turns. 0 means no limit.",
   },
 
@@ -720,6 +742,7 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "GROK_MAX_TURNS",
     fallback: 0,
+    scale: scale("count", [10, 25, 50, 100, 200, 400, 0], { zeroLabel: "No limit", noun: "turn" }),
     description: "Stop the run after this many agentic turns. 0 means no limit.",
   },
   {
@@ -821,6 +844,7 @@ const FIELDS: FieldDef[] = [
     type: "number",
     envVar: "COPILOT_MAX_AI_CREDITS",
     fallback: 0,
+    scale: scale("count", [5, 10, 25, 50, 100, 250, 0], { zeroLabel: "No cap", noun: "credit" }),
     description: "Stop the run once it has spent this many AI credits. 0 means no cap.",
   },
   {
@@ -1126,27 +1150,29 @@ export const settings = {
   budgetFor(): {
     maxToolCalls: number | null;
     maxWallClockMs: number | null;
-    maxInputTokens: number | null;
+    maxSpendUsd: number | null;
     maxToolOutputBytes: number | null;
     noProgressToolCalls: number | null;
     maxToolResultBytes: number;
   } {
-    const limit = (key: string, fallback: number): number | null => {
-      const base = count(key) || fallback;
-      return base <= 0 ? null : base;
+    // 0 is a real answer here — "no limit" — and not a missing value to paper
+    // over with the default: an unset field already reads as its default.
+    const limit = (key: string): number | null => {
+      const value = count(key);
+      return value <= 0 ? null : value;
     };
+    const minutes = limit("budget.maxWallClockMinutes");
     return {
-      maxToolCalls: limit("budget.maxToolCalls", 1000),
-      maxWallClockMs: (() => {
-        const minutes = limit("budget.maxWallClockMinutes", 90);
-        return minutes === null ? null : minutes * 60_000;
-      })(),
-      // The money. Unchanged, and the one budget a wrap-up turn does not get.
-      maxInputTokens: limit("budget.maxInputTokens", 8_000_000),
-      maxToolOutputBytes: limit("budget.maxToolOutputBytes", 8_388_608),
+      maxToolCalls: limit("budget.maxToolCalls"),
+      maxWallClockMs: minutes === null ? null : minutes * 60_000,
+      // The money, in dollars. The runner turns it into a token allowance at
+      // its own provider's and model's rate, so one cap means the same spend on
+      // every agent. It is the one budget a wrap-up turn does not get.
+      maxSpendUsd: limit("budget.maxSpendUsd"),
+      maxToolOutputBytes: limit("budget.maxToolOutputBytes"),
       // The thrash detector, not a ceiling on work.
-      noProgressToolCalls: (count("budget.noProgressToolCalls") || 25) > 0 ? count("budget.noProgressToolCalls") || 25 : null,
-      maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes") || 8192),
+      noProgressToolCalls: limit("budget.noProgressToolCalls"),
+      maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes")),
     };
   },
   /**
@@ -1406,6 +1432,7 @@ function describeField(field: FieldDef): SettingField {
     danger: field.isDangerous?.(current) ?? false,
     dangerWhenTrue: field.type === "boolean" && (field.isDangerous?.(true) ?? false),
     requiresRestart: field.requiresRestart ?? false,
+    scale: field.scale ?? null,
   };
 }
 

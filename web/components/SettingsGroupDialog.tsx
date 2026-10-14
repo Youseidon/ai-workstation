@@ -40,7 +40,7 @@ export function SettingsGroupDialog({
         </Button>
       }
     >
-      <SettingsGroupPanel group={group} onSaved={onSaved} />
+      <SettingsGroupPanel group={group} onSaved={onSaved} header={false} />
     </Modal>
   );
 }

@@ -17,6 +17,7 @@ import {
   type ModelSelectionMode,
   type ProviderId,
   type ProviderInfo,
+  type ProviderUpdateResult,
   type ProviderUsage,
   type ReasoningEffort,
   type SettingField,
@@ -91,6 +92,7 @@ export function AgentsView() {
   const [savingEnabled, setSavingEnabled] = useState<ProviderId | null>(null);
   const [configuring, setConfiguring] = useState<ProviderId | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [updating, setUpdating] = useState<ProviderId[]>([]);
 
   const agents = providers.map((provider) => agentState(provider, runs, items, lastRun));
   const writing = runs.filter((run) => run.role === "execute").length;
@@ -109,6 +111,29 @@ export function AgentsView() {
       setSavingEnabled(null);
     },
     [save, refreshProviders],
+  );
+
+  const onUpdate = useCallback(
+    async (id: ProviderId, label: string) => {
+      setUpdating((current) => [...current, id]);
+      setNotice(`Updating ${label}…`);
+      try {
+        const response = await fetch(new URL(`/api/providers/${id}/update`, SERVER_URL), { method: "POST" });
+        const body = (await response.json()) as ProviderUpdateResult & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? `update failed (${response.status})`);
+        await refreshProviders();
+        setNotice(
+          body.updated
+            ? `${label} updated: ${body.before ?? "unknown"} → ${body.after ?? "unknown"}. New runs use it; no restart needed.`
+            : `${label} is already up to date (${body.after ?? "version unknown"}).`,
+        );
+      } catch (error) {
+        setNotice(`${label} update failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setUpdating((current) => current.filter((entry) => entry !== id));
+      }
+    },
+    [refreshProviders],
   );
 
   const dirtyKeys = useMemo(() => {
@@ -376,6 +401,8 @@ export function AgentsView() {
                   if (agent.run !== null) interrupt(agent.run.runId);
                 }}
                 onStopConsult={(runId) => interrupt(runId)}
+                updating={updating.includes(agent.provider)}
+                onUpdate={() => void onUpdate(agent.provider, info.label)}
               />
             );
           })}
@@ -549,6 +576,8 @@ function AgentCard({
   onDiscardSettings,
   onStop,
   onStopConsult,
+  updating,
+  onUpdate,
 }: {
   agent: AgentState;
   info: ProviderInfo;
@@ -575,6 +604,8 @@ function AgentCard({
   onDiscardSettings(): void;
   onStop(): void;
   onStopConsult(runId: string): void;
+  updating: boolean;
+  onUpdate(): void;
 }) {
   const theme = providerTheme[agent.provider];
   const busy = agent.run !== null || agent.consultCount > 0;
@@ -722,6 +753,22 @@ function AgentCard({
         <span title={info.binary ?? info.transport} className="shrink-0">
           {info.version ?? "version unknown"}
         </span>
+        {/* Claude's SDK installs side by side, so only a CLI has to be idle. */}
+        <button
+          type="button"
+          onClick={onUpdate}
+          disabled={updating || (info.transport === "spawn" && (busy || info.binary === null))}
+          title={
+            info.transport === "sdk"
+              ? "Install the latest Agent SDK. New runs use it without a server restart."
+              : busy
+                ? "Wait for this agent's run to end before updating its CLI"
+                : "Run this CLI's own updater. New runs use the new version."
+          }
+          className="shrink-0 rounded px-1 text-accent transition-colors hover:bg-accent/10 disabled:cursor-not-allowed disabled:text-fg-dim disabled:opacity-60 disabled:hover:bg-transparent"
+        >
+          {updating ? "Updating…" : info.transport === "sdk" ? "Update SDK" : "Update CLI"}
+        </button>
         <span title="permission mode" className="min-w-0 flex-1 truncate text-right">
           {info.permissionMode}
         </span>

@@ -5,11 +5,19 @@ import { WorkspaceError } from "./workspaces.ts";
 interface PendingInput {
   runId: string;
   request: AgentInputRequestPayload;
+  promise: Promise<Record<string, AgentInputAnswer>>;
   resolve(answers: Record<string, AgentInputAnswer>): void;
   reject(error: Error): void;
 }
 
 const pending = new Map<string, PendingInput>();
+const completed = new Map<string, { requestId: string; answers: Record<string, AgentInputAnswer>; expiresAt: number }>();
+const COMPLETED_TTL_MS = 12 * 60 * 60 * 1000;
+
+function pruneCompleted(): void {
+  const now = Date.now();
+  for (const [runId, entry] of completed) if (entry.expiresAt <= now) completed.delete(runId);
+}
 
 const clean = (value: unknown, max: number): string =>
   typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -74,13 +82,29 @@ export function normalizeAgentInputRequest(input: Record<string, unknown>): Agen
   };
 }
 
-export function waitForAgentInput(runId: string, request: AgentInputRequestPayload): Promise<Record<string, AgentInputAnswer>> {
-  if (pending.has(runId)) throw new WorkspaceError(409, "input_already_pending", "This run is already waiting for input.");
-  return new Promise<Record<string, AgentInputAnswer>>((resolve, reject) => {
-    pending.set(runId, { runId, request, resolve, reject });
+export function waitForAgentInput(runId: string, request: AgentInputRequestPayload): { answers: Promise<Record<string, AgentInputAnswer>>; registered: boolean } {
+  pruneCompleted();
+  const settled = completed.get(runId);
+  if (settled?.requestId === request.requestId) {
+    return { answers: Promise.resolve(settled.answers), registered: false };
+  }
+  const existing = pending.get(runId);
+  if (existing !== undefined) {
+    if (existing.request.requestId !== request.requestId) {
+      throw new WorkspaceError(409, "input_already_pending", "This run is already waiting for input.");
+    }
+    return { answers: existing.promise, registered: false };
+  }
+  let resolve!: (answers: Record<string, AgentInputAnswer>) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<Record<string, AgentInputAnswer>>((accept, refuse) => {
+    resolve = accept;
+    reject = refuse;
   }).finally(() => {
     if (pending.get(runId)?.request.requestId === request.requestId) pending.delete(runId);
   });
+  pending.set(runId, { runId, request, promise, resolve, reject });
+  return { answers: promise, registered: true };
 }
 
 export function answerAgentInput(runId: string, requestId: string, answers: Record<string, AgentInputAnswer>): AgentInputRequestPayload {
@@ -106,6 +130,7 @@ export function answerAgentInput(runId: string, requestId: string, answers: Reco
     }
     normalized[question.id] = value;
   }
+  completed.set(runId, { requestId, answers: normalized, expiresAt: Date.now() + COMPLETED_TTL_MS });
   entry.resolve(normalized);
   return entry.request;
 }

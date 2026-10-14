@@ -7,6 +7,7 @@ import { DecisionDeck } from "@/components/DecisionDeck";
 import { ContextPicker } from "@/components/ContextPicker";
 import { LogPanel } from "@/components/LogPanel";
 import { LaunchLoader, type LaunchStage } from "./LaunchLoader";
+import { BudgetStrip } from "@/components/settings/BudgetStrip";
 import { useToast } from "@/components/ui/Toast";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { useAgentConsole } from "@/lib/useAgentConsole";
@@ -235,6 +236,7 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
               </div>
             )}
             {composer}
+            <BudgetStrip provider={selected} providerLabel={selectedInfo?.label ?? selected} model={models.resolve(selected)} />
           </div>
         </div>
       ) : (

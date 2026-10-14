@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AgentInputAnswer, ClientMessage, ServerMessage } from "@agent-console/shared";
-import { isRunRole } from "@agent-console/shared";
+import { isProviderId, isRunRole } from "@agent-console/shared";
 import type { DbAccessPayload, NormalizedEvent } from "@agent-console/shared";
 import { newId } from "./lib/ids.ts";
 import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { config } from "./config.ts";
 import { collectAccountUsage, detectProviders } from "./adapters/registry.ts";
+import { ProviderBusyError, updateProvider } from "./providerUpdate.ts";
 import { resetSettings, snapshot, updateSettings } from "./settings.ts";
 import { createLogger } from "./lib/logger.ts";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./lib/instanceLock.ts";
@@ -180,11 +181,13 @@ const httpServer = createServer((req, res) => {
           // Registration is synchronous. Do it before broadcasting so a fast
           // operator cannot answer in the gap between paint and the waiter.
           const waiting=waitForAgentInput(runId,request);
-          const event:NormalizedEvent={id:newId("evt"),runId,provider:live.provider,model:live.model,timestamp:new Date().toISOString(),type:"input_request",payload:request};
-          workspaces.recordAgentEvent(runId,event);
-          runHub.event(runId,event);
-          recordDbAccess(runId,describeAcceptedWrite({operation:"input",before:null,after:null,requestId:request.requestId,durationMs:Date.now()-startedAt}));
-          const answers=await waiting;
+          if(waiting.registered){
+            const event:NormalizedEvent={id:newId("evt"),runId,provider:live.provider,model:live.model,timestamp:new Date().toISOString(),type:"input_request",payload:request};
+            workspaces.recordAgentEvent(runId,event);
+            runHub.event(runId,event);
+            recordDbAccess(runId,describeAcceptedWrite({operation:"input",before:null,after:null,requestId:request.requestId,durationMs:Date.now()-startedAt}));
+          }
+          const answers=await waiting.answers;
           sendJson(res,200,{requestId:request.requestId,answers});
         }).catch(error=>sendJson(res,error instanceof WorkspaceError?error.status:409,{error:{code:error instanceof WorkspaceError?error.code:"input_cancelled",message:error instanceof Error?error.message:String(error)}}));
         return;
@@ -367,6 +370,32 @@ const httpServer = createServer((req, res) => {
       .catch((error: unknown) => {
         log.error("provider usage fetch failed", error);
         sendJson(res, 500, { error: "provider usage fetch failed" });
+      });
+    return;
+  }
+
+  const providerUpdate = /^\/api\/providers\/([a-z]+)\/update$/.exec(url.pathname);
+  if (providerUpdate !== null) {
+    const id = providerUpdate[1];
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    if (!isProviderId(id)) {
+      sendJson(res, 404, { error: `unknown provider ${id}` });
+      return;
+    }
+    updateProvider(id)
+      .then(async (result) => {
+        // Every open tab shows the version, not only the one that clicked.
+        await broadcastSettingsChange();
+        sendJson(res, 200, result);
+      })
+      .catch((error: unknown) => {
+        log.error(`provider update failed (${id})`, error);
+        sendJson(res, error instanceof ProviderBusyError ? 409 : 500, {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     return;
   }

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import type { AdapterEvent, NormalizedEvent } from "@agent-console/shared";
+import { inputTokenAllowance, type AdapterEvent, type NormalizedEvent } from "@agent-console/shared";
 import type { AgentAdapter, RunOptions } from "../src/adapters/types.ts";
 import { startRun, truncateToolOutput, type RunMetrics } from "../src/runner.ts";
-import { settings, snapshot } from "../src/settings.ts";
+import { resetSettings, settings, snapshot, updateSettings } from "../src/settings.ts";
 
 /**
  * Emits whatever the test asks for. A script ending in a `result` event returns
@@ -186,8 +186,31 @@ describe("the shipped allowance", () => {
     // Input tokens is the money, and no-progress is the thrash detector. Both
     // mean something the tool-call cap never did, so neither was relaxed.
     const budget = settings.budgetFor();
-    assert.equal(budget.maxInputTokens, 8_000_000);
+    assert.equal(budget.maxSpendUsd, 100);
     assert.equal(budget.noProgressToolCalls, 25);
+  });
+
+  test("one spend cap is a different token allowance on each provider", () => {
+    // The cap is money, so the tokens it buys follow the model's price: the
+    // same $100 has to stop an Opus run long before it stops a mid-tier one.
+    assert.equal(inputTokenAllowance(100, "claude", "claude-opus-5-5"), 6_666_667);
+    assert.equal(inputTokenAllowance(100, "claude", "claude-sonnet-5-5"), 33_333_333);
+    assert.equal(inputTokenAllowance(100, "codex", "gpt-5.5"), 40_000_000);
+    assert.equal(inputTokenAllowance(null, "claude", "claude-opus-5-5"), null);
+    assert.equal(inputTokenAllowance(0, "claude", null), null);
+  });
+
+  test("0 switches a budget off instead of quietly restoring its default", () => {
+    try {
+      const saved = updateSettings({ "budget.maxToolCalls": 0, "budget.maxSpendUsd": 0, "budget.noProgressToolCalls": 0 });
+      assert.deepEqual(saved.errors, []);
+      const budget = settings.budgetFor();
+      assert.equal(budget.maxToolCalls, null);
+      assert.equal(budget.maxSpendUsd, null);
+      assert.equal(budget.noProgressToolCalls, null);
+    } finally {
+      resetSettings(["budget.maxToolCalls", "budget.maxSpendUsd", "budget.noProgressToolCalls"]);
+    }
   });
 
   test("a sub-step's allowance is a station's — there is no depth to differ on", () => {

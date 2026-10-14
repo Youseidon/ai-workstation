@@ -568,3 +568,85 @@ body::before {
 .shell-rail-active {
   box-shadow: inset 2px 0 0 var(--accent);
 }
+
+/* --------------------------------------------------------------------------
+   Stop slider — the track for a numeric setting offered as a ladder of values.
+   `--fill` is the travelled share of the track; `--range-color` its hue.
+   -------------------------------------------------------------------------- */
+
+.ac-range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ac-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ac-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--range-color, var(--accent)) var(--fill, 0%),
+    var(--surface-3) var(--fill, 0%)
+  );
+}
+
+.ac-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.ac-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--range-color, var(--accent));
+}
+
+.ac-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 2px solid var(--range-color, var(--accent));
+  border-radius: 999px;
+  background: var(--surface-0);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+
+.ac-range::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--range-color, var(--accent));
+  border-radius: 999px;
+  background: var(--surface-0);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+
+.ac-range:not(:disabled):hover::-webkit-slider-thumb,
+.ac-range:not(:disabled):active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.ac-range:focus-visible {
+  outline: none;
+}
+
+.ac-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--range-color, var(--accent)) 30%, transparent);
+}
+
+.ac-range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--range-color, var(--accent)) 30%, transparent);
+}
