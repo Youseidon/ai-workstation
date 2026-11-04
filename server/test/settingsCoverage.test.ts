@@ -66,7 +66,7 @@ test("every settings field has a code reader", () => {
     // Direct helpers, or a local wrapper that still names the key (budgetFor's
     // `limit("budget.maxToolCalls", …)` pattern).
     const named = new RegExp(
-      String.raw`(?:count|flag|text|optionalText|commaList|argvList|limit)\(\s*["\`]${field.key.replace(/\./g, "\\.")}["\`]`,
+      String.raw`(?:count|flag|text|optionalText|commaList|argvList|limit|bytes)\(\s*["\`]${field.key.replace(/\./g, "\\.")}["\`]`,
     );
     assert.match(accessor, named, `${field.key} is declared but never read by the settings accessor`);
   }
@@ -77,6 +77,45 @@ test("retention group is present and env-prefixed", () => {
   assert.equal(fields.length, 3);
   for (const field of fields) {
     assert.match(field.envVar, /^RETENTION_/);
+  }
+});
+
+test("resource containment defaults fit an 8 GiB WSL host and remain configurable", () => {
+  const keys = ["resources.memoryHighMiB", "resources.memoryMaxMiB", "resources.memorySwapMaxMiB", "resources.tasksMax"];
+  resetSettings(keys);
+  try {
+    assert.deepEqual(settings.resourceLimits, {
+      memoryHighBytes: 3 * 1024 ** 3,
+      memoryMaxBytes: 4 * 1024 ** 3,
+      memorySwapMaxBytes: 512 * 1024 ** 2,
+      tasksMax: 512,
+    });
+    const updated = updateSettings({
+      "resources.memoryHighMiB": "2048",
+      "resources.memoryMaxMiB": 3072,
+      "resources.memorySwapMaxMiB": 0,
+      "resources.tasksMax": 256,
+    });
+    assert.deepEqual(updated.errors, []);
+    assert.deepEqual(settings.resourceLimits, {
+      memoryHighBytes: 2 * 1024 ** 3,
+      memoryMaxBytes: 3 * 1024 ** 3,
+      memorySwapMaxBytes: 0,
+      tasksMax: 256,
+    });
+  } finally {
+    resetSettings(keys);
+  }
+});
+
+test("open tool call timeout defaults to fifteen minutes and 0 disables it", () => {
+  resetSettings(["budget.maxOpenToolCallMinutes"]);
+  try {
+    assert.equal(settings.budgetFor().maxOpenToolCallMs, 15 * 60_000);
+    assert.equal(updateSettings({ "budget.maxOpenToolCallMinutes": 0 }).ok, true);
+    assert.equal(settings.budgetFor().maxOpenToolCallMs, null);
+  } finally {
+    resetSettings(["budget.maxOpenToolCallMinutes"]);
   }
 });
 

@@ -70,6 +70,7 @@ export function ChangesIndex() {
             <span className="font-mono text-[11px] text-fg-dim">{shortSha(item.baseCommit)} → {shortSha(item.headCommit)}</span>
             <DiffStat change={item}/>
             {item.commitCount>0&&<span className="text-xs text-fg-dim">{item.commitCount} {item.commitCount===1?"commit":"commits"}</span>}
+            {item.pipeline===null&&<Badge tone="accent" uppercase>Direct run</Badge>}
             <div className="relative z-10 ml-auto flex flex-wrap items-center gap-2">
               <Link href={activityHref(item.runId)} className={ACTION} title="Open the run that produced these changes">Activity</Link>
               {item.pipeline!==null&&<Link href={`/pipeline/${item.pipeline.id}`} className={cn(ACTION,"max-w-[14rem]")} title={`Open pipeline: ${item.pipeline.name}`}><span className="text-fg-dim">Pipeline</span><span className="truncate">{item.pipeline.name}</span></Link>}
@@ -96,6 +97,7 @@ export function ChangeReview({runId}:{runId:string}) {
           <h1 className="mt-2 text-xl text-fg">{detail.message??(detail.state==="UNCHANGED"?"No source changes":"Agent change review")}</h1>
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-fg-muted">
             <Badge tone={stateTone(detail.state)}>{stateLabel(detail.state)}</Badge>
+            {detail.pipeline===null&&<Badge tone="accent" uppercase>Direct run</Badge>}
             <span className="inline-flex min-w-0 items-center gap-1.5"><span className="text-fg-dim">{detail.commitCount===1?"1 commit to":`${detail.commitCount} commits to`}</span><BranchChip branch={detail.branch} className="text-xs"/></span>
             <span className="font-mono text-[11px] text-fg-dim">{shortSha(detail.baseCommit)} → {shortSha(detail.headCommit)}</span>
             <DiffStat change={detail}/>

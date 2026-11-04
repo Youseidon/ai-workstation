@@ -8,6 +8,7 @@ import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDra
 import { startConsult, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
 import { runChangeDetail, runFileDiff } from "./gitChanges.ts";
+import { workspaceGitContext } from "./workspaceGit.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
 /** A whole instruction file, as a proposal edit PATCHes it. Two 64k fields' worth with headroom for escaping. */
@@ -447,6 +448,15 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       if (method === "GET") json(res, 200, { workspaces: workspaces.list() });
       else if (method === "POST") json(res, 201, { workspace: workspaces.create(await body(req)) });
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
+    const gitContextMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/git-context$/);
+    if(gitContextMatch){
+      if(method!=="GET")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      else {
+        const workspace=workspaces.get(id(gitContextMatch[1]!));
+        json(res,200,{git:workspaceGitContext(workspace.workDirectory)});
+      }
       return true;
     }
     /*

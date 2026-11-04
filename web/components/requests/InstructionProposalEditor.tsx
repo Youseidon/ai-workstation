@@ -5,7 +5,8 @@ import type { DiffLine, InstructionProposalRecord, ProviderId, ProviderInfo } fr
 import { INSTRUCTION_FILE_NAMES, diffLineCounts, diffLines } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { Button } from "../ui/Button";
-import { Select, TextArea, TextInput } from "../ui/Field";
+import { TextArea, TextInput } from "../ui/Field";
+import { ProviderModelPicker, useAgentChoice } from "../programs/ProviderModelPicker";
 
 interface Props {
   proposal: InstructionProposalRecord;
@@ -17,7 +18,7 @@ interface Props {
   busy: boolean;
   onSave(content: string): Promise<boolean>;
   onApply(force: boolean): Promise<void>;
-  onRework(feedback: string, provider: ProviderId): Promise<boolean>;
+  onRework(feedback: string, provider: ProviderId, model: string | null): Promise<boolean>;
   onDiscard(): Promise<void>;
   onDelete(): Promise<void>;
 }
@@ -57,7 +58,8 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
   const [tab, setTab] = useState<"changes" | "edit">("changes");
   const [openFolds, setOpenFolds] = useState<Set<number>>(() => new Set());
   const [feedback, setFeedback] = useState("");
-  const [reworkProvider, setReworkProvider] = useState<ProviderId | "">(providers.find((provider) => provider.available)?.id ?? "");
+  const reworkAgent = useAgentChoice(providers);
+  const reworkProvider = reworkAgent.choice.provider;
 
   const lines = useMemo(() => diffLines(proposal.baseline, content), [proposal.baseline, content]);
   const counts = diffLineCounts(lines);
@@ -68,7 +70,7 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
   const unchanged = counts.added === 0 && counts.removed === 0;
 
   return (
-    <div className="space-y-3 border-t border-line bg-surface-0/40 px-4 py-4">
+    <div className="space-y-3 p-5">
       <div className="space-y-1 text-[11px] leading-relaxed text-fg-dim">
         {proposal.goal !== "" && <p><span className="text-fg-muted">Asked for:</span> {proposal.goal}</p>}
         {proposal.origin === "run" && (
@@ -166,29 +168,26 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
             <span className="flex-1" />
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onDiscard()}>Discard</Button>
           </div>
-          <div className={cn("flex flex-wrap items-end gap-2 border-t border-line pt-3", providers.length === 0 && "opacity-60")}>
+          <div className={cn("space-y-3 border-t border-line pt-3", providers.length === 0 && "opacity-60")}>
             <TextInput
               label="Ask the agent to rework it"
-              fieldClassName="min-w-[16rem] flex-1"
               value={feedback}
               placeholder="e.g. Shorter. Keep the testing section as it was."
               onChange={(event) => setFeedback(event.target.value)}
             />
-            <Select fieldClassName="w-40" value={reworkProvider} onChange={(event) => setReworkProvider(event.target.value as ProviderId)}>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id} disabled={!provider.available}>{provider.id}</option>
-              ))}
-            </Select>
-            <Button
-              variant="secondary"
-              disabled={busy || dirty || reworkProvider === "" || feedback.trim() === ""}
-              title={dirty ? "Save your edits first; the agent starts from the saved text" : undefined}
-              onClick={async () => {
-                if (await onRework(feedback.trim(), reworkProvider as ProviderId)) setFeedback("");
-              }}
-            >
-              Rework
-            </Button>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <ProviderModelPicker providers={providers} state={reworkAgent} label="Agent and model" placement="above" />
+              <Button
+                variant="secondary"
+                disabled={busy || dirty || reworkProvider === "" || feedback.trim() === ""}
+                title={dirty ? "Save your edits first; the agent starts from the saved text" : undefined}
+                onClick={async () => {
+                  if (await onRework(feedback.trim(), reworkProvider as ProviderId, reworkAgent.choice.model)) setFeedback("");
+                }}
+              >
+                Rework
+              </Button>
+            </div>
           </div>
         </>
       )}

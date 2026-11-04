@@ -14,7 +14,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,7 @@ import type { AdapterEvent, ProgramRecord, PromptRecord, SuiteRecord } from "@ag
 import { setAdapterOverride } from "../src/adapters/registry.ts";
 import type { AgentAdapter, RunOptions } from "../src/adapters/types.ts";
 import { pipelineScheduler } from "../src/pipelineScheduler.ts";
+import { checkpointRun, runChangeDetail } from "../src/gitChanges.ts";
 import { runHub } from "../src/runHub.ts";
 import { startExecute } from "../src/runService.ts";
 import { resetSettings, updateSettings } from "../src/settings.ts";
@@ -183,6 +184,39 @@ async function settle(workspaceId: number): Promise<void> {
   }
   throw new Error("runs did not settle");
 }
+
+test("a saved prompt run started outside a pipeline appears in Changes", async () => {
+  const ctx = fixture();
+  const adapter = scriptedProvider([{
+    finish: true,
+    post: (runId) => {
+      writeFileSync(join(ctx.workspace.workDirectory, "standalone.ts"), "export const standalone = true;\n");
+      checkpointRun(runId, "Add standalone feature", "claude", null);
+    },
+  }]);
+  setAdapterOverride("claude", adapter);
+  try {
+    const { runId } = await startExecute({
+      workspaceId: ctx.workspace.id,
+      provider: "claude",
+      model: null,
+      promptId: ctx.prompt.id,
+    });
+    await settle(ctx.workspace.id);
+
+    const changes = workspaces.runChangeSets(ctx.workspace.id);
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0]?.runId, runId);
+    assert.equal(changes[0]?.promptTitle, ctx.prompt.title);
+    assert.equal(changes[0]?.pipeline, null);
+    assert.equal(changes[0]?.filesChanged, 1);
+    assert.equal(changes[0]?.message, "Add standalone feature");
+    assert.equal(runChangeDetail(runId).files[0]?.path, "standalone.ts");
+  } finally {
+    setAdapterOverride("claude", null);
+    ctx.cleanup();
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* A budget stop earns exactly one turn                                */

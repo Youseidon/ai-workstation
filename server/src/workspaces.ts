@@ -1416,6 +1416,14 @@ if (afterThirtyEight < 39) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(39,?)").run(new Date().toISOString());
 }
 
+const afterThirtyNine = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterThirtyNine < 40) {
+  // systemd's cgroup-wide MemoryPeak is the only reliable measure when a
+  // provider launches compilers, language servers and test workers beneath it.
+  db.exec("ALTER TABLE agent_run ADD COLUMN peak_memory_bytes INTEGER;");
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(40,?)").run(new Date().toISOString());
+}
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1480,7 +1488,7 @@ const recoverAbandonedRuns=db.transaction(()=>{
 });
 
 /** What a finished run spent, as recorded by the runner. */
-export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null; sessionId?: string | null }
+export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null; peakMemoryBytes?: number | null; sessionId?: string | null }
 
 type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string; claude_md: string; agents_md: string };
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
@@ -4305,8 +4313,8 @@ export const workspaces = {
   finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics,options?:{deferStatus?:boolean}):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role,wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole;wrapupOf:string|null}|undefined;if(!run)return;
     const now=new Date().toISOString();
-    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,session_id=COALESCE(?,session_id) WHERE id=?")
-      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,metrics?.sessionId??null,runId);
+    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,peak_memory_bytes=?,session_id=COALESCE(?,session_id) WHERE id=?")
+      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,metrics?.peakMemoryBytes??null,metrics?.sessionId??null,runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     if(options?.deferStatus===true)return;

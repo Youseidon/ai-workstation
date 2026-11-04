@@ -331,6 +331,9 @@ test("each ending explains itself in a sentence an operator can act on", () => {
   assert.match(crashed, /observed failure/i);
   const budget = endOfRunReason({ status: "IN_PROGRESS", outcome: "done", stopReason: "budget_tool_calls:200" });
   assert.match(budget, /resume from there/i);
+  const memory = endOfRunReason({ status: "IN_PROGRESS", outcome: "error", stopReason: "resource_memory_limit:4294967296" });
+  assert.match(memory, /memory limit reached/i);
+  assert.match(memory, /descendant process tree/i);
   const silent = endOfRunReason({ status: "IN_PROGRESS", outcome: "done", stopReason: null });
   assert.match(silent, /unknown/i);
 });

@@ -14,13 +14,14 @@ const FOCUSABLE = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-export type ModalSize = "sm" | "md" | "lg" | "xl";
+export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl";
 
 const SIZES: Record<ModalSize, string> = {
   sm: "max-w-sm",
   md: "max-w-lg",
   lg: "max-w-2xl",
   xl: "max-w-4xl",
+  "2xl": "max-w-6xl",
 };
 
 export interface ModalProps {
@@ -33,6 +34,10 @@ export interface ModalProps {
   footer?: ReactNode;
   /** Set false for flows that must be resolved by a button (destructive ops). */
   dismissible?: boolean;
+  /** Replaces the body's default padding, e.g. for split layouts that run edge to edge. */
+  bodyClassName?: string;
+  /** Extra controls in the header, left of the close button. */
+  headerActions?: ReactNode;
   children?: ReactNode;
 }
 
@@ -50,6 +55,8 @@ export function Modal({
   size = "md",
   footer,
   dismissible = true,
+  bodyClassName,
+  headerActions,
   children,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -151,6 +158,7 @@ export function Modal({
               </p>
             )}
           </div>
+          {headerActions}
           {dismissible && (
             <button
               type="button"
@@ -170,7 +178,7 @@ export function Modal({
           )}
         </header>
 
-        {children !== undefined && <div className="px-5 py-4">{children}</div>}
+        {children !== undefined && <div className={bodyClassName ?? "px-5 py-4"}>{children}</div>}
 
         {footer !== undefined && (
           <footer className="flex items-center justify-end gap-2 border-t border-line px-5 py-3.5">

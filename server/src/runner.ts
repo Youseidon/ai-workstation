@@ -61,12 +61,14 @@ export interface RunBudget {
   noProgressToolCalls: number | null;
   /** Per-result cap; 0 disables truncation. */
   maxToolResultBytes: number;
+  /** Longest one tool_use may remain unmatched by tool_result. */
+  maxOpenToolCallMs: number | null;
 }
 
 /** A snapshot with every budget disabled, for tests and unmetered roles. */
 export function emptyBudgetSnapshot(): BudgetSnapshot {
   const none = { used: 0, limit: null };
-  return { toolCalls: none, wallClockMs: none, inputTokens: none, toolOutputBytes: none, pressure: 0, warning: null, exhausted: false };
+  return { toolCalls: none, wallClockMs: none, inputTokens: none, toolOutputBytes: none, openToolCallMs: none, pressure: 0, warning: null, exhausted: false };
 }
 
 /** What a run actually spent. Persisted on `agent_run` when it ends. */
@@ -76,6 +78,8 @@ export interface RunMetrics {
   toolOutputBytes: number;
   /** Set when the runner stopped the run itself. */
   stopReason: string | null;
+  /** Peak bytes charged to the run's systemd cgroup, when available. */
+  peakMemoryBytes: number | null;
   /**
    * The provider's own id for the conversation this run had, when it announced
    * one. Null for a provider that never did — the wrap-up turn then falls back
@@ -91,6 +95,7 @@ export interface BudgetSnapshot {
   /** Cost-weighted: cache reads count at their cache-read rate, not in full. */
   inputTokens: { used: number; limit: number | null };
   toolOutputBytes: { used: number; limit: number | null };
+  openToolCallMs: { used: number; limit: number | null };
   /** 0-1, the highest utilisation across all active budgets. */
   pressure: number;
   warning: string | null;
@@ -198,12 +203,15 @@ export function startRun(args: StartRunArgs): RunHandle {
     maxToolOutputBytes: args.budget?.maxToolOutputBytes !== undefined ? args.budget.maxToolOutputBytes : base.maxToolOutputBytes,
     noProgressToolCalls: args.budget?.noProgressToolCalls !== undefined ? args.budget.noProgressToolCalls : base.noProgressToolCalls,
     maxToolResultBytes: args.budget?.maxToolResultBytes ?? base.maxToolResultBytes,
+    maxOpenToolCallMs: args.budget?.maxOpenToolCallMs !== undefined ? args.budget.maxOpenToolCallMs : base.maxOpenToolCallMs,
   };
   let toolCalls = 0;
   let toolOutputBytes = 0;
   let repeatSignature: string | null = null;
   let repeatCount = 0;
   let budgetStopReason: string | null = null;
+  let peakMemoryBytes: number | null = null;
+  const openTools = new Map<string, { startedAt: number; timer: NodeJS.Timeout | null }>();
   let warned = false;
 
   const elapsed = () => Date.now() - startedAt;
@@ -216,17 +224,20 @@ export function startRun(args: StartRunArgs): RunHandle {
 
   const budgetSnapshot = (): BudgetSnapshot => {
     const inputTokens = spentInputTokens();
+    const oldestOpenToolMs = Math.max(0, ...[...openTools.values()].map((tool) => Date.now() - tool.startedAt));
     const pressure = Math.max(
       ratio(toolCalls, budget.maxToolCalls),
       ratio(elapsed(), budget.maxWallClockMs),
       ratio(inputTokens, budget.maxInputTokens),
       ratio(toolOutputBytes, budget.maxToolOutputBytes),
+      ratio(oldestOpenToolMs, budget.maxOpenToolCallMs),
     );
     return {
       toolCalls: { used: toolCalls, limit: budget.maxToolCalls },
       wallClockMs: { used: elapsed(), limit: budget.maxWallClockMs },
       inputTokens: { used: inputTokens, limit: budget.maxInputTokens },
       toolOutputBytes: { used: toolOutputBytes, limit: budget.maxToolOutputBytes },
+      openToolCallMs: { used: oldestOpenToolMs, limit: budget.maxOpenToolCallMs },
       pressure,
       warning: pressure >= BUDGET_WARN_FRACTION && budgetStopReason === null
         ? "You have used most of this run's budget. Bank your work now: post a PROGRESS remark recording exactly what is verified, then post DONE or BLOCKED, or decompose the remainder. Do not start new investigation."
@@ -271,6 +282,8 @@ export function startRun(args: StartRunArgs): RunHandle {
           usage: stampUsage(event.payload.usage),
           text: event.payload.text ?? null,
           exitCode: event.payload.exitCode ?? null,
+          stopReason: event.payload.stopReason ?? null,
+          peakMemoryBytes: event.payload.peakMemoryBytes ?? null,
         };
         return { ...base, type: "result", payload };
       }
@@ -315,11 +328,40 @@ export function startRun(args: StartRunArgs): RunHandle {
       const signature = `${normalized.payload.name}:${JSON.stringify(normalized.payload.input).slice(0, 200)}`;
       if (signature === repeatSignature) repeatCount += 1;
       else { repeatSignature = signature; repeatCount = 1; }
+      const previous = openTools.get(normalized.payload.toolUseId);
+      if (previous?.timer !== null && previous?.timer !== undefined) clearTimeout(previous.timer);
+      const timer = budget.maxOpenToolCallMs === null ? null : setTimeout(() => {
+        if (finished || budgetStopReason !== null || !openTools.has(normalized.payload.toolUseId)) return;
+        budgetStopReason = `budget_open_tool_call_ms:${budget.maxOpenToolCallMs}`;
+        log.warn(`tool ${normalized.payload.name} (${normalized.payload.toolUseId}) remained open; stopping run (${budgetStopReason})`);
+        emit({
+          type: "error",
+          payload: {
+            message: `Tool call ${normalized.payload.name} did not return within ${budget.maxOpenToolCallMs}ms`,
+            fatal: true,
+            detail: budgetStopReason,
+          },
+        });
+        void stopForBudget();
+      }, budget.maxOpenToolCallMs);
+      timer?.unref();
+      openTools.set(normalized.payload.toolUseId, { startedAt: Date.now(), timer });
     }
     if (normalized.type === "tool_result") {
+      const open = openTools.get(normalized.payload.toolUseId);
+      if (open?.timer !== null && open?.timer !== undefined) clearTimeout(open.timer);
+      openTools.delete(normalized.payload.toolUseId);
       toolOutputBytes += Buffer.byteLength(normalized.payload.output);
       // A write means the run is making progress, whatever it repeated to get there.
       if (!normalized.payload.isError) repeatCount = Math.min(repeatCount, 1);
+    }
+    if (normalized.type === "result") {
+      if (normalized.payload.stopReason !== null && normalized.payload.stopReason !== undefined) {
+        budgetStopReason = normalized.payload.stopReason;
+      }
+      if (normalized.payload.peakMemoryBytes !== null && normalized.payload.peakMemoryBytes !== undefined) {
+        peakMemoryBytes = normalized.payload.peakMemoryBytes;
+      }
     }
     args.onEvent(normalized);
     if (finished || budgetStopReason !== null) return;
@@ -406,11 +448,13 @@ export function startRun(args: StartRunArgs): RunHandle {
     } finally {
       finished = true;
       clearInterval(ticker);
+      for (const open of openTools.values()) if (open.timer !== null) clearTimeout(open.timer);
+      openTools.clear();
     }
 
     emit({ type: "status", payload: { state: finalState } });
     log.info(`run ${finalState} in ${elapsed()}ms · ${toolCalls} tool calls · ${toolOutputBytes} bytes of tool output`);
-    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason, sessionId });
+    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason, peakMemoryBytes, sessionId });
     return finalState;
   })();
 

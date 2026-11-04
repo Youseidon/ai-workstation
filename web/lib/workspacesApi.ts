@@ -1,7 +1,7 @@
 import type {
   AgentRequest, InstructionProposalRecord,
   ProgramDraftBody, ProgramDraftRecord, ProgramDraftPreview,
-  StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, RunChangeDetail, RunChangeSummary, RunFileDiff, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
+  StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, RunChangeDetail, RunChangeSummary, RunFileDiff, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceGitContext, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
 export class ApiError extends Error {
   constructor(
@@ -58,6 +58,7 @@ export const workspaceApi = {
   activity(serverUrl:string,promptId:number){return request<PromptActivity>(serverUrl,`/api/prompts/${promptId}/activity`);},
   interruptRun(serverUrl:string,runId:string){return request<{interrupted:boolean}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/interrupt`,{method:"POST",...json({})});},
   async list(serverUrl: string) { return (await request<{ workspaces: WorkspaceRecord[] }>(serverUrl, "/api/workspaces")).workspaces; },
+  async gitContext(serverUrl: string, id: number) { return (await request<{ git: WorkspaceGitContext }>(serverUrl, `/api/workspaces/${id}/git-context`)).git; },
   async tree(serverUrl: string, id: number) { return (await request<{ workspace: WorkspaceTree }>(serverUrl, `/api/workspaces/${id}/tree`)).workspace; },
   async prompts(serverUrl: string, id: number) { return (await request<{ prompts: PromptOption[] }>(serverUrl, `/api/workspaces/${id}/prompts`)).prompts; },
   create(serverUrl: string, value: unknown) { return request(serverUrl, "/api/workspaces", { method: "POST", ...json(value) }); },

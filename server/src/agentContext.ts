@@ -285,7 +285,7 @@ export interface ProgressApiArgs {
   port: number;
   /** False at maximum decompose depth: the operation would be refused. */
   canDecompose: boolean;
-  /** False for operator-started runs, which must not commit a pre-existing dirty tree. */
+  /** False when this run has no Git change capture and therefore cannot checkpoint. */
   canCheckpoint?: boolean;
   /** Standalone runs may pause for decisions; pipeline-managed runs never may. */
   canAsk?: boolean;

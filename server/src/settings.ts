@@ -68,7 +68,7 @@ function scale(unit: SettingScale["unit"], stops: number[], extra: { zeroLabel?:
 const KB = 1024;
 const MB = 1024 * 1024;
 
-export const GROUPS = ["Model access", "General", "Run budgets", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"] as const;
+export const GROUPS = ["Model access", "General", "Run budgets", "Resource containment", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"] as const;
 
 const FIELDS: FieldDef[] = [
   {
@@ -180,6 +180,56 @@ const FIELDS: FieldDef[] = [
     scale: scale("bytes", [2 * KB, 4 * KB, 8 * KB, 16 * KB, 32 * KB, 64 * KB, 0], { zeroLabel: "Never trimmed" }),
     description:
       "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
+  },
+  {
+    key: "budget.maxOpenToolCallMinutes",
+    label: "Time for one open tool call",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_OPEN_TOOL_CALL_MINUTES",
+    fallback: 15,
+    scale: scale("minutes", [5, 10, 15, 30, 60, 90, 0], { zeroLabel: "No limit" }),
+    description: "Stops a run when a tool_use has no matching tool_result within this time. 0 disables.",
+  },
+  {
+    key: "resources.memoryHighMiB",
+    label: "Memory pressure threshold",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_HIGH_MIB",
+    fallback: 3072,
+    scale: scale("count", [1024, 2048, 3072, 4096, 6144, 0], { zeroLabel: "Disabled", noun: "MiB" }),
+    description: "Linux/systemd MemoryHigh for one provider and all of its descendants. 0 disables the soft threshold.",
+  },
+  {
+    key: "resources.memoryMaxMiB",
+    label: "Memory hard limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_MAX_MIB",
+    fallback: 4096,
+    scale: scale("count", [1024, 2048, 3072, 4096, 6144, 0], { zeroLabel: "Disabled", noun: "MiB" }),
+    description: "Linux/systemd MemoryMax for one provider and its complete descendant tree. 0 disables the hard memory limit.",
+  },
+  {
+    key: "resources.memorySwapMaxMiB",
+    label: "Swap hard limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_SWAP_MAX_MIB",
+    fallback: 512,
+    scale: scale("count", [0, 256, 512, 1024, 2048], { zeroLabel: "No swap", noun: "MiB" }),
+    description: "Linux/systemd MemorySwapMax shared by the provider tree. 0 prevents the run from consuming swap.",
+  },
+  {
+    key: "resources.tasksMax",
+    label: "Process/thread limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_TASKS_MAX",
+    fallback: 512,
+    scale: scale("count", [128, 256, 512, 1024, 0], { zeroLabel: "Disabled", noun: "task" }),
+    description: "Linux/systemd TasksMax for the complete provider process tree. 0 disables the task limit.",
   },
   {
     key: "pipeline.pauseMode",
@@ -1154,6 +1204,7 @@ export const settings = {
     maxToolOutputBytes: number | null;
     noProgressToolCalls: number | null;
     maxToolResultBytes: number;
+    maxOpenToolCallMs: number | null;
   } {
     // 0 is a real answer here — "no limit" — and not a missing value to paper
     // over with the default: an unset field already reads as its default.
@@ -1162,6 +1213,7 @@ export const settings = {
       return value <= 0 ? null : value;
     };
     const minutes = limit("budget.maxWallClockMinutes");
+    const openToolMinutes = limit("budget.maxOpenToolCallMinutes");
     return {
       maxToolCalls: limit("budget.maxToolCalls"),
       maxWallClockMs: minutes === null ? null : minutes * 60_000,
@@ -1173,6 +1225,25 @@ export const settings = {
       // The thrash detector, not a ceiling on work.
       noProgressToolCalls: limit("budget.noProgressToolCalls"),
       maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes")),
+      maxOpenToolCallMs: openToolMinutes === null ? null : openToolMinutes * 60_000,
+    };
+  },
+  get resourceLimits(): {
+    memoryHighBytes: number | null;
+    memoryMaxBytes: number | null;
+    memorySwapMaxBytes: number;
+    tasksMax: number | null;
+  } {
+    const bytes = (key: string): number | null => {
+      const value = count(key);
+      return value <= 0 ? null : value * MB;
+    };
+    const tasks = count("resources.tasksMax");
+    return {
+      memoryHighBytes: bytes("resources.memoryHighMiB"),
+      memoryMaxBytes: bytes("resources.memoryMaxMiB"),
+      memorySwapMaxBytes: Math.max(0, count("resources.memorySwapMaxMiB")) * MB,
+      tasksMax: tasks <= 0 ? null : tasks,
     };
   },
   /**

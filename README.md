@@ -247,7 +247,7 @@ code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
 Everything in `.env` that is safe to change while the server is running is also
 editable from the **Agents** page — per-provider default model, permission/sandbox
 mode, reasoning effort, binary name, extra CLI arguments, API keys, host access, run budgets,
-pipeline policy, and transcript retention. (Day-to-day model switching happens in
+resource containment, pipeline policy, and transcript retention. (Day-to-day model switching happens in
 the header, not here; the `Model` field only supplies the fallback.) Changes are
 saved to `.agent-console/settings.json` (mode `0600`, gitignored) and survive
 restarts.
@@ -269,6 +269,35 @@ restarts.
 The Agents page is generated from the field table in `server/src/settings.ts`.
 Adding a new tunable is one entry there — label, group, type, `.env` variable,
 options, description — and it appears in the UI with no frontend change.
+
+### Per-run resource containment
+
+On Linux, when the user systemd manager is available, each agent run is launched
+in its own transient service/cgroup. `MemoryHigh`, `MemoryMax`,
+`MemorySwapMax`, and `TasksMax` apply to the provider and its complete descendant
+tree, including test workers, compilers, and language servers that remain in
+that cgroup. The shipped 8 GiB WSL defaults are 3 GiB high pressure,
+4 GiB hard memory, 512 MiB swap, and 512 tasks. Configure them on the Agents
+page or with `RUN_MEMORY_HIGH_MIB`, `RUN_MEMORY_MAX_MIB`,
+`RUN_MEMORY_SWAP_MAX_MIB`, and `RUN_TASKS_MAX`.
+
+An OOM kill is recorded as `resource_memory_limit:<bytes>` rather than a generic
+crash, and systemd's cgroup `MemoryPeak` is persisted with the run when it is
+available. Cancellation first sends the normal interrupt to every process in
+the unit, then force-kills the complete unit after the grace period.
+
+On macOS, Windows, Linux installations without a user systemd manager, and
+misconfigured WSL distributions where `systemctl --user` is unavailable, the
+runner falls back safely: on POSIX it starts a separate process group and
+signals the whole group; on Windows it can only signal the provider process.
+That fallback preserves tree cancellation on POSIX but **does not enforce an
+aggregate memory, swap, or task ceiling**. Enable systemd in WSL and ensure the
+account has a working user manager for full protection (`systemctl --user
+show-environment` must succeed).
+
+Separately, `BUDGET_MAX_OPEN_TOOL_CALL_MINUTES` (default 15) stops a run whose
+`tool_use` never receives its matching `tool_result`, so one hung command cannot
+consume the entire wall-clock budget.
 
 `REST: GET /api/settings` · `PUT /api/settings` (partial patch) ·
 `POST /api/settings/reset` (`{"keys": [...]}` or `{}` for everything).

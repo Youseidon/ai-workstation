@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AgentRequestMode, AgentRequestTarget, ProviderId, WorkspaceTree } from "@agent-console/shared";
+import type { AgentRequestMode, AgentRequestTarget, WorkspaceTree } from "@agent-console/shared";
 import { AGENT_REQUEST_MODES, AGENT_REQUEST_MODE_LABELS, agentRequestModeBlock, allowedAgentRequestModes } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
 import { useAgentConsole, type RunStatus } from "@/lib/useAgentConsole";
@@ -11,19 +11,14 @@ import { Button } from "../ui/Button";
 import { Select, TextArea } from "../ui/Field";
 import { useToast } from "../ui/Toast";
 import { useProviders } from "../programs/useProviders";
-
-/** What is selected in the directory tree, which the target follows. */
-export interface TreeSelection {
-  instructionField: "claudeMd" | "agentsMd" | null;
-  programId: number | null;
-  suiteId: number | null;
-  promptId: number | null;
-}
+import { ProviderModelPicker, useAgentChoice } from "../programs/ProviderModelPicker";
 
 interface Props {
   serverUrl: string;
   tree: WorkspaceTree;
-  selection: TreeSelection;
+  /** What the request is about when it opens. It can be changed from the "About" menu. */
+  initialTarget: AgentRequestTarget;
+  initialMode?: AgentRequestMode;
   /** A proposal was opened: `program:<id>` or `instructions:<id>`. */
   onProposalOpened(key: string): void | Promise<void>;
 }
@@ -61,14 +56,6 @@ function decodeTarget(value: string): AgentRequestTarget {
   return { kind: "program", programId };
 }
 
-function targetFromSelection(selection: TreeSelection): AgentRequestTarget {
-  if (selection.instructionField !== null) return { kind: "instructions", field: selection.instructionField };
-  if (selection.programId !== null) {
-    return { kind: "program", programId: selection.programId, suiteId: selection.suiteId, promptId: selection.promptId };
-  }
-  return { kind: "workspace" };
-}
-
 const label = (key: string | null, name: string) => (key === null ? name : `${key} — ${name}`);
 
 const PLACEHOLDERS: Record<AgentRequestTarget["kind"], Partial<Record<AgentRequestMode, string>>> = {
@@ -92,36 +79,27 @@ const PLACEHOLDERS: Record<AgentRequestTarget["kind"], Partial<Record<AgentReque
 /**
  * One place to ask an agent for anything in this workspace.
  *
- * Two choices frame every request: the target, which follows whatever is
- * selected in the tree but can be changed, and the mode, which says what the
- * agent may do. Modes that make no sense for a target are disabled with the
- * reason, using the same table the server enforces. `Ask` answers here; every
- * other mode opens a proposal in the list below, and nothing changes until it
- * is applied.
+ * Two choices frame every request: the target, which starts at whatever the
+ * request was opened from but can be changed, and the mode, which says what
+ * the agent may do. Modes that make no sense for a target are disabled with
+ * the reason, using the same table the server enforces. `Ask` answers here;
+ * every other mode opens a proposal, and nothing changes until it is applied.
  */
-export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }: Props) {
+export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = "ask", onProposalOpened }: Props) {
   const toast = useToast();
   const console_ = useAgentConsole();
-  const { providers, firstAvailable } = useProviders(serverUrl);
+  const { providers } = useProviders(serverUrl);
+  const agent = useAgentChoice(providers);
 
-  const selected = encodeTarget(targetFromSelection(selection));
-  const [targetValue, setTargetValue] = useState(selected);
-  // A new tree selection re-points the target; picking another target by hand
-  // holds until the selection moves again.
-  const [followed, setFollowed] = useState(selected);
-  if (followed !== selected) {
-    setFollowed(selected);
-    setTargetValue(selected);
-  }
+  const [targetValue, setTargetValue] = useState(() => encodeTarget(initialTarget));
   const target = useMemo(() => decodeTarget(targetValue), [targetValue]);
 
-  const [pickedMode, setMode] = useState<AgentRequestMode>("ask");
+  const [pickedMode, setMode] = useState<AgentRequestMode>(initialMode);
   const allowed = allowedAgentRequestModes(target);
   const mode = allowed.includes(pickedMode) ? pickedMode : allowed[0]!;
 
   const [text, setText] = useState("");
-  const [picked, setProvider] = useState<ProviderId | "">("");
-  const provider = picked !== "" ? picked : firstAvailable;
+  const provider = agent.choice.provider;
   const [busy, setBusy] = useState(false);
 
   const [askedRunId, setAskedRunId] = useState<string | null>(null);
@@ -145,7 +123,7 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
         target,
         mode,
         text: text.trim(),
-        ...(needsAgent ? { provider } : {}),
+        ...(needsAgent ? { provider, model: agent.choice.model } : {}),
       });
       if (result.kind === "consult") {
         setAskedRunId(result.runId);
@@ -155,7 +133,7 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
       const key = result.kind === "program-draft" ? `program:${result.draft.id}` : `instructions:${result.proposal.id}`;
       toast.success(
         result.runId === null ? "Proposal opened" : "The agent is writing a proposal",
-        "It is in the proposals list below. Nothing changes until you apply it.",
+        "Review it in Proposals. Nothing changes until you apply it.",
       );
       await onProposalOpened(key);
     } catch (error) {
@@ -165,16 +143,19 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
     }
   };
 
-  const selectedProgram = selection.programId === null ? null : tree.programs.find((program) => program.id === selection.programId) ?? null;
-  const selectedSuite = selectedProgram?.suites.find((suite) => suite.id === selection.suiteId) ?? null;
-  const selectedPrompt = selectedSuite?.prompts.find((prompt) => prompt.id === selection.promptId) ?? null;
+  // The suite or work item the request was opened from stays in the menu.
+  const selectedProgram = initialTarget.kind === "program" ? tree.programs.find((program) => program.id === initialTarget.programId) ?? null : null;
+  const selectedSuite = initialTarget.kind === "program"
+    ? selectedProgram?.suites.find((suite) => suite.id === initialTarget.suiteId || suite.prompts.some((prompt) => prompt.id === initialTarget.promptId)) ?? null
+    : null;
+  const selectedPrompt = initialTarget.kind === "program" ? selectedSuite?.prompts.find((prompt) => prompt.id === initialTarget.promptId) ?? null : null;
 
   return (
-    <section aria-label="Ask an agent" className="space-y-3 rounded-panel border border-line bg-surface-1 p-4">
+    <section aria-label="Ask an agent" className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <Select
           label="About"
-          fieldClassName="min-w-[14rem] flex-1 sm:max-w-sm"
+          fieldClassName="min-w-[14rem] flex-1"
           value={targetValue}
           onChange={(event) => setTargetValue(event.target.value)}
         >
@@ -203,7 +184,7 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
           </optgroup>
         </Select>
 
-        <div role="radiogroup" aria-label="What should the agent do" className="inline-flex rounded-md border border-line bg-surface-0 p-0.5">
+        <div role="radiogroup" aria-label="What should the agent do" className="inline-flex h-9 rounded-md border border-line bg-surface-0 p-0.5">
           {AGENT_REQUEST_MODES.map((entry) => {
             const blocked = agentRequestModeBlock(target, entry);
             return (
@@ -229,7 +210,8 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
 
       <TextArea
         label="Request"
-        rows={3}
+        rows={5}
+        autoFocus
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
@@ -242,21 +224,16 @@ export function AgentRequestBar({ serverUrl, tree, selection, onProposalOpened }
         hint={AGENT_REQUEST_MODE_LABELS[mode].hint}
       />
 
-      <div className="flex flex-wrap items-end justify-end gap-2">
-        {needsAgent && (
-          <Select
-            label="Agent"
-            fieldClassName="w-44"
-            value={provider}
-            onChange={(event) => setProvider(event.target.value as ProviderId | "")}
-          >
-            {providers.length === 0 && <option value="">no provider detected</option>}
-            {providers.map((entry) => (
-              <option key={entry.id} value={entry.id} disabled={!entry.available}>
-                {entry.id}{entry.available ? "" : " — unavailable"}
-              </option>
-            ))}
-          </Select>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        {needsAgent ? (
+          <ProviderModelPicker
+            providers={providers}
+            state={agent}
+            label="Agent and model"
+            blockedReason={(id) => (mode === "ask" && id === "cursor" ? "Cursor has no read-only mode, so it cannot answer questions" : null)}
+          />
+        ) : (
+          <span className="text-[11px] text-fg-dim">No agent runs — you write the proposal yourself.</span>
         )}
         <Button
           variant="primary"

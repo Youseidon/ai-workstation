@@ -66,7 +66,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         "disabled:pointer-events-none disabled:opacity-40",
         VARIANTS[variant],
         SIZES[size],
-        iconOnly && (size === "sm" ? "w-7 px-0" : size === "md" ? "w-9 px-0" : "w-11 px-0"),
+        // `px-0!` so the size padding above cannot squeeze the icon.
+        iconOnly && (size === "sm" ? "w-7 px-0!" : size === "md" ? "w-9 px-0!" : "w-11 px-0!"),
         className,
       )}
       {...rest}

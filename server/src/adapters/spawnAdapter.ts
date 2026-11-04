@@ -5,6 +5,14 @@ import { LineSplitter, tryParseJson } from "../lib/lines.ts";
 import { resolveBinary } from "../lib/process.ts";
 import { providerUsageUnavailable } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, RunOptions } from "./types.ts";
+import { settings } from "../settings.ts";
+import {
+  buildSpawnPlan,
+  readSystemdUnitOutcome,
+  signalProcessTree,
+  signalSystemdUnit,
+  type SpawnPlan,
+} from "./resourceContainment.ts";
 
 export interface SpawnSpec {
   args: string[];
@@ -57,7 +65,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
   protected abstract buildSpec(prompt: string, opts: RunOptions): SpawnSpec;
   protected abstract createMapper(): StreamMapper;
 
-  private readonly children = new Map<string, ChildProcess>();
+  private readonly children = new Map<string, { child: ChildProcess; plan: SpawnPlan }>();
 
   async checkAvailability(): Promise<AvailabilityReport> {
     const binary = await resolveBinary(this.binaryName);
@@ -97,7 +105,12 @@ export abstract class SpawnAdapter implements AgentAdapter {
     const splitter = new LineSplitter();
     let stderrTail = "";
 
-    opts.log.info(`spawn ${binary} ${spec.args.map(redactArg).join(" ")}`);
+    const limits = settings.resourceLimits;
+    const plan = buildSpawnPlan(binary, spec.args, opts.runId, limits);
+    opts.log.info(`spawn ${binary} ${spec.args.map(redactArg).join(" ")} · containment=${plan.containment}`);
+    if (plan.containment !== "systemd") {
+      opts.log.warn("systemd user containment unavailable; using process-tree cancellation without aggregate memory/task limits");
+    }
 
     let child: ChildProcess;
     try {
@@ -108,12 +121,13 @@ export abstract class SpawnAdapter implements AgentAdapter {
       delete childEnv.AGENT_CONSOLE_DATA_DIR;
       delete childEnv.AGENT_CONSOLE_DATABASE_PATH;
       delete childEnv.DATABASE_URL;
-      child = spawn(binary, spec.args, {
+      child = spawn(plan.command, plan.args, {
         cwd: opts.cwd,
         env: childEnv,
         // With no stdin payload the handle is closed outright: these CLIs
         // otherwise sit waiting for piped input.
         stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        detached: plan.detached,
       });
     } catch (error) {
       yield {
@@ -123,7 +137,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
       return;
     }
 
-    this.children.set(opts.runId, child);
+    this.children.set(opts.runId, { child, plan });
 
     // Before any provider output, so the id survives an interrupt.
     if (spec.sessionId !== undefined) {
@@ -175,13 +189,34 @@ export abstract class SpawnAdapter implements AgentAdapter {
       queue.close();
     });
 
-    child.on("close", (code, signal) => {
+    child.on("close", (code, signal) => { void (async () => {
       for (const line of splitter.flush()) handleLine(line);
       const interrupted = this.interrupted.has(opts.runId);
+      const unitOutcome = plan.unitName === null
+        ? { result: null, peakMemoryBytes: null, stopReason: null }
+        : await readSystemdUnitOutcome(plan.unitName, limits);
 
       if (!mapper.settled) {
         if (interrupted) {
           queue.push({ type: "result", payload: { state: "interrupted", exitCode: code } });
+        } else if (unitOutcome.stopReason !== null) {
+          queue.push({
+            type: "error",
+            payload: {
+              message: "Provider exceeded its run memory limit",
+              fatal: true,
+              detail: `${unitOutcome.stopReason}${unitOutcome.peakMemoryBytes === null ? "" : ` · peak ${unitOutcome.peakMemoryBytes} bytes`}`,
+            },
+          });
+          queue.push({
+            type: "result",
+            payload: {
+              state: "error",
+              exitCode: code,
+              stopReason: unitOutcome.stopReason,
+              peakMemoryBytes: unitOutcome.peakMemoryBytes,
+            },
+          });
         } else if (code !== 0) {
           queue.push({
             type: "error",
@@ -197,35 +232,53 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
       for (const event of mapper.finish(code, signal)) queue.push(event);
       queue.close();
-    });
+    })(); });
 
     try {
       for await (const event of queue) yield event;
     } finally {
       opts.signal.removeEventListener("abort", onAbort);
       this.children.delete(opts.runId);
+      if (plan.containment === "process-group") signalProcessTree(child.pid, "SIGKILL");
+      if (child.exitCode === null && child.signalCode === null) await this.forceKill(opts.runId, child, plan);
       this.interrupted.delete(opts.runId);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
   }
 
   private readonly interrupted = new Set<string>();
 
   async interrupt(runId: string): Promise<void> {
-    const child = this.children.get(runId);
+    const tracked = this.children.get(runId);
+    const child = tracked?.child;
     if (!child || child.exitCode !== null) return;
     this.interrupted.add(runId);
-    child.kill("SIGINT");
+    await this.signalTree(child, tracked.plan, "SIGINT");
     await new Promise<void>((resolvePromise) => {
-      const timer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      const timer = setTimeout(() => { void (async () => {
+        if (child.exitCode === null && child.signalCode === null) await this.forceKill(runId, child, tracked.plan);
         resolvePromise();
-      }, KILL_GRACE_MS);
+      })(); }, KILL_GRACE_MS);
       child.once("close", () => {
         clearTimeout(timer);
+        // The group leader can exit while a compiler/test worker ignores the
+        // interrupt. Do not mistake that for the complete tree being gone.
+        if (tracked.plan.containment === "process-group") signalProcessTree(child.pid, "SIGKILL");
         resolvePromise();
       });
     });
+  }
+
+  private async signalTree(child: ChildProcess, plan: SpawnPlan, signal: "SIGINT" | "SIGKILL"): Promise<void> {
+    if (plan.unitName !== null && await signalSystemdUnit(plan.unitName, signal)) return;
+    if (!signalProcessTree(child.pid, signal)) child.kill(signal);
+  }
+
+  private async forceKill(runId: string, child: ChildProcess, plan: SpawnPlan): Promise<void> {
+    await this.signalTree(child, plan, "SIGKILL");
+    // The wrapper can outlive a unit it was waiting for; make sure its pipe and
+    // run record cannot remain open after the cgroup has been killed.
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    this.interrupted.add(runId);
   }
 }
 

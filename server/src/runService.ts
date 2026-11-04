@@ -160,7 +160,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
   }
-  // Pipeline runs claim a clean repository before the run row exists. A tree
+  // Saved work-item runs claim a clean repository before the run row exists,
+  // whether an operator starts them directly or a pipeline starts them. A tree
   // that cannot take a managed writer is refusing the start, not a run failure:
   // done the other way round, the refusal was recorded as a crashed run, the
   // work item went FAILED, and the scheduler blamed whichever provider it had
@@ -182,7 +183,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId), "clarify")}\n\n## Human question\n\n${question.trim()}`;
     } else {
       if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
-      if (pipelineManaged) capture = openCapture();
+      capture = openCapture();
       const credential = runContexts.create(plannedRunId, workspaceId, promptId);
       try {
         workspaces.beginAgentRun({
@@ -221,7 +222,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         "",
         contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
         "",
-        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: pipelineManaged, canAsk: !pipelineManaged, shimPath:executeShimPath }),
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: true, canAsk: !pipelineManaged, shimPath:executeShimPath }),
       ].join("\n");
     }
   } else {

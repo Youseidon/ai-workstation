@@ -23,6 +23,8 @@ interface Props {
   /** Drop the pin so this provider tracks its settings value again. */
   onClear(): void;
   onClose(): void;
+  /** Open above the trigger, for pickers near the bottom of a scrolling pane. */
+  placement?: "below" | "above";
 }
 
 /**
@@ -62,6 +64,7 @@ export function ModelMenu({
   onSelect,
   onClear,
   onClose,
+  placement = "below",
 }: Props) {
   const isCustom = selected !== null && !options.some((option) => option.id === selected);
   const [custom, setCustom] = useState(isCustom ? (selected ?? "") : "");
@@ -110,7 +113,7 @@ export function ModelMenu({
     return (
       <div
         ref={containerRef}
-        className="absolute left-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-md border border-line bg-surface-1 p-2.5 shadow-xl shadow-black/50"
+        className={`absolute left-0 z-30 ${placement === "above" ? "bottom-full mb-1" : "top-full mt-1"} w-64 overflow-hidden rounded-md border border-line bg-surface-1 p-2.5 shadow-xl shadow-black/50`}
       >
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fg-dim">
           <span>{provider} model</span>
@@ -131,7 +134,7 @@ export function ModelMenu({
       ref={containerRef}
       role="listbox"
       aria-label={`${provider} model`}
-      className="absolute left-0 top-full z-30 mt-1 w-64 overflow-hidden rounded-md border border-line bg-surface-1 shadow-xl shadow-black/50"
+      className={`absolute left-0 z-30 ${placement === "above" ? "bottom-full mb-1" : "top-full mt-1"} w-64 overflow-hidden rounded-md border border-line bg-surface-1 shadow-xl shadow-black/50`}
     >
       <div className="flex items-baseline gap-2 border-b border-line px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-fg-dim">
         <span>{provider} model</span>

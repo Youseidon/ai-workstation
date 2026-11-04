@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { mergeUsage, oneLine } from "@agent-console/shared";
-import type { Options, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { loadClaudeSdk } from "../lib/claudeSdk.ts";
 import {
   describeEffectiveAccess,
@@ -13,6 +14,14 @@ import {
 } from "../settings.ts";
 import { fetchJson, parseClaudeUsage, providerUsageOk, providerUsageUnavailable, writeJsonAtomic } from "./accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
+import {
+  buildSpawnPlan,
+  readSystemdUnitOutcome,
+  signalProcessTree,
+  signalSystemdUnit,
+  type SpawnPlan,
+  type UnitOutcome,
+} from "./resourceContainment.ts";
 
 export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "WebFetch",
@@ -173,6 +182,7 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   private readonly queries = new Map<string, Query>();
+  private readonly processes = new Map<string, { child: ChildProcess; plan: SpawnPlan }>();
 
   async checkAvailability(): Promise<AvailabilityReport> {
     const version = await this.getVersion();
@@ -254,6 +264,7 @@ export class ClaudeAdapter implements AgentAdapter {
     opts.signal.addEventListener("abort", onAbort, { once: true });
 
     const permission = claudePermissionConfig(opts.permissionOverride);
+    let containmentOutcome: Promise<UnitOutcome> = Promise.resolve({ result: null, peakMemoryBytes: null, stopReason: null });
     const options: Options = {
       cwd: opts.cwd,
       abortController,
@@ -261,6 +272,58 @@ export class ClaudeAdapter implements AgentAdapter {
       permissionMode: permission.permissionMode as Options["permissionMode"],
       settingSources: settings.claude.settingSources as Options["settingSources"],
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
+      spawnClaudeCodeProcess: (spawnOptions): SpawnedProcess => {
+        const limits = settings.resourceLimits;
+        const plan = buildSpawnPlan(spawnOptions.command, spawnOptions.args, opts.runId, limits);
+        opts.log.info(`Claude SDK subprocess containment=${plan.containment}`);
+        if (plan.containment !== "systemd") {
+          opts.log.warn("systemd user containment unavailable; Claude uses process-tree cancellation without aggregate memory/task limits");
+        }
+        const child = spawn(plan.command, plan.args, {
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          detached: plan.detached,
+        });
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`));
+        this.processes.set(opts.runId, { child, plan });
+        child.once("close", () => {
+          if (this.processes.get(opts.runId)?.child === child) this.processes.delete(opts.runId);
+        });
+        let killRequested = false;
+        containmentOutcome = new Promise((resolveOutcome) => {
+          child.once("exit", () => {
+            if (plan.unitName === null) resolveOutcome({ result: null, peakMemoryBytes: null, stopReason: null });
+            else void readSystemdUnitOutcome(plan.unitName, limits).then(resolveOutcome);
+          });
+          child.once("error", () => resolveOutcome({ result: null, peakMemoryBytes: null, stopReason: null }));
+        });
+        const signalTree = (signal: NodeJS.Signals): boolean => {
+          killRequested = true;
+          if (plan.unitName !== null) {
+            void signalSystemdUnit(plan.unitName, signal === "SIGKILL" ? "SIGKILL" : "SIGINT");
+            return true;
+          }
+          return signalProcessTree(child.pid, signal) || child.kill(signal);
+        };
+        return {
+          stdin: child.stdin!,
+          stdout: child.stdout!,
+          get killed() { return killRequested || child.killed; },
+          get exitCode() { return child.exitCode; },
+          kill: signalTree,
+          on: ((event: "exit" | "error", listener: ((code: number | null, signal: NodeJS.Signals | null) => void) | ((error: Error) => void)) => {
+            child.on(event, listener as never);
+          }) as SpawnedProcess["on"],
+          once: ((event: "exit" | "error", listener: ((code: number | null, signal: NodeJS.Signals | null) => void) | ((error: Error) => void)) => {
+            child.once(event, listener as never);
+          }) as SpawnedProcess["once"],
+          off: ((event: "exit" | "error", listener: ((code: number | null, signal: NodeJS.Signals | null) => void) | ((error: Error) => void)) => {
+            child.off(event, listener as never);
+          }) as SpawnedProcess["off"],
+        };
+      },
     };
     if (permission.allowDangerouslySkipPermissions) {
       options.allowDangerouslySkipPermissions = true;
@@ -370,6 +433,22 @@ export class ClaudeAdapter implements AgentAdapter {
       if (opts.signal.aborted || isAbortError(error)) {
         yield { type: "result", payload: { state: "interrupted", usage, text: lastText, exitCode: null } };
       } else {
+        const contained = await containmentOutcome;
+        if (contained.stopReason !== null) {
+          yield {
+            type: "error",
+            payload: { message: "Claude Code exceeded its run memory limit", fatal: true, detail: contained.stopReason },
+          };
+          yield {
+            type: "result",
+            payload: {
+              state: "error", usage, text: lastText, exitCode: null,
+              stopReason: contained.stopReason,
+              peakMemoryBytes: contained.peakMemoryBytes,
+            },
+          };
+          return;
+        }
         yield {
           type: "error",
           payload: { message: "Claude Code run failed", fatal: true, detail: describe(error) },
@@ -542,17 +621,30 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async interrupt(runId: string): Promise<void> {
     const session = this.queries.get(runId);
-    if (!session) return;
+    const startedAt = Date.now();
     try {
       // The control request can hang if the CLI is mid-tool; the runner's
       // abort signal is the backstop, so give up quickly either way.
-      await Promise.race([
-        session.interrupt(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("interrupt timed out")), 1500)),
-      ]);
+      if (session) {
+        await Promise.race([
+          session.interrupt(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("interrupt timed out")), 1500)),
+        ]);
+      }
     } catch {
       // Fall through: the run's AbortController will tear the session down.
     }
+    const tracked = this.processes.get(runId);
+    if (!tracked || tracked.child.exitCode !== null || tracked.child.signalCode !== null) return;
+    const remainingGrace = Math.max(0, 1900 - (Date.now() - startedAt));
+    await new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, remainingGrace);
+      tracked.child.once("close", () => { clearTimeout(timer); resolvePromise(); });
+    });
+    if (tracked.child.exitCode !== null || tracked.child.signalCode !== null) return;
+    if (tracked.plan.unitName !== null) await signalSystemdUnit(tracked.plan.unitName, "SIGKILL");
+    else signalProcessTree(tracked.child.pid, "SIGKILL");
+    if (tracked.child.exitCode === null && tracked.child.signalCode === null) tracked.child.kill("SIGKILL");
   }
 }
 

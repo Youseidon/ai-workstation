@@ -19,11 +19,12 @@ import { workspaceApi } from "@/lib/workspacesApi";
 import { InstructionProposalEditor } from "../requests/InstructionProposalEditor";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
-import { Select, TextArea, TextInput } from "../ui/Field";
+import { TextArea, TextInput } from "../ui/Field";
 import { Spinner } from "../ui/Spinner";
 import { useDialogs } from "../ui/Dialogs";
 import { useToast } from "../ui/Toast";
 import { useProviders } from "./useProviders";
+import { ProviderModelPicker, useAgentChoice } from "./ProviderModelPicker";
 
 interface Props {
   serverUrl: string;
@@ -54,10 +55,10 @@ const CHANGE_TONE = { added: "success", changed: "info", moved: "violet", remove
  * Everything agents (or the operator) have proposed in this workspace: new
  * programs, changes to programs, and changes to CLAUDE.md and AGENTS.md.
  *
- * Requests are made from the request bar; this is where their results are read
- * and decided on. The screen is arranged around the one fact that matters: a
- * proposal is not a change. Nothing is created or modified until Apply, which
- * is why Apply is the only primary button in each one.
+ * Requests are made from the request modal; this is where their results are
+ * read and decided on: a list on the left (what waits on you first), the open
+ * proposal on the right. A proposal is not a change. Nothing is created or
+ * modified until Apply, which is why Apply is the only primary button in each.
  */
 export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onApplied, initialOpenKey = null }: Props) {
   const toast = useToast();
@@ -132,152 +133,185 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
       ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const pendingCount = rows?.filter((row) => (row.kind === "program" ? row.entry.draft.state : row.proposal.state) === "PENDING").length ?? 0;
 
-  const toggle = (key: string) => setOpenKey(openKey === key ? null : key);
+  const pending = rows?.filter((row) => rowState(row) === "PENDING") ?? [];
+  const resolved = rows?.filter((row) => rowState(row) !== "PENDING") ?? [];
+  // With nothing chosen, the first proposal waiting on a decision is shown.
+  const activeKey = rows?.some((row) => row.key === openKey) ? openKey : pending[0]?.key ?? null;
+  const active = rows?.find((row) => row.key === activeKey) ?? null;
+  const [showResolved, setShowResolved] = useState(false);
+  const resolvedOpen = showResolved || (active !== null && rowState(active) !== "PENDING");
+  const writingRun = (row: Row) => {
+    const runId = row.kind === "program" ? row.entry.draft.runId : row.proposal.origin === "request" ? row.proposal.runId : null;
+    return runId !== null && rowState(row) === "PENDING" && liveRunIds.includes(runId);
+  };
+
+  const renderRow = (row: Row) => (
+    <li key={row.key}>
+      <ProposalRow row={row} active={row.key === activeKey} writing={writingRun(row)} onSelect={() => setOpenKey(row.key)} />
+    </li>
+  );
+
+  if (rows === null) {
+    return <div className="flex items-center gap-2 p-6 text-xs text-fg-dim"><Spinner /> Loading proposals…</div>;
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+        <p className="text-sm font-medium text-fg">No proposals yet</p>
+        <p className="mt-1 max-w-sm text-xs leading-relaxed text-fg-dim">
+          Ask an agent to draft a program, or to change a program, CLAUDE.md or AGENTS.md. What it writes lands here for you to review.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <section className="rounded-panel border border-line bg-surface-1">
-      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3">
-        <div>
-          <h3 className="text-[13px] font-medium text-fg">Proposals</h3>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-fg-dim">
-            New programs, changes to programs, and changes to CLAUDE.md and AGENTS.md, written by an agent or by you. Nothing is created or changed until you apply it.
-          </p>
-        </div>
-        {rows !== null && rows.length > 0 && (
-          <span className="text-[11px] text-fg-dim">{pendingCount} pending · {rows.length} total</span>
+    <div className="grid h-[min(72vh,48rem)] grid-cols-1 md:grid-cols-[19rem_minmax(0,1fr)]">
+      <nav aria-label="Proposals" className="min-h-0 overflow-y-auto border-b border-line bg-surface-1/60 md:border-b-0 md:border-r">
+        <p className="px-4 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">
+          Waiting for review · {pendingCount}
+        </p>
+        {pending.length === 0 ? (
+          <p className="px-4 pb-3 text-[11px] text-fg-dim">Nothing waiting. You are all caught up.</p>
+        ) : (
+          <ul className="space-y-0.5 px-2 pb-2">{pending.map(renderRow)}</ul>
         )}
-      </header>
+        {resolved.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowResolved(!resolvedOpen)}
+              aria-expanded={resolvedOpen}
+              className="flex w-full items-center justify-between border-t border-line px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-fg-dim hover:text-fg"
+            >
+              Applied or discarded · {resolved.length}
+              <span aria-hidden>{resolvedOpen ? "−" : "+"}</span>
+            </button>
+            {resolvedOpen && <ul className="space-y-0.5 px-2 pb-2">{resolved.map(renderRow)}</ul>}
+          </>
+        )}
+      </nav>
 
-      {rows === null ? (
-        <div className="flex items-center gap-2 p-4 text-xs text-fg-dim"><Spinner /> Loading proposals…</div>
-      ) : rows.length === 0 ? (
-        <p className="p-4 text-xs leading-relaxed text-fg-dim">No proposals yet. Ask for one above with Change, Draft or Edit myself.</p>
-      ) : (
-        <ul className="divide-y divide-line">
-          {rows.map((row) => row.kind === "instructions" ? (
-            <li key={row.key}>
-              <InstructionProposalRow
-                proposal={row.proposal}
-                open={openKey === row.key}
-                writing={row.proposal.origin === "request" && row.proposal.runId !== null && liveRunIds.includes(row.proposal.runId)}
-                onToggle={() => toggle(row.key)}
-              />
-              {openKey === row.key && (
-                <InstructionProposalEditor
-                  key={`${row.proposal.id}:${row.proposal.updatedAt}`}
-                  proposal={row.proposal}
-                  current={instructions[row.proposal.field]}
-                  writing={row.proposal.origin === "request" && row.proposal.runId !== null && liveRunIds.includes(row.proposal.runId)}
-                  providers={providers}
-                  busy={busy}
-                  onSave={(content) => act(() => workspaceApi.saveInstructionProposal(serverUrl, row.proposal.id, content), "Proposal saved")}
-                  onApply={async (force) => {
-                    const name = INSTRUCTION_FILE_NAMES[row.proposal.field];
-                    const confirmed = await dialogs.confirm(force
-                      ? {
-                          title: `Apply over the newer ${name}?`,
-                          description: `${name} was changed after this proposal was opened. Applying replaces it with the proposed text, undoing that change. The replaced text is kept in the file's history.`,
-                          confirmLabel: "Apply anyway",
-                          tone: "danger",
-                        }
-                      : {
-                          title: `Apply these changes to ${name}?`,
-                          description: `Every later run in this workspace reads the new ${name}. The current text is kept in the file's history, so it can be restored.`,
-                          confirmLabel: "Apply",
-                        });
-                    if (!confirmed) return;
-                    const ok = await act(() => workspaceApi.applyInstructionProposal(serverUrl, row.proposal.id, { force }), `${name} updated`);
-                    if (ok) await onApplied();
-                  }}
-                  onRework={(feedback, provider) =>
-                    act(
-                      () => workspaceApi.reviseInstructionProposal(serverUrl, row.proposal.id, { provider, feedback }),
-                      "The agent is reworking the proposal",
-                    )
+      <section className="min-h-0 overflow-y-auto">
+        {active === null ? (
+          <div className="flex h-full items-center justify-center p-6 text-xs text-fg-dim">Select a proposal to review it.</div>
+        ) : active.kind === "instructions" ? (
+          <InstructionProposalEditor
+            key={`${active.proposal.id}:${active.proposal.updatedAt}`}
+            proposal={active.proposal}
+            current={instructions[active.proposal.field]}
+            writing={writingRun(active)}
+            providers={providers}
+            busy={busy}
+            onSave={(content) => act(() => workspaceApi.saveInstructionProposal(serverUrl, active.proposal.id, content), "Proposal saved")}
+            onApply={async (force) => {
+              const name = INSTRUCTION_FILE_NAMES[active.proposal.field];
+              const confirmed = await dialogs.confirm(force
+                ? {
+                    title: `Apply over the newer ${name}?`,
+                    description: `${name} was changed after this proposal was opened. Applying replaces it with the proposed text, undoing that change. The replaced text is kept in the file's history.`,
+                    confirmLabel: "Apply anyway",
+                    tone: "danger",
                   }
-                  onDiscard={async () => {
-                    const confirmed = await dialogs.confirm({
-                      title: "Discard this proposal?",
-                      description: "It is kept as a record, but it can no longer be applied. The same edit will not be proposed again.",
-                      confirmLabel: "Discard",
-                      tone: "danger",
-                    });
-                    if (confirmed) await act(() => workspaceApi.discardInstructionProposal(serverUrl, row.proposal.id), "Discarded");
-                  }}
-                  onDelete={async () => {
-                    const confirmed = await dialogs.confirm({
-                      title: "Delete this proposal?",
-                      description: "It is removed outright. If it was applied, the file keeps the applied text.",
-                      confirmLabel: "Delete",
-                      tone: "danger",
-                    });
-                    if (confirmed) {
-                      setOpenKey(null);
-                      await act(() => workspaceApi.removeInstructionProposal(serverUrl, row.proposal.id), "Deleted");
-                    }
-                  }}
-                />
-              )}
-            </li>
-          ) : (
-            <li key={row.key}>
-              <button
-                type="button"
-                onClick={() => toggle(row.key)}
-                className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2"
-              >
-                <Badge tone={STATE_TONE[row.entry.draft.state]}>{row.entry.draft.state.toLowerCase()}</Badge>
-                <Badge tone={row.entry.draft.targetProgramId !== null ? "violet" : "accent"}>
-                  {row.entry.draft.targetProgramId !== null ? "program changes" : "new program"}
-                </Badge>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] text-fg">
-                    {row.entry.draft.targetProgramId !== null
-                      ? `${row.entry.draft.baseline?.name ?? row.entry.draft.body.name}: ${row.entry.draft.goal}`
-                      : row.entry.draft.body.name === "" ? row.entry.draft.goal : row.entry.draft.body.name}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[11px] text-fg-dim">
-                    {row.entry.draft.targetProgramId !== null && row.entry.draft.baseline !== null
-                      ? `${diffProgramRevision(row.entry.draft.baseline, row.entry.draft.body).length} change(s) to an existing program`
-                      : `${row.entry.preview.filledSuites}/${row.entry.preview.suites} suites · ${row.entry.preview.prompts} work items${row.entry.preview.verifiable > 0 ? ` · ${row.entry.preview.verifiable} verifiable` : ""}`}
-                    {row.entry.draft.runId !== null && row.entry.draft.state === "PENDING" && liveRunIds.includes(row.entry.draft.runId) && " · an agent is writing"}
-                  </span>
-                </span>
-                <span className="text-[11px] text-fg-dim">{openKey === row.key ? "hide" : "open"}</span>
-              </button>
-              {openKey === row.key && (
-                <ProgramDraftEntry
-                  serverUrl={serverUrl}
-                  entry={row.entry}
-                  providers={providers}
-                  busy={busy}
-                  act={act}
-                  onApplied={onApplied}
-                  onDeleted={() => setOpenKey(null)}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                : {
+                    title: `Apply these changes to ${name}?`,
+                    description: `Every later run in this workspace reads the new ${name}. The current text is kept in the file's history, so it can be restored.`,
+                    confirmLabel: "Apply",
+                  });
+              if (!confirmed) return;
+              const ok = await act(() => workspaceApi.applyInstructionProposal(serverUrl, active.proposal.id, { force }), `${name} updated`);
+              if (ok) await onApplied();
+            }}
+            onRework={(feedback, provider, model) =>
+              act(
+                () => workspaceApi.reviseInstructionProposal(serverUrl, active.proposal.id, { provider, model, feedback }),
+                "The agent is reworking the proposal",
+              )
+            }
+            onDiscard={async () => {
+              const confirmed = await dialogs.confirm({
+                title: "Discard this proposal?",
+                description: "It is kept as a record, but it can no longer be applied. The same edit will not be proposed again.",
+                confirmLabel: "Discard",
+                tone: "danger",
+              });
+              if (confirmed) await act(() => workspaceApi.discardInstructionProposal(serverUrl, active.proposal.id), "Discarded");
+            }}
+            onDelete={async () => {
+              const confirmed = await dialogs.confirm({
+                title: "Delete this proposal?",
+                description: "It is removed outright. If it was applied, the file keeps the applied text.",
+                confirmLabel: "Delete",
+                tone: "danger",
+              });
+              if (confirmed) {
+                setOpenKey(null);
+                await act(() => workspaceApi.removeInstructionProposal(serverUrl, active.proposal.id), "Deleted");
+              }
+            }}
+          />
+        ) : (
+          <ProgramDraftEntry
+            serverUrl={serverUrl}
+            entry={active.entry}
+            providers={providers}
+            busy={busy}
+            act={act}
+            onApplied={onApplied}
+            onDeleted={() => setOpenKey(null)}
+          />
+        )}
+      </section>
+    </div>
   );
 }
 
-function InstructionProposalRow({ proposal, open, writing, onToggle }: { proposal: InstructionProposalRecord; open: boolean; writing: boolean; onToggle(): void }) {
-  const counts = useMemo(() => diffLineCounts(diffLines(proposal.baseline, proposal.content)), [proposal.baseline, proposal.content]);
+function rowState(row: Row) {
+  return row.kind === "program" ? row.entry.draft.state : row.proposal.state;
+}
+
+function ProposalRow({ row, active, writing, onSelect }: { row: Row; active: boolean; writing: boolean; onSelect(): void }) {
+  const counts = useMemo(
+    () => (row.kind === "instructions" ? diffLineCounts(diffLines(row.proposal.baseline, row.proposal.content)) : null),
+    [row],
+  );
+  let kindBadge: { tone: "caution" | "violet" | "accent"; label: string };
+  let title: string;
+  let detail: string;
+  if (row.kind === "instructions") {
+    const name = INSTRUCTION_FILE_NAMES[row.proposal.field];
+    kindBadge = { tone: "caution", label: name };
+    title = row.proposal.goal === "" ? `Changes to ${name}` : row.proposal.goal;
+    detail = `+${counts!.added} −${counts!.removed} lines${row.proposal.origin === "run" ? " · edited during a run" : ""}`;
+  } else {
+    const { draft, preview } = row.entry;
+    const revision = draft.targetProgramId !== null;
+    kindBadge = revision ? { tone: "violet", label: draft.baseline?.name ?? draft.body.name } : { tone: "accent", label: "new program" };
+    title = revision ? draft.goal : draft.body.name === "" ? draft.goal : draft.body.name;
+    detail = revision && draft.baseline !== null
+      ? `${diffProgramRevision(draft.baseline, draft.body).length} change(s)`
+      : `${preview.suites} suites · ${preview.prompts} work items`;
+  }
+  const state = rowState(row);
   return (
-    <button type="button" onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2">
-      <Badge tone={STATE_TONE[proposal.state]}>{proposal.state.toLowerCase()}</Badge>
-      <Badge tone="caution">{INSTRUCTION_FILE_NAMES[proposal.field]}</Badge>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] text-fg">{proposal.goal === "" ? `Changes to ${INSTRUCTION_FILE_NAMES[proposal.field]}` : proposal.goal}</span>
-        <span className="mt-0.5 block truncate text-[11px] text-fg-dim">
-          {writing ? "an agent is writing" : `+${counts.added} −${counts.removed} lines`}
-          {proposal.origin === "run" && " · edited during a run"}
-        </span>
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={active ? "true" : undefined}
+      className={cn(
+        "w-full rounded-md px-3 py-2 text-left transition-colors",
+        active ? "bg-surface-3 text-fg shadow-sm" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
+      )}
+    >
+      <span className="flex items-center gap-1.5">
+        <Badge tone={kindBadge.tone}>{kindBadge.label}</Badge>
+        {state !== "PENDING" && <Badge tone={STATE_TONE[state]}>{state.toLowerCase()}</Badge>}
+        {writing && <Spinner size={11} />}
       </span>
-      <span className="text-[11px] text-fg-dim">{open ? "hide" : "open"}</span>
+      <span className="mt-1 block truncate text-[12.5px]">{title}</span>
+      <span className="mt-0.5 block truncate text-[10.5px] text-fg-dim">
+        {writing ? "An agent is writing…" : detail}
+      </span>
     </button>
   );
 }
@@ -329,9 +363,9 @@ function ProgramDraftEntry({ serverUrl, entry, providers, busy, act, onApplied, 
         }, entry.draft.targetProgramId !== null ? undefined : "Program created");
         if (ok) await onApplied();
       }}
-      onRevise={(feedback, reviseProvider) =>
+      onRevise={(feedback, reviseProvider, model) =>
         act(
-          () => workspaceApi.reviseProgramDraft(serverUrl, entry.draft.id, { provider: reviseProvider, feedback }),
+          () => workspaceApi.reviseProgramDraft(serverUrl, entry.draft.id, { provider: reviseProvider, model, feedback }),
           "The agent is revising the draft",
         )
       }
@@ -369,7 +403,7 @@ interface EditorProps {
   busy: boolean;
   onSave(body: ProgramDraftBody): Promise<boolean>;
   onApply(withPipeline: boolean, changes: number): Promise<void>;
-  onRevise(feedback: string, provider: ProviderId): Promise<boolean>;
+  onRevise(feedback: string, provider: ProviderId, model: string | null): Promise<boolean>;
   onDiscard(): Promise<void>;
   onDelete(): Promise<void>;
 }
@@ -386,9 +420,8 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
   const [expanded, setExpanded] = useState<string | null>(null);
   const [withPipeline, setWithPipeline] = useState(true);
   const [feedback, setFeedback] = useState("");
-  const [reviseProvider, setReviseProvider] = useState<ProviderId | "">(
-    providers.find((provider) => provider.available)?.id ?? "",
-  );
+  const reviseAgent = useAgentChoice(providers);
+  const reviseProvider = reviseAgent.choice.provider;
   const saved = useRef(entry.draft.body);
 
   useEffect(() => {
@@ -425,7 +458,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
   };
 
   return (
-    <div className="space-y-4 border-t border-line bg-surface-0/40 p-4">
+    <div className="space-y-4 p-5">
       <p className="text-[11px] leading-relaxed text-fg-dim">
         {revision ? "Changes asked for" : "Asked for"}: <span className="whitespace-pre-wrap text-fg-muted">{entry.draft.goal}</span>
       </p>
@@ -609,26 +642,23 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
             <span className="flex-1" />
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onDiscard()}>Discard</Button>
           </div>
-          <div className={cn("flex flex-wrap items-end gap-2 border-t border-line pt-3", providers.length === 0 && "opacity-60")}>
+          <div className={cn("space-y-3 border-t border-line pt-3", providers.length === 0 && "opacity-60")}>
             <TextInput
               label="Ask the agent to change it"
-              fieldClassName="min-w-[16rem] flex-1"
               value={feedback}
               placeholder="e.g. Split S2; it is three sessions of work. Add a rollback item."
               onChange={(event) => setFeedback(event.target.value)}
             />
-            <Select fieldClassName="w-40" value={reviseProvider} onChange={(event) => setReviseProvider(event.target.value as ProviderId)}>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id} disabled={!provider.available}>{provider.id}</option>
-              ))}
-            </Select>
-            <Button
-              variant="secondary"
-              disabled={busy || reviseProvider === "" || feedback.trim() === ""}
-              onClick={() => void onRevise(feedback.trim(), reviseProvider as ProviderId)}
-            >
-              Revise
-            </Button>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <ProviderModelPicker providers={providers} state={reviseAgent} label="Agent and model" placement="above" />
+              <Button
+                variant="secondary"
+                disabled={busy || reviseProvider === "" || feedback.trim() === ""}
+                onClick={() => void onRevise(feedback.trim(), reviseProvider as ProviderId, reviseAgent.choice.model)}
+              >
+                Revise
+              </Button>
+            </div>
           </div>
         </>
       )}

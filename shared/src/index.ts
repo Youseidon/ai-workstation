@@ -1122,6 +1122,10 @@ export interface ResultPayload {
   /** Final assistant message, when the provider distinguishes one. */
   text: string | null;
   exitCode: number | null;
+  /** Orchestrator-owned classification for a forced stop (budget/resource). */
+  stopReason?: string | null;
+  /** Peak bytes charged to the run cgroup, when systemd reports it. */
+  peakMemoryBytes?: number | null;
 }
 
 export interface ErrorPayload {
@@ -1431,6 +1435,17 @@ export interface WorkspaceRecord {
    */
   claudeMd: string;
   agentsMd: string;
+}
+
+/** Live Git identity for a workspace. This is read from disk, never persisted. */
+export interface WorkspaceGitContext {
+  state: "ready" | "detached" | "not_repository" | "unavailable";
+  branch: string | null;
+  /** The current commit, abbreviated by Git. Null for a repository with no commits yet. */
+  head: string | null;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
 }
 
 export type WorkspaceInstructionField = "claudeMd" | "agentsMd";

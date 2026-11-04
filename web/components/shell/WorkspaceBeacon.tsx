@@ -2,8 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { WorkspaceGitContext } from "@agent-console/shared";
 import { cn } from "@/lib/cn";
+import { SERVER_URL } from "@/lib/serverUrl";
 import { useWorkspace } from "@/lib/workspaceContext";
+import { workspaceApi } from "@/lib/workspacesApi";
 
 function shortenPath(path: string): string {
   // Prefer a tidy trailing segment; full path stays in the title attribute.
@@ -20,8 +23,53 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
   const { workspaces, workspace, workspaceId, status, setWorkspaceId } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [gitSnapshot, setGitSnapshot] = useState<{
+    workspaceId: number;
+    context: WorkspaceGitContext | null;
+    failed: boolean;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (workspaceId === null) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const next = await workspaceApi.gitContext(SERVER_URL, workspaceId);
+        if (!cancelled) {
+          setGitSnapshot({ workspaceId, context: next, failed: false });
+        }
+      } catch {
+        if (!cancelled) {
+          setGitSnapshot((current) => ({
+            workspaceId,
+            context: current?.workspaceId === workspaceId ? current.context : null,
+            failed: true,
+          }));
+        }
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+
+    void refresh();
+    const timer = window.setInterval(refreshWhenVisible, 10_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [workspaceId]);
+
+  const currentGitSnapshot = gitSnapshot?.workspaceId === workspaceId ? gitSnapshot : null;
+  const gitContext = currentGitSnapshot?.context ?? null;
+  const gitFailed = currentGitSnapshot?.failed ?? false;
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +114,20 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
           ? "Unavailable"
           : (workspace?.name ?? "Choose workspace");
 
-  const pathHint = workspace?.workDirectory ? shortenPath(workspace.workDirectory) : null;
+  const branchLabel = gitFailed
+    ? "Branch unavailable"
+    : gitContext === null
+      ? "Reading branch…"
+      : gitContext.state === "ready"
+        ? (gitContext.branch ?? "Unknown branch")
+        : gitContext.state === "detached"
+          ? `detached${gitContext.head === null ? "" : ` @ ${gitContext.head}`}`
+          : gitContext.state === "not_repository"
+            ? "Not a Git repository"
+            : "Workspace unavailable";
+  const branchTitle = workspace === null
+    ? label
+    : `${workspace.name}\n${workspace.workDirectory}\nGit: ${branchLabel}${gitContext?.dirty ? " · uncommitted changes" : ""}`;
 
   return (
     <div ref={containerRef} className={cn("relative", collapsed ? "w-full" : "min-w-0 flex-1")}>
@@ -80,7 +141,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
         }
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={workspace?.workDirectory ?? label}
+        title={branchTitle}
         className={cn(
           "group flex w-full items-center rounded-md text-left transition-colors",
           collapsed ? "justify-center px-0 py-1.5" : "gap-2.5 px-1.5 py-1",
@@ -90,13 +151,21 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
         <span
           aria-hidden
           className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-md",
+            "relative flex size-8 shrink-0 items-center justify-center rounded-md",
             workspace?.workDirectoryExists === false
               ? "bg-danger/15 text-danger ring-1 ring-inset ring-danger/40"
               : "bg-accent/15 text-accent ring-1 ring-inset ring-accent/35",
           )}
         >
           <WorkspaceMark />
+          {collapsed && workspace !== null && (
+            <span
+              className={cn(
+                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-surface-1",
+                gitContext?.dirty ? "bg-warning" : gitContext?.state === "ready" ? "bg-success" : "bg-fg-dim",
+              )}
+            />
+          )}
         </span>
         {!collapsed && (
           <span className="min-w-0 flex-1">
@@ -113,9 +182,25 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
                 <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </span>
-            {pathHint !== null && (
-              <span className="mt-0.5 block truncate text-[10px] text-fg-dim" title={workspace?.workDirectory}>
-                {pathHint}
+            {workspace !== null && (
+              <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px]" title={branchTitle}>
+                <span className={cn("shrink-0", gitContext?.state === "ready" ? "text-accent" : "text-fg-dim")}>
+                  <BranchMark />
+                </span>
+                <span className="truncate font-mono text-fg-muted">{branchLabel}</span>
+                {gitContext?.dirty && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-warning" title="Uncommitted changes" />
+                )}
+                {gitContext !== null && gitContext.ahead > 0 && (
+                  <span className="numeric shrink-0 text-success" title={`${gitContext.ahead} commit${gitContext.ahead === 1 ? "" : "s"} ahead`}>
+                    ↑{gitContext.ahead}
+                  </span>
+                )}
+                {gitContext !== null && gitContext.behind > 0 && (
+                  <span className="numeric shrink-0 text-warning" title={`${gitContext.behind} commit${gitContext.behind === 1 ? "" : "s"} behind`}>
+                    ↓{gitContext.behind}
+                  </span>
+                )}
               </span>
             )}
             {status === "empty" && (
@@ -201,7 +286,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
                       )}
                     </span>
                     <span className="mt-0.5 block truncate text-[10.5px] text-fg-dim" title={item.workDirectory}>
-                      {item.workDirectory}
+                      {active ? `${branchLabel} · ${shortenPath(item.workDirectory)}` : item.workDirectory}
                     </span>
                   </span>
                   {active && (
@@ -227,6 +312,17 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
         </div>
       )}
     </div>
+  );
+}
+
+function BranchMark() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
+      <circle cx="3" cy="2.5" r="1.25" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="3" cy="9.5" r="1.25" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="9" cy="3.5" r="1.25" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M3 3.75v4.5M4.25 7.5h.5A4.25 4.25 0 0 0 9 4.75" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
   );
 }
 

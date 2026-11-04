@@ -84,6 +84,12 @@ export function decide(signal: StepSignal, producedWork = false): TransitionDeci
  */
 export function endOfRunReason(facts: EndOfRunFacts): string {
   if (facts.stopReason !== null && facts.stopReason !== "") {
+    if (facts.stopReason.startsWith("resource_memory_limit:")) {
+      return `Run memory limit reached (${facts.stopReason}). The provider and its descendant process tree were stopped before they could exhaust host memory. Its work so far remains in the tree; inspect and resume it rather than treating this as an unexplained crash.`;
+    }
+    if (facts.stopReason.startsWith("budget_open_tool_call_ms:")) {
+      return `A tool call exceeded its deadline (${facts.stopReason}). The run was stopped cleanly instead of waiting forever; its work so far remains in the tree and remarks.`;
+    }
     return `Run budget exhausted (${facts.stopReason}). The run was stopped before it could `
       + "post a status. Its work so far is in the tree and in this item's remarks; resume from "
       + "there rather than restarting.";

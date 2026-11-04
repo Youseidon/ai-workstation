@@ -138,6 +138,27 @@ describe("run budgets", () => {
     assert.equal(metrics.toolOutputBytes, 3);
   });
 
+  test("one tool call that never returns is stopped at its own deadline", async () => {
+    const { metrics, events } = await run([
+      { type: "tool_use", payload: { toolUseId: "stuck", name: "Bash", summary: "hang", input: { command: "hang" } } },
+    ], { ...unlimited, maxOpenToolCallMs: 25 });
+    assert.equal(metrics.stopReason, "budget_open_tool_call_ms:25");
+    assert.ok(events.some((event) => event.type === "error" && event.payload.message.includes("did not return")));
+  });
+
+  test("a resource-limited adapter outcome is preserved with peak memory", async () => {
+    const { metrics } = await run([{
+      type: "result",
+      payload: {
+        state: "error",
+        stopReason: "resource_memory_limit:4294967296",
+        peakMemoryBytes: 4_100_000_000,
+      },
+    }], unlimited);
+    assert.equal(metrics.stopReason, "resource_memory_limit:4294967296");
+    assert.equal(metrics.peakMemoryBytes, 4_100_000_000);
+  });
+
   test("the budget snapshot warns before it stops, so the run can bank its work", async () => {
     const seen: string[] = [];
     const handle = startRun({
