@@ -175,3 +175,20 @@ test("restricted catalogs remove provider defaults and unknown custom ids", () =
   assert.equal(recommendedModel("claude", catalog, "professional"), "claude-sonnet");
   assert.equal(recommendedModel("claude", catalog, "frontier"), "claude-sonnet");
 });
+
+test("Cursor's default model stays in Cursor's own pool, not the API-billed vendor pool", () => {
+  // A pipeline fallback starts Cursor with no model: it must not land on Opus.
+  const picked = recommendedModel("cursor", MODEL_CATALOG.cursor, "frontier");
+  const option = MODEL_CATALOG.cursor.find((model) => model.id === picked);
+  assert.equal(option?.pool, "cursor", `frontier default was ${picked}`);
+  assert.equal(
+    MODEL_CATALOG.cursor.find((model) => model.id === recommendedModel("cursor", MODEL_CATALOG.cursor, "professional"))?.pool,
+    "cursor",
+  );
+  // With nothing from Cursor's pool allowed, vendor models are still usable.
+  const vendorOnly = [
+    { id: "claude-opus-5", label: "opus", hint: "", pool: "vendor" as const },
+    { id: "claude-sonnet-5", label: "sonnet", hint: "", pool: "vendor" as const },
+  ];
+  assert.equal(recommendedModel("cursor", vendorOnly, "frontier"), "claude-opus-5");
+});

@@ -262,6 +262,20 @@ export function recommendedModel(
   if (tier === "all") return null;
   const allowed = eligibleModels(provider, models, tier).filter((model): model is ModelOption & { id: string } => model.id !== null);
   if (allowed.length === 0) return null;
+  // A default nobody picked must not bill a separate allowance. Cursor's own
+  // pool (auto, Composer, Cursor-hosted Grok) is covered by the plan; its
+  // vendor pool (Opus, GPT, …) draws on the limited API budget. Pipeline
+  // fallbacks start Cursor with no model, so this is what they run on.
+  const ownPool = allowed.filter((model) => model.pool === "cursor");
+  if (ownPool.length > 0) return pickRecommended(provider, ownPool, tier);
+  return pickRecommended(provider, allowed, tier);
+}
+
+function pickRecommended(
+  provider: ProviderId,
+  allowed: ReadonlyArray<ModelOption & { id: string }>,
+  tier: ModelAccessTier,
+): string | null {
   // Prefer the highest band the ceiling permits, then a provider-specific
   // family. This makes Professional default to Sonnet/Terra rather than the
   // first cheap entry while still falling back safely if an account lacks it.
