@@ -145,10 +145,10 @@ export function AgentPicker({
           title={`${selected}: ${ACTIVITY_LABEL[selectedState?.activity ?? "idle"]}`}
         />
         <span className="font-medium">{selectedInfo?.label ?? selected}</span>
-        <span className={cn("truncate text-fg-dim", compact ? "max-w-[8ch] text-[10px]" : "max-w-[12ch] text-xs")}>
+        <span className={cn("truncate text-fg-dim", compact ? "max-w-[8ch] text-xs" : "max-w-[12ch] text-xs")}>
           {modelLabel(selected, selectedModel, selectedInfo?.models) ?? "default"}
         </span>
-        <span className="text-[10px] opacity-60" aria-hidden>
+        <span className="text-xs opacity-60" aria-hidden>
           ▾
         </span>
       </button>
@@ -159,7 +159,7 @@ export function AgentPicker({
           aria-label="Agents"
           className="absolute right-0 top-full z-40 mt-2 w-[360px] animate-slide-up overflow-hidden rounded-lg border border-line bg-surface-1 shadow-xl"
         >
-          <div className="border-b border-line px-3 py-2 text-[10px] uppercase tracking-wider text-fg-dim">
+          <div className="border-b border-line px-3 py-2 text-xs uppercase tracking-wider text-fg-dim">
             Agents · ↑↓ Enter · 1–4 · ⌘K
           </div>
           <div className="max-h-[min(70vh,28rem)] overflow-y-auto py-1">
@@ -257,7 +257,7 @@ function ProviderRow({
       className={cn(
         "border-b border-line/60 last:border-b-0",
         focused && "bg-surface-2",
-        selected && "bg-surface-2/80",
+        selected && "bg-surface-2",
       )}
     >
       <div className="flex items-start gap-2 px-2 py-2">
@@ -292,13 +292,13 @@ function ProviderRow({
               />
               {provider.cooling !== null && (
                 <span
-                  className="rounded-full bg-caution/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-caution"
+                  className="rounded-full bg-caution/15 px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-caution"
                   title={provider.cooling.because}
                 >
                   cooling
                 </span>
               )}
-              <span className="truncate text-[11px] text-fg-dim">{state.caption}</span>
+              <span className="truncate text-xs text-fg-dim">{state.caption}</span>
             </span>
             {used !== null && (
               <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-surface-3">
@@ -314,7 +314,7 @@ function ProviderRow({
           type="button"
           onClick={onToggleModels}
           title="Models"
-          className="mt-1 shrink-0 rounded px-1.5 py-1 text-[10px] text-fg-dim ring-1 ring-inset ring-line hover:text-fg"
+          className="mt-1 shrink-0 rounded px-1.5 py-1 text-xs text-fg-dim ring-1 ring-inset ring-line hover:text-fg"
         >
           {modelLabel(provider.id, model, provider.models) ?? "default"}
           {pinned ? "" : " ·"}
@@ -365,14 +365,14 @@ function ModelList({
 
   if (provider.modelSelectionMode === "auto") {
     return (
-      <div className="border-t border-line bg-surface-0/40 px-2 py-2">
-        <div className="mb-1.5 flex items-center gap-2 text-[10px] text-fg-dim">
+      <div className="border-t border-line bg-surface-0 px-2 py-2">
+        <div className="mb-1.5 flex items-center gap-2 text-xs text-fg-dim">
           <span className="rounded bg-accent/10 px-1.5 py-0.5 font-medium text-accent">Auto Select</span>
           <span>{MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}</span>
         </div>
         <div className={cn("rounded px-2 py-1.5 text-xs ring-1 ring-inset", theme.chip)}>
           <span>{modelLabel(provider.id, provider.model, provider.models) ?? "No eligible model"}</span>
-          <p className="mt-1 text-[10px] leading-snug text-fg-dim">
+          <p className="mt-1 text-xs leading-snug text-fg-dim">
             Model selection is managed on the Agents page.
           </p>
         </div>
@@ -381,8 +381,8 @@ function ModelList({
   }
 
   return (
-    <div className="border-t border-line bg-surface-0/40 px-2 py-2">
-      <div className="mb-1.5 flex items-center gap-2 text-[10px] text-fg-dim">
+    <div className="border-t border-line bg-surface-0 px-2 py-2">
+      <div className="mb-1.5 flex items-center gap-2 text-xs text-fg-dim">
         <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
           {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
         </span>
@@ -399,14 +399,14 @@ function ModelList({
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Search model, family, or capability…"
           spellCheck={false}
-          className="mb-1.5 w-full rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+          className="mb-1.5 w-full rounded border border-line bg-surface-1 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
         />
       )}
       <div className="max-h-40 overflow-y-auto">
         {groups.map((group) => (
           <div key={group.family}>
             {provider.models.length > 12 && (
-              <div className="sticky top-0 z-10 bg-surface-0 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-fg-dim">
+              <div className="sticky top-0 z-10 bg-surface-0 px-2 py-1 text-xs font-semibold uppercase tracking-wider text-fg-dim">
                 {group.family} · {group.options.length}
               </div>
             )}
@@ -424,9 +424,9 @@ function ModelList({
             >
               <span className="shrink-0">{option.label}</span>
               {option.id === provider.tierDefaultModel && (
-                <span className="rounded bg-accent/10 px-1 text-[9px] uppercase tracking-wide text-accent">recommended</span>
+                <span className="rounded bg-accent/10 px-1 text-xs uppercase tracking-wide text-accent">recommended</span>
               )}
-              <span className="ml-auto truncate text-[10px] text-fg-dim">
+              <span className="ml-auto truncate text-xs text-fg-dim">
                 {option.id === null ? option.hint : `${classifyModel(provider.id, option.id) ?? "other"} · ${option.hint}`}
               </span>
             </button>
@@ -434,7 +434,7 @@ function ModelList({
             })}
           </div>
         ))}
-        {options.length === 0 && <p className="px-2 py-2 text-[11px] text-fg-dim">No matching models.</p>}
+        {options.length === 0 && <p className="px-2 py-2 text-xs text-fg-dim">No matching models.</p>}
       </div>
       {provider.modelAccessTier === "all" && (
       <div className="mt-1.5 flex gap-1.5">
@@ -449,7 +449,7 @@ function ModelList({
           }}
           placeholder="custom model id…"
           spellCheck={false}
-          className="min-w-0 flex-1 rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+          className="min-w-0 flex-1 rounded border border-line bg-surface-1 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
         />
         <button
           type="button"
@@ -458,14 +458,14 @@ function ModelList({
             if (value !== "") onSelect(value);
           }}
           disabled={custom.trim() === ""}
-          className="shrink-0 rounded border border-line bg-surface-2 px-2 text-[11px] text-fg-muted disabled:opacity-40"
+          className="shrink-0 rounded border border-line bg-surface-2 px-2 text-xs text-fg-muted disabled:opacity-40"
         >
           use
         </button>
       </div>
       )}
       {provider.modelAccessTier !== "all" && (
-        <p className="mt-1.5 text-[10px] leading-snug text-fg-dim">
+        <p className="mt-1.5 text-xs leading-snug text-fg-dim">
           Custom and out-of-tier models are hidden. Change Model access on Agents to unlock them.
         </p>
       )}
@@ -473,7 +473,7 @@ function ModelList({
         <button
           type="button"
           onClick={onClear}
-          className="mt-1 w-full rounded px-2 py-1 text-left text-[10px] text-fg-dim hover:text-fg-muted"
+          className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-fg-dim hover:text-fg-muted"
         >
           ↺ follow settings{provider.model === null ? "" : ` (${provider.model})`}
         </button>

@@ -101,6 +101,20 @@ function formatRemark(item: { actorType: string; kind: string; createdAt: string
 }
 
 /**
+ * What the operator has already done or decided for this one work item. First
+ * in the prompt on purpose: it exists to stop the agent repeating work, and a
+ * note read after the agent has planned its approach is a note read too late.
+ */
+export function briefingSection(briefings: ReadonlyArray<{ createdAt: string; content: string }>): string {
+  if (briefings.length === 0) return "";
+  const body = briefings.map((item) => `### ${item.createdAt}\n\n${item.content.trim()}`).join("\n\n");
+  return section(
+    "From the operator — read first",
+    "The operator has already done or decided the following for this work item. Treat it as authoritative and newer than anything below; do not redo what it says is done.\n\n" + body,
+  );
+}
+
+/**
  * Execute context: ordered, capped sections. Consult/clarify keep the older
  * shape so their callers do not have to change with the diet.
  */
@@ -206,6 +220,7 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
 
   return `# Work item ${key} — ${context.prompt.title}\n\n`
     + `This database response is the authoritative work-item context. Do not search for a Markdown prompt file and do not update one.\n\n`
+    + briefingSection(context.briefings)
     + `## Workspace\n\n${workspaceBlock}\n\n`
     + standing
     + `## Program\n\n${cap(programBody, 1024)}\n\n`
@@ -328,6 +343,9 @@ ${cmd} blocked --reason "Observed evidence" --action "Exact human action"
 ${decompose}Every requestId must be unique for this run.
 The launcher supplies one; do not reuse a requestId across calls.
 ${askGuidance}
+## Operator messages
+
+Run \`${cmd} inbox\` between major steps and before any long build or test run. A MESSAGE FROM THE OPERATOR overrides the work item; answer with \`${cmd} reply --text "…"\` (does not pause).
 `;
 }
 
@@ -358,6 +376,12 @@ curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"unique-status-id","ex
 ${decompose}Every requestId must be unique for this run.
 Do not reuse a requestId across calls.
 ${askGuidance}
+## Messages from the operator
+
+The operator can message you while you work. Check between major steps and before any long-running command:
+curl -fsS ${auth} ${base}/inbox
+Any JSON response may also carry \`operatorMessages\`. They override the work-item text where they disagree. Answer without pausing the run:
+curl -fsS -X POST ${auth} ${base}/reply -d '{"text":"…"}'
 `;
 }
 

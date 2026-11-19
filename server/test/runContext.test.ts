@@ -21,6 +21,7 @@ function fixture(overrides: Partial<AgentPromptContext> = {}): AgentPromptContex
     parent: null,
     children: [],
     verificationCommands: [],
+    briefings: [],
     stoppedRemarks: [
       {
         id: 1, promptId: 2, runId: "prior", kind: "BLOCKER",

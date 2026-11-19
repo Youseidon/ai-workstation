@@ -12,7 +12,6 @@ import type {
 import { COOLING_MINUTES, TRANSIENT_PATTERNS } from "@agent-console/shared";
 import { SettingsGroupPanel } from "@/components/SettingsGroupPanel";
 import { StatusDot } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { PIPELINE_POLICY_GROUP, RUN_BUDGETS_GROUP } from "@/lib/settingsGroups";
 import { useModelSelection } from "@/lib/useModelSelection";
@@ -22,14 +21,19 @@ import { StepConfigForm } from "./StepConfigForm";
 import { SuiteFallbackEditor } from "./SuiteFallbackEditor";
 import { CONTROL_LABEL, TRANSITIONS, type PipelineStatusView } from "./status";
 
-export type InspectorTab = "station" | "policy" | "budgets" | "statuses" | "definition";
+/**
+ * "station" is kept as a request value (a chip can ask for the station's
+ * settings) but has no tab here: step settings live in the item panel.
+ */
+export type InspectorTab = "station" | "history" | "verification" | "policy" | "budgets" | "statuses" | "definition";
 
-const TABS: Array<{ id: InspectorTab; label: string }> = [
-  { id: "station", label: "Station" },
+const TABS: Array<{ id: Exclude<InspectorTab, "station">; label: string }> = [
+  { id: "history", label: "History" },
+  { id: "verification", label: "Verify" },
   { id: "policy", label: "Policy" },
   { id: "budgets", label: "Budgets" },
   { id: "statuses", label: "Statuses" },
-  { id: "definition", label: "Definition" },
+  { id: "definition", label: "Done criteria" },
 ];
 
 /**
@@ -40,7 +44,6 @@ export function PipelineInspector({
   open,
   tab,
   onTabChange,
-  onClose,
   status,
   policy,
   stationLabel,
@@ -52,11 +55,12 @@ export function PipelineInspector({
   onSettingsSaved,
   onEditStationFromSummary,
   station,
+  history,
+  verification,
 }: {
   open: boolean;
   tab: InspectorTab;
   onTabChange(tab: InspectorTab): void;
-  onClose(): void;
   status: PipelineStatusView;
   policy: PipelinePolicy;
   stationLabel: string | null;
@@ -68,7 +72,11 @@ export function PipelineInspector({
   onSettingsSaved?(): void;
   /** Jump from the transitions table into the station editor. */
   onEditStationFromSummary?(): void;
-  station: null | {
+  /** Run history of this pipeline. */
+  history?: ReactNode;
+  /** Suite verification reports and actions. */
+  verification?: ReactNode;
+  station?: null | {
     rule: PromptPipelineRule;
     item: OperationsPrompt;
     subStep: boolean;
@@ -84,20 +92,7 @@ export function PipelineInspector({
   if (!open) return null;
 
   return (
-    <aside
-      className="flex min-h-0 w-full flex-col border-t border-line bg-surface-1 xl:w-[360px] xl:border-t-0 xl:border-l"
-      aria-label="Pipeline configuration"
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
-        <div>
-          <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Configure</div>
-          <div className="text-[13px] text-fg">Pipeline settings</div>
-        </div>
-        <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close configuration">
-          Close
-        </Button>
-      </div>
-
+    <div className="flex h-full min-h-0 w-full flex-col" aria-label="Pipeline panel">
       <div className="flex gap-0.5 overflow-x-auto border-b border-line px-2 py-1.5" role="tablist">
         {TABS.map((entry) => (
           <button
@@ -107,7 +102,7 @@ export function PipelineInspector({
             aria-selected={tab === entry.id}
             onClick={() => onTabChange(entry.id)}
             className={cn(
-              "shrink-0 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+              "shrink-0 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
               tab === entry.id ? "bg-surface-3 text-fg" : "text-fg-dim hover:bg-surface-2 hover:text-fg",
             )}
           >
@@ -117,7 +112,11 @@ export function PipelineInspector({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {tab === "station" && (
+        {tab === "history" && history}
+        {tab === "verification" && (verification ?? (
+          <EmptyTab title="No suite selected" body="Select a suite to verify its work items." />
+        ))}
+        {tab === "station" && station !== undefined && (
           station === null ? (
             <EmptyTab
               title="No station selected"
@@ -149,7 +148,7 @@ export function PipelineInspector({
             />
 
             <section className="space-y-2">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
                 House pipeline policy
               </h3>
               <SettingsGroupPanel group={PIPELINE_POLICY_GROUP} onSaved={onSettingsSaved} compact />
@@ -157,10 +156,10 @@ export function PipelineInspector({
 
             {suiteId != null && pipelineId != null && (
               <section className="space-y-2 border-t border-line pt-4">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
                   Suite provider fallbacks
                 </h3>
-                <p className="text-[11px] leading-5 text-fg-dim">
+                <p className="text-xs leading-5 text-fg-dim">
                   Used when a station leaves its own list empty. Empty here means the house default (
                   {policy.fallbackProviders.join(" → ") || "none"}).
                 </p>
@@ -175,12 +174,12 @@ export function PipelineInspector({
 
             <section className="space-y-2 border-t border-line pt-4">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
                   Every state
                 </h3>
                 <button
                   type="button"
-                  className="text-[11px] text-accent hover:underline"
+                  className="text-xs text-accent hover:underline"
                   onClick={() => setShowTransitions((value) => !value)}
                 >
                   {showTransitions ? "Hide table" : "Show table"}
@@ -204,7 +203,7 @@ export function PipelineInspector({
 
         {tab === "statuses" && (
           <div className="space-y-2">
-            <p className="text-[11px] leading-5 text-fg-dim">
+            <p className="text-xs leading-5 text-fg-dim">
               Labels, tones, and enter behaviour for every status the board can show.
             </p>
             <StatusCatalogPanel onChanged={onStatusesChanged} />
@@ -219,7 +218,7 @@ export function PipelineInspector({
             />
           ) : (
             <div className="space-y-2">
-              <p className="text-[11px] leading-5 text-fg-dim">
+              <p className="text-xs leading-5 text-fg-dim">
                 Inherited by every work item in the suite that has not written its own.
               </p>
               <DefinitionOfDonePanel scope="suite" scopeId={suiteId} />
@@ -227,15 +226,15 @@ export function PipelineInspector({
           )
         )}
       </div>
-    </aside>
+    </div>
   );
 }
 
 function EmptyTab({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-panel border border-dashed border-line bg-surface-2/50 px-3 py-6 text-center">
+    <div className="rounded-panel border border-dashed border-line bg-surface-2 px-3 py-6 text-center">
       <p className="text-sm text-fg">{title}</p>
-      <p className="mt-1 text-[11px] leading-5 text-fg-dim">{body}</p>
+      <p className="mt-1 text-xs leading-5 text-fg-dim">{body}</p>
     </div>
   );
 }
@@ -259,8 +258,8 @@ function RightNowSummary({
   ];
 
   return (
-    <section className="space-y-3 rounded-panel border border-line bg-surface-2/60 p-3">
-      <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-dim">Right now</h3>
+    <section className="space-y-3 rounded-panel border border-line bg-surface-2 p-3">
+      <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-fg-dim">Right now</h3>
       <dl className="space-y-2.5">
         <Line term="State">
           <span className="inline-flex items-center gap-2">
@@ -277,7 +276,7 @@ function RightNowSummary({
           </Line>
         ))}
       </dl>
-      <p className="text-[11px] leading-5 text-fg-dim">
+      <p className="text-xs leading-5 text-fg-dim">
         Pause is{" "}
         <button type="button" className="text-accent hover:underline" onClick={onEditPolicy}>
           {policy.pauseMode === "immediate" ? "immediate" : "graceful"}
@@ -343,7 +342,7 @@ function TransitionsTable({
 function FallbacksReference() {
   return (
     <div className="space-y-2 pt-2">
-      <h4 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-dim">
+      <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">
         Transient failure cooling
       </h4>
       <div className="overflow-x-auto rounded-md border border-line">
@@ -357,16 +356,16 @@ function FallbacksReference() {
           <tbody>
             {TRANSIENT_PATTERNS.map((row) => (
               <tr key={row.id} className="border-b border-line/60 last:border-b-0">
-                <td className="px-2 py-1.5 font-mono text-[11px] text-fg">{row.id}</td>
+                <td className="px-2 py-1.5 font-mono text-xs text-fg">{row.id}</td>
                 <td className="px-2 py-1.5 text-fg-dim">{COOLING_MINUTES[row.id] ?? 5} min</td>
               </tr>
             ))}
             <tr className="border-b border-line/60 last:border-b-0">
-              <td className="px-2 py-1.5 font-mono text-[11px] text-fg">start_failed</td>
+              <td className="px-2 py-1.5 font-mono text-xs text-fg">start_failed</td>
               <td className="px-2 py-1.5 text-fg-dim">{COOLING_MINUTES.start_failed} min</td>
             </tr>
             <tr>
-              <td className="px-2 py-1.5 font-mono text-[11px] text-fg">died_before_work</td>
+              <td className="px-2 py-1.5 font-mono text-xs text-fg">died_before_work</td>
               <td className="px-2 py-1.5 text-fg-dim">{COOLING_MINUTES.died_before_work} min</td>
             </tr>
           </tbody>
@@ -401,7 +400,7 @@ function TransitionRowView({
       >
         {row.condition}
         {here && (
-          <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-accent">
+          <span className="ml-1 text-xs font-semibold uppercase tracking-[0.1em] text-accent">
             here
           </span>
         )}
@@ -475,15 +474,15 @@ function SetBy({
 function Line({ term, children }: { term: string; children: ReactNode }) {
   return (
     <div className="grid gap-1">
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-dim">{term}</dt>
-      <dd className="min-w-0 text-[12px] leading-5 text-fg-muted">{children}</dd>
+      <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">{term}</dt>
+      <dd className="min-w-0 text-xs leading-5 text-fg-muted">{children}</dd>
     </div>
   );
 }
 
 function Th({ children }: { children: ReactNode }) {
   return (
-    <th className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-dim">
+    <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">
       {children}
     </th>
   );

@@ -148,7 +148,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                   <span
                     aria-hidden
                     className={cn(
-                      "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-bold ring-1 ring-inset",
+                      "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-xs font-bold ring-1 ring-inset",
                       tone.text,
                       tone.ring,
                     )}
@@ -156,7 +156,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                     {tone.glyph}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-medium text-fg">{item.title}</p>
+                    <p className="text-sm font-medium text-fg">{item.title}</p>
                     {item.description !== undefined && (
                       <p className="mt-0.5 break-words text-xs leading-relaxed text-fg-muted">
                         {item.description}

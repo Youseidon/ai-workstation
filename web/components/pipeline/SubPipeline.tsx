@@ -1,12 +1,12 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { OperationsPrompt, PromptPipelineRule, SuitePipelineRun } from "@agent-console/shared";
 import { Badge } from "@/components/ui/Badge";
-import { cn } from "@/lib/cn";
 import type { RunStatus } from "@/lib/agentConsole";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
-import { onUnfinishedChip, overrideChip, stationOccupancy, TONE, LABEL } from "./status";
+import { onUnfinishedChip, overrideChip, stationOccupancy } from "./status";
 
 export interface SubStepRuleView {
   rule: PromptPipelineRule;
@@ -36,14 +36,11 @@ export function SubPipeline({
   ruleFor,
   activeRun,
   runs,
-  readOnly,
-  busy,
+  selectedId,
   onNavigate,
   onOpen,
-  onConfig,
-  onUseStationSettings,
-  onRetry,
-  onSkip,
+  onSelect,
+  renderGate,
 }: {
   /** Station first, deepest open node last. Clicking an entry navigates up. */
   trail: SubTrailEntry[];
@@ -53,15 +50,14 @@ export function SubPipeline({
   ruleFor(promptId: number): SubStepRuleView;
   activeRun: SuitePipelineRun | null;
   runs: RunStatus[];
-  readOnly: boolean;
-  busy: boolean;
+  selectedId: number | null;
   /** `null` returns to the station flowchart; an index returns to that depth. */
   onNavigate(index: number | null): void;
+  /** Drill into a sub-step's own sub-steps. */
   onOpen(promptId: number): void;
-  onConfig(promptId: number): void;
-  onUseStationSettings(promptId: number): void;
-  onRetry(promptId: number): void;
-  onSkip(promptId: number): void;
+  /** Show a sub-step in the item panel. */
+  onSelect(promptId: number): void;
+  renderGate?(item: OperationsPrompt): ReactNode;
 }) {
   const parent = trail[trail.length - 1];
   const done = items.filter(isDone).length;
@@ -73,7 +69,7 @@ export function SubPipeline({
 
   return (
     <div className="space-y-4">
-      <nav aria-label="Sub-pipeline trail" className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <nav aria-label="Sub-pipeline trail" className="flex flex-wrap items-center gap-1.5 text-xs">
         <button type="button" onClick={() => onNavigate(null)} className="text-accent hover:underline">
           ← Flowchart
         </button>
@@ -96,7 +92,7 @@ export function SubPipeline({
       <div className="rounded-panel border border-line bg-surface-1 px-4 py-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Sub-pipeline</div>
+            <div className="text-xs uppercase tracking-[0.18em] text-fg-dim">Sub-pipeline</div>
             <h3 className="mt-1 truncate text-lg text-fg">{parent?.label ?? "Sub-steps"}</h3>
             <p className="mt-1 text-xs leading-5 text-fg-dim">
               The agent split this step into {items.length} slice{items.length === 1 ? "" : "s"} and runs them in
@@ -118,7 +114,7 @@ export function SubPipeline({
             </Badge>
           </div>
         </div>
-        <div className="mt-3 border-t border-line pt-2 text-[11px] text-fg-dim">
+        <div className="mt-3 border-t border-line pt-2 text-xs text-fg-dim">
           Inherited from this step: <span className="text-fg-muted">{overrideChip(parentRule) ?? "no agent yet"}</span>
           {" · on blocked "}
           <span className="text-fg-muted">{onUnfinishedChip(parentRule)}</span>
@@ -126,7 +122,7 @@ export function SubPipeline({
       </div>
 
       {items.length === 0 ? (
-        <div className="rounded-panel border border-dashed border-line bg-surface-1/70 px-6 py-12 text-center text-sm text-fg-dim">
+        <div className="rounded-panel border border-dashed border-line bg-surface-1 px-6 py-12 text-center text-sm text-fg-dim">
           This step has no sub-steps.
         </div>
       ) : (
@@ -137,6 +133,7 @@ export function SubPipeline({
             const item = items[index];
             return item !== undefined && activeRun?.currentPromptId === item.prompt.id;
           }}
+          renderGate={renderGate === undefined ? undefined : (item) => renderGate(item)}
           renderCard={(item, index) => {
             const view = ruleFor(item.prompt.id);
             const childDone = item.children.filter(isDone).length;
@@ -148,36 +145,16 @@ export function SubPipeline({
                 inherited={view.inherited}
                 current={activeRun?.currentPromptId === item.prompt.id}
                 occupancy={stationOccupancy(item, runs, activeRun)}
-                readOnly={readOnly}
+                selected={selectedId === item.prompt.id}
                 subSteps={item.children.length > 0 ? { done: childDone, total: item.children.length } : undefined}
+                onSelect={() => onSelect(item.prompt.id)}
                 onOpenSubPipeline={item.children.length > 0 ? () => onOpen(item.prompt.id) : undefined}
-                onConfig={readOnly || busy ? undefined : () => onConfig(item.prompt.id)}
-                onUseStationSettings={readOnly || busy ? undefined : () => onUseStationSettings(item.prompt.id)}
-                onRetry={readOnly || busy || !item.prompt.recoverable ? undefined : () => onRetry(item.prompt.id)}
-                onRemove={readOnly || busy || isDone(item) ? undefined : () => onSkip(item.prompt.id)}
-                removeLabel="Skip"
               />
             );
           }}
         />
       )}
 
-      <ol className="space-y-1">
-        {items.map((item, index) => (
-          <li key={item.prompt.id} className="flex items-center gap-2 text-[11px]">
-            <span className="w-5 shrink-0 text-right numeric text-fg-dim">{index + 1}</span>
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate",
-                item.operationalState === "SKIPPED" ? "text-fg-dim line-through" : "text-fg-muted",
-              )}
-            >
-              {item.prompt.externalKey ?? item.prompt.title}
-            </span>
-            <Badge tone={TONE[item.operationalState]}>{LABEL[item.operationalState]}</Badge>
-          </li>
-        ))}
-      </ol>
     </div>
   );
 }

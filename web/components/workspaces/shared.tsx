@@ -75,7 +75,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
           disabled={option.disabled}
           onClick={() => onChange(option.value)}
           className={cn(
-            "rounded px-3 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+            "rounded px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
             value === option.value ? "bg-surface-3 text-fg shadow-sm" : "text-fg-dim hover:text-fg",
           )}
         >
@@ -90,8 +90,8 @@ export function SectionHeading({ title, hint, actions }: { title: string; hint?:
   return (
     <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <h2 className="text-[13px] font-semibold text-fg">{title}</h2>
-        {hint !== undefined && <p className="mt-0.5 text-[11px] text-fg-dim">{hint}</p>}
+        <h2 className="text-sm font-semibold text-fg">{title}</h2>
+        {hint !== undefined && <p className="mt-0.5 text-xs text-fg-dim">{hint}</p>}
       </div>
       {actions}
     </div>

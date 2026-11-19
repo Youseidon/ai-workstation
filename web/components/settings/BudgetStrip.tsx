@@ -39,7 +39,7 @@ export function BudgetStrip({ provider, providerLabel, model }: { provider: Prov
         type="button"
         onClick={() => setEditing(true)}
         title="Limits for one run. Click to change them."
-        className="group mx-auto mt-3 flex max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full px-3 py-1 text-[11px] text-fg-dim transition-colors hover:bg-surface-2 hover:text-fg-muted"
+        className="group mx-auto mt-3 flex max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full px-3 py-1 text-xs text-fg-dim transition-colors hover:bg-surface-2 hover:text-fg-muted"
       >
         <span className="uppercase tracking-wider">Per run</span>
         {chips.map(({ key, value, scale }) => {

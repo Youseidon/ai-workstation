@@ -79,7 +79,7 @@ export function StopSlider({ id, labelledBy, value, defaultValue, scale, disable
             onClick={() => onChange(stop)}
             style={{ left: `${last === 0 ? 0 : (position / last) * 100}%` }}
             className={cn(
-              "absolute top-0 -translate-x-1/2 whitespace-nowrap rounded px-0.5 font-mono text-[10px] leading-4 transition-colors",
+              "absolute top-0 -translate-x-1/2 whitespace-nowrap rounded px-0.5 font-mono text-xs leading-4 transition-colors",
               position === index ? "text-fg" : "text-fg-dim hover:text-fg-muted",
               stop === defaultValue && position !== index && "underline decoration-dotted underline-offset-2",
             )}
@@ -133,9 +133,9 @@ export function ValueReadout({
             if (event.key === "Escape") setText(null);
           }}
           aria-label={`Exact value${unit === "" ? "" : ` in ${unit}`}`}
-          className="w-24 rounded border border-line-strong bg-surface-0 px-1.5 py-0.5 text-right font-mono text-[12px] text-fg focus:outline-none"
+          className="w-24 rounded border border-line-strong bg-surface-0 px-1.5 py-0.5 text-right font-mono text-xs text-fg focus:outline-none"
         />
-        {unit !== "" && <span className="text-[10px] text-fg-dim">{unit}</span>}
+        {unit !== "" && <span className="text-xs text-fg-dim">{unit}</span>}
       </span>
     );
   }
@@ -147,7 +147,7 @@ export function ValueReadout({
       onClick={() => setText(String(value))}
       title="Type an exact value"
       className={cn(
-        "shrink-0 rounded px-1.5 py-0.5 font-mono text-[13px] font-semibold tabular-nums transition-colors hover:bg-surface-2 disabled:opacity-50",
+        "shrink-0 rounded px-1.5 py-0.5 font-mono text-sm font-semibold tabular-nums transition-colors hover:bg-surface-2 disabled:opacity-50",
         open ? "text-warning" : "text-fg",
       )}
     >
@@ -181,7 +181,7 @@ export function NumberStepper({
         value={String(value)}
         disabled={disabled}
         onChange={(event) => onChange(Math.max(0, Math.trunc(Number(event.target.value)) || 0))}
-        className="w-16 bg-transparent py-0.5 text-center font-mono text-[12px] text-fg [appearance:textfield] focus:outline-none disabled:opacity-50 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className="w-16 bg-transparent py-0.5 text-center font-mono text-xs text-fg [appearance:textfield] focus:outline-none disabled:opacity-50 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       <button type="button" aria-label="Increase" disabled={disabled} onClick={() => onChange(value + 1)} className={button}>
         +

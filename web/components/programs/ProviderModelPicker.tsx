@@ -67,7 +67,7 @@ export function ProviderModelPicker({ providers, state, label = "Agent", blocked
     <div className={className}>
       <div className="mb-1.5 text-xs font-medium text-fg-muted">{label}</div>
       {providers.length === 0 ? (
-        <p className="text-[11px] text-fg-dim">No agent detected on this server.</p>
+        <p className="text-xs text-fg-dim">No agent detected on this server.</p>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {providers.map((info) => {
@@ -105,7 +105,7 @@ export function ProviderModelPicker({ providers, state, label = "Agent", blocked
                     setMenuFor(active && menuFor !== id ? id : null);
                   }}
                   className={cn(
-                    "inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[11px] ring-1 ring-inset transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    "inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs ring-1 ring-inset transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                     active ? providerTheme[id].chip : "text-fg-muted ring-line hover:bg-surface-3",
                   )}
                 >

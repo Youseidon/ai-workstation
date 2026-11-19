@@ -23,7 +23,7 @@ export function UsageBlock({
   if (loading) {
     return (
       <div className="mt-3 border-t border-line pt-3">
-        <div className="text-[10px] uppercase tracking-wider text-fg-dim">plan usage</div>
+        <div className="text-xs uppercase tracking-wider text-fg-dim">plan usage</div>
         <div className="mt-2 flex flex-col gap-2">
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
@@ -42,8 +42,8 @@ export function UsageBlock({
   return (
     <div className="mt-3 border-t border-line pt-3">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-fg-dim">plan usage</div>
-        {usage.plan !== null && <div className="truncate text-[10px] text-fg-dim">{usage.plan}</div>}
+        <div className="text-xs uppercase tracking-wider text-fg-dim">plan usage</div>
+        {usage.plan !== null && <div className="truncate text-xs text-fg-dim">{usage.plan}</div>}
       </div>
       <dl className="mt-2 flex flex-col gap-2">
         {windows.map((window) => (
@@ -61,7 +61,7 @@ export function UsageMeter({ window }: { window: ProviderUsageWindow }) {
   const reset = formatResetIn(window.resetsAt);
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-2 text-[11px]">
+      <div className="flex items-baseline justify-between gap-2 text-xs">
         <dt className="text-fg-dim">{windowLabel(window)}</dt>
         <dd className="numeric text-fg">{percent === null ? "—" : `${Math.round(percent)}%`}</dd>
       </div>
@@ -77,7 +77,7 @@ export function UsageMeter({ window }: { window: ProviderUsageWindow }) {
           style={{ width: `${percent === null ? 0 : Math.min(100, percent)}%` }}
         />
       </div>
-      {reset !== null && <div className="mt-0.5 text-[10px] text-fg-dim">resets {reset}</div>}
+      {reset !== null && <div className="mt-0.5 text-xs text-fg-dim">resets {reset}</div>}
     </div>
   );
 }
@@ -102,7 +102,7 @@ export function CreditsLine({ credits }: { credits: NonNullable<ProviderUsage["c
     parts.push(`${money(credits.limit)} cap`);
   }
   if (parts.length === 0) return null;
-  return <div className="mt-2 text-[10px] text-fg-dim">credits · {parts.join(" · ")}</div>;
+  return <div className="mt-2 text-xs text-fg-dim">credits · {parts.join(" · ")}</div>;
 }
 
 function windowLabel(window: ProviderUsageWindow): string {

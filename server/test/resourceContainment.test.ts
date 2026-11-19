@@ -6,6 +6,7 @@ import {
   parseSystemdProperties,
   signalProcessTree,
   systemdUserManagerAvailable,
+  withSpawnEnvironment,
   type ResourceLimits,
 } from "../src/adapters/resourceContainment.ts";
 
@@ -15,6 +16,14 @@ const limits: ResourceLimits = {
   memorySwapMaxBytes: 512 * 1024 ** 2,
   tasksMax: 512,
 };
+
+test("systemd forwards the selected cwd and environment without putting credential values in argv", () => {
+  const plan = withSpawnEnvironment(buildSystemdSpawnPlan("kilo", ["serve"], "stream", limits), "/tmp/workspace with spaces", { KILO_SERVER_PASSWORD: "secret-value", PATH: "/bin" });
+  assert.ok(plan.args.includes("--working-directory=/tmp/workspace with spaces"));
+  assert.ok(plan.args.includes("--setenv=KILO_SERVER_PASSWORD"));
+  assert.equal(plan.args.some(arg => arg.includes("secret-value")), false);
+  assert.ok(plan.args.some(arg => arg.startsWith("--property=UnsetEnvironment=")));
+});
 
 test("systemd command contains cgroup-wide memory, swap, and task limits", () => {
   const plan = buildSystemdSpawnPlan("/usr/bin/codex", ["exec", "hello"], "run:unsafe/id", limits);

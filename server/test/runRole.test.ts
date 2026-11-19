@@ -209,7 +209,7 @@ test("cursor adapter uses the supported long model flag", () => {
     model: "claude-sonnet-5",
     extraArgs: [],
   });
-  assert.deepEqual(args, ["-p", "--output-format", "stream-json", "--model", "claude-sonnet-5", "do the work"]);
+  assert.deepEqual(args, ["-p", "--output-format", "stream-json", "--stream-partial-output", "--model", "claude-sonnet-5", "do the work"]);
   assert.equal(args.includes("-m"), false);
 });
 

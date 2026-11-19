@@ -41,21 +41,21 @@ export function StepConfigForm({
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-[10px] uppercase tracking-[0.16em] text-fg-dim">
+        <div className="text-xs uppercase tracking-[0.16em] text-fg-dim">
           {subStep ? "Sub-step" : "Station"}
         </div>
         <h3 className="mt-0.5 text-sm font-medium text-fg">
           {item.prompt.externalKey ?? item.prompt.title}
         </h3>
         {item.prompt.externalKey !== null && (
-          <p className="mt-0.5 truncate text-[11px] text-fg-dim">{item.prompt.title}</p>
+          <p className="mt-0.5 truncate text-xs text-fg-dim">{item.prompt.title}</p>
         )}
       </div>
 
       {subStep && (
         <p
           className={cn(
-            "rounded-md px-3 py-2 text-[11px] leading-5 ring-1 ring-inset",
+            "rounded-md px-3 py-2 text-xs leading-5 ring-1 ring-inset",
             inherited ? "bg-surface-2 text-fg-dim ring-line" : "bg-violet/10 text-violet ring-violet/30",
           )}
         >
@@ -66,7 +66,7 @@ export function StepConfigForm({
       )}
 
       <section>
-        <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">AI for this step</div>
+        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">AI for this step</div>
         <div className="flex flex-wrap gap-1">
           {PROVIDER_IDS.map((id) => {
             const info = providers.find((entry) => entry.id === id);
@@ -89,7 +89,7 @@ export function StepConfigForm({
                     setModelFor(modelFor === id ? null : id);
                   }}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
+                    "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ring-1 ring-inset",
                     active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
                   )}
                 >
@@ -101,7 +101,7 @@ export function StepConfigForm({
                     </span>
                   )}
                   {inactiveSavedModel && (
-                    <span className="ml-1 rounded bg-caution/15 px-1 text-[9px] uppercase tracking-wide text-caution">
+                    <span className="ml-1 rounded bg-caution/15 px-1 text-xs uppercase tracking-wide text-caution">
                       {info?.modelSelectionMode === "auto" ? "uses auto" : "uses tier default"}
                     </span>
                   )}
@@ -139,7 +139,7 @@ export function StepConfigForm({
       </section>
 
       <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
-        <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On DONE</div>
+        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">On DONE</div>
         <div className="flex flex-wrap gap-1">
           {(["continue", "stop", "skip_rest"] as const).map((action) => (
             <button
@@ -147,7 +147,7 @@ export function StepConfigForm({
               type="button"
               onClick={() => onChange({ onDone: action })}
               className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
+                "rounded-full px-2 py-0.5 text-xs ring-1 ring-inset",
                 rule.onDone === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
               )}
             >
@@ -155,11 +155,11 @@ export function StepConfigForm({
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onDoneConsequence(rule.onDone, policy)}</p>
+        <p className="mt-2 text-xs leading-4 text-fg-dim">{onDoneConsequence(rule.onDone, policy)}</p>
       </section>
 
       <section>
-        <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">On unfinished</div>
+        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">On unfinished</div>
         <div className="flex flex-wrap gap-1">
           {(["continue", "skip", "wait"] as const).map((action) => (
             <button
@@ -167,7 +167,7 @@ export function StepConfigForm({
               type="button"
               onClick={() => onChange({ onUnfinished: action })}
               className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
+                "rounded-full px-2 py-0.5 text-xs ring-1 ring-inset",
                 rule.onUnfinished === action ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-muted ring-line",
               )}
             >
@@ -175,12 +175,12 @@ export function StepConfigForm({
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[11px] leading-4 text-fg-dim">{onUnfinishedConsequence(rule, policy)}</p>
+        <p className="mt-2 text-xs leading-4 text-fg-dim">{onUnfinishedConsequence(rule, policy)}</p>
       </section>
 
       <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
-        <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">Fallback providers</div>
-        <p className="mb-2 text-[11px] leading-4 text-fg-dim">
+        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Fallback providers</div>
+        <p className="mb-2 text-xs leading-4 text-fg-dim">
           Ordered list tried when this station&apos;s agent cannot start or dies before doing any
           work. Empty means the suite / house default (
           {policy.fallbackProviders.join(" → ") || "none"}).
@@ -202,7 +202,7 @@ export function StepConfigForm({
                   onChange({ fallbackProviders: next });
                 }}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ring-1 ring-inset",
                   active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
                 )}
               >
@@ -214,7 +214,7 @@ export function StepConfigForm({
           })}
         </div>
         {rule.fallbackProviders.length > 1 && (
-          <p className="mt-2 text-[11px] leading-4 text-fg-dim">
+          <p className="mt-2 text-xs leading-4 text-fg-dim">
             Order: {rule.fallbackProviders.join(" → ")}. Click again to remove; re-add to move to the end.
           </p>
         )}

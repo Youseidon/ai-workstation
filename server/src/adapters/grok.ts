@@ -150,7 +150,7 @@ function summarizeToolInput(name: string, input: unknown): string {
   }
 }
 
-class GrokMapper implements StreamMapper {
+export class GrokMapper implements StreamMapper {
   settled = false;
   private usage: TokenUsage | null = null;
   private lastText: string | null = null;
@@ -162,6 +162,7 @@ class GrokMapper implements StreamMapper {
   private readonly completedTools = new Set<string>();
 
   map(value: unknown): AdapterEvent[] {
+    if (this.settled) return [];
     const event = value as GrokEvent;
     switch (event.type) {
       case "text":
@@ -436,7 +437,7 @@ export class GrokAdapter extends SpawnAdapter {
     return { args, env: Object.keys(env).length > 0 ? env : undefined, sessionId };
   }
 
-  protected createMapper(): StreamMapper {
+  protected override createMapper(): StreamMapper {
     return new GrokMapper();
   }
 }

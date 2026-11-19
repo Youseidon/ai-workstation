@@ -8,6 +8,7 @@ import type { AgentAdapter, AvailabilityReport, RunOptions } from "./types.ts";
 import { settings } from "../settings.ts";
 import {
   buildSpawnPlan,
+  withSpawnEnvironment,
   readSystemdUnitOutcome,
   signalProcessTree,
   signalSystemdUnit,
@@ -27,6 +28,15 @@ export interface SpawnSpec {
    * exactly the runs that do not need it — a budget stop never gets there.
    */
   sessionId?: string;
+  /** Duplex transports keep stdin open and end when their protocol settles. */
+  interactive?: boolean;
+  mapper?: StreamMapper;
+}
+
+export interface StreamChannel {
+  send(message: unknown): void;
+  emit(event: AdapterEvent): void;
+  fail(error: unknown): void;
 }
 
 /**
@@ -40,6 +50,13 @@ export interface StreamMapper {
   finish(exitCode: number | null, signal: NodeJS.Signals | null): AdapterEvent[];
   /** True once the mapper has emitted a terminal `result` event. */
   readonly settled: boolean;
+  start?(channel: StreamChannel): void;
+  line?(line: string): void;
+  /** True when the provider has been asked to stop through its native API. */
+  interrupt?(): boolean;
+  /** Adds operator input to the turn in progress (`/btw`); false when there is none to add to. */
+  steer?(text: string): Promise<boolean>;
+  dispose?(): void;
 }
 
 const KILL_GRACE_MS = 2000;
@@ -63,9 +80,9 @@ export abstract class SpawnAdapter implements AgentAdapter {
   /** Extra availability checks (auth, keys) once the binary is present. */
   protected abstract checkAuth(): Promise<string | null>;
   protected abstract buildSpec(prompt: string, opts: RunOptions): SpawnSpec;
-  protected abstract createMapper(): StreamMapper;
+  protected createMapper(): StreamMapper { throw new Error("Provider did not configure a stream mapper"); }
 
-  private readonly children = new Map<string, { child: ChildProcess; plan: SpawnPlan }>();
+  private readonly children = new Map<string, { child: ChildProcess; plan: SpawnPlan; mapper: StreamMapper }>();
 
   async checkAvailability(): Promise<AvailabilityReport> {
     const binary = await resolveBinary(this.binaryName);
@@ -100,13 +117,19 @@ export abstract class SpawnAdapter implements AgentAdapter {
     }
 
     const spec = this.buildSpec(prompt, opts);
-    const mapper = this.createMapper();
+    const mapper = spec.mapper ?? this.createMapper();
     const queue = new AsyncQueue<AdapterEvent>();
     const splitter = new LineSplitter();
     let stderrTail = "";
 
     const limits = settings.resourceLimits;
-    const plan = buildSpawnPlan(binary, spec.args, opts.runId, limits);
+    const childEnv = { ...process.env, ...spec.env };
+    delete childEnv.AGENT_CONSOLE_DATA_DIR;
+    delete childEnv.AGENT_CONSOLE_DATABASE_PATH;
+    delete childEnv.AGENT_CONSOLE_DB;
+    delete childEnv.DATABASE_URL;
+    delete childEnv.SETTINGS_FILE;
+    const plan = withSpawnEnvironment(buildSpawnPlan(binary, spec.args, opts.runId, limits), opts.cwd, childEnv);
     opts.log.info(`spawn ${binary} ${spec.args.map(redactArg).join(" ")} · containment=${plan.containment}`);
     if (plan.containment !== "systemd") {
       opts.log.warn("systemd user containment unavailable; using process-tree cancellation without aggregate memory/task limits");
@@ -114,19 +137,15 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
     let child: ChildProcess;
     try {
-      const childEnv={...process.env,...spec.env};
       // Persistence belongs exclusively to the server process. Never pass a
       // database/data-directory capability to a spawned agent, even if one is
       // added to the service environment later.
-      delete childEnv.AGENT_CONSOLE_DATA_DIR;
-      delete childEnv.AGENT_CONSOLE_DATABASE_PATH;
-      delete childEnv.DATABASE_URL;
       child = spawn(plan.command, plan.args, {
         cwd: opts.cwd,
         env: childEnv,
         // With no stdin payload the handle is closed outright: these CLIs
         // otherwise sit waiting for piped input.
-        stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        stdio: [spec.stdin === undefined && !spec.interactive ? "ignore" : "pipe", "pipe", "pipe"],
         detached: plan.detached,
       });
     } catch (error) {
@@ -137,7 +156,16 @@ export abstract class SpawnAdapter implements AgentAdapter {
       return;
     }
 
-    this.children.set(opts.runId, { child, plan });
+    this.children.set(opts.runId, { child, plan, mapper });
+    const emit = (event: AdapterEvent) => {
+      queue.push(event);
+      if (spec.interactive && event.type === "result") queue.close();
+    };
+    const fail = (error: unknown) => {
+      emit({ type: "error", payload: { message: `${this.label} streaming failed`, fatal: true, detail: describeError(error) } });
+      emit({ type: "result", payload: { state: "error", exitCode: null } });
+    };
+    child.stdin?.on("error", error => { if (!mapper.settled) fail(error); });
 
     // Before any provider output, so the id survives an interrupt.
     if (spec.sessionId !== undefined) {
@@ -159,14 +187,19 @@ export abstract class SpawnAdapter implements AgentAdapter {
     const handleLine = (line: string) => {
       const parsed = tryParseJson(line);
       if (parsed === undefined) {
+        try {
+          if (spec.interactive && !mapper.line) fail(new Error("Provider returned invalid JSON on its protocol stream"));
+          else mapper.line?.(line);
+        } catch (error) { fail(error); }
         // Not JSON: banner/progress noise. Server log only.
         opts.log.debug(`non-json stdout: ${line.slice(0, 400)}`);
         return;
       }
       try {
-        for (const event of mapper.map(parsed)) queue.push(event);
+        for (const event of mapper.map(parsed)) emit(event);
       } catch (error) {
-        opts.log.warn("mapper failed on line", describeError(error));
+        if (spec.interactive) fail(error);
+        else opts.log.warn("mapper failed on line", describeError(error));
       }
     };
 
@@ -217,7 +250,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
               peakMemoryBytes: unitOutcome.peakMemoryBytes,
             },
           });
-        } else if (code !== 0) {
+        } else if (code !== 0 || spec.interactive) {
           queue.push({
             type: "error",
             payload: {
@@ -235,9 +268,28 @@ export abstract class SpawnAdapter implements AgentAdapter {
     })(); });
 
     try {
+      mapper.start?.({
+        send: message => {
+          if (!child.stdin?.writable) throw new Error("Provider input closed");
+          child.stdin.write(`${JSON.stringify(message)}\n`);
+        },
+        emit,
+        fail,
+      });
+      if (opts.signal.aborted) onAbort();
       for await (const event of queue) yield event;
     } finally {
+      mapper.dispose?.();
       opts.signal.removeEventListener("abort", onAbort);
+      if (spec.interactive && child.exitCode === null && child.signalCode === null) {
+        // App Server flushes its durable thread on stdio EOF. Give a completed
+        // protocol a brief shutdown window before enforcing tree cleanup.
+        child.stdin?.end();
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, 250);
+          child.once("close", () => { clearTimeout(timer); resolve(); });
+        });
+      }
       this.children.delete(opts.runId);
       if (plan.containment === "process-group") signalProcessTree(child.pid, "SIGKILL");
       if (child.exitCode === null && child.signalCode === null) await this.forceKill(opts.runId, child, plan);
@@ -247,12 +299,22 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
   private readonly interrupted = new Set<string>();
 
+  /**
+   * Hands `/btw` text to a live run's mapper. Not `sendUserMessage` itself: a
+   * provider opts in by defining that method, so this base class must not.
+   */
+  protected async steerRun(runId: string, text: string): Promise<boolean> {
+    const tracked = this.children.get(runId);
+    if (!tracked || tracked.child.exitCode !== null || tracked.mapper.steer === undefined) return false;
+    return tracked.mapper.steer(text);
+  }
+
   async interrupt(runId: string): Promise<void> {
     const tracked = this.children.get(runId);
     const child = tracked?.child;
     if (!child || child.exitCode !== null) return;
     this.interrupted.add(runId);
-    await this.signalTree(child, tracked.plan, "SIGINT");
+    if (!tracked.mapper.interrupt?.()) await this.signalTree(child, tracked.plan, "SIGINT");
     await new Promise<void>((resolvePromise) => {
       const timer = setTimeout(() => { void (async () => {
         if (child.exitCode === null && child.signalCode === null) await this.forceKill(runId, child, tracked.plan);

@@ -15,6 +15,8 @@ import {
 } from "@agent-console/shared";
 import { CountUp } from "@/components/CountUp";
 import { Badge } from "@/components/ui/Badge";
+import { ContentTitle } from "@/components/shell/PageCanvas";
+import { SidebarCollection, SidebarRow } from "@/components/shell/SidebarCollection";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
@@ -47,6 +49,12 @@ function sessionTitle(session: SessionUsageRow): string {
     return `${session.promptKey} — ${session.promptTitle}`;
   }
   return session.promptTitle;
+}
+
+const REPORT_SECTIONS = [["summary", "Summary"], ["by-provider", "By provider"], ["breakdown", "Breakdown"]] as const;
+
+function jump(id: string) {
+  document.getElementById(`report-${id}`)?.scrollIntoView({ block: "start" });
 }
 
 export function ReportView() {
@@ -107,21 +115,35 @@ export function ReportView() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="flex w-full flex-col gap-6 p-5">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-xs text-fg-dim">
-              Tokens per session, rolled up into tasks and suites.
-              {report !== null ? ` · ${formatWhen(report.generatedAt)}` : ""}
-            </p>
-            {loadError !== null && <p className="mt-1 text-xs text-danger">{loadError}</p>}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={() => void refresh()} loading={loading && report !== null}>
-              Refresh
-            </Button>
-          </div>
-        </header>
+      <SidebarCollection label="Report sections">
+        {REPORT_SECTIONS.map(([id, label]) => (
+          <SidebarRow
+            key={id}
+            title={label}
+            onSelect={() => jump(id)}
+          />
+        ))}
+        {(["suites", "tasks", "sessions"] as const).map((id) => (
+          <SidebarRow
+            key={id}
+            depth={1}
+            title={id === "suites" ? "Suites" : id === "tasks" ? "Tasks" : "Sessions"}
+            selected={tab === id}
+            onSelect={() => { setTab(id); jump("breakdown"); }}
+          />
+        ))}
+      </SidebarCollection>
+      <ContentTitle
+        title="Report"
+        meta={<>Tokens per session, rolled up into tasks and suites{report !== null ? ` · ${formatWhen(report.generatedAt)}` : ""}</>}
+        actions={
+          <Button size="sm" variant="ghost" onClick={() => void refresh()} loading={loading && report !== null}>
+            Refresh
+          </Button>
+        }
+      />
+      <div className="flex w-full flex-col gap-8 px-5 pb-8 max-sm:px-4">
+        {loadError !== null && <p role="alert" className="text-sm text-danger">{loadError}</p>}
 
         {report === null && loading ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -131,7 +153,7 @@ export function ReportView() {
           </div>
         ) : report !== null ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <dl id="report-summary" aria-label="Summary" className="grid scroll-mt-4 gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-4">
               <HeroStat
                 label="Estimated spend"
                 kind="money"
@@ -161,22 +183,20 @@ export function ReportView() {
                 value={report.suites.filter((suite) => suite.totals.sessionCount > 0).length}
                 hint={`${allTasks.length} tasks · ${report.unassigned.sessionIds.length} unassigned`}
               />
-            </section>
+            </dl>
 
             {report.byProvider.length > 0 && (
-              <section className="rounded-lg bg-surface-1 ring-1 ring-inset ring-line">
-                <div className="flex items-baseline justify-between gap-3 border-b border-line px-4 py-3">
-                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg-dim">
-                    By provider
-                  </h2>
-                  <p className="text-[11px] text-fg-dim">API-rate estimate</p>
+              <section id="report-by-provider" aria-labelledby="report-by-provider-title" className="scroll-mt-4">
+                <div className="mb-2 flex items-baseline justify-between gap-3">
+                  <h2 id="report-by-provider-title" className="text-base font-semibold text-fg">By provider</h2>
+                  <p className="text-xs text-fg-muted">API-rate estimate</p>
                 </div>
                 <ul className="divide-y divide-line">
                   {report.byProvider.map((entry) => {
                     const theme = isProviderId(entry.provider) ? providerTheme[entry.provider] : null;
                     const width = share(entry.totals.estimatedUsd || entry.totals.totalTokens, Math.max(report.totals.estimatedUsd, report.totals.totalTokens, 1));
                     return (
-                      <li key={entry.provider} className="px-4 py-3">
+                      <li key={entry.provider} className="py-3">
                         <div className="flex items-baseline justify-between gap-3 text-sm">
                           <span className={cn("font-medium capitalize", theme?.text ?? "text-fg")}>
                             {entry.provider}
@@ -192,7 +212,7 @@ export function ReportView() {
                             style={{ width: `${width}%` }}
                           />
                         </div>
-                        <div className="mt-1 text-[10px] text-fg-dim">
+                        <div className="mt-1 text-xs text-fg-dim">
                           {entry.totals.sessionsWithUsage}/{entry.totals.sessionCount} sessions with usage
                         </div>
                       </li>
@@ -202,9 +222,9 @@ export function ReportView() {
               </section>
             )}
 
-            <section className="rounded-lg bg-surface-1 ring-1 ring-inset ring-line">
+            <section id="report-breakdown" aria-label="Breakdown" className="scroll-mt-4 rounded-lg ring-1 ring-inset ring-line">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-                <div className="flex gap-1 rounded-md bg-surface-2 p-1 ring-1 ring-inset ring-line">
+                <div className="flex gap-1 rounded-md p-1 ring-1 ring-inset ring-line" role="group" aria-label="Breakdown by">
                   {(
                     [
                       ["suites", "Suites"],
@@ -215,6 +235,7 @@ export function ReportView() {
                     <button
                       key={id}
                       type="button"
+                      aria-pressed={tab === id}
                       onClick={() => setTab(id)}
                       className={cn(
                         "rounded px-3 py-1.5 text-xs font-medium transition-colors",
@@ -225,7 +246,7 @@ export function ReportView() {
                     </button>
                   ))}
                 </div>
-                <p className="max-w-md text-[11px] leading-relaxed text-fg-dim">{report.pricingNote}</p>
+                <p className="max-w-md text-xs leading-relaxed text-fg-dim">{report.pricingNote}</p>
               </div>
 
               {tab === "suites" && (
@@ -264,14 +285,9 @@ function HeroStat({
   accent?: boolean;
 }) {
   return (
-    <div
-      className={cn(
-        "relative overflow-hidden rounded-lg bg-surface-1 p-4 ring-1 ring-inset ring-line",
-        accent && "bg-[linear-gradient(135deg,color-mix(in_oklab,var(--accent)_12%,transparent),transparent_55%)]",
-      )}
-    >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-fg-dim">{label}</div>
-      <div className={cn("mt-2 numeric text-2xl font-semibold tracking-tight", accent ? "text-accent" : "text-fg")}>
+    <div className="min-w-0">
+      <dt className="text-sm text-fg-muted">{label}</dt>
+      <dd className={cn("mt-1 numeric text-2xl font-semibold tracking-tight", accent ? "text-accent" : "text-fg")}>
         {kind === "money" ? (
           <MoneyCount value={value} />
         ) : kind === "tokens" ? (
@@ -279,9 +295,9 @@ function HeroStat({
         ) : (
           <CountUp value={value} />
         )}
-      </div>
+      </dd>
       {hint !== undefined && (
-        <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-fg-dim" title={hint}>
+        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-fg-muted" title={hint}>
           {hint}
         </p>
       )}
@@ -323,12 +339,12 @@ function SuiteTable({
             <button
               type="button"
               onClick={() => onToggle(suite.suiteId)}
-              className="flex w-full flex-col gap-2 px-4 py-3 text-left transition-colors hover:bg-surface-2/60"
+              className="flex w-full flex-col gap-2 px-4 py-3 text-left transition-colors hover:bg-surface-2"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-fg">{suite.suiteName}</div>
-                  <div className="truncate text-[11px] text-fg-dim">
+                  <div className="truncate text-xs text-fg-dim">
                     {suite.programName}
                     {suite.workspaceName ? ` · ${suite.workspaceName}` : ""}
                     {` · ${suite.tasks.length} task${suite.tasks.length === 1 ? "" : "s"}`}
@@ -351,7 +367,7 @@ function SuiteTable({
               </div>
             </button>
             {open && (
-              <div className="border-t border-line bg-surface-0/40 px-4 py-3">
+              <div className="border-t border-line bg-surface-0 px-4 py-3">
                 <ul className="flex flex-col gap-2">
                   {suite.tasks.map((task) => (
                     <TaskRow key={task.promptId} task={task} compact />
@@ -367,7 +383,7 @@ function SuiteTable({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div>
               <div className="text-sm font-medium text-fg">Unassigned sessions</div>
-              <div className="text-[11px] text-fg-dim">
+              <div className="text-xs text-fg-dim">
                 Research, consult, and custom runs without a work item · {unassigned.sessionIds.length} session
                 {unassigned.sessionIds.length === 1 ? "" : "s"}
               </div>
@@ -381,7 +397,7 @@ function SuiteTable({
               return <SessionRow key={id} session={session} />;
             })}
             {unassigned.sessionIds.length > 12 && (
-              <li className="text-[11px] text-fg-dim">+{unassigned.sessionIds.length - 12} more</li>
+              <li className="text-xs text-fg-dim">+{unassigned.sessionIds.length - 12} more</li>
             )}
           </ul>
         </li>
@@ -408,19 +424,19 @@ function TaskRow({ task, compact = false }: { task: TaskUsageRow; compact?: bool
     <div className={cn("flex flex-wrap items-baseline justify-between gap-3", compact && "rounded-md bg-surface-1 px-3 py-2 ring-1 ring-inset ring-line")}>
       <div className="min-w-0">
         <Link
-          href={`/tasks?prompt=${task.promptId}`}
+          href={`/pipeline/open?prompt=${task.promptId}`}
           className="truncate text-sm font-medium text-fg hover:text-accent"
         >
           {task.promptKey !== null ? `${task.promptKey} — ${task.promptTitle}` : task.promptTitle}
         </Link>
         {!compact && (
-          <div className="truncate text-[11px] text-fg-dim">
+          <div className="truncate text-xs text-fg-dim">
             {task.suiteName} · {task.programName}
             {` · ${task.sessionIds.length} session${task.sessionIds.length === 1 ? "" : "s"}`}
           </div>
         )}
         {compact && (
-          <div className="text-[10px] text-fg-dim">
+          <div className="text-xs text-fg-dim">
             {task.sessionIds.length} session{task.sessionIds.length === 1 ? "" : "s"}
           </div>
         )}
@@ -453,16 +469,16 @@ function SessionRow({ session, detailed = false }: { session: SessionUsageRow; d
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           {session.promptId !== null ? (
-            <Link href={`/tasks?prompt=${session.promptId}`} className="truncate text-sm text-fg hover:text-accent">
+            <Link href={`/pipeline/open?prompt=${session.promptId}`} className="truncate text-sm text-fg hover:text-accent">
               {sessionTitle(session)}
             </Link>
           ) : (
             <span className="truncate text-sm text-fg">{sessionTitle(session)}</span>
           )}
           <Badge tone="neutral">{session.role}</Badge>
-          <span className={cn("text-[10px] capitalize", theme?.text ?? "text-fg-dim")}>{session.provider}</span>
+          <span className={cn("text-xs capitalize", theme?.text ?? "text-fg-dim")}>{session.provider}</span>
         </div>
-        <div className="mt-0.5 truncate text-[11px] text-fg-dim">
+        <div className="mt-0.5 truncate text-xs text-fg-dim">
           {formatWhen(session.startedAt)}
           {model !== null ? ` · ${model}` : ""}
           {detailed && session.suiteName ? ` · ${session.suiteName}` : ""}
@@ -471,7 +487,7 @@ function SessionRow({ session, detailed = false }: { session: SessionUsageRow; d
       </div>
       <div className="numeric text-right text-sm">
         <div className="text-fg">{session.cost.usd === null ? "—" : formatUsd(session.cost.usd)}</div>
-        <div className="text-[11px] text-fg-dim">
+        <div className="text-xs text-fg-dim">
           {session.usage === null ? "—" : formatTokens(session.usage.totalTokens)}
         </div>
       </div>
@@ -483,7 +499,7 @@ function TotalsChip({ totals }: { totals: UsageTotals }) {
   return (
     <div className="numeric shrink-0 text-right text-sm">
       <div className="font-medium text-fg">{formatUsd(totals.estimatedUsd)}</div>
-      <div className="text-[11px] text-fg-dim">
+      <div className="text-xs text-fg-dim">
         {formatTokens(totals.totalTokens)}
         {totals.sessionsWithoutUsage > 0 ? ` · ${totals.sessionsWithoutUsage} unknown` : ""}
       </div>

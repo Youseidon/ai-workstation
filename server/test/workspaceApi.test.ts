@@ -50,6 +50,31 @@ function fixture() {
   };
 }
 
+test("Chat library routes persist metadata, page history and enforce workspace ownership", async () => {
+  const ctx=fixture(), other=fixture();
+  const threadId=`review:${unique("thread")}`;
+  try {
+    workspaces.beginConsultRun({runId:unique("chat-run"),workspaceId:ctx.workspace.id,promptId:null,provider:"codex",model:null,tokenHash:"fixture",expiresAt:new Date(Date.now()+60000).toISOString(),displayText:"Review Chat",threadId});
+    const root=`/api/workspaces/${ctx.workspace.id}/threads`;
+    const path=`${root}/${encodeURIComponent(threadId)}`;
+    const listed=await call("GET",root);
+    assert.equal(listed.status,200);
+    assert.equal((listed.body.threads as Array<{id:string}>)[0]!.id,threadId);
+    assert.equal((await call("PATCH",path,{title:"My review",pinned:true})).status,200);
+    const detail=await call("GET",`${path}/history`);
+    assert.equal(detail.status,200);
+    assert.equal((detail.body.sessions as Array<{threadTitle:string}>)[0]!.threadTitle,"My review");
+    assert.equal((await call("PATCH",path,{pinned:"false"})).status,422);
+    assert.equal((await call("POST",path,{})).status,405);
+    const foreign=`/api/workspaces/${other.workspace.id}/threads/${encodeURIComponent(threadId)}`;
+    assert.equal((await call("GET",`${foreign}/history`)).status,404);
+    assert.equal((await call("PATCH",foreign,{archived:true})).status,404);
+    assert.equal((await call("PATCH",path,{archived:true})).status,200);
+    assert.deepEqual((await call("GET",root)).body.threads,[]);
+    assert.equal(((await call("GET",`${root}?archived=true`)).body.threads as unknown[]).length,1);
+  } finally { ctx.cleanup(); other.cleanup(); }
+});
+
 test("patching a step rule needs no suiteId, but deleting one still does", async () => {
   const ctx = fixture();
   try {

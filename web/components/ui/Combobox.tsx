@@ -177,7 +177,7 @@ export function Combobox<T extends string | number>({
             </>
           )}
         </span>
-        <span aria-hidden className="shrink-0 text-[8px] text-fg-dim">▼</span>
+        <span aria-hidden className="shrink-0 text-xs text-fg-dim">▼</span>
       </button>
 
       {open && (
@@ -242,12 +242,12 @@ export function Combobox<T extends string | number>({
                         )}
                       </span>
                       {item.description !== undefined && (
-                        <span className="mt-0.5 block truncate text-[10.5px] text-fg-dim">
+                        <span className="mt-0.5 block truncate text-xs text-fg-dim">
                           {item.description}
                         </span>
                       )}
                       {item.note !== undefined && (
-                        <span className="mt-0.5 block truncate text-[10.5px] text-warning">
+                        <span className="mt-0.5 block truncate text-xs text-warning">
                           {item.note}
                         </span>
                       )}
@@ -261,7 +261,7 @@ export function Combobox<T extends string | number>({
             )}
           </ul>
 
-          <div className="border-t border-line px-2.5 py-1 text-[10px] text-fg-dim">
+          <div className="border-t border-line px-2.5 py-1 text-xs text-fg-dim">
             ↑↓ move · ⏎ select · esc close
           </div>
         </div>

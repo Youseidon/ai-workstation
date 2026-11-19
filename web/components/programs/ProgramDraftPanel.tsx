@@ -167,12 +167,12 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
 
   return (
     <div className="grid h-[min(72vh,48rem)] grid-cols-1 md:grid-cols-[19rem_minmax(0,1fr)]">
-      <nav aria-label="Proposals" className="min-h-0 overflow-y-auto border-b border-line bg-surface-1/60 md:border-b-0 md:border-r">
-        <p className="px-4 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">
+      <nav aria-label="Proposals" className="min-h-0 overflow-y-auto border-b border-line bg-surface-1 md:border-b-0 md:border-r">
+        <p className="px-4 pb-1 pt-3 text-xs font-semibold uppercase tracking-wider text-fg-dim">
           Waiting for review · {pendingCount}
         </p>
         {pending.length === 0 ? (
-          <p className="px-4 pb-3 text-[11px] text-fg-dim">Nothing waiting. You are all caught up.</p>
+          <p className="px-4 pb-3 text-xs text-fg-dim">Nothing waiting. You are all caught up.</p>
         ) : (
           <ul className="space-y-0.5 px-2 pb-2">{pending.map(renderRow)}</ul>
         )}
@@ -182,7 +182,7 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
               type="button"
               onClick={() => setShowResolved(!resolvedOpen)}
               aria-expanded={resolvedOpen}
-              className="flex w-full items-center justify-between border-t border-line px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-fg-dim hover:text-fg"
+              className="flex w-full items-center justify-between border-t border-line px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-fg-dim hover:text-fg"
             >
               Applied or discarded · {resolved.length}
               <span aria-hidden>{resolvedOpen ? "−" : "+"}</span>
@@ -308,8 +308,8 @@ function ProposalRow({ row, active, writing, onSelect }: { row: Row; active: boo
         {state !== "PENDING" && <Badge tone={STATE_TONE[state]}>{state.toLowerCase()}</Badge>}
         {writing && <Spinner size={11} />}
       </span>
-      <span className="mt-1 block truncate text-[12.5px]">{title}</span>
-      <span className="mt-0.5 block truncate text-[10.5px] text-fg-dim">
+      <span className="mt-1 block truncate text-xs">{title}</span>
+      <span className="mt-0.5 block truncate text-xs text-fg-dim">
         {writing ? "An agent is writing…" : detail}
       </span>
     </button>
@@ -459,12 +459,12 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
 
   return (
     <div className="space-y-4 p-5">
-      <p className="text-[11px] leading-relaxed text-fg-dim">
+      <p className="text-xs leading-relaxed text-fg-dim">
         {revision ? "Changes asked for" : "Asked for"}: <span className="whitespace-pre-wrap text-fg-muted">{entry.draft.goal}</span>
       </p>
       {revision && (
         <div className="rounded-md border border-line bg-surface-1 p-3">
-          <p className="text-[11px] font-medium text-fg-muted">
+          <p className="text-xs font-medium text-fg-muted">
             {changes.length === 0
               ? entry.draft.runId !== null && entry.draft.state === "PENDING" ? "No changes yet — the agent is still reading." : "No changes yet."
               : `${changes.length} change(s) to ${baseline?.name ?? "the program"}`}
@@ -472,7 +472,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
           {changes.length > 0 && (
             <ul className="mt-2 space-y-1">
               {changes.map((change) => (
-                <li key={`${change.scope}:${change.kind}:${change.key}`} className="flex flex-wrap items-baseline gap-2 text-[11px]">
+                <li key={`${change.scope}:${change.kind}:${change.key}`} className="flex flex-wrap items-baseline gap-2 text-xs">
                   <Badge tone={CHANGE_TONE[change.kind]}>{change.kind}</Badge>
                   <span className="text-fg-muted">
                     {change.scope === "program" ? "Program" : change.scope === "suite" ? `Suite ${change.key}` : change.key} · {change.label}
@@ -486,8 +486,8 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
       )}
       {entry.draft.body.notes !== "" && (
         <details className="rounded-md border border-line bg-surface-1 px-3 py-2">
-          <summary className="cursor-pointer text-[11px] text-fg-muted">What the agent read</summary>
-          <p className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-fg-dim">{entry.draft.body.notes}</p>
+          <summary className="cursor-pointer text-xs text-fg-muted">What the agent read</summary>
+          <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-fg-dim">{entry.draft.body.notes}</p>
         </details>
       )}
 
@@ -518,12 +518,12 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
                 disabled={!editable}
                 onChange={(event) => patchSuite(suiteIndex, { name: event.target.value })}
               />
-              <span className="pb-2 text-[11px] text-fg-dim">
+              <span className="pb-2 text-xs text-fg-dim">
                 {suite.prompts.length} item{suite.prompts.length === 1 ? "" : "s"}
               </span>
             </div>
             {suite.prompts.length === 0 ? (
-              <p className="mt-2 text-[11px] text-caution">
+              <p className="mt-2 text-xs text-caution">
                 No work items yet{entry.draft.runId !== null && entry.draft.state === "PENDING" ? " — the agent has not posted this suite" : ""}.
               </p>
             ) : (
@@ -536,7 +536,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
                       <div className="flex items-center gap-2 px-2 py-1.5">
                         <button
                           type="button"
-                          className="min-w-0 flex-1 truncate text-left text-[12px] text-fg-muted hover:text-fg"
+                          className="min-w-0 flex-1 truncate text-left text-xs text-fg-muted hover:text-fg"
                           onClick={() => setExpanded(expanded === id ? null : id)}
                         >
                           <span className="text-fg-dim">{prompt.key}</span> {prompt.title}
@@ -546,7 +546,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
                         )}
                         {prompt.gate !== null && <Badge tone="violet">gate</Badge>}
                         {prompt.dependsOn.length > 0 && (
-                          <span className="text-[10px] text-fg-dim">after {prompt.dependsOn.join(", ")}</span>
+                          <span className="text-xs text-fg-dim">after {prompt.dependsOn.join(", ")}</span>
                         )}
                         <Badge tone={verify.length > 0 ? "success" : "warning"}>
                           {verify.length > 0 ? `${verify.length} check${verify.length === 1 ? "" : "s"}` : "no checks"}
@@ -563,7 +563,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
                           <TextArea
                             label="Instructions"
                             rows={14}
-                            className="font-mono text-[11px]"
+                            className="font-mono text-xs"
                             value={prompt.content}
                             disabled={!editable}
                             hint="A ## Verify block of shell commands becomes this item's definition of done."
@@ -600,20 +600,20 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
       </ul>
 
       {preview.issues.length > 0 && (
-        <ul className="space-y-1 rounded-md border border-caution/40 bg-caution/10 p-3 text-[11px] text-caution">
+        <ul className="space-y-1 rounded-md border border-caution/40 bg-caution/10 p-3 text-xs text-caution">
           {preview.issues.map((issue) => <li key={issue}>{issue}</li>)}
         </ul>
       )}
 
-      <p className="text-[11px] text-fg-dim">
+      <p className="text-xs text-fg-dim">
         {preview.prompts} work items · {preview.dependencies} dependencies · {preview.gates} gates · {preview.verifiable} with checks
       </p>
 
       {entry.draft.state === "APPLIED" ? (
-        <p className="text-[11px] text-success">{revision ? "Applied. The program has these changes." : "Applied. This program is in the tree."}</p>
+        <p className="text-xs text-success">{revision ? "Applied. The program has these changes." : "Applied. This program is in the tree."}</p>
       ) : entry.draft.state === "DISCARDED" ? (
         <div className="flex gap-2">
-          <p className="flex-1 text-[11px] text-fg-dim">Discarded.</p>
+          <p className="flex-1 text-xs text-fg-dim">Discarded.</p>
           <Button size="sm" variant="danger" disabled={busy} onClick={() => void onDelete()}>Delete</Button>
         </div>
       ) : (
@@ -627,7 +627,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
             >
               {revision ? "Apply changes" : "Create program"}
             </Button>
-            <label className="flex items-center gap-1.5 text-[11px] text-fg-muted">
+            <label className="flex items-center gap-1.5 text-xs text-fg-muted">
               <input
                 type="checkbox"
                 checked={withPipeline}
@@ -662,7 +662,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
           </div>
         </>
       )}
-      <p className="text-[10px] text-fg-dim">
+      <p className="text-xs text-fg-dim">
         Draft {entry.draft.id} · updated {new Date(entry.draft.updatedAt).toLocaleString()}
         {entry.draft.runId !== null && ` · run ${entry.draft.runId}`}
         {` · ${serverUrl.replace(/^https?:\/\//, "")}`}

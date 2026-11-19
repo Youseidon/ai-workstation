@@ -1,9 +1,13 @@
+import { conversationContext } from "./conversationContext.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { WorkspaceError, workspaces, chatThreads } from "./workspaces.ts";
+import { ChatThreadError } from "./chatThreads.ts";
+import type { ChatThreadPatch } from "@agent-console/shared";
 import { inspectPromptPack } from "./promptImport.ts";
 import { activeRuns } from "./activeRuns.ts";
 import { runHub } from "./runHub.ts";
+import { sendBtw, supportsLiveDelivery } from "./runMessages.ts";
 import { INSTRUCTION_FILE_NAMES, isProviderId, normalizeAgentRequest, programDraftPreview, type AgentRequest, type ProviderId } from "@agent-console/shared";
 import { startConsult, startInstructionAuthor, startProgramAuthor } from "./runService.ts";
 import { scheduleCompletionAudit, type AuditBlock } from "./completionAudit.ts";
@@ -65,6 +69,7 @@ function id(value: string): number {
 }
 
 function failure(res: ServerResponse, error: unknown): void {
+  if (error instanceof ChatThreadError) { json(res,error.status,{error:{code:error.code,message:error.message}}); return; }
   if (error instanceof WorkspaceError) { json(res, error.status, { error: { code: error.code, message: error.message, ...(error.fields ? { fields: error.fields } : {}), ...(error.details ?? {}) } }); return; }
   console.error("workspace API failed", error);
   json(res, 500, { error: { code: "internal_error", message: "Workspace operation failed" } });
@@ -401,8 +406,33 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
+    const btwMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/(btw|messages)$/);
+    if(btwMatch){
+      const runId=decodeURIComponent(btwMatch[1]!);
+      if(btwMatch[2]==="messages"&&method==="GET"){json(res,200,{messages:workspaces.runMessages(runId),live:runHub.get(runId)!==undefined,liveDelivery:supportsLiveDelivery(runId)});return true;}
+      if(btwMatch[2]==="btw"&&method==="POST"){json(res,201,{message:await sendBtw(runId,await body(req))});return true;}
+      json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;
+    }
     let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
     if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
+    const threadsMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/threads(?:\/([^/]+))?(\/history)?$/);
+    if(threadsMatch){
+      const workspaceId=id(threadsMatch[1]!);
+      const threadId=threadsMatch[2] ? decodeURIComponent(threadsMatch[2]) : undefined;
+      if(method==="GET" && !threadId) json(res,200,chatThreads.list(workspaceId,{query:url.searchParams.get("q")??undefined,archived:url.searchParams.get("archived")==="true",cursor:url.searchParams.get("cursor")??undefined}));
+      else if(method==="GET" && threadId && threadsMatch[3]) json(res,200,workspaces.chatThreadHistory(workspaceId,threadId,url.searchParams.get("before")??undefined));
+      else if(method==="PATCH" && threadId && !threadsMatch[3]) json(res,200,{thread:chatThreads.patch(workspaceId,threadId,await body(req) as ChatThreadPatch)});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    if(url.pathname==="/api/sessions/context"){
+      if(method!=="GET"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
+      const workspaceId=id(url.searchParams.get("workspace")??"");
+      const thread=url.searchParams.get("thread")??"";
+      if(!thread || thread.length>200)throw new WorkspaceError(422,"validation_error","Thread is required");
+      json(res,200,{context:conversationContext(workspaces.conversationHistory(workspaceId,thread))});
+      return true;
+    }
     if(url.pathname==="/api/sessions"){
       if(method==="GET")json(res,200,{sessions:workspaces.sessions()});
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
@@ -673,7 +703,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     match = url.pathname.match(/^\/api\/(programs|suites|prompts)\/(\d+)$/);
     if (match) {
       const kind = match[1]!.slice(0, -1) as "program" | "suite" | "prompt"; const resourceId = id(match[2]!);
-      if (method === "PATCH") json(res, 200, { [kind]: workspaces.updateChild(kind, resourceId, await body(req)) });
+      if (method === "GET" && kind === "prompt") json(res, 200, { prompt: workspaces.promptPreview(resourceId) });
+      else if (method === "PATCH") json(res, 200, { [kind]: workspaces.updateChild(kind, resourceId, await body(req)) });
       else if (method === "DELETE") { workspaces.removeChild(kind, resourceId); res.writeHead(204); res.end(); }
       else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
       return true;
@@ -693,6 +724,16 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       await pipelineScheduler.onPromptResponded(promptId);
       json(res,201,{remark});return true;
     }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/briefings$/);
+    if(match){
+      const promptId=id(match[1]!);
+      if(method==="GET")json(res,200,{briefings:workspaces.promptBriefings(promptId)});
+      else if(method==="POST")json(res,201,{briefing:workspaces.addPromptBriefing(promptId,await body(req))});
+      else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
+      return true;
+    }
+    match=url.pathname.match(/^\/api\/prompts\/(\d+)\/briefings\/(\d+)$/);
+    if(match&&method==="DELETE"){workspaces.deletePromptBriefing(id(match[1]!),id(match[2]!));res.writeHead(204);res.end();return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/recover$/);
     if(match&&method==="POST"){const promptId=id(match[1]!);const runId=workspaces.recoveryRunId(promptId);await activeRuns.stop(runId);workspaces.recoverPrompt(promptId,runId);json(res,200,{recovered:true});return true;}
     match=url.pathname.match(/^\/api\/prompts\/(\d+)\/audit$/);

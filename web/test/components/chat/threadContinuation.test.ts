@@ -4,12 +4,13 @@ import test from "node:test";
 
 const consoleSource = readFileSync(new URL("../../../lib/agentConsole.tsx", import.meta.url), "utf8");
 const chatSource = readFileSync(new URL("../../../components/chat/ChatWorkspace.tsx", import.meta.url), "utf8");
-const pageSource = readFileSync(new URL("../../../app/page.tsx", import.meta.url), "utf8");
+// Chat state is owned by the shell-level controller, not the `/` route.
+const pageSource = readFileSync(new URL("../../../lib/chatController.tsx", import.meta.url), "utf8");
 const activitySource = readFileSync(new URL("../../../components/activity/ActivityView.tsx", import.meta.url), "utf8");
 
 test("custom chat follow-ups resume the same provider session in their tab", () => {
   assert.match(consoleSource, /current\.source\.type === "custom"/);
-  assert.match(consoleSource, /\[current\.provider\]: \{ sessionId: announcedSession, workspaceId: current\.workspace\.id \}/);
+  assert.match(consoleSource, /\[current\.provider\]: \{ sessionId: announcedSession, workspaceId: current\.workspace\.id, startedAt:current\.startedAt \}/);
   assert.match(consoleSource, /state\.tabSessions\[tabId\]\?\.\[provider\]\?\.workspaceId === workspaceId/);
   assert.match(consoleSource, /resumeSessionId: state\.tabSessions\[tabId\]!\[provider\]!\.sessionId/);
 });
@@ -40,7 +41,7 @@ test("activity can reopen a durable thread and Chat persists its tabs", () => {
   assert.match(activitySource, /Continue in Chat/);
   assert.match(activitySource, /thread=\$\{encodeURIComponent\(selected\.threadId\)\}/);
   assert.match(pageSource, /agent-console\.chat-tabs\.v1/);
-  assert.match(pageSource, /console_\.restoreThread\(tab\.id, details\)/);
+  assert.match(pageSource, /latestConsole\.current\.restoreThread\(tab\.id,page\.sessions\)/);
   assert.match(consoleSource, /case "restore_thread"/);
   assert.match(consoleSource, /session\.providerSessionId/);
 });

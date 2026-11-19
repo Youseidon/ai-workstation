@@ -24,11 +24,12 @@ import {
   type SettingValue,
 } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { AskChip } from "@/components/AgentDock";
+import { AskChip } from "@/components/RunStatus";
 import { SettingRow } from "@/components/SettingField";
 import { SettingsGroupDialog } from "@/components/SettingsGroupDialog";
 import { GROUP_BLURB, GROUP_TITLE } from "@/lib/settingsGroups";
-import { PageChrome } from "@/components/shell/chrome";
+import { ContentTitle } from "@/components/shell/PageCanvas";
+import { SidebarCollection, SidebarGroup, SidebarRow } from "@/components/shell/SidebarCollection";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -214,52 +215,35 @@ export function AgentsView() {
   );
 
   return (
-    <main className="flex h-full flex-col bg-surface-0">
-      <PageChrome
+    <div className="flex h-full flex-col">
+      <SidebarCollection label="Agents settings">
+        <SidebarRow title="Model access" onSelect={() => jumpTo("agents-model-access")} />
+        <SidebarGroup title={`Providers · ${agents.filter((agent) => agent.available).length} available`}>
+          {agents.map((agent) => {
+            const info = providers.find((provider) => provider.id === agent.provider);
+            return (
+              <SidebarRow
+                key={agent.provider}
+                title={info?.label ?? agent.provider}
+                onSelect={() => jumpTo(`agent-${agent.provider}`)}
+                status={agent.run !== null ? "Working" : agent.consultCount > 0 ? "Asking" : agent.available ? undefined : "Unavailable"}
+                statusTone={agent.run !== null || agent.consultCount > 0 ? "accent" : "muted"}
+              />
+            );
+          })}
+        </SidebarGroup>
+      </SidebarCollection>
+      <ContentTitle
         title="Agents"
-        actions={
-          <div className="flex flex-wrap items-center gap-3">
-            <dl className="hidden items-center gap-4 sm:flex">
-              <Stat label="available" value={agents.filter((agent) => agent.available).length} />
-              {asking > 0 ? (
-                <>
-                  {writing > 0 && <Stat label="writing" value={writing} />}
-                  <Stat label="asking" value={asking} />
-                </>
-              ) : (
-                <Stat label="working" value={writing} />
-              )}
-              <Stat label="tokens" value={totalTokens} format={formatTokens} />
-            </dl>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void credits.refresh(true)}
-              loading={credits.loading && credits.usage !== null}
-              title="Refresh plan usage from each provider"
-            >
-              Refresh usage
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void refreshProviders()}
-              title="Re-run provider detection"
-            >
-              Re-detect
-            </Button>
-          </div>
-        }
+        meta="Provider settings apply to every workspace."
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <header className="mb-5">
-          <p className="text-xs text-fg-dim">
-            {connection === "open" ? fleetSummary(writing, asking) : "Reconnecting to the backend…"}
-            {credits.error !== null ? ` · ${credits.error}` : ""}
-            {notice !== null ? ` · ${notice}` : ""}
-          </p>
-        </header>
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8 max-sm:px-4">
+        <p className="mb-5 text-sm text-fg-muted" role="status">
+          {connection === "open" ? fleetSummary(writing, asking) : "Reconnecting to the backend…"}
+          {credits.error !== null ? ` · ${credits.error}` : ""}
+          {notice !== null ? ` · ${notice}` : ""}
+        </p>
 
         <ModelAccessPanel
           tier={modelAccessTier}
@@ -332,6 +316,36 @@ export function AgentsView() {
           />
         )}
 
+        <section aria-labelledby="agents-providers-heading" className="mt-8">
+        <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+          <h2 id="agents-providers-heading" className="text-base font-semibold text-fg">Providers</h2>
+          <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+            <Stat label="available" value={agents.filter((agent) => agent.available).length} />
+            {asking > 0 ? (
+              <>
+                {writing > 0 && <Stat label="writing" value={writing} />}
+                <Stat label="asking" value={asking} />
+              </>
+            ) : (
+              <Stat label="working" value={writing} />
+            )}
+            <Stat label="tokens" value={totalTokens} format={formatTokens} />
+          </dl>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void credits.refresh(true)}
+              loading={credits.loading && credits.usage !== null}
+              title="Refresh plan usage from each provider"
+            >
+              Refresh usage
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void refreshProviders()} title="Re-run provider detection">
+              Re-detect
+            </Button>
+          </div>
+        </div>
         <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {agents.map((agent) => {
             const info = providers.find((provider) => provider.id === agent.provider);
@@ -407,9 +421,14 @@ export function AgentsView() {
             );
           })}
         </ul>
+        </section>
       </div>
-    </main>
+    </div>
   );
+}
+
+function jumpTo(id: string) {
+  document.getElementById(id)?.scrollIntoView({ block: "start" });
 }
 
 function ModelAccessPanel({
@@ -434,11 +453,11 @@ function ModelAccessPanel({
   const eligible = providers.reduce((total, provider) => total + provider.models.length, 0);
   const available = providers.filter((provider) => provider.available).length;
   return (
-    <section className="mb-4 rounded-panel border border-line bg-surface-1 p-3" aria-labelledby="model-access-heading">
+    <section id="agents-model-access" className="scroll-mt-4 rounded-panel border border-line p-4" aria-labelledby="model-access-heading">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 id="model-access-heading" className="text-sm font-semibold text-fg">Model access</h2>
-          <p className="mt-0.5 max-w-3xl text-[11px] leading-relaxed text-fg-dim">
+          <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-fg-dim">
             One credit-use ceiling for every console, task, pipeline, workspace, fallback, handoff, and reviewer run.
             Saved choices outside the tier stay saved but the provider&apos;s tier default runs instead.
           </p>
@@ -449,7 +468,7 @@ function ModelAccessPanel({
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
           <div>
             <div className="text-xs font-semibold text-fg">Model choice</div>
-            <p className="mt-0.5 text-[10px] leading-snug text-fg-dim">
+            <p className="mt-0.5 text-xs leading-snug text-fg-dim">
               Auto Select chooses within the access tier for every run.
             </p>
           </div>
@@ -462,7 +481,7 @@ function ModelAccessPanel({
                 aria-pressed={selectionMode === mode}
                 onClick={() => void onSelectMode(mode)}
                 className={cn(
-                  "rounded px-3 py-1.5 text-[11px] font-medium transition-colors disabled:opacity-50",
+                  "rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50",
                   selectionMode === mode ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
                 )}
               >
@@ -474,7 +493,7 @@ function ModelAccessPanel({
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
           <div>
             <div className="text-xs font-semibold text-fg">Reasoning effort</div>
-            <p className="mt-0.5 text-[10px] leading-snug text-fg-dim">
+            <p className="mt-0.5 text-xs leading-snug text-fg-dim">
               Default for every agent unless its settings override it. Cursor only lists models at this effort.
             </p>
           </div>
@@ -487,7 +506,7 @@ function ModelAccessPanel({
                 aria-pressed={reasoningEffort === effort}
                 onClick={() => void onSelectEffort(effort)}
                 className={cn(
-                  "rounded px-3 py-1.5 text-[11px] font-medium capitalize transition-colors disabled:opacity-50",
+                  "rounded px-3 py-1.5 text-xs font-medium capitalize transition-colors disabled:opacity-50",
                   reasoningEffort === effort ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
                 )}
               >
@@ -519,10 +538,10 @@ function ModelAccessPanel({
                 {info.label}
                 {selected && <span className="text-accent">●</span>}
               </span>
-              <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-fg-dim">
+              <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-fg-dim">
                 {info.creditUse}
               </span>
-              <span className="mt-1.5 block text-[10px] leading-snug text-fg-dim">{info.description}</span>
+              <span className="mt-1.5 block text-xs leading-snug text-fg-dim">{info.description}</span>
             </button>
           );
         })}
@@ -541,11 +560,11 @@ function Stat({
   format?: (value: number) => string;
 }) {
   return (
-    <div className="text-right">
-      <dd className="numeric text-sm text-fg">
+    <div className="flex items-baseline gap-1.5">
+      <dd className="numeric text-fg">
         <CountUp value={value} format={format} />
       </dd>
-      <dt className="text-[10px] uppercase tracking-wider text-fg-dim">{label}</dt>
+      <dt className="text-fg-muted">{label}</dt>
     </div>
   );
 }
@@ -613,8 +632,9 @@ function AgentCard({
 
   return (
     <li
+      id={`agent-${agent.provider}`}
       className={cn(
-        "relative flex flex-col overflow-hidden rounded-panel border bg-surface-1 p-3 transition-colors",
+        "relative flex scroll-mt-4 flex-col overflow-hidden rounded-panel border bg-surface-1 p-3 transition-colors",
         busy ? "border-line-strong" : "border-line",
         (!enabled || agent.activity === "offline") && "opacity-70",
       )}
@@ -635,7 +655,7 @@ function AgentCard({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className={cn("truncate text-[12px] font-semibold", theme.text)}>{info.label}</span>
+            <span className={cn("truncate text-xs font-semibold", theme.text)}>{info.label}</span>
             <Badge tone={ACTIVITY_TONE[enabled ? agent.activity : "offline"]} dot pulse={busy}>
               {enabled ? ACTIVITY_LABEL[agent.activity] : "Off"}
             </Badge>
@@ -651,7 +671,7 @@ function AgentCard({
 
       <p
         className={cn(
-          "mt-2 line-clamp-2 text-[11px] leading-snug",
+          "mt-2 line-clamp-2 text-xs leading-snug",
           !enabled || agent.activity === "offline" ? "text-fg-dim" : "text-fg-muted",
         )}
       >
@@ -660,19 +680,19 @@ function AgentCard({
 
       {agent.run !== null && (
         <>
-          <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 border-t border-line pt-2 text-[11px]">
+          <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 border-t border-line pt-2 text-xs">
             <div>
-              <dt className="text-[10px] text-fg-dim">elapsed</dt>
+              <dt className="text-xs text-fg-dim">elapsed</dt>
               <dd className="numeric text-fg">{formatElapsed(agent.run.elapsedMs)}</dd>
             </div>
             <div>
-              <dt className="text-[10px] text-fg-dim">tokens</dt>
+              <dt className="text-xs text-fg-dim">tokens</dt>
               <dd className="numeric text-fg">
                 {agent.run.usage === null ? "—" : formatTokens(agent.run.usage.totalTokens)}
               </dd>
             </div>
             <div className="col-span-2 min-w-0">
-              <dt className="text-[10px] text-fg-dim">workspace</dt>
+              <dt className="text-xs text-fg-dim">workspace</dt>
               <dd className="truncate text-fg" title={agent.run.workspace.workDirectory}>
                 {agent.run.workspace.name}
               </dd>
@@ -681,7 +701,7 @@ function AgentCard({
           <div className="mt-2 flex gap-1.5">
             <Link
               href="/"
-              className="flex-1 rounded-md px-2 py-1 text-center text-[11px] text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
+              className="flex-1 rounded-md px-2 py-1 text-center text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
             >
               Transcript
             </Link>
@@ -694,7 +714,7 @@ function AgentCard({
 
       {agent.consultCount > 0 && (
         <div className={cn("flex flex-col gap-1.5", agent.run !== null ? "mt-2" : "mt-2 border-t border-line pt-2")}>
-          <div className="text-[10px] uppercase tracking-wider text-fg-dim">
+          <div className="text-xs uppercase tracking-wider text-fg-dim">
             {agent.consultCount} asking
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -713,7 +733,7 @@ function AgentCard({
           type="button"
           onClick={onOpenConfigure}
           aria-haspopup="dialog"
-          className="flex w-full items-center justify-between gap-2 rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[11px] text-fg-muted transition-colors hover:border-line-strong hover:bg-surface-3 hover:text-fg"
+          className="flex w-full items-center justify-between gap-2 rounded-md border border-line bg-surface-2 px-2 py-1.5 text-xs text-fg-muted transition-colors hover:border-line-strong hover:bg-surface-3 hover:text-fg"
         >
           <span className="flex items-center gap-1.5">
             <GearIcon />
@@ -721,7 +741,7 @@ function AgentCard({
           </span>
           <span className="flex min-w-0 items-center gap-1.5">
             {dirtyKeys.length > 0 && (
-              <span className="shrink-0 rounded bg-warning/15 px-1 text-[9px] uppercase tracking-wider text-warning">
+              <span className="shrink-0 rounded bg-warning/15 px-1 text-xs uppercase tracking-wider text-warning">
                 {dirtyKeys.length} unsaved
               </span>
             )}
@@ -749,7 +769,7 @@ function AgentCard({
         onDiscardSettings={onDiscardSettings}
       />
 
-      <footer className="mt-2 flex items-baseline gap-2 border-t border-line pt-2 text-[10px] text-fg-dim">
+      <footer className="mt-2 flex items-baseline gap-2 border-t border-line pt-2 text-xs text-fg-dim">
         <span title={info.binary ?? info.transport} className="shrink-0">
           {info.version ?? "version unknown"}
         </span>
@@ -842,7 +862,7 @@ function ConfigureDialog({
       description="The model this agent runs with next, and the provider's own settings. Model choice applies immediately; settings need saving."
       footer={
         <div className="flex w-full items-center justify-between gap-3">
-          <span className="min-w-0 truncate text-[11px] text-fg-dim">
+          <span className="min-w-0 truncate text-xs text-fg-dim">
             {dirtyKeys.length > 0
               ? `${dirtyKeys.length} unsaved change${dirtyKeys.length === 1 ? "" : "s"}`
               : (notice ?? "")}
@@ -867,7 +887,7 @@ function ConfigureDialog({
       }
     >
       <section>
-        <h3 className="text-[10px] uppercase tracking-wider text-fg-dim">Model</h3>
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Model</h3>
         <div className="mt-2">
           <ModelRow
             provider={info}
@@ -880,9 +900,9 @@ function ConfigureDialog({
       </section>
 
       <section className="mt-4 border-t border-line pt-4">
-        <h3 className="text-[10px] uppercase tracking-wider text-fg-dim">Settings</h3>
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Settings</h3>
         {fields.length === 0 ? (
-          <p className="py-2 text-[11px] text-fg-dim">Settings are still loading…</p>
+          <p className="py-2 text-xs text-fg-dim">Settings are still loading…</p>
         ) : (
           fields.map((field) => (
             <SettingRow
@@ -930,15 +950,15 @@ function ModelRow({
   if (provider.modelSelectionMode === "auto") {
     return (
       <div>
-        <div className="mb-2 flex items-center gap-2 text-[10px] text-fg-dim">
+        <div className="mb-2 flex items-center gap-2 text-xs text-fg-dim">
           <span className="rounded bg-accent/10 px-1.5 py-0.5 font-medium text-accent">Auto Select</span>
           <span>{MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}</span>
         </div>
-        <div className={cn("rounded-md px-2.5 py-2 text-[11px] ring-1 ring-inset", theme.chip)}>
+        <div className={cn("rounded-md px-2.5 py-2 text-xs ring-1 ring-inset", theme.chip)}>
           <div className="font-medium">
             {modelLabel(provider.id, provider.model, provider.models) ?? "No eligible model"}
           </div>
-          <p className="mt-1 text-[10px] leading-snug text-fg-dim">
+          <p className="mt-1 text-xs leading-snug text-fg-dim">
             Selected automatically for this tier. Switch Model choice to Manual above to choose a model.
           </p>
         </div>
@@ -948,7 +968,7 @@ function ModelRow({
 
   return (
     <div>
-      <div className="mb-2 flex items-center gap-2 text-[10px] text-fg-dim">
+      <div className="mb-2 flex items-center gap-2 text-xs text-fg-dim">
         <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
           {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
         </span>
@@ -965,7 +985,7 @@ function ModelRow({
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Search model, family, or capability…"
           spellCheck={false}
-          className="mb-2 w-full rounded border border-line bg-surface-0 px-2 py-1.5 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+          className="mb-2 w-full rounded border border-line bg-surface-0 px-2 py-1.5 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
         />
       )}
       <div className="flex flex-wrap gap-1">
@@ -978,7 +998,7 @@ function ModelRow({
               title={`${option.id === null ? "provider default" : classifyModel(provider.id, option.id) ?? "unclassified"} · ${option.hint}`}
               onClick={() => onSelect(option.id)}
               className={cn(
-                "rounded-md px-2 py-1 text-[11px] transition-colors ring-1 ring-inset",
+                "rounded-md px-2 py-1 text-xs transition-colors ring-1 ring-inset",
                 isSelected ? theme.chip : "text-fg-muted ring-line hover:bg-surface-2 hover:text-fg",
               )}
             >
@@ -987,7 +1007,7 @@ function ModelRow({
             </button>
           );
         })}
-        {options.length === 0 && <p className="py-2 text-[11px] text-fg-dim">No matching models.</p>}
+        {options.length === 0 && <p className="py-2 text-xs text-fg-dim">No matching models.</p>}
       </div>
       {provider.modelAccessTier === "all" && (
       <div className="mt-1.5 flex gap-1.5">
@@ -1002,7 +1022,7 @@ function ModelRow({
           }}
           placeholder="custom model id…"
           spellCheck={false}
-          className="min-w-0 flex-1 rounded border border-line bg-surface-0 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:outline-none"
+          className="min-w-0 flex-1 rounded border border-line bg-surface-0 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
         />
         <button
           type="button"
@@ -1011,14 +1031,14 @@ function ModelRow({
             if (value !== "") onSelect(value);
           }}
           disabled={custom.trim() === ""}
-          className="shrink-0 rounded border border-line bg-surface-2 px-2 text-[11px] text-fg-muted disabled:opacity-40"
+          className="shrink-0 rounded border border-line bg-surface-2 px-2 text-xs text-fg-muted disabled:opacity-40"
         >
           use
         </button>
       </div>
       )}
       {provider.modelAccessTier !== "all" && (
-        <p className="mt-2 text-[10px] text-fg-dim">
+        <p className="mt-2 text-xs text-fg-dim">
           {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].description} Custom IDs are available under All models.
         </p>
       )}
@@ -1026,7 +1046,7 @@ function ModelRow({
         <button
           type="button"
           onClick={onClear}
-          className="mt-1 w-full rounded px-2 py-1 text-left text-[10px] text-fg-dim hover:text-fg-muted"
+          className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-fg-dim hover:text-fg-muted"
         >
           ↺ follow settings{provider.model === null ? "" : ` (${provider.model})`}
         </button>

@@ -29,6 +29,7 @@ export interface LiveRun {
   provider: ProviderId;
   model: string | null;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
+  clientRequestId?: string;
   source: RunSource;
   role: RunRole;
   permissionMode: string | null;
@@ -54,6 +55,7 @@ function snapshot(run: LiveRun): RunSnapshot {
     model: run.model,
     workspace: run.workspace,
     source: run.source,
+    clientRequestId: run.clientRequestId,
     role: run.role,
     state: run.state,
     startedAt: run.startedAt,
@@ -75,6 +77,8 @@ function snapshot(run: LiveRun): RunSnapshot {
  * nothing and reported "idle" while the agent was still working. The run is a
  * property of the server, so it is owned here and every subscriber sees it.
  */
+const endHooks: Array<(runId: string) => void> = [];
+
 export const runHub = {
   /** Registers a client. Returns an unsubscribe function. */
   subscribe(subscriber: Subscriber): () => void {
@@ -146,6 +150,7 @@ export const runHub = {
   start(input: {
     handle: RunHandle;
     workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
+    clientRequestId?: string;
     source: RunSource;
     role?: RunRole;
     permissionMode?: string | null;
@@ -157,6 +162,7 @@ export const runHub = {
       model: input.handle.model,
       workspace: input.workspace,
       source: input.source,
+      clientRequestId: input.clientRequestId,
       role: input.role ?? input.handle.role ?? "execute",
       permissionMode: input.permissionMode !== undefined ? input.permissionMode : (input.handle.permissionMode ?? null),
       state: "starting",
@@ -175,6 +181,7 @@ export const runHub = {
       model: run.model,
       workspace: run.workspace,
       source: run.source,
+      clientRequestId: run.clientRequestId,
       role: run.role,
     });
     this.operationsChanged();
@@ -201,9 +208,21 @@ export const runHub = {
     this.broadcast({ kind: "event", event });
   },
 
+  /**
+   * Called just before a run leaves the hub, while its events can still be
+   * shown. Hooks rather than imports keep this module free of the things that
+   * clean up after a run (`/btw` notes, for one) and their dependencies.
+   */
+  onBeforeEnd(hook: (runId: string) => void): void {
+    endHooks.push(hook);
+  },
+
   /** Removes a finished run and announces its terminal state. */
   end(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">): void {
     cancelAgentInput(runId);
+    for (const hook of endHooks) {
+      try { hook(runId); } catch (error) { log.warn(`end hook failed for run ${runId}`, error); }
+    }
     runs.delete(runId);
     this.broadcast({ kind: "run_ended", runId, state });
     this.operationsChanged();

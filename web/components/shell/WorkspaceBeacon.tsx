@@ -170,7 +170,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
         {!collapsed && (
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1">
-              <span className="truncate text-[13px] font-semibold tracking-tight text-fg">{label}</span>
+              <span className="truncate text-sm font-semibold tracking-tight text-fg">{label}</span>
               <svg
                 width="12"
                 height="12"
@@ -183,7 +183,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
               </svg>
             </span>
             {workspace !== null && (
-              <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px]" title={branchTitle}>
+              <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs" title={branchTitle}>
                 <span className={cn("shrink-0", gitContext?.state === "ready" ? "text-accent" : "text-fg-dim")}>
                   <BranchMark />
                 </span>
@@ -204,7 +204,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
               </span>
             )}
             {status === "empty" && (
-              <span className="mt-0.5 block truncate text-[10px] text-fg-dim">Create one to begin</span>
+              <span className="mt-0.5 block truncate text-xs text-fg-dim">Create one to begin</span>
             )}
           </span>
         )}
@@ -241,7 +241,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
             )}
             {status === "empty" && (
               <p className="px-2 py-3 text-xs text-fg-dim">
-                No workspaces yet. Create one to scope Chat, Tasks, and Pipeline.
+                No workspaces yet. Create one to scope Chat and Pipeline.
               </p>
             )}
             {status === "ready" && filtered.length === 0 && (
@@ -268,7 +268,7 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
                   <span
                     aria-hidden
                     className={cn(
-                      "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-[11px]",
+                      "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-xs",
                       item.workDirectoryExists
                         ? "bg-surface-3 text-accent ring-1 ring-inset ring-line"
                         : "bg-danger/15 text-danger ring-1 ring-inset ring-danger/35",
@@ -280,12 +280,12 @@ export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
                     <span className="flex items-center gap-1.5">
                       <span className="truncate text-xs font-medium">{item.name}</span>
                       {!item.workDirectoryExists && (
-                        <span className="shrink-0 rounded-full bg-danger/15 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-danger">
+                        <span className="shrink-0 rounded-full bg-danger/15 px-1.5 py-0.5 text-xs uppercase tracking-wider text-danger">
                           missing
                         </span>
                       )}
                     </span>
-                    <span className="mt-0.5 block truncate text-[10.5px] text-fg-dim" title={item.workDirectory}>
+                    <span className="mt-0.5 block truncate text-xs text-fg-dim" title={item.workDirectory}>
                       {active ? `${branchLabel} · ${shortenPath(item.workDirectory)}` : item.workDirectory}
                     </span>
                   </span>

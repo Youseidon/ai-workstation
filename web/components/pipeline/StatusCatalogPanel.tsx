@@ -44,7 +44,7 @@ const ON_ENTER_LABEL: Record<StatusOnEnter, string> = {
 function Locked({ reason }: { reason: string }) {
   return (
     <span
-      className="cursor-help border-b border-dotted border-fg-dim/50 text-[11px] text-fg-dim"
+      className="cursor-help border-b border-dotted border-fg-dim/50 text-xs text-fg-dim"
       title={reason}
     >
       Fixed
@@ -88,16 +88,16 @@ function Row({
           <StatusIcon icon={draft.icon} className="mr-1" />
           {draft.label}
         </Badge>
-        <code className="text-[10px] text-fg-dim">{definition.id}</code>
+        <code className="text-xs text-fg-dim">{definition.id}</code>
         {!definition.storable && (
           <span
-            className="text-[10px] text-fg-dim"
+            className="text-xs text-fg-dim"
             title="Worked out fresh on every read from what is true right now, never written to the database."
           >
             live
           </span>
         )}
-        {overridden && <span className="text-[10px] text-accent">edited</span>}
+        {overridden && <span className="text-xs text-accent">edited</span>}
         <div className="ml-auto flex items-center gap-2">
           {overridden && (
             <Button
@@ -130,35 +130,35 @@ function Row({
       </div>
 
       <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           Label
           <TextInput value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
         </label>
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           Short label <span className="text-fg-dim/60">— for tight spaces</span>
           <TextInput value={draft.shortLabel} onChange={(e) => setDraft({ ...draft, shortLabel: e.target.value })} />
         </label>
       </div>
 
-      <label className="mt-2 block text-[11px] text-fg-dim">
+      <label className="mt-2 block text-xs text-fg-dim">
         What it means <span className="text-fg-dim/60">— shown wherever this state has to explain itself</span>
         <TextInput value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
       </label>
 
       <div className="mt-2 flex flex-wrap items-end gap-3">
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           Colour
           <Select value={draft.tone} onChange={(e) => setDraft({ ...draft, tone: e.target.value as StatusDefinition["tone"] })}>
             {STATUS_TONES.map((tone) => <option key={tone} value={tone}>{tone}</option>)}
           </Select>
         </label>
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           Icon
           <Select value={draft.icon} onChange={(e) => setDraft({ ...draft, icon: e.target.value as StatusDefinition["icon"] })}>
             {STATUS_ICONS.map((icon) => <option key={icon} value={icon}>{icon}</option>)}
           </Select>
         </label>
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           On entering
           {editable("onEnter")
             ? (
@@ -170,7 +170,7 @@ function Row({
         </label>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-fg-dim">
+      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-fg-dim">
         <span className="flex items-center gap-1.5" title="No further work is expected. Terminal states settle a parent and let the pipeline move past them.">
           Finished
           <span className="text-fg">{definition.isTerminal ? "yes" : "no"}</span>
@@ -228,7 +228,7 @@ export function StatusCatalogPanel({ onChanged }: { onChanged?: () => void }) {
     }
   };
 
-  if (catalog === null) return <p className="text-[11px] text-fg-dim">Loading the status catalog…</p>;
+  if (catalog === null) return <p className="text-xs text-fg-dim">Loading the status catalog…</p>;
 
   const shipped = (id: string) => statusDefinition(DEFAULT_STATUS_CATALOG, id as never);
   const isOverridden = (definition: StatusDefinition) => {
@@ -239,7 +239,7 @@ export function StatusCatalogPanel({ onChanged }: { onChanged?: () => void }) {
 
   return (
     <div>
-      <p className="mb-3 text-[11px] text-fg-dim">
+      <p className="mb-3 text-xs text-fg-dim">
         Every state a work item can be in. The names and descriptions are yours — rename one here and it
         changes on the board, on the station cards and in the status bar at once. A few fields are fixed
         because the pipeline relies on them; those say why instead of showing a control.

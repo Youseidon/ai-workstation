@@ -16,6 +16,7 @@ import { fetchJson, parseClaudeUsage, providerUsageOk, providerUsageUnavailable,
 import type { AgentAdapter, AvailabilityReport, PermissionOverride, RunOptions } from "./types.ts";
 import {
   buildSpawnPlan,
+  withSpawnEnvironment,
   readSystemdUnitOutcome,
   signalProcessTree,
   signalSystemdUnit,
@@ -274,14 +275,20 @@ export class ClaudeAdapter implements AgentAdapter {
       stderr: (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`),
       spawnClaudeCodeProcess: (spawnOptions): SpawnedProcess => {
         const limits = settings.resourceLimits;
-        const plan = buildSpawnPlan(spawnOptions.command, spawnOptions.args, opts.runId, limits);
+        const childEnv = { ...spawnOptions.env };
+        delete childEnv.AGENT_CONSOLE_DATA_DIR;
+        delete childEnv.AGENT_CONSOLE_DATABASE_PATH;
+        delete childEnv.AGENT_CONSOLE_DB;
+        delete childEnv.DATABASE_URL;
+        delete childEnv.SETTINGS_FILE;
+        const plan = withSpawnEnvironment(buildSpawnPlan(spawnOptions.command, spawnOptions.args, opts.runId, limits), spawnOptions.cwd ?? opts.cwd, childEnv);
         opts.log.info(`Claude SDK subprocess containment=${plan.containment}`);
         if (plan.containment !== "systemd") {
           opts.log.warn("systemd user containment unavailable; Claude uses process-tree cancellation without aggregate memory/task limits");
         }
         const child = spawn(plan.command, plan.args, {
           cwd: spawnOptions.cwd,
-          env: spawnOptions.env,
+          env: childEnv,
           stdio: ["pipe", "pipe", "pipe"],
           detached: plan.detached,
         });
@@ -388,12 +395,12 @@ export class ClaudeAdapter implements AgentAdapter {
     let usage: TokenUsage | null = null;
     let lastText: string | null = null;
     let currentMessageId = "message";
-    const streamedBlocks = new Set<string>();
+    const streamedBlocks = new Map<string, string>();
     let settled = false;
 
     try {
       for await (const message of session as AsyncGenerator<SDKMessage, void>) {
-        for (const event of this.mapMessage(message, {
+        for (const event of mapClaudeMessage(message, {
           get usage() {
             return usage;
           },
@@ -461,163 +468,6 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
-  private *mapMessage(message: SDKMessage, state: MapperState): Generator<AdapterEvent> {
-    switch (message.type) {
-      case "system": {
-        if (message.subtype === "init") {
-          yield {
-            type: "status",
-            payload: {
-              state: "running",
-              detail: `${message.model} · ${message.tools.length} tools · ${message.permissionMode}`,
-              // The SDK's own session id, banked on the init message: it is
-              // what `resume` takes, and a budget stop aborts the query long
-              // before any result message would carry it.
-              sessionId: message.session_id ?? null,
-            },
-          };
-        }
-        return;
-      }
-
-      case "stream_event": {
-        const event = message.event as { type?: string; index?: number; message?: { id?: string }; delta?: { type?: string; text?: string; thinking?: string } };
-        if (event.type === "message_start" && event.message?.id) {
-          state.setMessageId(event.message.id);
-          return;
-        }
-        if (event.type !== "content_block_delta" || event.delta === undefined) return;
-        const blockId = `${state.getMessageId()}:${event.index ?? 0}`;
-        if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
-          state.streamedBlocks.add(blockId);
-          yield {
-            type: "assistant_text",
-            payload: { blockId, delta: true, text: event.delta.text, kind: "message" },
-          };
-        } else if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
-          state.streamedBlocks.add(blockId);
-          yield {
-            type: "assistant_text",
-            payload: { blockId, delta: true, text: event.delta.thinking, kind: "thinking" },
-          };
-        }
-        return;
-      }
-
-      case "assistant": {
-        const apiMessage = message.message as unknown as { id?: string; content?: ContentBlock[]; usage?: RawUsage };
-        state.setUsage(accumulate(state.usage, apiMessage.usage));
-        const messageId = apiMessage.id ?? state.getMessageId();
-        const blocks = Array.isArray(apiMessage.content) ? apiMessage.content : [];
-        for (const [index, block] of blocks.entries()) {
-          const blockId = `${messageId}:${index}`;
-          if (block.type === "text" || block.type === "thinking") {
-            const text = block.type === "text" ? block.text : block.thinking;
-            if (typeof text !== "string" || text === "") continue;
-            if (block.type === "text") state.setText(text);
-            // Skip blocks already delivered as deltas — the browser has them.
-            if (state.streamedBlocks.has(blockId)) continue;
-            yield {
-              type: "assistant_text",
-              payload: {
-                blockId,
-                delta: false,
-                text,
-                kind: block.type === "thinking" ? "thinking" : "message",
-              },
-            };
-          } else if (block.type === "tool_use") {
-            const name = block.name ?? "tool";
-            yield {
-              type: "tool_use",
-              payload: {
-                toolUseId: block.id ?? `${messageId}:${index}`,
-                name,
-                summary: summarizeToolInput(name, block.input),
-                input: block.input ?? {},
-              },
-            };
-          }
-        }
-        if (state.usage !== null) {
-          yield { type: "status", payload: { state: "running", usage: state.usage, detail: "usage" } };
-        }
-        if (message.error) {
-          yield {
-            type: "error",
-            payload: { message: `Claude reported: ${message.error}`, fatal: false, detail: null },
-          };
-        }
-        return;
-      }
-
-      case "user": {
-        const apiMessage = message.message as unknown as { content?: ContentBlock[] | string };
-        const blocks = Array.isArray(apiMessage.content) ? apiMessage.content : [];
-        for (const block of blocks) {
-          if (block.type !== "tool_result") continue;
-          const output = stringifyContent(block.content);
-          yield {
-            type: "tool_result",
-            payload: {
-              toolUseId: block.tool_use_id ?? "unknown",
-              name: null,
-              isError: block.is_error === true,
-              summary: oneLine(output || "completed"),
-              output,
-              exitCode: null,
-            },
-          };
-        }
-        return;
-      }
-
-      case "tool_progress": {
-        yield {
-          type: "status",
-          payload: {
-            state: "running",
-            detail: `${message.tool_name} running ${Math.round(message.elapsed_time_seconds)}s`,
-          },
-        };
-        return;
-      }
-
-      case "result": {
-        if (state.isSettled()) return;
-        state.markSettled();
-        const finalUsage = mergeUsage(state.usage, toUsage(message.usage as RawUsage));
-        state.setUsage(finalUsage);
-        if (message.subtype !== "success") {
-          const detail = "errors" in message && Array.isArray(message.errors)
-            ? message.errors.join("\n")
-            : null;
-          yield {
-            type: "error",
-            payload: { message: `Claude Code ended: ${message.subtype}`, fatal: true, detail },
-          };
-          yield {
-            type: "result",
-            payload: { state: "error", usage: finalUsage, text: state.getText(), exitCode: null },
-          };
-          return;
-        }
-        yield {
-          type: "result",
-          payload: {
-            state: "done",
-            usage: finalUsage,
-            text: typeof message.result === "string" ? message.result : state.getText(),
-            exitCode: null,
-          },
-        };
-        return;
-      }
-
-      default:
-        return;
-    }
-  }
 
   async interrupt(runId: string): Promise<void> {
     const session = this.queries.get(runId);
@@ -648,6 +498,167 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 }
 
+export function* mapClaudeMessage(message: SDKMessage, state: MapperState): Generator<AdapterEvent> {
+  if (state.isSettled()) return;
+  switch (message.type) {
+    case "system": {
+      if (message.subtype === "init") {
+        yield {
+          type: "status",
+          payload: {
+            state: "running",
+            detail: `${message.model} · ${message.tools.length} tools · ${message.permissionMode}`,
+            // The SDK's own session id, banked on the init message: it is
+            // what `resume` takes, and a budget stop aborts the query long
+            // before any result message would carry it.
+            sessionId: message.session_id ?? null,
+          },
+        };
+      }
+      return;
+    }
+
+    case "stream_event": {
+      const event = message.event as { type?: string; index?: number; message?: { id?: string }; delta?: { type?: string; text?: string; thinking?: string } };
+      if (event.type === "message_start" && event.message?.id) {
+        state.setMessageId(event.message.id);
+        return;
+      }
+      if (event.type !== "content_block_delta" || event.delta === undefined) return;
+      const blockId = `${state.getMessageId()}:${event.index ?? 0}`;
+      if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
+        state.streamedBlocks.set(blockId, (state.streamedBlocks.get(blockId) ?? "") + event.delta.text);
+        state.setText(state.streamedBlocks.get(blockId)!);
+        yield {
+          type: "assistant_text",
+          payload: { blockId, delta: true, text: event.delta.text, kind: "message" },
+        };
+      } else if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
+        state.streamedBlocks.set(blockId, (state.streamedBlocks.get(blockId) ?? "") + event.delta.thinking);
+        yield {
+          type: "assistant_text",
+          payload: { blockId, delta: true, text: event.delta.thinking, kind: "thinking" },
+        };
+      }
+      return;
+    }
+
+    case "assistant": {
+      const apiMessage = message.message as unknown as { id?: string; content?: ContentBlock[]; usage?: RawUsage };
+      state.setUsage(accumulate(state.usage, apiMessage.usage));
+      const messageId = apiMessage.id ?? state.getMessageId();
+      const blocks = Array.isArray(apiMessage.content) ? apiMessage.content : [];
+      for (const [index, block] of blocks.entries()) {
+        const blockId = `${messageId}:${index}`;
+        if (block.type === "text" || block.type === "thinking") {
+          const text = block.type === "text" ? block.text : block.thinking;
+          if (typeof text !== "string" || text === "") continue;
+          if (block.type === "text") state.setText(text);
+          // Skip blocks already delivered as deltas — the browser has them.
+          if (state.streamedBlocks.get(blockId) === text) continue;
+          state.streamedBlocks.set(blockId, text);
+          yield {
+            type: "assistant_text",
+            payload: {
+              blockId,
+              delta: false,
+              text,
+              kind: block.type === "thinking" ? "thinking" : "message",
+            },
+          };
+        } else if (block.type === "tool_use") {
+          const name = block.name ?? "tool";
+          yield {
+            type: "tool_use",
+            payload: {
+              toolUseId: block.id ?? `${messageId}:${index}`,
+              name,
+              summary: summarizeToolInput(name, block.input),
+              input: block.input ?? {},
+            },
+          };
+        }
+      }
+      if (state.usage !== null) {
+        yield { type: "status", payload: { state: "running", usage: state.usage, detail: "usage" } };
+      }
+      if (message.error) {
+        yield {
+          type: "error",
+          payload: { message: `Claude reported: ${message.error}`, fatal: false, detail: null },
+        };
+      }
+      return;
+    }
+
+    case "user": {
+      const apiMessage = message.message as unknown as { content?: ContentBlock[] | string };
+      const blocks = Array.isArray(apiMessage.content) ? apiMessage.content : [];
+      for (const block of blocks) {
+        if (block.type !== "tool_result") continue;
+        const output = stringifyContent(block.content);
+        yield {
+          type: "tool_result",
+          payload: {
+            toolUseId: block.tool_use_id ?? "unknown",
+            name: null,
+            isError: block.is_error === true,
+            summary: oneLine(output || "completed"),
+            output,
+            exitCode: null,
+          },
+        };
+      }
+      return;
+    }
+
+    case "tool_progress": {
+      yield {
+        type: "status",
+        payload: {
+          state: "running",
+          detail: `${message.tool_name} running ${Math.round(message.elapsed_time_seconds)}s`,
+        },
+      };
+      return;
+    }
+
+    case "result": {
+      if (state.isSettled()) return;
+      state.markSettled();
+      const finalUsage = mergeUsage(state.usage, toUsage(message.usage as RawUsage));
+      state.setUsage(finalUsage);
+      if (message.subtype !== "success") {
+        const detail = "errors" in message && Array.isArray(message.errors)
+          ? message.errors.join("\n")
+          : null;
+        yield {
+          type: "error",
+          payload: { message: `Claude Code ended: ${message.subtype}`, fatal: true, detail },
+        };
+        yield {
+          type: "result",
+          payload: { state: "error", usage: finalUsage, text: state.getText(), exitCode: null },
+        };
+        return;
+      }
+      yield {
+        type: "result",
+        payload: {
+          state: "done",
+          usage: finalUsage,
+          text: typeof message.result === "string" ? message.result : state.getText(),
+          exitCode: null,
+        },
+      };
+      return;
+    }
+
+    default:
+      return;
+  }
+}
+
 interface MapperState {
   readonly usage: TokenUsage | null;
   setUsage(next: TokenUsage | null): void;
@@ -655,7 +666,7 @@ interface MapperState {
   getText(): string | null;
   getMessageId(): string;
   setMessageId(id: string): void;
-  streamedBlocks: Set<string>;
+  streamedBlocks: Map<string, string>;
   isSettled(): boolean;
   markSettled(): void;
 }

@@ -2,9 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type { RunChangeDetail, RunChangeState, RunChangeSummary, RunFileDiff } from "@agent-console/shared";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Spinner";
+import { ContentTitle, PageState } from "@/components/shell/PageCanvas";
+import { SidebarBack, SidebarCollection, SidebarEmpty, SidebarRow } from "@/components/shell/SidebarCollection";
 import { cn } from "@/lib/cn";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useWorkspace } from "@/lib/workspaceContext";
@@ -31,7 +34,7 @@ function BranchIcon() {
 
 /** The branch the run was on when capture began — where its commits landed. */
 function BranchChip({branch,className}:{branch:string|null;className?:string}) {
-  return <span title={branch===null?"The run committed on a detached HEAD, not a branch":`Commits were made to ${branch}`} className={cn("inline-flex min-w-0 max-w-full items-center gap-1 rounded-md bg-surface-3 px-1.5 py-0.5 font-mono text-[11px] ring-1 ring-inset ring-line",branch===null?"text-warning":"text-fg",className)}><BranchIcon/><span className="truncate">{branch??"detached HEAD"}</span></span>;
+  return <span title={branch===null?"The run committed on a detached HEAD, not a branch":`Commits were made to ${branch}`} className={cn("inline-flex min-w-0 max-w-full items-center gap-1 rounded-md bg-surface-3 px-1.5 py-0.5 font-mono text-xs ring-1 ring-inset ring-line",branch===null?"text-warning":"text-fg",className)}><BranchIcon/><span className="truncate">{branch??"detached HEAD"}</span></span>;
 }
 
 function DiffStat({change}:{change:Pick<RunChangeSummary,"filesChanged"|"additions"|"deletions">}) {
@@ -45,15 +48,15 @@ export function ChangesIndex() {
     const needle=query.trim().toLowerCase();if(items===null||needle==="")return items??[];
     return items.filter(item=>[item.promptTitle,item.message,item.branch,item.pipeline?.name,item.headCommit].some(value=>value?.toLowerCase().includes(needle)));
   },[items,query]);
-  if(workspaceId===null)return <Empty text="Choose a workspace to browse agent changes."/>;
-  if(error!==null)return <Empty text={error}/>;
-  if(items===null)return <div className="space-y-3 p-5"><Skeleton className="h-24 w-full"/><Skeleton className="h-24 w-full"/></div>;
-  if(items.length===0)return <Empty text="No agent source changes have been captured in this workspace yet."/>;
-  return <div className="mx-auto w-full max-w-5xl p-5">
-    <div className="mb-4 flex flex-wrap items-end gap-3">
-      <div className="min-w-0 flex-1"><h1 className="text-2xl text-fg">Agent changes</h1><p className="mt-1 text-sm text-fg-muted">Every committed checkpoint, tied back to the run that produced it.</p></div>
-      <input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Filter by title, branch, pipeline…" aria-label="Filter changes" className="h-9 w-full rounded-md bg-surface-2 px-3 text-[13px] text-fg ring-1 ring-inset ring-line placeholder:text-fg-dim focus:outline-none focus:ring-accent/60 sm:w-72"/>
-    </div>
+  const collection=<SidebarCollection label="Change sets" tools={<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Filter change sets" aria-label="Filter changes" className="app-sidebar-search"/>}>
+    {workspaceId===null?<SidebarEmpty>Choose a workspace.</SidebarEmpty>:error!==null?<SidebarEmpty alert>{error}</SidebarEmpty>:items===null?<SidebarEmpty><span role="status">Loading change sets…</span></SidebarEmpty>:visible.length===0?<SidebarEmpty>{items.length===0?"No change sets yet.":"No change sets match."}</SidebarEmpty>:visible.map(item=><SidebarRow key={item.runId} href={`/changes/${encodeURIComponent(item.runId)}`} title={item.promptTitle} detail={`${fileCount(item.filesChanged)} · ${timeAgo(item.updatedAt)}`} status={item.state==="COMMITTED"?undefined:stateLabel(item.state)} statusTone={item.state==="NEEDS_COMMIT"?"warning":"muted"}/>)}
+  </SidebarCollection>;
+  if(workspaceId===null)return <>{collection}<Empty text="Choose a workspace to browse agent changes."/></>;
+  if(error!==null)return <>{collection}<Empty text={error}/></>;
+  if(items===null)return <>{collection}<div className="space-y-3 px-5 py-5"><Skeleton className="h-24 w-full"/><Skeleton className="h-24 w-full"/></div></>;
+  if(items.length===0)return <>{collection}<Empty text="No agent source changes have been captured in this workspace yet."/></>;
+  return <div className="w-full px-5 pb-8 max-sm:px-4">{collection}
+    <p className="mb-4 text-sm text-fg-muted">Every committed checkpoint, tied back to the run that produced it.</p>
     {visible.length===0?<p className="rounded-panel border border-dashed border-line p-8 text-center text-sm text-fg-dim">No changes match “{query.trim()}”.</p>:<ul className="space-y-2">
       {visible.map(item=>{
         const detailHref=`/changes/${encodeURIComponent(item.runId)}`;
@@ -67,7 +70,7 @@ export function ChangesIndex() {
           <p className="mt-1 line-clamp-2 text-xs text-fg-muted">{item.message??"Change capture in progress"}</p>
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
             <BranchChip branch={item.branch}/>
-            <span className="font-mono text-[11px] text-fg-dim">{shortSha(item.baseCommit)} → {shortSha(item.headCommit)}</span>
+            <span className="font-mono text-xs text-fg-dim">{shortSha(item.baseCommit)} → {shortSha(item.headCommit)}</span>
             <DiffStat change={item}/>
             {item.commitCount>0&&<span className="text-xs text-fg-dim">{item.commitCount} {item.commitCount===1?"commit":"commits"}</span>}
             {item.pipeline===null&&<Badge tone="accent" uppercase>Direct run</Badge>}
@@ -84,43 +87,49 @@ export function ChangesIndex() {
 }
 
 export function ChangeReview({runId}:{runId:string}) {
-  const [detail,setDetail]=useState<RunChangeDetail|null>(null);const [error,setError]=useState<string|null>(null);const [selected,setSelected]=useState<string|null>(null);const [diff,setDiff]=useState<RunFileDiff|null>(null);const [diffError,setDiffError]=useState<string|null>(null);const [mode,setMode]=useState<"unified"|"split">("unified");
-  useEffect(()=>{let cancelled=false;void workspaceApi.runChanges(SERVER_URL,runId).then(value=>{if(cancelled)return;setDetail(value);setSelected(value.files[0]?.path??null);}).catch((reason:unknown)=>{if(!cancelled)setError(reason instanceof Error?reason.message:"Changes could not be loaded.");});return()=>{cancelled=true;};},[runId]);
+  const params=useSearchParams();const requestedFile=params.get("file");
+  const [detail,setDetail]=useState<RunChangeDetail|null>(null);const [error,setError]=useState<string|null>(null);const [diff,setDiff]=useState<RunFileDiff|null>(null);const [diffError,setDiffError]=useState<string|null>(null);const [mode,setMode]=useState<"unified"|"split">("unified");
+  useEffect(()=>{let cancelled=false;void workspaceApi.runChanges(SERVER_URL,runId).then(value=>{if(cancelled)return;setDetail(value);}).catch((reason:unknown)=>{if(!cancelled)setError(reason instanceof Error?reason.message:"Changes could not be loaded.");});return()=>{cancelled=true;};},[runId]);
+  // The URL owns the selected file; an unknown or absent ?file= shows the first file.
+  const selected=detail===null?null:(detail.files.find(file=>file.path===requestedFile)??detail.files[0])?.path??null;
+  const fileHref=(path:string)=>`/changes/${encodeURIComponent(runId)}?file=${encodeURIComponent(path)}`;
   useEffect(()=>{if(selected===null){setDiff(null);return;}let cancelled=false;setDiff(null);setDiffError(null);void workspaceApi.runFileDiff(SERVER_URL,runId,selected).then(value=>{if(!cancelled)setDiff(value);}).catch((reason:unknown)=>{if(!cancelled)setDiffError(reason instanceof Error?reason.message:"Diff could not be loaded.");});return()=>{cancelled=true;};},[runId,selected]);
   const selectedFile=detail?.files.find(file=>file.path===selected)??null;
-  if(error!==null)return <Empty text={error}/>;if(detail===null)return <div className="p-5"><Skeleton className="h-[70vh] w-full"/></div>;
-  return <div className="flex min-h-0 flex-1 flex-col">
-    <header className="border-b border-line bg-surface-1 px-5 py-4">
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2 text-xs"><Link href="/changes" className="text-fg-dim hover:text-fg">Changes</Link><span className="text-fg-dim">/</span><span className="truncate text-fg-muted" title={runId}>{detail.promptTitle}</span></div>
-          <h1 className="mt-2 text-xl text-fg">{detail.message??(detail.state==="UNCHANGED"?"No source changes":"Agent change review")}</h1>
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-fg-muted">
-            <Badge tone={stateTone(detail.state)}>{stateLabel(detail.state)}</Badge>
-            {detail.pipeline===null&&<Badge tone="accent" uppercase>Direct run</Badge>}
-            <span className="inline-flex min-w-0 items-center gap-1.5"><span className="text-fg-dim">{detail.commitCount===1?"1 commit to":`${detail.commitCount} commits to`}</span><BranchChip branch={detail.branch} className="text-xs"/></span>
-            <span className="font-mono text-[11px] text-fg-dim">{shortSha(detail.baseCommit)} → {shortSha(detail.headCommit)}</span>
-            <DiffStat change={detail}/>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Link href={activityHref(runId)} className={ACTION} title="Open the run that produced these changes">Activity</Link>
-          {detail.pipeline!==null&&<Link href={`/pipeline/${detail.pipeline.id}`} className={cn(ACTION,"max-w-[14rem]")} title={`Open pipeline: ${detail.pipeline.name}`}><span className="text-fg-dim">Pipeline</span><span className="truncate">{detail.pipeline.name}</span></Link>}
-          <div className="flex gap-1 rounded-md border border-line bg-surface-2 p-1"><button className={cn("rounded px-2 py-1 text-xs",mode==="unified"?"bg-surface-4 text-fg":"text-fg-dim")} onClick={()=>setMode("unified")}>Unified</button><button className={cn("rounded px-2 py-1 text-xs",mode==="split"?"bg-surface-4 text-fg":"text-fg-dim")} onClick={()=>setMode("split")}>Split</button></div>
-        </div>
-      </div>
-    </header>
-    <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,35vh)_minmax(0,1fr)] lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-1"><aside className="min-h-0 overflow-y-auto border-b border-line bg-surface-1 p-3 lg:border-r lg:border-b-0"><div className="mb-2 px-2 text-[10px] uppercase tracking-wider text-fg-dim">Changed files</div>{detail.files.length===0?<p className="px-2 text-sm text-fg-dim">This run did not change tracked source.</p>:detail.files.map(file=><button key={file.path} onClick={()=>setSelected(file.path)} className={cn("mb-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs",selected===file.path?"bg-surface-3 text-fg":"text-fg-muted hover:bg-surface-2 hover:text-fg")}><span className="w-4 shrink-0 font-mono uppercase text-accent">{file.status[0]}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span><span className="numeric shrink-0 text-[10px]"><b className="text-success">+{file.additions??"–"}</b> <b className="text-danger">−{file.deletions??"–"}</b></span></button>)}</aside>
-      <main className="min-h-0 overflow-auto bg-surface-0">{selectedFile===null?<Empty text="Select a changed file."/>:<><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface-1/95 px-4 py-2 backdrop-blur"><span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{selectedFile.path}</span>{selectedFile.previousPath!==null&&<span className="truncate text-[10px] text-fg-dim">from {selectedFile.previousPath}</span>}</div>{diffError!==null?<Empty text={diffError}/>:diff===null?<div className="p-4"><Skeleton className="h-80 w-full"/></div>:<DiffPatch patch={diff.patch} split={mode==="split"}/>}</>}</main>
+  const files=<SidebarCollection label="Changed files">
+    <SidebarBack href="/changes">All change sets</SidebarBack>
+    {detail===null?<SidebarEmpty><span role="status">Loading files…</span></SidebarEmpty>:detail.files.length===0?<SidebarEmpty>This run did not change tracked source.</SidebarEmpty>:<>
+      <p className="app-sidebar-group">Changed files · {detail.files.length}</p>
+      {detail.files.map(file=><SidebarRow key={file.path} href={fileHref(file.path)} selected={selected===file.path} title={file.path} detail={<span className="numeric">{file.status.toLowerCase()} · <b className="font-normal text-success">+{file.additions??"–"}</b> <b className="font-normal text-danger">−{file.deletions??"–"}</b></span>}/>)}
+    </>}
+  </SidebarCollection>;
+  if(error!==null)return <>{files}<PageState title="Change review" tone="error">{error}</PageState></>;
+  if(detail===null)return <>{files}<ContentTitle meta="Changes" title="Change review"/><div className="px-5 pb-5 max-sm:px-4" role="status" aria-label="Loading changes"><Skeleton className="h-[70vh] w-full"/></div></>;
+  return <div className="flex min-h-0 flex-1 flex-col">{files}
+    <ContentTitle
+      meta={<>Changes · <span title={runId}>{detail.promptTitle}</span></>}
+      title={detail.message??(detail.state==="UNCHANGED"?"No source changes":"Agent change review")}
+      actions={<>
+        <Link href={activityHref(runId)} className={ACTION} title="Open the run that produced these changes">Activity</Link>
+        {detail.pipeline!==null&&<Link href={`/pipeline/${detail.pipeline.id}`} className={cn(ACTION,"max-w-[14rem]")} title={`Open pipeline: ${detail.pipeline.name}`}><span className="text-fg-dim">Pipeline</span><span className="truncate">{detail.pipeline.name}</span></Link>}
+        <div className="flex gap-1 rounded-md border border-line p-1" role="group" aria-label="Comparison"><button type="button" aria-pressed={mode==="unified"} className={cn("rounded px-2 py-1 text-xs",mode==="unified"?"bg-surface-3 text-fg":"text-fg-muted")} onClick={()=>setMode("unified")}>Unified</button><button type="button" aria-pressed={mode==="split"} className={cn("rounded px-2 py-1 text-xs",mode==="split"?"bg-surface-3 text-fg":"text-fg-muted")} onClick={()=>setMode("split")}>Split</button></div>
+      </>}
+    />
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 px-5 text-xs text-fg-muted max-sm:px-4">
+      <Badge tone={stateTone(detail.state)}>{stateLabel(detail.state)}</Badge>
+      {detail.pipeline===null&&<Badge tone="accent" uppercase>Direct run</Badge>}
+      <span className="inline-flex min-w-0 items-center gap-1.5"><span className="text-fg-dim">{detail.commitCount===1?"1 commit to":`${detail.commitCount} commits to`}</span><BranchChip branch={detail.branch} className="text-xs"/></span>
+      <span className="font-mono text-xs text-fg-dim">{shortSha(detail.baseCommit)} → {shortSha(detail.headCommit)}</span>
+      <DiffStat change={detail}/>
     </div>
-    {detail.commits.length>0&&<footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line bg-surface-1 px-5 py-2 text-xs text-fg-muted"><span className="text-[10px] uppercase tracking-wider text-fg-dim">Commits on</span><BranchChip branch={detail.branch}/>{detail.commits.map(commit=><span key={commit.sha} title={`${commit.author} · ${new Date(commit.authoredAt).toLocaleString()}`}><code>{shortSha(commit.sha)}</code> {commit.subject}</span>)}</footer>}
+    {detail.commits.length>0&&<details className="mx-5 mb-3 text-xs text-fg-muted max-sm:mx-4"><summary className="cursor-pointer py-1">{detail.commits.length===1?"1 commit":`${detail.commits.length} commits`} on <BranchChip branch={detail.branch}/></summary><ul className="mt-2 grid gap-1">{detail.commits.map(commit=><li key={commit.sha} title={`${commit.author} · ${new Date(commit.authoredAt).toLocaleString()}`}><code>{shortSha(commit.sha)}</code> {commit.subject}</li>)}</ul></details>}
+    <section aria-label="Diff" className="mx-5 mb-6 min-h-0 flex-1 overflow-auto rounded-panel border border-line max-sm:mx-4">{selectedFile===null?<Empty text="Select a changed file."/>:<><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface-1 px-4 py-2"><span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{selectedFile.path}</span>{selectedFile.previousPath!==null&&<span className="truncate text-xs text-fg-dim">from {selectedFile.previousPath}</span>}</div>{diffError!==null?<Empty text={diffError}/>:diff===null?<div className="p-4"><Skeleton className="h-80 w-full"/></div>:<DiffPatch patch={diff.patch} split={mode==="split"}/>}</>}</section>
   </div>;
 }
 
 function DiffPatch({patch,split}:{patch:string;split:boolean}) {
   const lines=useMemo(()=>patch.split("\n"),[patch]);
-  if(split){const rows:Array<{left:string|null;right:string|null}>=[];for(const line of lines){if(line.startsWith("-")&&!line.startsWith("---"))rows.push({left:line,right:null});else if(line.startsWith("+")&&!line.startsWith("+++")){const last=rows.at(-1);if(last?.right===null)last.right=line;else rows.push({left:null,right:line});}else rows.push({left:line,right:line});}return <div className="grid min-w-[900px] grid-cols-2 font-mono text-[12px] leading-5">{rows.flatMap((row,index)=>[<DiffLine key={`l${index}`} line={row.left??""}/>,<DiffLine key={`r${index}`} line={row.right??""}/>])}</div>;}
-  return <pre className="min-w-max p-3 font-mono text-[12px] leading-5">{lines.map((line,index)=><DiffLine key={index} line={line}/>)}</pre>;
+  if(split){const rows:Array<{left:string|null;right:string|null}>=[];for(const line of lines){if(line.startsWith("-")&&!line.startsWith("---"))rows.push({left:line,right:null});else if(line.startsWith("+")&&!line.startsWith("+++")){const last=rows.at(-1);if(last?.right===null)last.right=line;else rows.push({left:null,right:line});}else rows.push({left:line,right:line});}return <div className="grid min-w-[900px] grid-cols-2 font-mono text-xs leading-5">{rows.flatMap((row,index)=>[<DiffLine key={`l${index}`} line={row.left??""}/>,<DiffLine key={`r${index}`} line={row.right??""}/>])}</div>;}
+  return <pre className="min-w-max p-3 font-mono text-xs leading-5">{lines.map((line,index)=><DiffLine key={index} line={line}/>)}</pre>;
 }
 function DiffLine({line}:{line:string}) {const tone=line.startsWith("+")&&!line.startsWith("+++")?"bg-success/10 text-success":line.startsWith("-")&&!line.startsWith("---")?"bg-danger/10 text-danger":line.startsWith("@@")?"bg-accent/10 text-accent":"text-fg-muted";return <span className={cn("block min-h-5 whitespace-pre px-2",tone)}>{line||" "}</span>;}
 function Empty({text}:{text:string}) {return <div className="flex min-h-[40vh] items-center justify-center p-6 text-center text-sm text-fg-dim">{text}</div>;}

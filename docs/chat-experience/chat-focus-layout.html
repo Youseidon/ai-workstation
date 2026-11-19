@@ -1,0 +1,240 @@
+<section id="chat-focus-layout" aria-label="Proposed Chat layout">
+  <style>
+    #chat-focus-layout {
+      --cf-bg: light-dark(#ffffff, #151820);
+      --cf-side: light-dark(#f5f5f7, #10131a);
+      --cf-fg: light-dark(#20232c, #e7eaf1);
+      --cf-muted: light-dark(#626675, #a9b1c2);
+      --cf-soft: light-dark(#e9ebef, #252b37);
+      --cf-user: light-dark(#f0f1f5, #242b38);
+      --cf-line: light-dark(#d8dbe3, #3a4151);
+      --cf-accent: light-dark(#246879, #97d5dd);
+      --cf-input: light-dark(#fafafb, #1c212b);
+      --cf-column: 880px;
+      --cf-type: 16px;
+      --cf-sidebar: 272px;
+      color: var(--cf-fg); background: var(--cf-bg);
+      font: 400 var(--cf-type)/1.65 ui-sans-serif, system-ui, sans-serif;
+      position: relative; isolation: isolate; overflow-wrap: anywhere;
+    }
+    #chat-focus-layout * { box-sizing: border-box; }
+    #chat-focus-layout [hidden] { display: none !important; }
+    #chat-focus-layout button, #chat-focus-layout textarea, #chat-focus-layout select, #chat-focus-layout input { font: inherit; color: inherit; }
+    #chat-focus-layout button:disabled { cursor: default; opacity: .5; }
+    #chat-focus-layout :is(button, select, textarea, summary, input):focus-visible { outline: 2px solid var(--cf-accent); outline-offset: 3px; }
+    #chat-focus-layout .cf-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    #chat-focus-layout .cf-layout { display: grid; grid-template-columns: var(--cf-sidebar) minmax(0, 1fr); min-height: 660px; }
+    #chat-focus-layout[data-sidebar="closed"] .cf-layout { grid-template-columns: minmax(0, 1fr); }
+    #chat-focus-layout[data-sidebar="closed"] .cf-sidebar { display: none; }
+    #chat-focus-layout .cf-sidebar { background: var(--cf-side); padding: 20px 14px 14px; display: flex; flex-direction: column; min-width: 0; gap: 18px; }
+    #chat-focus-layout .cf-workspace { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 0 8px; font-size: 13px; font-weight: 600; }
+    #chat-focus-layout .cf-plain { border: 0; background: transparent; border-radius: 7px; padding: 5px 8px; text-align: left; }
+    #chat-focus-layout .cf-plain:hover { background: var(--cf-soft); }
+    #chat-focus-layout .cf-new { width: 100%; border: 1px solid var(--cf-line); border-radius: 9px; background: var(--cf-bg); padding: 8px 12px; font-size: 13px; text-align: left; }
+    #chat-focus-layout .cf-search { width: 100%; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid var(--cf-line); padding: 7px 8px; font-size: 13px; }
+    #chat-focus-layout .cf-search::placeholder { color: var(--cf-muted); opacity: 1; }
+    #chat-focus-layout .cf-group { display: grid; gap: 4px; }
+    #chat-focus-layout .cf-label { padding: 3px 10px; font-size: 12px; color: var(--cf-muted); }
+    #chat-focus-layout .cf-thread { display: block; width: 100%; padding: 9px 10px; border: none; border-radius: 8px; background: transparent; text-align: left; font-size: 13px; }
+    #chat-focus-layout .cf-thread:hover, #chat-focus-layout .cf-thread[aria-current="true"] { background: var(--cf-soft); }
+    #chat-focus-layout .cf-subtitle { display: block; font-size: 12px; color: var(--cf-muted); margin-top: 2px; }
+    #chat-focus-layout .cf-side-bottom { margin-top: auto; font-size: 13px; display: grid; gap: 8px; padding: 10px 8px 0; }
+    #chat-focus-layout .cf-tools-list { display: grid; gap: 7px; padding: 12px 0 5px 15px; color: var(--cf-muted); }
+    #chat-focus-layout .cf-connected { color: var(--cf-muted); font-size: 12px; }
+    #chat-focus-layout .cf-main { min-width: 0; position: relative; padding: 46px 30px 20px; display: flex; flex-direction: column; gap: 30px; }
+    #chat-focus-layout .cf-toggle { position: absolute; top: 10px; left: 12px; font-size: 12px; color: var(--cf-muted); }
+    #chat-focus-layout .cf-conversation { width: 100%; max-width: var(--cf-column); margin: 0 auto; display: grid; gap: 28px; }
+    #chat-focus-layout .cf-user { width: fit-content; max-width: 88%; margin-left: auto; background: var(--cf-user); border-radius: 18px 18px 5px 18px; padding: 10px 16px; white-space: pre-wrap; }
+    #chat-focus-layout[data-user-bubble="false"] .cf-user { background: transparent; border-radius: 0; padding-inline: 0; font-weight: 500; }
+    #chat-focus-layout .cf-provider { font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+    #chat-focus-layout .cf-answer { display: grid; gap: 14px; }
+    #chat-focus-layout .cf-answer p { margin: 0; }
+    #chat-focus-layout .cf-answer ul { margin: 0; padding-left: 22px; }
+    #chat-focus-layout .cf-answer li + li { margin-top: 5px; }
+    #chat-focus-layout .cf-answer strong { font-weight: 600; }
+    #chat-focus-layout .cf-activity { color: var(--cf-muted); font-size: 12px; margin-bottom: 14px; }
+    #chat-focus-layout .cf-activity pre { background: var(--cf-side); padding: 12px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--cf-fg); font-size: 12px; }
+    #chat-focus-layout .cf-actions { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 12px; color: var(--cf-muted); font-size: 12px; }
+    #chat-focus-layout .cf-actions details { padding: 5px 8px; }
+    #chat-focus-layout .cf-actions details p { margin: 7px 0 0; }
+    #chat-focus-layout .cf-compose-wrap { margin-top: auto; width: 100%; max-width: var(--cf-column); margin-inline: auto; }
+    #chat-focus-layout .cf-composer { border: 1px solid var(--cf-line); border-radius: 17px; background: var(--cf-input); padding: 12px 14px 10px; }
+    #chat-focus-layout .cf-composer textarea { display: block; width: 100%; min-height: 50px; resize: vertical; border: 0; background: transparent; padding: 0; font-size: 16px; line-height: 1.5; }
+    #chat-focus-layout .cf-composer textarea::placeholder { color: var(--cf-muted); opacity: 1; }
+    #chat-focus-layout .cf-compose-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; }
+    #chat-focus-layout .cf-compose-actions select { background: transparent; border: 0; padding: 5px 2px; min-width: 0; max-width: 100%; font-size: 12px; }
+    #chat-focus-layout .cf-compose-actions option { color: var(--cf-fg); background: var(--cf-input); }
+    #chat-focus-layout .cf-send { margin-left: auto; background: var(--cf-fg); color: var(--cf-bg); border: 0; border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+    #chat-focus-layout .cf-context { margin-bottom: 9px; font-size: 12px; color: var(--cf-muted); }
+    #chat-focus-layout .cf-quote { font-size: 12px; border-left: 2px solid var(--cf-line); padding: 4px 8px; margin-bottom: 10px; }
+    #chat-focus-layout .cf-quote p { margin: 0; }
+    #chat-focus-layout .cf-status { font-size: 12px; color: var(--cf-muted); margin: 6px 0 0; }
+    @media (max-width: 680px) {
+      #chat-focus-layout .cf-layout { grid-template-columns: minmax(0, 1fr); min-height: 700px; }
+      #chat-focus-layout .cf-sidebar { display: none; }
+      #chat-focus-layout[data-sidebar="open"] .cf-sidebar { display: flex; }
+      #chat-focus-layout .cf-main { padding: 48px 16px 16px; }
+      #chat-focus-layout .cf-user { max-width: 94%; }
+    }
+    @media (pointer: coarse) {
+      #chat-focus-layout :is(button, select, summary) { min-height: 44px; }
+    }
+  </style>
+  <div class="cf-layout">
+    <aside class="cf-sidebar" aria-label="Chat navigation">
+      <div class="cf-workspace"><span>ai-orchestration</span><span aria-hidden="true">⌄</span></div>
+      <button type="button" class="cf-new cursor-interaction" id="cf-new">＋ New chat</button>
+      <label class="cf-sr-only" for="cf-search">Search example chats</label>
+      <input id="cf-search" class="cf-search" type="search" placeholder="Search chats" />
+      <div class="cf-group">
+        <span class="cf-label">Today</span>
+        <button type="button" class="cf-thread cursor-interaction" data-thread="layout" aria-current="true">A calmer Chat experience</button>
+        <button type="button" class="cf-thread cursor-interaction" data-thread="streaming">Understand streaming</button>
+      </div>
+      <div class="cf-group">
+        <span class="cf-label">Yesterday</span>
+        <button type="button" class="cf-thread cursor-interaction" data-thread="tests">Review the test approach</button>
+      </div>
+      <div class="cf-side-bottom">
+        <details><summary class="cursor-interaction">Workspace tools</summary><div class="cf-tools-list"><span>Pipeline</span><span>Activity</span><span>Changes</span><span>Report</span><span>Agents</span><span>Workspaces</span></div></details>
+        <span class="cf-connected">Connected · Workspace ready</span>
+      </div>
+    </aside>
+    <div class="cf-main">
+      <button type="button" id="cf-toggle" class="cf-plain cf-toggle cursor-interaction" aria-label="Toggle chat sidebar" aria-expanded="true">☰ <span>Chats</span></button>
+      <div class="cf-conversation" id="cf-content">
+        <div class="cf-user" id="cf-prompt">How can we make Chat feel calmer and easier to use?</div>
+        <article aria-label="Example assistant response">
+          <div class="cf-provider" id="cf-provider">Codex</div>
+          <details class="cf-activity" id="cf-evidence"><summary class="cursor-interaction">Reviewed 4 components · View activity</summary><pre>Example recorded activity
+Read: AppShell.tsx
+Read: ConversationPanel.tsx
+Read: ConversationExchange.tsx
+Read: Composer.tsx</pre></details>
+          <div class="cf-answer" id="cf-answer">
+            <p>Give the conversation more space, and let <strong>the words do most of the work.</strong></p>
+            <ul><li>Keep your conversations together on the left.</li><li>Let answers sit directly on the page.</li><li>Bring details forward when you need them.</li></ul>
+            <p>The input stays close at hand. You can read back through the conversation without panels and status bars competing for attention.</p>
+          </div>
+          <div class="cf-actions">
+            <button type="button" class="cf-plain cursor-interaction" id="cf-copy">Copy</button>
+            <button type="button" class="cf-plain cursor-interaction" id="cf-quote">Quote</button>
+            <details><summary class="cursor-interaction">More</summary><p>Codex · Example reply · Read-only</p></details>
+          </div>
+        </article>
+        <div class="cf-user" id="cf-followup">And keep the main area free of headers and footers.</div>
+        <article id="cf-second-answer" class="cf-answer" aria-label="Example follow-up response"><p>Yes. The center becomes a continuous conversation with an aligned input. Workspace navigation lives in the sidebar, and activity expands within the relevant reply.</p></article>
+      </div>
+      <div class="cf-compose-wrap">
+        <div class="cf-composer">
+          <div id="cf-quote-preview" class="cf-quote" hidden><p id="cf-quoted-text"></p><button type="button" id="cf-remove-quote" class="cf-plain cursor-interaction">Remove quote</button></div>
+          <div id="cf-context" class="cf-context" hidden>ai-orchestration · Current conversation<br>Example context: recent messages in this thread.</div>
+          <label for="cf-draft" class="cf-sr-only">Your message</label>
+          <textarea id="cf-draft" rows="2" placeholder="Ask a follow-up, or start something new…"></textarea>
+          <div class="cf-compose-actions">
+            <select id="cf-model" aria-label="Next provider"><option>Codex</option><option>Claude</option><option>Copilot</option><option>Grok</option><option>Kilo Code</option></select>
+            <select id="cf-mode" aria-label="Message mode"><option value="run">Run · Can change workspace</option><option value="ask">Ask · Read-only</option></select>
+            <button type="button" id="cf-context-toggle" class="cf-plain cursor-interaction" aria-expanded="false">＋ Context</button>
+            <button type="button" class="cf-send" disabled aria-label="Send, unavailable in layout preview">↑ Send</button>
+          </div>
+        </div>
+        <p id="cf-status" class="cf-status" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('chat-focus-layout');
+      const byId = id => root.querySelector('#' + id);
+      const drafts = {};
+      const state = { thread: 'layout', sidebar: null, quoted: '', context: false, provider: 'Codex', mode: 'run' };
+      const design = { width: 880, textSize: 16, userBubble: true };
+      const examples = {
+        layout: { prompt: 'How can we make Chat feel calmer and easier to use?', answer: '<p>Give the conversation more space, and let <strong>the words do most of the work.</strong></p><ul><li>Keep your conversations together on the left.</li><li>Let answers sit directly on the page.</li><li>Bring details forward when you need them.</li></ul><p>The input stays close at hand. You can read back through the conversation without panels and status bars competing for attention.</p>' },
+        streaming: { prompt: 'How should scrolling work while an answer is streaming?', answer: '<p>Follow the answer while you are reading the latest text.</p><p>When you scroll up, keep your place. A small jump action can take you back when you are ready, without interrupting your reading.</p><p>Returning to a thread should restore the passage you were reading.</p>' },
+        tests: { prompt: 'What should we verify before releasing the new layout?', answer: '<p>Start with the things people do every day: write, send, read, switch conversations and return later.</p><ul><li>Keep drafts when switching threads.</li><li>Preserve reading position during streaming.</li><li>Make questions and failures easy to find.</li><li>Check the layout on mobile and in every theme.</li></ul>' },
+        new: { prompt: '', answer: '' }
+      };
+      function save() {
+        if (window.openai?.setWidgetState) window.openai.setWidgetState({ modelContent: { layout: 'Centered conversation with a combined left sidebar', ...design }, privateContent: { ...state } }).catch(() => {});
+      }
+      function renderDesign() {
+        root.style.setProperty('--cf-column', design.width + 'px');
+        root.style.setProperty('--cf-type', design.textSize + 'px');
+        root.dataset.userBubble = String(design.userBubble);
+      }
+      function render() {
+        const selected = examples[state.thread] || examples.layout;
+        root.dataset.sidebar = state.sidebar || '';
+        byId('cf-toggle').setAttribute('aria-expanded', String(state.sidebar === 'open' || state.sidebar !== 'closed' && !matchMedia('(max-width: 680px)').matches));
+        byId('cf-prompt').textContent = selected.prompt;
+        byId('cf-prompt').hidden = state.thread === 'new';
+        byId('cf-answer').innerHTML = state.thread === 'new' ? '<p>What would you like to work on?</p>' : selected.answer;
+        byId('cf-provider').hidden = state.thread === 'new';
+        byId('cf-evidence').hidden = state.thread !== 'layout';
+        byId('cf-followup').hidden = state.thread !== 'layout';
+        byId('cf-second-answer').hidden = state.thread !== 'layout';
+        byId('cf-draft').placeholder = state.thread === 'new' ? 'Write a message…' : 'Ask a follow-up, or start something new…';
+        byId('cf-quote-preview').hidden = !state.quoted;
+        byId('cf-quoted-text').textContent = state.quoted;
+        byId('cf-context').hidden = !state.context;
+        byId('cf-context-toggle').setAttribute('aria-expanded', String(state.context));
+        byId('cf-model').value = state.provider;
+        byId('cf-mode').value = state.mode;
+        root.querySelectorAll('[data-thread]').forEach(button => button.setAttribute('aria-current', String(button.dataset.thread === state.thread)));
+      }
+      function applySaved(value) {
+        const p = value?.privateContent;
+        const m = value?.modelContent;
+        if (p && Object.hasOwn(examples, p.thread)) state.thread = p.thread;
+        if (p && ['open', 'closed'].includes(p.sidebar)) state.sidebar = p.sidebar;
+        if (p && typeof p.context === 'boolean') state.context = p.context;
+        if (p && typeof p.quoted === 'string') state.quoted = p.quoted.slice(0, 2000);
+        if (p && ['Codex', 'Claude', 'Copilot', 'Grok', 'Kilo Code'].includes(p.provider)) state.provider = p.provider;
+        if (p && ['ask', 'run'].includes(p.mode)) state.mode = p.mode;
+        if (m && Number.isFinite(m.width)) design.width = Math.max(720, Math.min(1040, m.width));
+        if (m && Number.isFinite(m.textSize)) design.textSize = Math.max(14, Math.min(18, m.textSize));
+        if (m && typeof m.userBubble === 'boolean') design.userBubble = m.userBubble;
+        render(); renderDesign();
+      }
+      function selectThread(thread) {
+        drafts[state.thread] = byId('cf-draft').value;
+        state.thread = thread; state.quoted = '';
+        byId('cf-draft').value = drafts[thread] || '';
+        byId('cf-status').textContent = '';
+        render(); save();
+      }
+      root.querySelectorAll('[data-thread]').forEach(button => button.addEventListener('click', () => selectThread(button.dataset.thread)));
+      byId('cf-search').addEventListener('input', event => {
+        const query = event.target.value.trim().toLowerCase();
+        root.querySelectorAll('[data-thread]').forEach(button => { button.hidden = !button.textContent.toLowerCase().includes(query); });
+      });
+      byId('cf-new').addEventListener('click', () => { selectThread('new'); byId('cf-draft').focus(); });
+      byId('cf-toggle').addEventListener('click', () => {
+        const visible = getComputedStyle(root.querySelector('.cf-sidebar')).display !== 'none';
+        state.sidebar = visible ? 'closed' : 'open'; render(); save();
+      });
+      byId('cf-quote').addEventListener('click', () => {
+        const selection = window.getSelection();
+        state.quoted = selection?.anchorNode && byId('cf-answer').contains(selection.anchorNode) && selection.toString().trim() ? selection.toString() : byId('cf-answer').innerText;
+        state.quoted = state.quoted.slice(0, 2000); render(); save(); byId('cf-draft').focus();
+      });
+      byId('cf-remove-quote').addEventListener('click', () => { state.quoted = ''; render(); save(); });
+      byId('cf-context-toggle').addEventListener('click', () => { state.context = !state.context; render(); save(); });
+      byId('cf-model').addEventListener('change', event => { state.provider = event.target.value; save(); });
+      byId('cf-mode').addEventListener('change', event => { state.mode = event.target.value; save(); });
+      byId('cf-copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(byId('cf-answer').innerText); byId('cf-status').textContent = 'Copied example answer.'; }
+        catch { byId('cf-status').textContent = 'Select the example answer to copy it.'; }
+      });
+      window.addEventListener('openai:set_globals', event => { if (event.detail?.globals?.widgetState) applySaved(event.detail.globals.widgetState); });
+      applySaved(window.openai?.widgetState);
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: () => { renderDesign(); save(); } });
+        tweak.addSlider(design, 'width', { label: 'Conversation width', min: 720, max: 1040, step: 40, unit: 'px' });
+        tweak.addSlider(design, 'textSize', { label: 'Message text size', min: 14, max: 18, step: 1, unit: 'px' });
+        tweak.addToggle(design, 'userBubble', { label: 'Subtle user bubbles' });
+      }
+    })();
+  </script>
+</section>

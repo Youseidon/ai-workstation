@@ -124,7 +124,7 @@ export function ProgramModal({ serverUrl, program, pendingProposals, refresh, on
       description={`${progress.suites} suite${progress.suites === 1 ? "" : "s"} · ${progress.total} work item${progress.total === 1 ? "" : "s"} · ${progress.done} done${progress.blocked > 0 ? ` · ${progress.blocked} blocked` : ""}`}
       headerActions={
         pendingProposals > 0 ? (
-          <button type="button" onClick={onReviewProposals} className="mt-0.5 flex shrink-0 items-center gap-2 text-[11px] text-fg-muted hover:text-fg">
+          <button type="button" onClick={onReviewProposals} className="mt-0.5 flex shrink-0 items-center gap-2 text-xs text-fg-muted hover:text-fg">
             <Badge tone="info">{pendingProposals} pending</Badge>
             <span className="hidden sm:inline">Review →</span>
           </button>
@@ -144,7 +144,7 @@ export function ProgramModal({ serverUrl, program, pendingProposals, refresh, on
       }
     >
       <div className="grid h-[min(68vh,44rem)] grid-cols-1 md:grid-cols-[18rem_minmax(0,1fr)]">
-        <nav className="min-h-0 overflow-y-auto border-b border-line bg-surface-1/60 p-2 md:border-b-0 md:border-r" role="tree" aria-label={`${program.name} contents`}>
+        <nav className="min-h-0 overflow-y-auto border-b border-line bg-surface-1 p-2 md:border-b-0 md:border-r" role="tree" aria-label={`${program.name} contents`}>
           <TreeRow
             level={0}
             active={selection.suiteId === null}
@@ -155,7 +155,7 @@ export function ProgramModal({ serverUrl, program, pendingProposals, refresh, on
           />
           <div className="my-1.5 border-t border-line" />
           {program.suites.length === 0 && (
-            <p className="px-3 py-2 text-[11px] text-fg-dim">No suites yet. Suites group work items that run together.</p>
+            <p className="px-3 py-2 text-xs text-fg-dim">No suites yet. Suites group work items that run together.</p>
           )}
           {program.suites.map((entry) => {
             const open = expandedSuites.has(entry.id);
@@ -242,8 +242,8 @@ function TreeRow({ level, active, expanded, leaf = false, icon, label, meta, onC
     >
       <ChevronIcon className={cn("size-3 shrink-0 transition-transform", leaf && "invisible", expanded && "rotate-90")} />
       <span className="flex shrink-0 items-center">{icon}</span>
-      <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{label}</span>
-      {meta !== undefined && <span className="shrink-0 font-mono text-[9px] tabular-nums text-fg-dim">{meta}</span>}
+      <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
+      {meta !== undefined && <span className="shrink-0 font-mono text-xs tabular-nums text-fg-dim">{meta}</span>}
     </button>
   );
 }
@@ -255,7 +255,7 @@ function TreeAdd({ level, label, disabled, onClick }: { level: number; label: st
       disabled={disabled}
       onClick={onClick}
       style={{ paddingLeft: `${1.75 + level * 1.1}rem` }}
-      className="mb-0.5 flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-[11px] text-fg-dim hover:bg-surface-2 hover:text-accent disabled:opacity-40"
+      className="mb-0.5 flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs text-fg-dim hover:bg-surface-2 hover:text-accent disabled:opacity-40"
     >
       <span className="text-sm leading-none">+</span>
       {label}
@@ -267,7 +267,7 @@ function DetailHeader({ eyebrow, title, aside }: { eyebrow: ReactNode; title: st
   return (
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-6 py-4">
       <div className="min-w-0">
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-dim">{eyebrow}</div>
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-fg-dim">{eyebrow}</div>
         <h3 className="truncate text-base font-semibold tracking-tight text-fg">{title}</h3>
       </div>
       {aside}
@@ -294,7 +294,7 @@ function NamedEditor({ value, kind, busy, onSave, onDelete }: {
       <DetailHeader
         eyebrow={kind === "program" ? <><FolderIcon className="size-3.5 text-info" /> Program</> : <><StackIcon className="size-3.5 text-violet" /> Suite {value.externalKey}</>}
         title={draft.name || `Untitled ${kind}`}
-        aside={<span className="text-[10px] text-fg-dim">Updated {formatDate(value.updatedAt)}</span>}
+        aside={<span className="text-xs text-fg-dim">Updated {formatDate(value.updatedAt)}</span>}
       />
       <div className="space-y-4 px-6 py-5">
         <TextInput label="Name" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
@@ -373,9 +373,9 @@ function PromptEditor({ value, busy, onSave, onDelete }: {
       )}
 
       {verifyCommands.length > 0 && (
-        <div className="mx-6 mb-4 rounded-md border border-line bg-surface-0/60 px-3 py-2">
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">Checked when marked done</p>
-          <ul className="space-y-1 font-mono text-[11px] text-fg-muted">
+        <div className="mx-6 mb-4 rounded-md border border-line bg-surface-0 px-3 py-2">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-dim">Checked when marked done</p>
+          <ul className="space-y-1 font-mono text-xs text-fg-muted">
             {verifyCommands.map((command) => (
               <li key={command.text} className="truncate" title={command.text}>{command.text}</li>
             ))}
@@ -384,8 +384,8 @@ function PromptEditor({ value, busy, onSave, onDelete }: {
       )}
 
       {value.result !== "" && mode === "view" && (
-        <div className="mx-6 mb-4 rounded-md border border-line bg-surface-2/50 px-3 py-2">
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-dim">Latest result</p>
+        <div className="mx-6 mb-4 rounded-md border border-line bg-surface-2 px-3 py-2">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-fg-dim">Latest result</p>
           <p className="whitespace-pre-wrap text-xs leading-relaxed text-fg-muted">{value.result}</p>
         </div>
       )}
@@ -401,7 +401,7 @@ function PromptEditor({ value, busy, onSave, onDelete }: {
             </Button>
           </>
         )}
-        <span className="text-[10px] text-fg-dim">Updated {formatDate(value.updatedAt)}</span>
+        <span className="text-xs text-fg-dim">Updated {formatDate(value.updatedAt)}</span>
         <Button variant="ghost" size="sm" className="ml-auto text-danger! hover:bg-danger/10" onClick={onDelete}>Delete</Button>
       </div>
     </form>

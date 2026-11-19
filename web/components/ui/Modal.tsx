@@ -133,7 +133,7 @@ export function Modal({
         aria-hidden
         onClick={dismissible ? onClose : undefined}
         style={{ background: "var(--backdrop)" }}
-        className="fixed inset-0 animate-fade-in backdrop-blur-[2px]"
+        className="fixed inset-0 animate-fade-in"
       />
       <div
         ref={panelRef}

@@ -74,7 +74,7 @@ export function ThemeToggle() {
           aria-label="Appearance"
           className="glass absolute bottom-full left-0 z-40 mb-2 w-60 animate-slide-up rounded-lg p-2 shadow-xl"
         >
-          <p className="px-2 pb-1.5 pt-1 text-[10px] uppercase tracking-wider text-fg-dim">Theme</p>
+          <p className="px-2 pb-1.5 pt-1 text-xs uppercase tracking-wider text-fg-dim">Theme</p>
           {THEMES.map((option) => (
             <button
               key={option}
@@ -89,7 +89,7 @@ export function ThemeToggle() {
               <ThemeSwatch theme={option} />
               <span className="min-w-0 flex-1">
                 <span className="block text-xs font-medium">{THEME_META[option].label}</span>
-                <span className="block truncate text-[10.5px] text-fg-dim">
+                <span className="block truncate text-xs text-fg-dim">
                   {THEME_META[option].description}
                 </span>
               </span>
@@ -120,7 +120,7 @@ export function ThemeToggle() {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xs font-medium">Reduce effects</span>
-                <span className="block truncate text-[10.5px] text-fg-dim">
+                <span className="block truncate text-xs text-fg-dim">
                   Turns off ambient motion and blur.
                 </span>
               </span>

@@ -1,5 +1,6 @@
 "use client";
 
+import { PageState } from "@/components/shell/PageCanvas";
 import { Suspense, use, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { PipelineBoard } from "@/components/pipeline/PipelineBoard";
@@ -15,11 +16,11 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
   const { id: raw } = use(params);
   const id = Number(raw);
   if (!Number.isSafeInteger(id) || id <= 0) {
-    return <div className="p-6 text-sm text-danger">Invalid pipeline id.</div>;
+    return <PageState title="Pipeline" tone="error">“{raw}” is not a pipeline id.</PageState>;
   }
 
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-fg-dim">Loading pipeline…</div>}>
+    <Suspense fallback={<PageState title="Pipeline" tone="loading">Loading pipeline…</PageState>}>
       <PipelineDetail id={id} />
     </Suspense>
   );

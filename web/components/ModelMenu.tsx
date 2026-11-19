@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { ModelAccessTier, ModelOption, ModelSelectionMode, ProviderId } from "@agent-console/shared";
 import { classifyModel, MODEL_ACCESS_TIER_INFO, modelFamily, modelLabel } from "@agent-console/shared";
 import { providerTheme } from "@/lib/providerTheme";
 
 interface Props {
+  boundaryRef?: RefObject<HTMLElement | null>;
   provider: ProviderId;
   /** Runtime catalog refreshed by the server for this provider. */
   options: ModelOption[];
@@ -52,6 +53,7 @@ function groupByFamily(options: ModelOption[]): Array<{ family: string | null; o
  * a handful each and fall through to the same code as one unlabelled section.
  */
 export function ModelMenu({
+  boundaryRef,
   provider,
   options,
   accessTier,
@@ -90,7 +92,7 @@ export function ModelMenu({
   // Click-away and Escape both close, so the menu never strands the header.
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) onClose();
+      if (!containerRef.current?.contains(event.target as Node) && !boundaryRef?.current?.contains(event.target as Node)) onClose();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -101,7 +103,7 @@ export function ModelMenu({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [onClose]);
+  }, [onClose,boundaryRef]);
 
   const submitCustom = () => {
     const value = custom.trim();
@@ -115,14 +117,14 @@ export function ModelMenu({
         ref={containerRef}
         className={`absolute left-0 z-30 ${placement === "above" ? "bottom-full mb-1" : "top-full mt-1"} w-64 overflow-hidden rounded-md border border-line bg-surface-1 p-2.5 shadow-xl shadow-black/50`}
       >
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fg-dim">
+        <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-fg-dim">
           <span>{provider} model</span>
           <span className="rounded bg-accent/10 px-1.5 py-0.5 normal-case tracking-normal text-accent">Auto Select</span>
         </div>
         <div className={`mt-2 rounded px-2 py-1.5 text-xs ${theme.chip}`}>
           {modelLabel(provider, selected, options) ?? "No eligible model"}
         </div>
-        <p className="mt-2 text-[10px] leading-snug text-fg-dim">
+        <p className="mt-2 text-xs leading-snug text-fg-dim">
           The server selects the model within the {MODEL_ACCESS_TIER_INFO[accessTier].label} tier. Switch to Manual on Agents to override it.
         </p>
       </div>
@@ -136,7 +138,7 @@ export function ModelMenu({
       aria-label={`${provider} model`}
       className={`absolute left-0 z-30 ${placement === "above" ? "bottom-full mb-1" : "top-full mt-1"} w-64 overflow-hidden rounded-md border border-line bg-surface-1 shadow-xl shadow-black/50`}
     >
-      <div className="flex items-baseline gap-2 border-b border-line px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-fg-dim">
+      <div className="flex items-baseline gap-2 border-b border-line px-2.5 py-1.5 text-xs uppercase tracking-wider text-fg-dim">
         <span>{provider} model</span>
         <span className="rounded bg-surface-3 px-1.5 py-0.5 normal-case tracking-normal text-fg-muted">
           {MODEL_ACCESS_TIER_INFO[accessTier].shortLabel}
@@ -153,21 +155,21 @@ export function ModelMenu({
             onChange={(event) => setFilter(event.target.value)}
             placeholder="filter…"
             spellCheck={false}
-            className="w-full rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:border-line focus:outline-none"
+            className="w-full rounded border border-line bg-surface-1 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:border-line focus:outline-none"
           />
         </div>
       )}
 
       <div className="max-h-72 overflow-y-auto py-1">
         {matchCount === 0 && (
-          <div className="px-2.5 py-2 text-[11px] text-fg-dim">
+          <div className="px-2.5 py-2 text-xs text-fg-dim">
             no model matches “{filter.trim()}” — type it below to use it anyway
           </div>
         )}
         {sections.map((section) => (
           <div key={section.family ?? "__ungrouped__"}>
             {section.family !== null && (
-              <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-wider text-fg-dim">
+              <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-surface-1 px-2.5 py-1 text-xs uppercase tracking-wider text-fg-dim">
                 <span>{section.family}</span>
                 <span className="ml-auto normal-case tracking-normal">{section.options.length}</span>
               </div>
@@ -190,11 +192,11 @@ export function ModelMenu({
                   <span className={isSelected ? "" : "text-fg-dim"}>{isSelected ? "●" : "○"}</span>
                   <span className="shrink-0 truncate">{option.label}</span>
                   {option.id === recommended && (
-                    <span className="shrink-0 rounded bg-accent/10 px-1 text-[9px] uppercase tracking-wide text-accent">
+                    <span className="shrink-0 rounded bg-accent/10 px-1 text-xs uppercase tracking-wide text-accent">
                       recommended
                     </span>
                   )}
-                  <span className="ml-auto shrink-0 truncate pl-2 text-right text-[10px] text-fg-dim">
+                  <span className="ml-auto shrink-0 truncate pl-2 text-right text-xs text-fg-dim">
                     {isConfigured && !isSelected
                       ? "from settings"
                       : option.id === null
@@ -208,7 +210,7 @@ export function ModelMenu({
         ))}
 
         {isCustom && (
-          <div className={`mx-2 my-1 rounded px-1.5 py-1 text-[10px] ${theme.chip}`}>
+          <div className={`mx-2 my-1 rounded px-1.5 py-1 text-xs ${theme.chip}`}>
             custom · {selected}
           </div>
         )}
@@ -216,7 +218,7 @@ export function ModelMenu({
 
       <div className="border-t border-line p-2">
         {accessTier !== "all" && (
-          <p className="mb-1.5 text-[10px] leading-snug text-fg-dim">
+          <p className="mb-1.5 text-xs leading-snug text-fg-dim">
             Showing models allowed by {MODEL_ACCESS_TIER_INFO[accessTier].label}. Change the global tier on Agents to see more.
           </p>
         )}
@@ -232,13 +234,13 @@ export function ModelMenu({
             }}
             placeholder="custom model id…"
             spellCheck={false}
-            className="min-w-0 flex-1 rounded border border-line bg-surface-1 px-2 py-1 text-[11px] text-fg placeholder:text-fg-dim focus:border-line focus:outline-none"
+            className="min-w-0 flex-1 rounded border border-line bg-surface-1 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:border-line focus:outline-none"
           />
           <button
             type="button"
             onClick={submitCustom}
             disabled={custom.trim() === ""}
-            className="shrink-0 rounded border border-line bg-surface-2 px-2 text-[11px] text-fg-muted transition-colors hover:bg-surface-3 disabled:opacity-40"
+            className="shrink-0 rounded border border-line bg-surface-2 px-2 text-xs text-fg-muted transition-colors hover:bg-surface-3 disabled:opacity-40"
           >
             use
           </button>
@@ -248,7 +250,7 @@ export function ModelMenu({
           <button
             type="button"
             onClick={onClear}
-            className="mt-1.5 w-full rounded px-2 py-1 text-left text-[10px] text-fg-dim transition-colors hover:text-fg-muted"
+            className="mt-1.5 w-full rounded px-2 py-1 text-left text-xs text-fg-dim transition-colors hover:text-fg-muted"
           >
             ↺ follow settings{configured === null ? "" : ` (${configured})`}
           </button>

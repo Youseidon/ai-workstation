@@ -63,7 +63,7 @@ export function ChoiceControl({ labelledBy, value, options, disabled, onChange }
                 title={option.hint ?? undefined}
                 onClick={() => onChange(option.value)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
+                  "rounded-md px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
                   active
                     ? option.danger
                       ? "bg-warning/15 font-medium text-warning ring-1 ring-inset ring-warning/40"
@@ -77,7 +77,7 @@ export function ChoiceControl({ labelledBy, value, options, disabled, onChange }
           })}
         </div>
         {selected !== null && selected.hint !== null && (
-          <p className="mt-1.5 text-[11px] leading-snug text-fg-dim">{selected.hint}</p>
+          <p className="mt-1.5 text-xs leading-snug text-fg-dim">{selected.hint}</p>
         )}
       </div>
     );
@@ -116,11 +116,11 @@ export function ChoiceControl({ labelledBy, value, options, disabled, onChange }
               {active && <span className={cn("size-1.5 rounded-full", option.danger ? "bg-warning" : "bg-accent")} />}
             </span>
             <span className="min-w-0">
-              <span className={cn("block text-[12px]", active ? "font-medium text-fg" : "text-fg-muted", option.danger && active && "text-warning")}>
+              <span className={cn("block text-xs", active ? "font-medium text-fg" : "text-fg-muted", option.danger && active && "text-warning")}>
                 {option.label}
               </span>
               {active && option.hint !== null && (
-                <span className="mt-0.5 block text-[11px] leading-snug text-fg-dim">{option.hint}</span>
+                <span className="mt-0.5 block text-xs leading-snug text-fg-dim">{option.hint}</span>
               )}
             </span>
           </button>

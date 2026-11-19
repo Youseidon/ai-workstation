@@ -43,6 +43,7 @@ function baseContext(overrides: Partial<AgentPromptContext> = {}): AgentPromptCo
     children: [],
     verificationCommands: ["npm test"],
     stoppedRemarks: [],
+    briefings: [],
     dependencies: [{ externalKey: "S6-01", title: "Cart", status: "DONE", result: "green" }],
     gate: null,
     history: { remarks: [], events: [] },
@@ -169,7 +170,10 @@ test("protocol and progress sections stay under their byte bounds", () => {
   const progress = progressApiMarkdown({
     runId: "r1", token: "tok", port: 4000, canDecompose: true, shimPath: "/tmp/x/agent-step",
   });
-  assert.ok(Buffer.byteLength(progress) < 1024, `progress was ${Buffer.byteLength(progress)} bytes`);
+  // 1 KB of contract plus the operator-inbox lines; still one screen.
+  assert.ok(Buffer.byteLength(progress) < 1400, `progress was ${Buffer.byteLength(progress)} bytes`);
+  assert.match(progress, /inbox/);
+  assert.match(progress, /reply --text/);
   assert.doesNotMatch(progress, /curl/);
   assert.doesNotMatch(progress, /reviewer is sent/i);
   assert.match(progress, /requestId must be unique/);

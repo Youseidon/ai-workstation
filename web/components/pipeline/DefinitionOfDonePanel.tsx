@@ -91,22 +91,22 @@ function CriterionForm({
   submitLabel: string;
 }) {
   return (
-    <div className="rounded border border-line bg-surface-2/40 p-3">
+    <div className="rounded border border-line bg-surface-2 p-3">
       <div className="flex flex-wrap items-end gap-3">
-        <label className="text-[11px] text-fg-dim">
+        <label className="text-xs text-fg-dim">
           Kind
           <Select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value as DodCriterionKind })}>
             {DOD_CRITERION_KINDS.map((kind) => <option key={kind} value={kind}>{DOD_KIND_LABEL[kind]}</option>)}
           </Select>
         </label>
-        <span className="flex items-center gap-1.5 pb-1 text-[11px] text-fg-dim" title="An optional criterion is checked and reported, but never stops a work item closing.">
+        <span className="flex items-center gap-1.5 pb-1 text-xs text-fg-dim" title="An optional criterion is checked and reported, but never stops a work item closing.">
           Required
           <Switch checked={draft.required} aria-label="Required" onCheckedChange={(next) => setDraft({ ...draft, required: next })} />
         </span>
       </div>
-      <p className="mt-1 text-[11px] leading-5 text-fg-dim">{DOD_KIND_HINT[draft.kind]}</p>
+      <p className="mt-1 text-xs leading-5 text-fg-dim">{DOD_KIND_HINT[draft.kind]}</p>
 
-      <label className="mt-2 block text-[11px] text-fg-dim">
+      <label className="mt-2 block text-xs text-fg-dim">
         What has to be true <span className="text-fg-dim/60">— in your words, and what a reviewer is shown</span>
         <TextInput
           value={draft.text}
@@ -117,7 +117,7 @@ function CriterionForm({
 
       {draft.kind === "COMMAND" && (
         <>
-          <label className="mt-2 block text-[11px] text-fg-dim">
+          <label className="mt-2 block text-xs text-fg-dim">
             Command <span className="text-fg-dim/60">— run by this server, in the workspace, as your user</span>
             <TextInput
               value={draft.command}
@@ -126,8 +126,8 @@ function CriterionForm({
               onChange={(event) => setDraft({ ...draft, command: event.target.value })}
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-end gap-3 text-[11px] text-fg-dim">
-            <label className="text-[11px] text-fg-dim">
+          <div className="mt-2 flex flex-wrap items-end gap-3 text-xs text-fg-dim">
+            <label className="text-xs text-fg-dim">
               Directory <span className="text-fg-dim/60">— relative to the workspace</span>
               <TextInput value={draft.cwd} placeholder="(the workspace root)" onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} />
             </label>
@@ -203,9 +203,9 @@ function CriterionRow({
     <div className="border-t border-line py-2.5 first:border-t-0">
       <div className="flex flex-wrap items-center gap-2">
         {result !== null && <Badge tone={RESULT_TONE[result.result]}>{RESULT_LABEL[result.result]}</Badge>}
-        <span className="text-[13px] text-fg">{criterion.text}</span>
-        {!criterion.required && <span className="text-[10px] text-fg-dim" title="Checked and reported, but it never stops a close.">optional</span>}
-        <span className="text-[10px] text-fg-dim">{DOD_KIND_LABEL[criterion.kind]}</span>
+        <span className="text-sm text-fg">{criterion.text}</span>
+        {!criterion.required && <span className="text-xs text-fg-dim" title="Checked and reported, but it never stops a close.">optional</span>}
+        <span className="text-xs text-fg-dim">{DOD_KIND_LABEL[criterion.kind]}</span>
         {editable && (
           <div className="ml-auto flex gap-1">
             <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
@@ -222,14 +222,14 @@ function CriterionRow({
       </div>
 
       {criterion.command !== null && (
-        <code className="mt-1 block break-all font-mono text-[11px] text-fg-muted">
+        <code className="mt-1 block break-all font-mono text-xs text-fg-muted">
           {criterion.cwd === null ? "" : `${criterion.cwd}$ `}{criterion.command}
           {criterion.expectExitCode !== 0 && <span className="text-fg-dim"> (expects exit {criterion.expectExitCode})</span>}
         </code>
       )}
 
       {result !== null && (
-        <div className="mt-1 text-[11px] text-fg-dim">
+        <div className="mt-1 text-xs text-fg-dim">
           {result.evidence}
           {result.source !== null && <span> · {SOURCE_LABEL[result.source] ?? result.source}</span>}
           {result.createdAt !== null && <span> · {new Date(result.createdAt).toLocaleString("en-GB", { hour12: false })}</span>}
@@ -243,7 +243,7 @@ function CriterionRow({
         </div>
       )}
       {showOutput && result !== null && (
-        <pre className="mt-1 max-h-64 overflow-auto rounded border border-line bg-surface-2 p-2 font-mono text-[11px] leading-5 text-fg-muted">{result.output}</pre>
+        <pre className="mt-1 max-h-64 overflow-auto rounded border border-line bg-surface-2 p-2 font-mono text-xs leading-5 text-fg-muted">{result.output}</pre>
       )}
     </div>
   );
@@ -303,7 +303,7 @@ export function DefinitionOfDonePanel({
     }
   };
 
-  if (definition === null) return <p className="text-[11px] text-fg-dim">Loading the definition of done…</p>;
+  if (definition === null) return <p className="text-xs text-fg-dim">Loading the definition of done…</p>;
 
   // Criteria are inherited whole from the nearest scope that has any, so
   // editing is only ever offered where they actually live. Anything else would
@@ -316,14 +316,14 @@ export function DefinitionOfDonePanel({
   return (
     <section className="rounded border border-line bg-surface-1 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">Definition of done</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">Definition of done</h3>
         {evaluation !== null && definition.criteria.length > 0 && (
           <Badge tone={evaluation.satisfied ? "success" : evaluation.blocking ? "danger" : "caution"}>
             {evaluation.satisfied ? "met" : evaluation.blocking ? "not met — this work item cannot close" : "not met"}
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-[11px] text-fg-dim" title="What happens when a required criterion does not pass. Inherits from Pipeline policy unless you say otherwise here.">
+          <label className="flex items-center gap-1.5 text-xs text-fg-dim" title="What happens when a required criterion does not pass. Inherits from Pipeline policy unless you say otherwise here.">
             If not met
             <Select
               value={definition.enforcement}
@@ -350,14 +350,14 @@ export function DefinitionOfDonePanel({
       </div>
 
       {inherited && definition.inheritedFrom !== null && (
-        <p className="mt-1 text-[11px] text-fg-dim">
+        <p className="mt-1 text-xs text-fg-dim">
           Inherited from {DOD_SCOPE_LABEL[definition.inheritedFrom.scope]}. Adding a criterion here gives this
           work item its own definition of done, which replaces the inherited one rather than adding to it.
         </p>
       )}
 
       {definition.criteria.length === 0 ? (
-        <p className="mt-2 text-[11px] leading-5 text-fg-dim">
+        <p className="mt-2 text-xs leading-5 text-fg-dim">
           Nothing is defined, so nothing is checked and a work item closes on whatever the agent or the
           reviewer says. Add a command and that stops being true.
         </p>

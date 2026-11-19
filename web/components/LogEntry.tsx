@@ -13,7 +13,7 @@ function clock(timestamp: string): string {
 
 function Gutter({ item, streaming = false }: { item: LogItem; streaming?: boolean }) {
   return (
-    <div className="flex w-[232px] shrink-0 items-center gap-2 pt-px text-[10px] text-fg-dim">
+    <div className="flex w-[232px] shrink-0 items-center gap-2 pt-px text-xs text-fg-dim">
       <span className="tabular-nums">{clock(item.timestamp)}</span>
       <AgentAvatar
         provider={item.provider}
@@ -52,6 +52,15 @@ function DatabaseIcon({ className = "" }: { className?: string }) {
       <path d="M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1" fill="none" stroke="currentColor" strokeWidth="1.3" />
     </svg>
   );
+}
+
+/** What happened to a `/btw` note, in the operator's terms. */
+export function btwDeliveryLabel(delivery: string | null, state: string): string {
+  if (state === "SUPERSEDED") return "not delivered — the run ended first";
+  if (state === "QUEUED") return delivery === "resume" ? "interrupting to deliver…" : "waiting for the agent to check in";
+  if (delivery === "native") return "delivered live";
+  if (delivery === "resume") return "delivered on resume";
+  return "picked up by the agent";
 }
 
 export function LogEntry({ item, streaming = false }: { item: LogItem; streaming?: boolean }) {
@@ -110,7 +119,7 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
             <span className="shrink-0 font-semibold text-fg-muted">{item.name}</span>
             <span className="truncate text-fg-muted">{item.summary}</span>
             {hasDetail && (
-              <span className="ml-auto shrink-0 pl-2 text-[10px] text-fg-dim">
+              <span className="ml-auto shrink-0 pl-2 text-xs text-fg-dim">
                 {expanded ? "▾" : "▸"}
               </span>
             )}
@@ -138,7 +147,7 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
           {!expanded && item.result !== null && item.result.summary !== "" && (
             <div
               className={[
-                "mt-1 truncate text-[11px]",
+                "mt-1 truncate text-xs",
                 failed ? "text-danger/80" : "text-fg-dim",
               ].join(" ")}
             >
@@ -159,13 +168,13 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
             <span>✗</span>
             <span className="break-words">{item.message}</span>
             {item.fatal && (
-              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-danger/70">
+              <span className="ml-auto shrink-0 text-xs uppercase tracking-wider text-danger/70">
                 fatal
               </span>
             )}
           </div>
           {item.detail !== null && item.detail !== "" && (
-            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-danger/70">
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-danger/70">
               {item.detail}
             </pre>
           )}
@@ -190,7 +199,7 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
       <div className="mt-1 flex gap-3">
         <Gutter item={item} />
         <div
-          className={`flex min-w-0 flex-1 items-center gap-1.5 rounded border-l-2 py-0.5 pl-2 text-[11px] ${
+          className={`flex min-w-0 flex-1 items-center gap-1.5 rounded border-l-2 py-0.5 pl-2 text-xs ${
             item.outcome === "rejected" ? "border-danger/50 bg-danger/5" : "border-accent/40 bg-accent/[0.04]"
           }`}
           title={`${item.method} ${item.operation} · ${item.httpStatus} · ${item.durationMs}ms`}
@@ -206,12 +215,12 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
               : item.summary}
           </span>
           {item.outcome === "replayed" && (
-            <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-fg-dim/60">
+            <span className="ml-auto shrink-0 text-xs uppercase tracking-wider text-fg-dim/60">
               replayed
             </span>
           )}
           {item.changed.length > 0 && item.outcome !== "replayed" && (
-            <span className="ml-auto shrink-0 text-[10px] text-fg-dim/60">
+            <span className="ml-auto shrink-0 text-xs text-fg-dim/60">
               {item.changed.join(" · ")}
             </span>
           )}
@@ -238,16 +247,16 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
           <button type="button" onClick={() => setExpanded((value) => !value)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
             <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-accent/10 text-xs text-accent">?</span>
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">{item.heading}</span>
-            <span className={answered ? "text-[10px] text-success" : "text-[10px] text-warning"}>
+            <span className={answered ? "text-xs text-success" : "text-xs text-warning"}>
               {answered && item.answeredAt !== null ? `answered ${clock(item.answeredAt)}` : "waiting"}
             </span>
-            <span className="text-[10px] text-fg-dim">{expanded ? "▾" : "▸"}</span>
+            <span className="text-xs text-fg-dim">{expanded ? "▾" : "▸"}</span>
           </button>
           {expanded && (
             <div className="space-y-3 border-t border-line px-3 py-3">
               {item.questions.map((question, index) => (
                 <div key={question.id} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-2 text-xs">
-                  <span className="numeric text-[10px] text-fg-dim">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="numeric text-xs text-fg-dim">{String(index + 1).padStart(2, "0")}</span>
                   <div>
                     <p className="whitespace-pre-wrap text-fg-muted">{question.prompt}</p>
                     {answered && (
@@ -265,6 +274,29 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
     );
   }
 
+  if (item.kind === "btw") {
+    const operator = item.direction === "OPERATOR";
+    return (
+      <div className="mt-3 flex gap-3">
+        <Gutter item={item} />
+        <div
+          className={[
+            "min-w-0 flex-1 rounded-panel border px-3 py-2",
+            operator ? "border-accent/40 bg-accent/5" : "border-line bg-surface-2",
+          ].join(" ")}
+        >
+          <div className="mb-1 flex items-center gap-2 text-xs text-fg-dim">
+            <span className={operator ? "text-accent" : theme.text}>{operator ? "You · btw" : "Agent reply"}</span>
+            {operator && item.state !== null && <span>· {btwDeliveryLabel(item.delivery, item.state)}</span>}
+          </div>
+          <div className="whitespace-pre-wrap break-words text-fg">{item.text}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (item.kind === "context") return <details className="my-2 text-xs text-fg-muted"><summary>Recorded conversation context</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap">{item.context}</pre></details>;
+
   const tone =
     item.state === "done"
       ? "text-success/80"
@@ -275,7 +307,7 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
   return (
     <div className="mt-3 flex gap-3">
       <Gutter item={item} />
-      <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px]">
+      <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
         <span className={tone}>■ {item.state}</span>
         <span className="text-fg-dim">· {formatElapsed(item.elapsedMs)}</span>
         {item.usage !== null && (
@@ -301,10 +333,10 @@ function Block({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[10px] uppercase tracking-wider text-fg-dim">{label}</div>
+      <div className="mb-1 text-xs uppercase tracking-wider text-fg-dim">{label}</div>
       <pre
         className={[
-          "max-h-72 overflow-auto rounded border px-2 py-1.5 text-[11px] leading-relaxed",
+          "max-h-72 overflow-auto rounded border px-2 py-1.5 text-xs leading-relaxed",
           "whitespace-pre-wrap break-words",
           tone === "error"
             ? "border-danger/20 bg-danger/5 text-danger/80"

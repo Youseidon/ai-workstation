@@ -1,16 +1,8 @@
-import { Suspense } from "react";
-import { TasksView } from "@/components/tasks/TasksView";
+import { redirect } from "next/navigation";
+import { legacyTarget, type SearchParams } from "@/lib/legacyRedirect";
 
-/**
- * `useSearchParams` makes the tree below it client-rendered, so it needs a
- * Suspense boundary. Reading the deep-link parameters this way — rather than
- * poking at `window.location` inside an effect — is what lets the view derive
- * its selection during render instead of correcting it afterwards.
- */
-export default function TasksPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-sm text-fg-dim">Loading tasks…</div>}>
-      <TasksView />
-    </Suspense>
-  );
+/** Tasks merged into Pipeline: the item (or suite) resolves to the pipeline that drives it, or to its suite view. */
+export default async function TasksRedirect({ searchParams }: { searchParams: Promise<SearchParams> }) {
+  const params = await searchParams;
+  redirect(Object.keys(params).length === 0 ? "/pipeline" : legacyTarget("/pipeline/open", params));
 }

@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentRequestMode, AgentRequestTarget, ProgramRecord, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 import { INSTRUCTION_FILE_NAMES } from "@agent-console/shared";
-import { cn } from "@/lib/cn";
 import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Spinner";
+import { ContentTitle } from "./shell/PageCanvas";
+import { SidebarCollection, SidebarEmpty, SidebarRow } from "./shell/SidebarCollection";
 import { useDialogs } from "./ui/Dialogs";
 import { useToast } from "./ui/Toast";
 import { AgentRequestModal } from "./workspaces/AgentRequestModal";
@@ -79,15 +80,22 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
 
   const { act, busy } = useAct(refresh);
 
-  const choose = async (id: number) => {
+  /** One selected workspace, shared with the sidebar's workspace switcher and every other section. */
+  const choose = (id: number) => {
     setSheet(null);
     setWorkspaceId(id);
-    try {
-      setTree(await workspaceApi.tree(serverUrl, id));
-    } catch (error) {
-      toast.error("Could not open workspace", error instanceof Error ? error.message : String(error));
-    }
   };
+
+  useEffect(() => {
+    if (globalWorkspaceId === null || items === null || tree?.id === globalWorkspaceId) return;
+    if (!items.some((item) => item.id === globalWorkspaceId)) return;
+    let cancelled = false;
+    workspaceApi
+      .tree(serverUrl, globalWorkspaceId)
+      .then((next) => { if (!cancelled) setTree(next); })
+      .catch((error: unknown) => { if (!cancelled) toast.error("Could not open workspace", error instanceof Error ? error.message : String(error)); });
+    return () => { cancelled = true; };
+  }, [globalWorkspaceId, items, tree?.id, serverUrl, toast]);
 
   const closeSheet = () => {
     setSheet(null);
@@ -140,85 +148,73 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const program = sheet?.kind === "program" ? tree?.programs.find((entry) => entry.id === sheet.programId) ?? null : null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-      <aside className="shrink-0 overflow-y-auto border-b border-line bg-surface-1 p-3 lg:w-64 lg:border-b-0 lg:border-r">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-fg-dim">Workspaces</span>
-          <Button size="sm" variant="secondary" onClick={() => setSheet({ kind: "create" })}>
-            + New
-          </Button>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <SidebarCollection
+        label="Workspaces"
+        tools={<button type="button" className="app-sidebar-new" onClick={() => setSheet({ kind: "create" })}><span aria-hidden>＋</span> New workspace</button>}
+      >
         {items === null ? (
-          <div className="space-y-2">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-          </div>
+          <SidebarEmpty><span role="status">Loading workspaces…</span></SidebarEmpty>
         ) : items.length === 0 ? (
-          <p className="text-xs leading-relaxed text-fg-dim">No workspaces yet.</p>
+          <SidebarEmpty>No workspaces yet.</SidebarEmpty>
         ) : (
-          <ul className="space-y-1">
-            {items.map((workspace) => (
-              <li key={workspace.id}>
-                <button
-                  type="button"
-                  onClick={() => void choose(workspace.id)}
-                  aria-current={tree?.id === workspace.id ? "true" : undefined}
-                  className={cn(
-                    "w-full rounded-md px-3 py-2 text-left transition-colors",
-                    tree?.id === workspace.id ? "bg-surface-3 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
-                  )}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-[13px]">{workspace.name}</span>
-                    {!workspace.workDirectoryExists && <Badge tone="danger">missing</Badge>}
-                  </span>
-                  <span className="mt-0.5 block truncate font-mono text-[10px] text-fg-dim">{workspace.workDirectory}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          items.map((workspace) => (
+            <SidebarRow
+              key={workspace.id}
+              onSelect={() => choose(workspace.id)}
+              selected={tree?.id === workspace.id}
+              title={workspace.name}
+              detail={<span className="font-mono">{workspace.workDirectory}</span>}
+              status={workspace.workDirectoryExists ? undefined : "Directory missing"}
+              statusTone="danger"
+            />
+          ))
         )}
-      </aside>
+      </SidebarCollection>
 
       <section className="min-w-0 flex-1 overflow-y-auto">
         {items !== null && tree === null ? (
           <EmptyWorkspaces onCreate={() => setSheet({ kind: "create" })} />
         ) : tree === null ? (
-          <div className="space-y-4 p-6">
+          <div className="space-y-4 px-5 pb-6 max-sm:px-4">
+            <ContentTitle className="-mx-5 max-sm:-mx-4" title="Workspaces" />
             <Skeleton className="h-20 w-full" />
             <Skeleton className="h-32 w-full" />
           </div>
         ) : (
-          <div className="mx-auto max-w-5xl space-y-8 p-5 sm:p-8">
-            <header className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0">
-                <h1 className="truncate text-xl font-semibold tracking-tight text-fg">{tree.name}</h1>
-                <p className="mt-1 flex min-w-0 items-center gap-2 font-mono text-[11px] text-fg-dim">
+          <div className="w-full space-y-8 px-5 pb-8 max-sm:px-4">
+            <ContentTitle
+              className="-mx-5 max-sm:-mx-4"
+              meta={
+                <span className="flex min-w-0 items-center gap-2 font-mono">
                   <FolderIcon className="size-3.5 shrink-0" />
-                  <span className="min-w-0 max-w-full truncate">{tree.workDirectory}</span>
+                  <span className="min-w-0 truncate">{tree.workDirectory}</span>
                   {!tree.workDirectoryExists && <Badge tone="danger">not found on disk</Badge>}
-                </p>
-                {tree.description.trim() !== "" && (
-                  <p className="mt-2 line-clamp-2 max-w-2xl text-xs leading-relaxed text-fg-muted" title={tree.description}>
-                    {tree.description}
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="secondary" iconLeft={<InboxIcon className="size-4" />} onClick={() => openProposals()}>
-                  Proposals
-                  {summary.pending > 0 && <Badge tone="info" className="ml-1.5">{summary.pending}</Badge>}
-                </Button>
-                <Button
-                  variant="secondary"
-                  iconLeft={<SparkIcon className="size-4 text-accent" />}
-                  onClick={() => setSheet({ kind: "request", target: { kind: "workspace" } })}
-                >
-                  Ask AI
-                </Button>
-                <Button variant="ghost" iconOnly aria-label="Workspace settings" title="Workspace settings" iconLeft={<GearIcon className="size-4" />} onClick={() => setSheet({ kind: "settings" })} />
-              </div>
-            </header>
+                </span>
+              }
+              title={tree.name}
+              actions={
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="secondary" iconLeft={<InboxIcon className="size-4" />} onClick={() => openProposals()}>
+                    Proposals
+                    {summary.pending > 0 && <Badge tone="info" className="ml-1.5">{summary.pending}</Badge>}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    iconLeft={<SparkIcon className="size-4 text-accent" />}
+                    onClick={() => setSheet({ kind: "request", target: { kind: "workspace" } })}
+                  >
+                    Ask AI
+                  </Button>
+                  <Button variant="ghost" iconOnly aria-label="Workspace settings" title="Workspace settings" iconLeft={<GearIcon className="size-4" />} onClick={() => setSheet({ kind: "settings" })} />
+                </div>
+              }
+            />
+            {tree.description.trim() !== "" && (
+              <p className="-mt-6 line-clamp-2 max-w-2xl text-sm leading-relaxed text-fg-muted" title={tree.description}>
+                {tree.description}
+              </p>
+            )}
 
             {!tree.workDirectoryExists && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-panel border border-danger/40 bg-danger/10 px-4 py-3 text-xs text-danger">
@@ -430,7 +426,7 @@ function EmptyWorkspaces({ onCreate }: { onCreate(): void }) {
   return (
     <div className="flex h-full min-h-[24rem] flex-col items-center justify-center p-8 text-center">
       <FolderIcon className="mb-3 size-10 text-fg-dim" />
-      <h2 className="text-base font-semibold text-fg">Create your first workspace</h2>
+      <h1 className="text-xl font-semibold text-fg">Create your first workspace</h1>
       <p className="mt-1 max-w-sm text-xs leading-relaxed text-fg-dim">
         A workspace points at a project directory. Agents read and write there, and its programs describe the work.
       </p>
@@ -451,11 +447,11 @@ function InstructionCard({ field, value, pending, onOpen }: { field: Instruction
       <DocumentIcon className="mt-0.5 size-5 shrink-0 text-accent" />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[13px] font-medium text-fg">{INSTRUCTION_FILE_NAMES[field]}</span>
+          <span className="font-mono text-sm font-medium text-fg">{INSTRUCTION_FILE_NAMES[field]}</span>
           {pending > 0 && <Badge tone="info">{pending} proposal{pending === 1 ? "" : "s"}</Badge>}
         </span>
-        <span className="mt-0.5 block text-[11px] text-fg-dim">{INSTRUCTION_HINTS[field]}</span>
-        <span className="mt-2 block truncate text-[11px] text-fg-muted">
+        <span className="mt-0.5 block text-xs text-fg-dim">{INSTRUCTION_HINTS[field]}</span>
+        <span className="mt-2 block truncate text-xs text-fg-muted">
           {lines === 0 ? <span className="italic text-fg-dim">Empty — click to write it</span> : `${lines} line${lines === 1 ? "" : "s"} · ${firstLine ?? ""}`}
         </span>
       </span>
@@ -474,14 +470,14 @@ function ProgramCard({ program, pending, onOpen }: { program: ProgramRecord; pen
     >
       <span className="flex items-start gap-2">
         <FolderIcon className="mt-0.5 size-4 shrink-0 text-info" />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{program.name}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{program.name}</span>
         {pending > 0 && <Badge tone="info">{pending} proposal{pending === 1 ? "" : "s"}</Badge>}
       </span>
-      <span className="mt-1.5 line-clamp-2 flex-1 text-[11px] leading-relaxed text-fg-dim">
+      <span className="mt-1.5 line-clamp-2 flex-1 text-xs leading-relaxed text-fg-dim">
         {program.overview.trim() === "" ? "No overview yet." : program.overview}
       </span>
       <span className="mt-3 block">
-        <span className="flex items-center justify-between text-[10px] tabular-nums text-fg-dim">
+        <span className="flex items-center justify-between text-xs tabular-nums text-fg-dim">
           <span>
             {progress.suites} suite{progress.suites === 1 ? "" : "s"} · {progress.total} item{progress.total === 1 ? "" : "s"}
             {progress.blocked > 0 && <span className="text-warning"> · {progress.blocked} blocked</span>}
@@ -491,7 +487,7 @@ function ProgramCard({ program, pending, onOpen }: { program: ProgramRecord; pen
         <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-surface-3" aria-hidden>
           <span className="block h-full rounded-full bg-success transition-[width]" style={{ width: `${percent}%` }} />
         </span>
-        <span className="mt-1.5 block text-[10px] text-fg-dim">Updated {formatDate(program.updatedAt)}</span>
+        <span className="mt-1.5 block text-xs text-fg-dim">Updated {formatDate(program.updatedAt)}</span>
       </span>
     </button>
   );

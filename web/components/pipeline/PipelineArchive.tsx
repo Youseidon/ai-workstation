@@ -44,14 +44,14 @@ export function PipelineArchive({
               )}
             >
               <div className="flex items-center justify-between gap-2">
-                <time className="text-[11px] numeric text-fg-muted" dateTime={run.startedAt}>
+                <time className="text-xs numeric text-fg-muted" dateTime={run.startedAt}>
                   {formatStamp(run.startedAt)}
                 </time>
                 <Badge tone={PIPELINE_TONE[run.state]} pulse={run.state === "PLAYING"}>
                   {PIPELINE_LABEL[run.state]}
                 </Badge>
               </div>
-              <div className="mt-1 text-[12px] text-fg-dim">
+              <div className="mt-1 text-xs text-fg-dim">
                 {current !== undefined
                   ? `at ${current.suiteName}`
                   : run.state === "COMPLETE"
@@ -74,7 +74,7 @@ function RunStages({ run }: { run: PipelineRunDetail }) {
       {run.stages.map((stage, index) => {
         const state: PipelineState | "pending" = stage.suiteRun?.state ?? "pending";
         return (
-          <li key={stage.suiteId} className="flex items-center gap-2 text-[11px]">
+          <li key={stage.suiteId} className="flex items-center gap-2 text-xs">
             <span className="numeric w-4 text-fg-dim">{index + 1}</span>
             <span className="min-w-0 flex-1 truncate text-fg-muted">{stage.suiteName}</span>
             <span
@@ -89,7 +89,7 @@ function RunStages({ run }: { run: PipelineRunDetail }) {
         );
       })}
       {run.stopReason !== null && run.stopReason !== "" && (
-        <li className="text-[11px] text-fg-dim">{run.stopReason.replaceAll("_", " ")}</li>
+        <li className="text-xs text-fg-dim">{run.stopReason.replaceAll("_", " ")}</li>
       )}
     </ol>
   );

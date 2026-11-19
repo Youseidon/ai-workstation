@@ -1,5 +1,5 @@
 import type {
-  AgentRequest, InstructionProposalRecord,
+  AgentRequest, InstructionProposalRecord, RunMessage,
   ProgramDraftBody, ProgramDraftRecord, ProgramDraftPreview,
   StatusDefinition, DefinitionOfDone, DodEvaluation, AgentSession, ApiErrorBody, HumanInputRequest, OperationsSnapshot, PipelineDashboard, PipelineFlowchartView, PipelineRecord, PipelineRun, PipelineRunDetail, PromptActivity, PromptOption, PromptPipelineRule, PromptRemark, PromptStatusEvent, ProviderId, RunChangeDetail, RunChangeSummary, RunFileDiff, SuiteVerificationContext, SuiteVerificationDetail, SuiteVerificationRecord, UsageReport, WorkspaceGitContext, WorkspaceRecord, WorkspaceTree } from "@agent-console/shared";
 
@@ -29,6 +29,19 @@ const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 export interface ProgramRevisionApplied { added:number; updated:number; removed:number; moved:number; newPromptIds:number[]; pipelineSteps:number }
 
 export const workspaceApi = {
+  threads(serverUrl:string,workspaceId:number,options:{query?:string;archived?:boolean;cursor?:string}={}) {
+    const params=new URLSearchParams();
+    if(options.query)params.set("q",options.query);
+    if(options.archived)params.set("archived","true");
+    if(options.cursor)params.set("cursor",options.cursor);
+    return request<import("@agent-console/shared").ChatThreadPage>(serverUrl,`/api/workspaces/${workspaceId}/threads?${params}`);
+  },
+  patchThread(serverUrl:string,workspaceId:number,threadId:string,patch:import("@agent-console/shared").ChatThreadPatch) {
+    return request<{thread:import("@agent-console/shared").ChatThread}>(serverUrl,`/api/workspaces/${workspaceId}/threads/${encodeURIComponent(threadId)}`,{method:"PATCH",...json(patch)}).then(r=>r.thread);
+  },
+  threadHistory(serverUrl:string,workspaceId:number,threadId:string,before?:string) {
+    return request<import("@agent-console/shared").ChatHistoryPage>(serverUrl,`/api/workspaces/${workspaceId}/threads/${encodeURIComponent(threadId)}/history${before ? `?before=${encodeURIComponent(before)}` : ""}`);
+  },
   async sessions(serverUrl:string){return (await request<{sessions:AgentSession[]}>(serverUrl,"/api/sessions")).sessions;},
   async session(serverUrl:string,runId:string){return (await request<{session:AgentSession}>(serverUrl,`/api/sessions/${encodeURIComponent(runId)}`)).session;},
   async changes(serverUrl:string,workspaceId:number){return (await request<{changes:RunChangeSummary[]}>(serverUrl,`/api/changes?workspace=${workspaceId}`)).changes;},
@@ -60,6 +73,7 @@ export const workspaceApi = {
   async list(serverUrl: string) { return (await request<{ workspaces: WorkspaceRecord[] }>(serverUrl, "/api/workspaces")).workspaces; },
   async gitContext(serverUrl: string, id: number) { return (await request<{ git: WorkspaceGitContext }>(serverUrl, `/api/workspaces/${id}/git-context`)).git; },
   async tree(serverUrl: string, id: number) { return (await request<{ workspace: WorkspaceTree }>(serverUrl, `/api/workspaces/${id}/tree`)).workspace; },
+  promptPreview(serverUrl:string,id:number){return request<{prompt:{id:number;title:string;content:string;externalKey:string|null;status:string}}>(serverUrl,`/api/prompts/${id}`).then(r=>r.prompt);},
   async prompts(serverUrl: string, id: number) { return (await request<{ prompts: PromptOption[] }>(serverUrl, `/api/workspaces/${id}/prompts`)).prompts; },
   create(serverUrl: string, value: unknown) { return request(serverUrl, "/api/workspaces", { method: "POST", ...json(value) }); },
   update(serverUrl: string, id: number, value: unknown) { return request(serverUrl, `/api/workspaces/${id}`, { method: "PATCH", ...json(value) }); },
@@ -97,6 +111,13 @@ export const workspaceApi = {
   startProgramRevision(serverUrl:string,programId:number,value:{goal:string;provider?:ProviderId;model?:string|null}){return request<{draft:ProgramDraftRecord;preview:ProgramDraftPreview;runId:string|null}>(serverUrl,`/api/programs/${programId}/revisions`,{method:"POST",...json(value)});},
   history(serverUrl:string,id:number){return request<{events:PromptStatusEvent[];remarks:PromptRemark[];runs:unknown[]}>(serverUrl,`/api/prompts/${id}/history`);},
   humanInput(serverUrl:string){return request<{requests:HumanInputRequest[]}>(serverUrl,"/api/prompts/human-input");},
+  /** Operator context for one work item, read first by every run of that item until it is DONE. */
+  briefings(serverUrl:string,id:number){return request<{briefings:PromptRemark[]}>(serverUrl,`/api/prompts/${id}/briefings`).then(r=>r.briefings);},
+  addBriefing(serverUrl:string,id:number,content:string){return request<{briefing:PromptRemark}>(serverUrl,`/api/prompts/${id}/briefings`,{method:"POST",...json({content})}).then(r=>r.briefing);},
+  removeBriefing(serverUrl:string,id:number,briefingId:number){return request<void>(serverUrl,`/api/prompts/${id}/briefings/${briefingId}`,{method:"DELETE"});},
+  /** `/btw` to a run that is already working. `interrupt` stops it and continues its session with the note (pipeline stations only). */
+  sendBtw(serverUrl:string,runId:string,value:{text:string;interrupt?:boolean}){return request<{message:RunMessage}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/btw`,{method:"POST",...json(value)}).then(r=>r.message);},
+  runMessages(serverUrl:string,runId:string){return request<{messages:RunMessage[];live:boolean;liveDelivery:boolean}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/messages`);},
   respond(serverUrl:string,id:number,content:string){return request<{remark:PromptRemark}>(serverUrl,`/api/prompts/${id}/human-response`,{method:"POST",...json({content})});},
   /** Operator override for work that is done but whose status write never landed. */
   completePrompt(serverUrl:string,id:number,verificationSummary:string,reason?:string){return request<{completed:boolean}>(serverUrl,`/api/prompts/${id}/complete`,{method:"POST",...json(reason===undefined?{verificationSummary}:{verificationSummary,reason})});},
@@ -116,7 +137,7 @@ export const workspaceApi = {
   updatePipeline(serverUrl:string,id:number,value:{name?:string;description?:string;suiteIds?:number[]}){return request<{pipeline:PipelineRecord}>(serverUrl,`/api/pipelines/${id}`,{method:"PATCH",...json(value)}).then(r=>r.pipeline);},
   removePipeline(serverUrl:string,id:number){return request<void>(serverUrl,`/api/pipelines/${id}`,{method:"DELETE"});},
   pipelineRuns(serverUrl:string,id:number){return request<{runs:PipelineRunDetail[]}>(serverUrl,`/api/pipelines/${id}/runs`).then(r=>r.runs);},
-  playPipeline(serverUrl:string,id:number,value:{provider?:ProviderId|null;model?:string|null}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/play`,{method:"POST",...json(value)}).then(r=>r.run);},
+  playPipeline(serverUrl:string,id:number,value:{provider?:ProviderId|null;model?:string|null;briefing?:{promptId:number;content:string}}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/play`,{method:"POST",...json(value)}).then(r=>r.run);},
   pausePipeline(serverUrl:string,id:number){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/pause`,{method:"POST",...json({})}).then(r=>r.run);},
   stopPipeline(serverUrl:string,id:number){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/stop`,{method:"POST",...json({})}).then(r=>r.run);},
 };

@@ -48,13 +48,13 @@ export function SpendMap({ usd }: { usd: number }) {
   const { providers } = useAgentConsole();
   const models = useModelSelection(providers);
   if (usd <= 0) {
-    return <p className="mt-2 text-[11px] text-warning/90">No spend cap. Runs are held only by the time and tool-call limits.</p>;
+    return <p className="mt-2 text-xs text-warning/90">No spend cap. Runs are held only by the time and tool-call limits.</p>;
   }
   const shares = spendShares(usd, providers, models.resolve);
   if (shares.length === 0) return null;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-      <span className="text-[10px] uppercase tracking-wider text-fg-dim">buys</span>
+      <span className="text-xs uppercase tracking-wider text-fg-dim">buys</span>
       {shares.map((share) => (
         <span
           key={share.provider}
@@ -63,13 +63,13 @@ export function SpendMap({ usd }: { usd: number }) {
               ? `${share.label}: no list price to convert with`
               : `${share.label} · ${share.model ?? "default model"} · $${share.rate}/M input tokens`
           }
-          className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset", providerTheme[share.provider].chip)}
+          className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs ring-1 ring-inset", providerTheme[share.provider].chip)}
         >
           <span>{share.label}</span>
           <span className="font-mono font-semibold tabular-nums">{share.tokens === null ? "—" : compactTokens(share.tokens)}</span>
         </span>
       ))}
-      <span className="text-[10px] text-fg-dim">input tokens</span>
+      <span className="text-xs text-fg-dim">input tokens</span>
     </div>
   );
 }

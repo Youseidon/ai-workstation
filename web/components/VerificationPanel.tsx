@@ -58,7 +58,7 @@ function when(iso: string): string {
  * reads persisted records rather than in-page state, and survives reload,
  * navigation and restart.
  *
- * On the Tasks page the verify/audit buttons live on SuiteHeader; this panel
+ * When a parent owns the verify/audit actions (the board menu), this panel
  * collapses to a one-line verdict and expands for history and reports.
  */
 export function VerificationPanel({
@@ -75,7 +75,7 @@ export function VerificationPanel({
   provider: Parameters<ReturnType<typeof useAgentConsole>["verifySuite"]>[1];
   model: string | null;
   workspaceBusy: boolean;
-  /** Start collapsed to a one-line verdict summary (Tasks page). */
+  /** Start collapsed to a one-line verdict summary. */
   defaultCollapsed?: boolean;
   /** Hide built-in verify/audit buttons when a parent owns those actions. */
   hideActions?: boolean;
@@ -282,7 +282,7 @@ export function VerificationPanel({
           aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <span aria-hidden className="text-[9px] text-fg-dim">
+          <span aria-hidden className="text-xs text-fg-dim">
             {collapsed ? "▸" : "▾"}
           </span>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Verification</h3>
@@ -362,7 +362,7 @@ export function VerificationPanel({
 
                     {changes.length > 0 && (
                       <div className="rounded-md border border-line bg-surface-2 p-3">
-                        <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
+                        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">
                           Changed since the previous verification
                         </div>
                         <ul className="space-y-1 text-xs">
@@ -385,14 +385,14 @@ export function VerificationPanel({
                         {shown.items.map((item, index) => (
                           <li key={`${item.promptKey ?? item.title}-${index}`} className="bg-surface-2 p-3">
                             <div className="flex flex-wrap items-start justify-between gap-2">
-                              <span className="text-[13px] text-fg">
+                              <span className="text-sm text-fg">
                                 {item.promptKey !== null && (
                                   <span className="mr-1.5 font-semibold text-fg-muted">{item.promptKey}</span>
                                 )}
                                 {item.title}
                                 {item.promptId === null && (
                                   <span
-                                    className="ml-2 text-[10px] text-fg-dim"
+                                    className="ml-2 text-xs text-fg-dim"
                                     title="The agent named an item that does not match a work item in this suite"
                                   >
                                     unmatched
@@ -404,7 +404,7 @@ export function VerificationPanel({
                               </Badge>
                             </div>
                             {item.commands !== "" && (
-                              <p className="mt-1.5 font-terminal text-[11px] text-fg-dim">$ {item.commands}</p>
+                              <p className="mt-1.5 font-terminal text-xs text-fg-dim">$ {item.commands}</p>
                             )}
                             {item.evidence !== "" && (
                               <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-fg-muted">
@@ -456,8 +456,8 @@ export function VerificationPanel({
               </div>
 
               {/* History ------------------------------------------------------- */}
-              <aside className="min-w-0">
-                <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">
+              <section aria-label="Verification history" className="min-w-0">
+                <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">
                   History · {history.length}
                 </div>
                 <ul className="space-y-1.5">
@@ -478,9 +478,9 @@ export function VerificationPanel({
                           <Badge tone={record.verdict === null ? "info" : VERDICT_TONE[record.verdict]}>
                             {record.verdict ?? record.state}
                           </Badge>
-                          <span className="text-[10px] text-fg-dim">{when(record.startedAt)}</span>
+                          <span className="text-xs text-fg-dim">{when(record.startedAt)}</span>
                         </div>
-                        <div className="mt-1 truncate text-[11px] text-fg-muted">
+                        <div className="mt-1 truncate text-xs text-fg-muted">
                           {record.kind === "AGENT"
                             ? `agent · ${record.provider ?? "?"}`
                             : "record audit"}
@@ -489,7 +489,7 @@ export function VerificationPanel({
                     </li>
                   ))}
                 </ul>
-              </aside>
+              </section>
             </div>
           )}
         </>
@@ -507,7 +507,7 @@ function VerdictBanner({ record }: { record: SuiteVerificationRecord }) {
   return (
     <div
       className={cn(
-        "holo rounded-md border p-4",
+        "rounded-md border p-4",
         tone === "success" && "border-success/40 bg-success/5",
         tone === "warning" && "border-warning/40 bg-warning/5",
         tone === "danger" && "border-danger/40 bg-danger/5",
@@ -546,7 +546,7 @@ function VerdictBanner({ record }: { record: SuiteVerificationRecord }) {
       </div>
 
       {record.stats !== null && (
-        <p className="mt-3 text-[10px] text-fg-dim">
+        <p className="mt-3 text-xs text-fg-dim">
           Dossier: {record.stats.workItems} work items · {record.stats.uniqueCommands} deduplicated commands ·{" "}
           {record.stats.dossierCharacters.toLocaleString()} context chars from{" "}
           {record.stats.sourceCharacters.toLocaleString()} source chars
@@ -578,7 +578,7 @@ function Disclosure({
           aria-expanded={open}
           className="flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
         >
-          <span aria-hidden className="text-[9px]">
+          <span aria-hidden className="text-xs">
             {open ? "▾" : "▸"}
           </span>
           {label}

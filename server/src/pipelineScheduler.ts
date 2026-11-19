@@ -1,10 +1,11 @@
-import { classifyFailure, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type SuitePipelineRun } from "@agent-console/shared";
+import { classifyFailure, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type RunMessage, type SuitePipelineRun } from "@agent-console/shared";
 import { detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { clearCooling, cooling, isCooling, markCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
+import { setResumeRequester } from "./runMessages.ts";
 import { settings } from "./settings.ts";
 import type { StartExecuteArgs } from "./runService.ts";
 import { WorkspaceError, workspaces } from "./workspaces.ts";
@@ -203,7 +204,49 @@ type StartStationOpts = {
    * only when a cold Play must fail hard (unused today).
    */
   onExhausted?: "park" | "terminate";
+  /** "Interrupt & deliver now": continue the interrupted provider session with the operator's note. */
+  redirect?: PendingRedirect;
 };
+
+/** A `/btw` the operator chose not to wait for: the run is being interrupted to deliver it. */
+interface PendingRedirect {
+  messageId: number;
+  text: string;
+  provider: ProviderId;
+  sessionId: string | null;
+}
+const redirects = new Map<string, PendingRedirect>();
+
+/**
+ * Stops a pipeline run so an operator note reaches it now rather than on the
+ * agent's next `agent-step` call. Only the rail's current run qualifies: the
+ * scheduler is what restarts it, and a run it does not own would just stop.
+ */
+async function interruptToDeliver(runId: string, message: RunMessage): Promise<void> {
+  const owner = workspaces.suitePipelineForRun(runId);
+  const run = runHub.get(runId);
+  if (owner === null || run === undefined || owner.state !== "PLAYING") {
+    throw new WorkspaceError(409, "btw_interrupt_pipeline_only", "Interrupt & deliver is for a running pipeline station. In Chat, stop the run and send your message as the next turn.");
+  }
+  redirects.set(runId, { messageId: message.id, text: message.text, provider: run.provider, sessionId: run.handle.sessionId() });
+  log.info(`btw interrupt run=${runId} message=${message.id}`);
+  await runHub.stop(runId);
+}
+setResumeRequester(interruptToDeliver);
+
+/** Shows the delivered note at the top of the run that carries it. */
+function announceRedirect(runId: string, redirect: PendingRedirect, resumed: boolean): void {
+  const live = runHub.get(runId);
+  if (live === undefined) return;
+  const event = {
+    id: newId("evt"), runId, provider: live.provider, model: live.model, timestamp: new Date().toISOString(),
+    type: "operator_message" as const,
+    payload: { messageId: redirect.messageId, text: redirect.text, delivery: "resume" as const, state: "DELIVERED" as const },
+  };
+  workspaces.recordAgentEvent(runId, event);
+  runHub.event(runId, event);
+  log.info(`btw delivered message=${redirect.messageId} run=${runId} ${resumed ? "resumed-session" : "fresh-run-briefing"}`);
+}
 
 async function startCurrentStation(
   pipeline: SuitePipelineRun,
@@ -259,13 +302,23 @@ async function startCurrentStation(
   tried.add(target.provider);
   workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: null });
   try {
+    // The same provider can pick its interrupted session back up; any other
+    // starts fresh, so the note goes in as a briefing at the top of the prompt.
+    const redirect = opts.redirect;
+    const resumable = redirect !== undefined && redirect.sessionId !== null && redirect.provider === target.provider;
+    if (redirect !== undefined && !resumable) workspaces.addPromptBriefing(promptId, { content: redirect.text });
     const { runId } = await startStationFn({
       workspaceId: live.workspaceId,
       provider: target.provider,
       model: target.model,
       promptId,
       pipelineRunId: live.id,
+      ...(resumable ? { redirect: { sessionId: redirect.sessionId!, text: redirect.text } } : {}),
     });
+    if (redirect !== undefined) {
+      workspaces.settleRunMessage(redirect.messageId, "QUEUED", "DELIVERED");
+      announceRedirect(runId, redirect, resumable);
+    }
     ruleByRun.set(runId, rule);
     const updated = workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: runId });
     await syncNamedFromSuite(updated);
@@ -521,6 +574,35 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
   ruleByRun.delete(runId);
   const trigger = workspaces.latestStatusTrigger(promptId);
 
+  const redirect = redirects.get(runId);
+  redirects.delete(runId);
+  if (redirect !== undefined) {
+    if (posted.status === "DONE" || posted.status === "SKIPPED") {
+      // It finished before the interrupt landed; the note has nothing to change.
+      workspaces.settleRunMessage(redirect.messageId, "QUEUED", "SUPERSEDED");
+    } else {
+      // An operator-ordered stop is not an unfinished ending: it spends no
+      // allowance, and the next run continues the same session where it can.
+      workspaces.queueContinuation(promptId, {
+        attempt: workspaces.continuationCount(promptId) + 1,
+        of: settings.pipelinePolicy.maxContinuations,
+        cause: "The operator interrupted the run to send a message.",
+        previousRunId: runId,
+        writeSystemRemark: !workspaces.runHasContinuationRemark(promptId, runId),
+        countsTowardAllowance: false,
+      });
+      const updated = workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: null });
+      if (updated.state === "PAUSED") {
+        // No run is coming to read it now, so keep it with the step.
+        workspaces.addPromptBriefing(promptId, { content: redirect.text });
+        workspaces.settleRunMessage(redirect.messageId, "QUEUED", "DELIVERED");
+        return;
+      }
+      await startCurrentStation(updated, promptId, { onExhausted: "park", redirect });
+      return;
+    }
+  }
+
   // Sub-step DONE/SKIPPED never applies the parent's onDone (stop / skip_rest);
   // that policy is reserved for the station itself finishing.
   const parentId = workspaces.parentPromptId(promptId);
@@ -700,12 +782,33 @@ function notReadyReason(
   return `${label} is not ready to run.`;
 }
 
+/**
+ * "Run with context": the operator's note for one station, written before the
+ * play so the station's first run already has it at the top of its prompt.
+ * Refused while that station's run is live — a note the running agent will not
+ * read until its next run is a `/btw`, and the UI offers that instead.
+ */
+function applyPlayBriefing(workspaceId: number, body: Record<string, unknown>): void {
+  const briefing = body.briefing;
+  if (briefing === undefined || briefing === null) return;
+  if (typeof briefing !== "object" || Array.isArray(briefing)) throw new WorkspaceError(422, "validation_error", "briefing must be an object");
+  const { promptId, content } = briefing as Record<string, unknown>;
+  if (typeof promptId !== "number" || !Number.isSafeInteger(promptId) || promptId <= 0) throw new WorkspaceError(422, "validation_error", "briefing.promptId must be a work item id");
+  workspaces.resolvePrompt(workspaceId, promptId);
+  const live = runHub.activeForWorkspace(workspaceId);
+  if (live !== undefined && "promptId" in live.source && live.source.promptId === promptId) {
+    throw new WorkspaceError(409, "prompt_run_active", "That station is running now. Stop it and rerun with this context, or send it to the running agent with /btw.");
+  }
+  workspaces.addPromptBriefing(promptId, { content });
+}
+
 async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> = {}): Promise<SuitePipelineRun> {
   const suite = workspaces.suiteHeader(suiteId);
   const workspace = workspaces.get(suite.workspaceId);
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
   }
+  applyPlayBriefing(suite.workspaceId, body);
   const namedRunId = optionalNamedPipelineRunId(body);
   const namedPipelineId = namedRunId === null ? undefined : workspaces.namedPipelineRunById(namedRunId)?.pipelineId;
   if (workspaces.enabledPipelineSteps(suiteId, namedPipelineId).length === 0) {
@@ -928,6 +1031,7 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
   }
+  applyPlayBriefing(pipeline.workspaceId, body);
   if (pipeline.stages.length === 0) {
     throw new WorkspaceError(422, "empty_pipeline", "Add at least one suite before playing this pipeline");
   }

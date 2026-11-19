@@ -1,5 +1,6 @@
 "use client";
 
+import { settleAcceptedRequest } from "./chatSubmission";
 import {
   createContext,
   useCallback,
@@ -27,7 +28,7 @@ import type {
   WorkspaceRecord,
 } from "@agent-console/shared";
 import { mergeUsage } from "@agent-console/shared";
-import { appendPrompt, applyEvent, type LogItem } from "./log";
+import { appendPrompt, applyEvent, type LogItem, type PromptWorkItem } from "./log";
 import { SERVER_URL } from "./serverUrl";
 
 export type ConnectionState = "connecting" | "open" | "disconnected";
@@ -52,6 +53,7 @@ export interface PendingLaunch {
   requestId: string;
   tabId: string;
   role: RunRole;
+  prompt: string;
 }
 
 export interface PendingAgentInput extends AgentInputRequestPayload {
@@ -79,7 +81,7 @@ interface ConsoleState {
   /** Provider session announced by each run, retained across reconnect replay. */
   runSessionIds: Record<string, string>;
   /** Provider-native conversations retained independently in each work tab. */
-  tabSessions: Record<string, Partial<Record<ProviderId, { sessionId: string; workspaceId: number }>>>;
+  tabSessions: Record<string, Partial<Record<ProviderId, { sessionId: string; workspaceId: number; startedAt?: string }>>>;
   /** Last completed research run in each browser-local work tab. */
   lastConsultsByTab: Record<string, RunStatus>;
   /** Requests accepted by the socket that have not produced a run yet. */
@@ -100,6 +102,7 @@ type Action =
   | { type: "launch_send_failed"; requestId: string }
   | { type: "dismiss_launch_failure"; tabId: string }
   | { type: "claim_workspace"; workspaceId: number; tabId: string }
+  | { type: "claim_run"; runId: string; tabId: string }
   | { type: "restore_thread"; tabId: string; sessions: AgentSession[] }
   | { type: "clear"; workspaceId?: number; tabId?: string };
 
@@ -147,6 +150,13 @@ function replayInputRequests(base: Record<string, PendingAgentInput>, events: No
 }
 
 /** The transcript line that stands in for a run's instruction. */
+/** Runs given a saved work item link to it, so its markdown can be previewed. */
+function sourceWorkItem(source: RunSource): PromptWorkItem | undefined {
+  return source.type === "saved" || source.type === "wrapup"
+    ? { id: source.promptId, key: source.promptKey, title: source.title }
+    : undefined;
+}
+
 function sourceText(source: RunSource): string {
   switch (source.type) {
     case "custom":
@@ -278,6 +288,14 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
         }),
       };
 
+    case "claim_run": {
+      // "Open in Chat" from the pipeline: the run's own tab takes it even if
+      // another tab adopted it first, so the conversation lands where the link
+      // pointed.
+      if (state.runTabIds[action.runId] === action.tabId) return state;
+      return { ...state, runTabIds: { ...state.runTabIds, [action.runId]: action.tabId } };
+    }
+
     case "claim_workspace": {
       const runTabIds = { ...state.runTabIds };
       const tabSessions = { ...state.tabSessions };
@@ -291,7 +309,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           if (run?.role === "execute" && run.source.type === "custom" && sessionId !== undefined) {
             tabSessions[action.tabId] = {
               ...tabSessions[action.tabId],
-              [run.provider]: { sessionId, workspaceId: action.workspaceId },
+              [run.provider]: { sessionId, workspaceId: action.workspaceId, startedAt:run.startedAt },
             };
           }
         }
@@ -322,11 +340,12 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       for (const session of ordered) {
         runWorkspaceIds[session.id] = session.workspaceId;
         runTabIds[session.id] = action.tabId;
-        if (session.providerSessionId !== null) {
+        if (session.providerSessionId !== null && session.role === "execute" && (providerSessions[session.provider as ProviderId]?.startedAt ?? "") <= session.startedAt) {
           runSessionIds[session.id] = session.providerSessionId;
           providerSessions[session.provider as ProviderId] = {
             sessionId: session.providerSessionId,
             workspaceId: session.workspaceId,
+            startedAt: session.startedAt,
           };
         }
         if (liveIds.has(session.id)) continue;
@@ -344,6 +363,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       return {
         ...state,
         items: restored,
+        consultIds: [...new Set([...state.consultIds, ...ordered.filter(session => session.role === "consult").map(session => session.id)])],
         runWorkspaceIds,
         runTabIds,
         runSessionIds,
@@ -368,6 +388,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
               provider: snapshot.provider,
               model: snapshot.model,
               text: sourceText(snapshot.source),
+              workItem: sourceWorkItem(snapshot.source),
               timestamp: snapshot.startedAt,
             });
             for (const event of snapshot.events) replayed = applyEvent(replayed, event);
@@ -378,6 +399,8 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           for (const snapshot of message.activeRuns) inputRequests = replayInputRequests(inputRequests, snapshot.events);
           return {
             ...state,
+            pendingLaunches: [],
+            launchFailuresByTab: state.pendingLaunches.reduce((failures, launch) => message.activeRuns.some(run => run.clientRequestId === launch.requestId) ? failures : { ...failures, [launch.tabId]: "Acceptance could not be confirmed after reconnect. Check Activity before explicitly retrying; the draft is retained." }, state.launchFailuresByTab),
             providers: message.providers,
             items: [...finished, ...replayed],
             runs: message.activeRuns.map(toRunStatus),
@@ -422,9 +445,8 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           const role = message.role ?? "execute";
           const ownerTabId = action.tabId
             ?? (message.source.type === "custom" ? message.source.threadId : undefined);
-          const pendingLaunches = action.requestId === undefined
-            ? state.pendingLaunches
-            : state.pendingLaunches.filter((launch) => launch.requestId !== action.requestId);
+          const acceptedRequestId = message.clientRequestId ?? action.requestId;
+          const pendingLaunches = settleAcceptedRequest(state.pendingLaunches, acceptedRequestId);
           const launchFailuresByTab = { ...state.launchFailuresByTab };
           if (action.tabId !== undefined) delete launchFailuresByTab[action.tabId];
           // `hello` may already have replayed this run; still settle its pending request.
@@ -440,6 +462,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
               provider: message.provider,
               model: message.model,
               text: sourceText(message.source),
+              workItem: sourceWorkItem(message.source),
             }),
             runs: [
               ...state.runs,
@@ -526,7 +549,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
                   ...state.tabSessions,
                   [tabId]: {
                     ...state.tabSessions[tabId],
-                    [current.provider]: { sessionId: announcedSession, workspaceId: current.workspace.id },
+                    [current.provider]: { sessionId: announcedSession, workspaceId: current.workspace.id, startedAt:current.startedAt },
                   },
                 },
           };
@@ -568,7 +591,7 @@ const RECONNECT_MAX_MS = 5000;
 interface AgentConsoleApi extends ConsoleState {
   /**
    * The execute writer for single-run UI. Prefer execute so a consult cannot
-   * hide a writer; TopBar falls back for consult-only.
+   * hide a writer; the shell attention summary counts consult-only runs.
    */
   run: RunStatus | null;
   /** Transcript lines belonging to one run. */
@@ -583,6 +606,7 @@ interface AgentConsoleApi extends ConsoleState {
     source: { prompt: string } | { promptId: number },
     model: string | null,
     tabId?: string,
+    freshContext?: boolean,
   ): boolean;
   startConsult(
     workspaceId: number,
@@ -590,6 +614,7 @@ interface AgentConsoleApi extends ConsoleState {
     source: { prompt: string } | { promptId: number } | { prompt: string; promptId: number },
     model: string | null,
     tabId?: string,
+    freshContext?: boolean,
   ): boolean;
   askClarification(
     workspaceId: number,
@@ -609,6 +634,8 @@ interface AgentConsoleApi extends ConsoleState {
   /** Rebuild a persisted custom conversation in its original Chat tab. */
   restoreThread(tabId: string, sessions: AgentSession[]): void;
   claimWorkspaceRuns(tabId: string, workspaceId: number): void;
+  /** Moves one run into a tab (a pipeline run opened from its "Open in Chat" link). */
+  claimRun(tabId: string, runId: string): void;
   dismissLaunchFailure(tabId: string): void;
   refreshProviders(): Promise<void>;
 }
@@ -682,9 +709,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
           let requestId: string | undefined;
           if (message.kind === "run_started") {
             const index = pendingTabsRef.current.findIndex((pending) =>
-              pending.workspaceId === message.workspace.id
-              && pending.provider === message.provider
-              && pending.role === (message.role ?? "execute"));
+              pending.requestId === message.clientRequestId);
             if (index !== -1) {
               const pending = pendingTabsRef.current[index]!;
               tabId = pending.tabId;
@@ -736,7 +761,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
     const startOwnedRun = (message: Extract<ClientMessage, { kind: "run" }>, tabId?: string) => {
       const requestId = `launch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       if (tabId !== undefined) {
-        const launch = { requestId, tabId, role: message.role ?? "execute" };
+        const launch = { requestId, tabId, role: message.role ?? "execute", prompt: message.prompt ?? "Saved work item" };
         dispatch({ type: "launch_queued", launch });
         pendingTabsRef.current.push({
           workspaceId: message.workspaceId,
@@ -761,7 +786,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
       itemsForWorkspace: (workspaceId) =>
         state.items.filter((item) => state.runWorkspaceIds[item.runId] === workspaceId),
       itemsForTab: (tabId) => state.items.filter((item) => state.runTabIds[item.runId] === tabId),
-      startRun: (workspaceId, provider, source, model, tabId) =>
+      startRun: (workspaceId, provider, source, model, tabId, freshContext) =>
         startOwnedRun({
           kind: "run",
           workspaceId,
@@ -769,15 +794,16 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
           ...source,
           model,
           role: "execute",
-          ...(tabId !== undefined
+          freshContext,
+          ...(!freshContext && tabId !== undefined
             && "prompt" in source
             && state.tabSessions[tabId]?.[provider]?.workspaceId === workspaceId
             ? { resumeSessionId: state.tabSessions[tabId]![provider]!.sessionId }
             : {}),
           ...(tabId !== undefined && "prompt" in source ? { threadId: tabId } : {}),
         }, tabId),
-      startConsult: (workspaceId, provider, source, model, tabId) =>
-        startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "consult" }, tabId),
+      startConsult: (workspaceId, provider, source, model, tabId, freshContext) =>
+        startOwnedRun({ kind: "run", workspaceId, provider, ...source, model, role: "consult", freshContext, ...(tabId !== undefined && "prompt" in source && !("promptId" in source) ? { threadId: tabId } : {}) }, tabId),
       askClarification: (workspaceId, provider, promptId, question, model) =>
         send({ kind: "run", mode: "clarify", workspaceId, provider, promptId, question, model, role: "execute" }),
       verifySuite: (suiteId, provider, model, promptId) =>
@@ -793,6 +819,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
       clearTabLog: (tabId) => dispatch({ type: "clear", tabId }),
       restoreThread: (tabId, sessions) => dispatch({ type: "restore_thread", tabId, sessions }),
       claimWorkspaceRuns: (tabId, workspaceId) => dispatch({ type: "claim_workspace", tabId, workspaceId }),
+      claimRun: (tabId, runId) => dispatch({ type: "claim_run", tabId, runId }),
       dismissLaunchFailure: (tabId) => dispatch({ type: "dismiss_launch_failure", tabId }),
       refreshProviders,
     };

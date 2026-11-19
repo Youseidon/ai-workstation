@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
+import { createChatThreadStore } from "./chatThreads.ts";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { INSTRUCTION_CONTENT_MAX, INSTRUCTION_FILE_NAMES, isInstructionField, type InstructionProposalOrigin, type InstructionProposalRecord, type InstructionProposalState, type WorkspaceInstructionField } from "@agent-console/shared";
-import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, conversationTitle, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, conversationTitle, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunMessage, type RunMessageDelivery, type RunMessageState, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -1424,6 +1425,71 @@ if (afterThirtyNine < 40) {
   db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(40,?)").run(new Date().toISOString());
 }
 
+const afterForty = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterForty < 41) {
+  // `/btw`: messages between the operator and a run that is already working.
+  // A table rather than run events alone because an inbox message has a
+  // lifecycle (queued → delivered) that the agent's next shim call settles.
+  db.exec(`
+    CREATE TABLE run_message (
+      id INTEGER PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES agent_run(id) ON DELETE CASCADE,
+      direction TEXT NOT NULL CHECK(direction IN ('OPERATOR','AGENT')),
+      text TEXT NOT NULL,
+      delivery TEXT NOT NULL CHECK(delivery IN ('native','inbox','resume')),
+      state TEXT NOT NULL CHECK(state IN ('QUEUED','DELIVERED','SUPERSEDED')),
+      created_at TEXT NOT NULL,
+      delivered_at TEXT
+    );
+    CREATE INDEX run_message_run_idx ON run_message(run_id,id);
+  `);
+  db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(41,?)").run(new Date().toISOString());
+}
+
+const afterFortyOne = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterFortyOne < 42) {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE chat_thread (
+        thread_id TEXT NOT NULL,
+        workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        last_reply_at TEXT,
+        last_read_at TEXT,
+        PRIMARY KEY(workspace_id,thread_id)
+      );
+      CREATE INDEX chat_thread_list_idx ON chat_thread(workspace_id,archived,pinned DESC,updated_at DESC,thread_id DESC);
+      CREATE INDEX agent_run_workspace_thread_idx ON agent_run(workspace_id,thread_id,started_at,id);
+      CREATE TRIGGER chat_thread_insert AFTER INSERT ON agent_run WHEN NEW.thread_id IS NOT NULL BEGIN
+        INSERT INTO chat_thread(thread_id,workspace_id,title,updated_at)
+        VALUES(NEW.thread_id,NEW.workspace_id,COALESCE(NEW.thread_title,'Conversation'),NEW.started_at)
+        ON CONFLICT(workspace_id,thread_id) DO UPDATE SET updated_at=MAX(updated_at,excluded.updated_at);
+      END;
+      CREATE TRIGGER chat_thread_associate AFTER UPDATE OF thread_id ON agent_run WHEN NEW.thread_id IS NOT NULL BEGIN
+        INSERT INTO chat_thread(thread_id,workspace_id,title,updated_at)
+        VALUES(NEW.thread_id,NEW.workspace_id,COALESCE(NEW.thread_title,'Conversation'),NEW.started_at)
+        ON CONFLICT(workspace_id,thread_id) DO UPDATE SET updated_at=MAX(updated_at,excluded.updated_at);
+      END;
+      CREATE TRIGGER chat_thread_finished AFTER UPDATE OF ended_at ON agent_run WHEN NEW.thread_id IS NOT NULL AND NEW.ended_at IS NOT NULL BEGIN
+        UPDATE chat_thread SET updated_at=MAX(updated_at,NEW.ended_at) WHERE workspace_id=NEW.workspace_id AND thread_id=NEW.thread_id;
+      END;
+    `);
+    const rows = db.prepare(`SELECT thread_id id,workspace_id workspaceId,
+      MAX(COALESCE(ended_at,started_at)) updatedAt FROM agent_run WHERE thread_id IS NOT NULL GROUP BY workspace_id,thread_id`).all() as Array<{id:string;workspaceId:number;updatedAt:string}>;
+    const insert = db.prepare("INSERT INTO chat_thread(thread_id,workspace_id,title,updated_at,last_read_at) VALUES(?,?,?,?,?)");
+    for (const row of rows) {
+      const first = db.prepare("SELECT thread_title title,display_text prompt FROM agent_run WHERE workspace_id=? AND thread_id=? ORDER BY started_at,id LIMIT 1").get(row.workspaceId,row.id) as {title:string|null;prompt:string|null};
+      insert.run(row.id,row.workspaceId,first.title ?? conversationTitle(first.prompt ?? "Conversation"),row.updatedAt,row.updatedAt);
+    }
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(42,?)").run(new Date().toISOString());
+  })();
+}
+
+export const chatThreads = createChatThreadStore(db);
+
 /** Turns a suite_verification row plus its items into the wire shape. */
 function hydrateVerification(row:Record<string,unknown>):SuiteVerificationRecord {
   const id=row.id as number;
@@ -1756,6 +1822,12 @@ export interface AgentPromptContext {
    * last few PROGRESS/VERIFICATION notes. Never includes AGENT_RESPONSE.
    */
   stoppedRemarks:PromptRemark[];
+  /**
+   * Operator briefings for this work item only (OPERATOR_BRIEFING), written
+   * since it last reached DONE, oldest first. Rendered at the very top of the
+   * execute prompt; never carried to another work item.
+   */
+  briefings:PromptRemark[];
   dependencies:Array<{externalKey:string|null;title:string;status:PromptRecord["status"];result:string}>;
   gate:{code:string;name:string;description:string}|null;
   history:{remarks:PromptRemark[];events:PromptStatusEvent[]};
@@ -1908,14 +1980,19 @@ function clipDisplayText(value:string|null|undefined):string|null {
   return trimmed.length>DISPLAY_TEXT_LIMIT?trimmed.slice(0,DISPLAY_TEXT_LIMIT):trimmed;
 }
 
-const beginConsultTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null})=>{
+const beginConsultTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null;threadId?:string})=>{
   if(!db.prepare("SELECT 1 FROM workspace WHERE id=?").get(args.workspaceId))throw new WorkspaceError(404,"not_found","Workspace not found");
   if(args.promptId!==null){
     const prompt=db.prepare(`SELECT p.id FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.id=? AND g.workspace_id=?`).get(args.promptId,args.workspaceId);
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt was not found in this workspace");
   }
+  if(args.threadId){
+    const owner=db.prepare("SELECT workspace_id id FROM agent_run WHERE thread_id=? LIMIT 1").get(args.threadId) as {id:number}|undefined;
+    if(owner && owner.id!==args.workspaceId)throw new WorkspaceError(409,"thread_workspace_mismatch","Thread belongs to a different workspace");
+  }
   const now=new Date().toISOString();
   db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,display_text) VALUES(?,?,?,?,?,'STARTING',?,?,?,'consult',?)").run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,clipDisplayText(args.displayText));
+  if(args.threadId)db.prepare("UPDATE agent_run SET thread_id=?,thread_title=COALESCE((SELECT thread_title FROM agent_run WHERE thread_id=? AND thread_title IS NOT NULL LIMIT 1),?) WHERE id=?").run(args.threadId,args.threadId,conversationTitle(args.displayText??"Ask"),args.runId);
 });
 
 /** Chat-box execute: no work item, so no status transition and no per-prompt lock. */
@@ -2081,6 +2158,27 @@ function buildChildrenContext(promptId:number):AgentPromptChildSummary[] {
     }
     return{externalKey:row.externalKey,title:row.title,status:row.status,result:row.result};
   });
+}
+
+/** Upper bound on briefing text handed to one run, newest kept. */
+const BRIEFING_CONTEXT_MAX_BYTES=8*1024;
+
+/**
+ * Operator briefings still in force for a work item: those written after its
+ * most recent DONE, so a reopened item does not inherit notes about work that
+ * was already closed. Oldest first; trimmed from the oldest end to the cap.
+ */
+function activeBriefings(promptId:number):PromptRemark[] {
+  const lastDone=db.prepare("SELECT MAX(id) id FROM prompt_status_event WHERE prompt_id=? AND new_status='DONE'").get(promptId) as {id:number|null};
+  const doneAt=lastDone.id===null?null:(db.prepare("SELECT created_at createdAt FROM prompt_status_event WHERE id=?").get(lastDone.id) as {createdAt:string}).createdAt;
+  const rows=db.prepare(
+    `SELECT id,prompt_id promptId,run_id runId,kind,content,actor_type actorType,created_at createdAt
+     FROM prompt_remark WHERE prompt_id=? AND kind='OPERATOR_BRIEFING' AND (? IS NULL OR created_at>?)
+     ORDER BY id DESC`,
+  ).all(promptId,doneAt,doneAt) as PromptRemark[];
+  const kept:PromptRemark[]=[];let bytes=0;
+  for(const row of rows){bytes+=Buffer.byteLength(row.content,"utf8");if(kept.length>0&&bytes>BRIEFING_CONTEXT_MAX_BYTES)break;kept.push(row);}
+  return kept.reverse();
 }
 
 /**
@@ -3291,7 +3389,7 @@ function hydrateSession(row:SessionQueryRow, events:NormalizedEvent[]):AgentSess
   };
 }
 
-const SESSION_SELECT=`SELECT r.id,r.thread_id threadId,r.thread_title threadTitle,r.session_id providerSessionId,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt,pl.id pipelineId,pl.name pipelineName FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id ${RUN_PIPELINE_JOIN}`;
+const SESSION_SELECT=`SELECT r.id,r.thread_id threadId,COALESCE(t.title,r.thread_title) threadTitle,r.session_id providerSessionId,r.workspace_id workspaceId,w.name workspaceName,w.work_directory workDirectory,r.prompt_id promptId,p.external_key promptKey,p.title savedTitle,r.display_text displayText,p.status promptStatus,COALESCE(g.name,'') programName,COALESCE(s.name,'') suiteName,r.provider,r.model,r.role,r.state,r.started_at startedAt,r.ended_at endedAt,c.run_id changeRunId,c.workspace_id changeWorkspaceId,c.repository_root repositoryRoot,c.branch changeBranch,c.base_commit baseCommit,c.head_commit headCommit,c.state changeState,c.files_changed filesChanged,c.additions,c.deletions,c.commit_count commitCount,c.message changeMessage,c.captured_at capturedAt,c.updated_at changeUpdatedAt,pl.id pipelineId,pl.name pipelineName FROM agent_run r JOIN workspace w ON w.id=r.workspace_id LEFT JOIN chat_thread t ON t.workspace_id=r.workspace_id AND t.thread_id=r.thread_id LEFT JOIN prompt p ON p.id=r.prompt_id LEFT JOIN suite s ON s.id=p.suite_id LEFT JOIN program g ON g.id=s.program_id LEFT JOIN run_change_set c ON c.run_id=r.id ${RUN_PIPELINE_JOIN}`;
 
 export const workspaces = {
   databasePath,
@@ -3684,6 +3782,7 @@ export const workspaces = {
       children,
       verificationCommands,
       stoppedRemarks,
+      briefings:activeBriefings(promptId),
       dependencies,
       gate:gate??null,
       history:{remarks:[...history.remarks].reverse() as PromptRemark[],events:[...history.events].reverse() as PromptStatusEvent[]},
@@ -3719,6 +3818,12 @@ export const workspaces = {
     else { db.prepare(`UPDATE ${table} SET name=?,overview=?,updated_at=? WHERE id=?`).run(input.name===undefined?row.name:requireText(input.name,"name",120),input.overview===undefined?row.overview:requireText(input.overview,"overview",10000,true),now,id); }
     return db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
   })()); },
+  /** One work item's current text, for read-only previews (e.g. Activity). */
+  promptPreview(id:number):{id:number;title:string;content:string;externalKey:string|null;status:string} {
+    const row=db.prepare("SELECT id,title,content,external_key externalKey,status FROM prompt WHERE id=?").get(id) as {id:number;title:string;content:string;externalKey:string|null;status:string}|undefined;
+    if(!row)throw new WorkspaceError(404,"not_found","prompt not found");
+    return row;
+  },
   /** Newest first. The revision holds the text as it was *before* that edit. */
   promptRevisions(promptId:number):Array<Record<string,unknown>> {
     if(!db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId))throw new WorkspaceError(404,"not_found","Prompt not found");
@@ -4049,7 +4154,7 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.provider,args.model,now,args.tokenHash,args.expiresAt,clipDisplayText(args.displayText));
   }); },
   beginAgentRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole}):void { sqliteGuard(()=>beginRunTransaction(args)); },
-  beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
+  beginConsultRun(args:{runId:string;workspaceId:number;promptId:number|null;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText?:string|null;threadId?:string}):void { sqliteGuard(()=>beginConsultTransaction(args)); },
   beginCustomExecuteRun(args:{runId:string;workspaceId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;displayText:string;threadId?:string}):string { return sqliteGuard(()=>beginCustomExecuteTransaction({...args,threadId:args.threadId?.trim()||args.runId})); },
   beginRunChangeSet(args:{runId:string;workspaceId:number;repositoryRoot:string;branch:string|null;baseCommit:string}):RunChangeSummary {
     const now=new Date().toISOString();
@@ -4375,6 +4480,12 @@ export const workspaces = {
     `).all(runId,oldestId) as Array<{id:number;event_json:string}>;
     return [...olderDecisions,...rows.reverse()].map((row)=>JSON.parse(row.event_json) as NormalizedEvent);
   },
+  conversationHistory(workspaceId:number,threadId:string) {
+    const owner=db.prepare("SELECT workspace_id id FROM agent_run WHERE thread_id=? LIMIT 1").get(threadId) as {id:number}|undefined;
+    if(owner && owner.id!==workspaceId)throw new WorkspaceError(409,"thread_workspace_mismatch","Thread belongs to another workspace");
+    const rows=db.prepare("SELECT id,display_text prompt,provider,model,role,session_id sessionId FROM agent_run WHERE workspace_id=? AND thread_id=? ORDER BY started_at DESC,rowid DESC LIMIT 13").all(workspaceId,threadId) as Array<{id:string;prompt:string|null;provider:string;model:string|null;role:string;sessionId:string|null}>;
+    return rows.reverse().map(row=>({...row,events:this.runEvents(row.id,200)}));
+  },
   latestRunActivity(promptId:number):AgentRunActivity|null {
     const run=db.prepare("SELECT id,provider,model,role,state,started_at startedAt,ended_at endedAt FROM agent_run WHERE prompt_id=? ORDER BY started_at DESC LIMIT 1").get(promptId) as Omit<AgentRunActivity,"events">|undefined;
     if(!run)return null;
@@ -4389,6 +4500,15 @@ export const workspaces = {
   sessions():AgentSession[] {
     const rows=db.prepare(`${SESSION_SELECT} ORDER BY r.started_at DESC`).all() as SessionQueryRow[];
     return rows.map((run)=>hydrateSession(run, []));
+  },
+  chatThreadHistory(workspaceId:number,threadId:string,before?:string) {
+    chatThreads.get(workspaceId,threadId);
+    const cursor = before ? db.prepare("SELECT started_at startedAt,id FROM agent_run WHERE workspace_id=? AND thread_id=? AND id=?").get(workspaceId,threadId,before) as {startedAt:string;id:string}|undefined : undefined;
+    if (before && !cursor) throw new WorkspaceError(400,"invalid_cursor","History cursor is not in this conversation");
+    const rows = db.prepare(`${SESSION_SELECT} WHERE r.workspace_id=? AND r.thread_id=? ${cursor ? "AND (r.started_at,r.id)<(?,?)" : ""} ORDER BY r.started_at DESC,r.id DESC LIMIT 13`)
+      .all(workspaceId,threadId,...(cursor ? [cursor.startedAt,cursor.id] : [])) as SessionQueryRow[];
+    const page = rows.slice(0,12);
+    return {sessions:page.reverse().map(row=>hydrateSession(row,this.runEvents(row.id))),next:rows.length>12 ? page[0]!.id : null};
   },
   /** One session with a capped transcript, for the Activity detail pane. */
   sessionById(runId:string):AgentSession|null {
@@ -4663,6 +4783,10 @@ export const workspaces = {
   recordAgentEvent(runId:string,event:NormalizedEvent):void {
     if(event.type==="status"&&event.payload.state==="running")return;
     db.prepare("INSERT INTO agent_run_event(run_id,event_json,created_at) VALUES(?,?,?)").run(runId,JSON.stringify(event),event.timestamp);
+    if (event.type === "assistant_text" && event.payload.kind === "message" || event.type === "input_request" || event.type === "result") {
+      db.prepare(`UPDATE chat_thread SET last_reply_at=MAX(COALESCE(last_reply_at,''),?),updated_at=MAX(updated_at,?)
+        WHERE (workspace_id,thread_id)=(SELECT workspace_id,thread_id FROM agent_run WHERE id=?)`).run(event.timestamp,event.timestamp,runId);
+    }
   },
   /**
    * Per-run event counts for retention. Only `agent_run_event` is ever swept —
@@ -4711,6 +4835,49 @@ export const workspaces = {
   clarifications(promptId:number):ClarificationExchange[] { return db.prepare("SELECT id,prompt_id promptId,question,answer,provider,model,state,created_at createdAt,answered_at answeredAt FROM clarification_exchange WHERE prompt_id=? ORDER BY id").all(promptId) as ClarificationExchange[]; },
   beginClarification(promptId:number,questionValue:unknown,provider:string,model:string|null):number { const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:string}|undefined;if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");if(prompt.status!=="BLOCKED")throw new WorkspaceError(409,"prompt_not_blocked","Clarification is only available while a prompt is blocked");const question=requireText(questionValue,"question",10000);return Number(db.prepare("INSERT INTO clarification_exchange(prompt_id,question,provider,model,state,created_at) VALUES(?,?,?,?, 'RUNNING',?)").run(promptId,question,provider,model,new Date().toISOString()).lastInsertRowid); },
   finishClarification(id:number,state:"DONE"|"INTERRUPTED"|"ERROR",answer:string|null):void { db.prepare("UPDATE clarification_exchange SET state=?,answer=?,answered_at=? WHERE id=?").run(state,answer?.trim()||null,new Date().toISOString(),id); },
+  // ── `/btw` messages ──────────────────────────────────────────────────────
+  addRunMessage(input:{runId:string;direction:RunMessage["direction"];text:string;delivery:RunMessageDelivery;state:RunMessageState}):RunMessage {
+    const now=new Date().toISOString();
+    const deliveredAt=input.state==="DELIVERED"?now:null;
+    const id=Number(db.prepare("INSERT INTO run_message(run_id,direction,text,delivery,state,created_at,delivered_at) VALUES(?,?,?,?,?,?,?)")
+      .run(input.runId,input.direction,input.text,input.delivery,input.state,now,deliveredAt).lastInsertRowid);
+    return{id,runId:input.runId,direction:input.direction,text:input.text,delivery:input.delivery,state:input.state,createdAt:now,deliveredAt};
+  },
+  runMessages(runId:string):RunMessage[] {
+    return db.prepare("SELECT id,run_id runId,direction,text,delivery,state,created_at createdAt,delivered_at deliveredAt FROM run_message WHERE run_id=? ORDER BY id").all(runId) as RunMessage[];
+  },
+  /** Moves a message on; returns the updated row, or null when it was not in `from`. */
+  settleRunMessage(id:number,from:RunMessageState,to:RunMessageState,delivery?:RunMessageDelivery):RunMessage|null {
+    const now=new Date().toISOString();
+    const result=db.prepare("UPDATE run_message SET state=?,delivery=COALESCE(?,delivery),delivered_at=CASE WHEN ?='DELIVERED' THEN ? ELSE delivered_at END WHERE id=? AND state=?")
+      .run(to,delivery??null,to,now,id,from);
+    if(result.changes===0)return null;
+    return db.prepare("SELECT id,run_id runId,direction,text,delivery,state,created_at createdAt,delivered_at deliveredAt FROM run_message WHERE id=?").get(id) as RunMessage;
+  },
+  /** Every operator message the agent has not seen yet, oldest first, marked delivered in one step. */
+  drainRunInbox(runId:string):RunMessage[] {
+    return db.transaction(()=>{
+      const rows=db.prepare("SELECT id FROM run_message WHERE run_id=? AND direction='OPERATOR' AND state='QUEUED' AND delivery='inbox' ORDER BY id").all(runId) as Array<{id:number}>;
+      return rows.map((row)=>this.settleRunMessage(row.id,"QUEUED","DELIVERED")).filter((row):row is RunMessage=>row!==null);
+    })();
+  },
+  /** Operator context for this work item's next runs ("I already built it; don't"). */
+  addPromptBriefing(promptId:number,input:Record<string,unknown>):PromptRemark { return sqliteGuard(()=>{
+    const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
+    if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
+    if(prompt.status==="DONE"||prompt.status==="SKIPPED")throw new WorkspaceError(409,"already_terminal","This work item is already complete; a briefing would never be read");
+    const content=requireText(input.content,"content",8000);const now=new Date().toISOString();
+    const id=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,NULL,'OPERATOR_BRIEFING',?,'USER',?)").run(promptId,content,now).lastInsertRowid);
+    return{id,promptId,runId:null,kind:"OPERATOR_BRIEFING",content,actorType:"USER",createdAt:now};
+  }); },
+  promptBriefings(promptId:number):PromptRemark[] {
+    if(!db.prepare("SELECT 1 FROM prompt WHERE id=?").get(promptId))throw new WorkspaceError(404,"not_found","Prompt not found");
+    return activeBriefings(promptId);
+  },
+  deletePromptBriefing(promptId:number,remarkId:number):void {
+    const result=db.prepare("DELETE FROM prompt_remark WHERE id=? AND prompt_id=? AND kind='OPERATOR_BRIEFING'").run(remarkId,promptId);
+    if(result.changes===0)throw new WorkspaceError(404,"not_found","Briefing not found");
+  },
   respondToBlockedPrompt(promptId:number,input:Record<string,unknown>):PromptRemark { return sqliteGuard(()=>db.transaction(()=>{
     const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
     if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");

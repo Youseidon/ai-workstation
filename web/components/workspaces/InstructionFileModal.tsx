@@ -70,7 +70,7 @@ export function InstructionFileModal({ field, value, updatedAt, busy, pendingPro
           >
             Propose changes with AI
           </Button>
-          {dirty && <span className="text-[11px] text-warning">Unsaved changes</span>}
+          {dirty && <span className="text-xs text-warning">Unsaved changes</span>}
           {mode === "view" ? (
             <Button variant="primary" onClick={() => setMode("edit")}>Edit</Button>
           ) : (
@@ -101,7 +101,7 @@ export function InstructionFileModal({ field, value, updatedAt, busy, pendingPro
           options={[{ value: "view", label: "Preview" }, { value: "edit", label: "Source" }]}
         />
         {pendingProposals > 0 && (
-          <button type="button" onClick={() => void leave(onReviewProposals)} className="flex items-center gap-2 text-[11px] text-fg-muted hover:text-fg">
+          <button type="button" onClick={() => void leave(onReviewProposals)} className="flex items-center gap-2 text-xs text-fg-muted hover:text-fg">
             <Badge tone="info">{pendingProposals} pending</Badge>
             Review proposal{pendingProposals === 1 ? "" : "s"} →
           </button>
@@ -128,7 +128,7 @@ export function InstructionFileModal({ field, value, updatedAt, busy, pendingPro
             }
           }}
           placeholder={`# ${name}\n\nHow to build, test and work in this repository…`}
-          className="block h-[62vh] min-h-[20rem] w-full resize-none bg-surface-0/40 px-6 py-5 font-terminal text-[12.5px] leading-relaxed text-fg outline-none placeholder:text-fg-dim sm:px-10"
+          className="block h-[62vh] min-h-[20rem] w-full resize-none bg-surface-0 px-6 py-5 font-terminal text-xs leading-relaxed text-fg outline-none placeholder:text-fg-dim sm:px-10"
         />
       )}
     </Modal>

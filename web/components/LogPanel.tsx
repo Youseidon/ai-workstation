@@ -61,7 +61,7 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
             onClick={() => setDbOnly((on) => !on)}
             aria-pressed={dbOnly}
             title="Show only this agent's reads and writes to the console's own database"
-            className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+            className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
               dbOnly
                 ? "border-accent bg-accent/15 text-accent"
                 : "border-line bg-bg/80 text-fg-dim hover:text-fg"
@@ -95,7 +95,7 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
             const container = containerRef.current;
             if (container !== null) container.scrollTop = container.scrollHeight;
           }}
-          className="absolute bottom-4 right-6 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-[11px] text-fg-muted shadow-lg transition-colors hover:text-fg"
+          className="absolute bottom-4 right-6 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-xs text-fg-muted shadow-lg transition-colors hover:text-fg"
         >
           ↓ jump to latest
         </button>

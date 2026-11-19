@@ -53,12 +53,12 @@ function FieldShell({
       )}
       {children}
       {hint !== undefined && error == null && (
-        <p id={hintId} className="text-[11px] leading-relaxed text-fg-dim">
+        <p id={hintId} className="text-xs leading-relaxed text-fg-dim">
           {hint}
         </p>
       )}
       {error != null && error !== "" && (
-        <p id={errorId} role="alert" className="flex items-start gap-1.5 text-[11px] text-danger">
+        <p id={errorId} role="alert" className="flex items-start gap-1.5 text-xs text-danger">
           <span aria-hidden>✗</span>
           <span>{error}</span>
         </p>
@@ -69,7 +69,7 @@ function FieldShell({
 
 /** Shared look for every text-like control. */
 const CONTROL = [
-  "w-full min-w-0 rounded-md bg-surface-2 px-3 text-[13px] text-fg",
+  "w-full min-w-0 rounded-md bg-surface-2 px-3 text-sm text-fg",
   "ring-1 ring-inset ring-line transition-shadow duration-150",
   "placeholder:text-fg-dim",
   "hover:ring-line-strong",
@@ -198,7 +198,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
         </select>
         <span
           aria-hidden
-          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] text-fg-dim"
+          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-fg-dim"
         >
           ▼
         </span>

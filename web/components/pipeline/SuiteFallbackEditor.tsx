@@ -55,7 +55,7 @@ export function SuiteFallbackEditor({
               void save(next);
             }}
             className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
+              "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs ring-1 ring-inset",
               active ? theme.chip : "text-fg-muted ring-line hover:bg-surface-3",
               busy && "opacity-60",
             )}

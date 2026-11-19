@@ -27,6 +27,7 @@ import { scheduleRetentionSweep } from "./retention.ts";
 import { settings } from "./settings.ts";
 import { assertRunChangesCommitted, checkpointRun } from "./gitChanges.ts";
 import { answerAgentInput, normalizeAgentInputRequest, waitForAgentInput } from "./agentInput.ts";
+import { agentReply, inboxPayload } from "./runMessages.ts";
 
 const log = createLogger("server");
 
@@ -44,7 +45,23 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+/**
+ * Responses to an execute run's own `agent-step` calls. Any of them carries the
+ * operator's waiting `/btw` notes, so a headless agent picks a note up on
+ * whatever it calls next, not only when it remembers to check its inbox.
+ */
+const agentInboxResponses = new WeakMap<ServerResponse, string>();
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  const inboxRunId = agentInboxResponses.get(res);
+  if (inboxRunId !== undefined && status < 500 && body !== null && typeof body === "object" && !Array.isArray(body) && !("operatorMessages" in body)) {
+    try {
+      const operatorMessages = inboxPayload(inboxRunId);
+      if (operatorMessages.length > 0) body = { ...body, operatorMessages };
+    } catch (error) {
+      log.warn(`could not attach operator messages for run=${inboxRunId}`, error);
+    }
+  }
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
@@ -154,7 +171,7 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program|input)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program|input|inbox|reply)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
@@ -164,6 +181,26 @@ const httpServer = createServer((req, res) => {
       // Two doors, and neither opens the other. An execute run works a work
       // item and may never write a draft; an author run writes a draft and has
       // no work item to post about. A consult run has neither.
+      if(persisted.role==="execute")agentInboxResponses.set(res,runId);
+      if(operation==="inbox"||operation==="reply"){
+        const startedAt=Date.now();
+        if(persisted.role!=="execute")throw new WorkspaceError(403,"btw_execute_only","Only a working run has an operator inbox.");
+        if(operation==="inbox"&&req.method==="GET"){
+          const operatorMessages=inboxPayload(runId);
+          sendJson(res,200,{operatorMessages});
+          recordDbAccess(runId,describeRead({operation:"inbox",summary:operatorMessages.length===0?"checked the operator inbox: empty":`picked up ${operatorMessages.length} operator message${operatorMessages.length===1?"":"s"}`,durationMs:Date.now()-startedAt}));
+          return;
+        }
+        if(operation==="reply"&&req.method==="POST"){
+          void readJsonBody(req,MAX_BODY_BYTES).then(body=>{
+            const message=agentReply(runId,body as Record<string,unknown>);
+            sendJson(res,201,{reply:{id:message.id,sentAt:message.createdAt}});
+            recordDbAccess(runId,describeAcceptedWrite({operation:"reply",before:null,after:null,requestId:typeof body.requestId==="string"?body.requestId:null,durationMs:Date.now()-startedAt}));
+          }).catch(error=>sendJson(res,error instanceof WorkspaceError?error.status:400,{error:{code:error instanceof WorkspaceError?error.code:"invalid_request",message:error instanceof Error?error.message:String(error)}}));
+          return;
+        }
+        throw new WorkspaceError(405,"method_not_allowed","Method not allowed");
+      }
       const authoring=operation==="propose-program"||operation==="propose-suite"||operation==="revise-program";
       if(authoring&&persisted.role!=="author")throw new WorkspaceError(403,"author_only","Only an author run can propose a program.");
       if(!authoring&&persisted.role!=="execute"&&(operation==="remarks"||operation==="status"||operation==="decompose"||operation==="repair-verify")){
@@ -551,9 +588,10 @@ wss.on("connection", (ws: WebSocket) => {
     clientRequestId?: string,
     resumeSessionId?: string,
     threadId?: string,
+    freshContext?: boolean,
   ): Promise<void> => {
     try {
-      await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question, resumeSessionId, threadId });
+      await startExecute({ workspaceId, prompt, promptId, provider: providerId, model, mode, question, resumeSessionId, threadId, clientRequestId, freshContext });
     } catch (error) {
       rejectRun(clientRequestId, error, "Unable to resolve workspace");
     }
@@ -567,9 +605,11 @@ wss.on("connection", (ws: WebSocket) => {
     model: string | null,
     question?: string,
     clientRequestId?: string,
+    threadId?: string,
+    freshContext?: boolean,
   ): Promise<void> => {
     try {
-      await startConsult({ workspaceId, prompt, promptId, provider: providerId, model, question });
+      await startConsult({ workspaceId, prompt, promptId, provider: providerId, model, question, threadId, clientRequestId, freshContext });
     } catch (error) {
       rejectRun(clientRequestId, error, "Unable to start consult");
     }
@@ -634,7 +674,7 @@ wss.on("connection", (ws: WebSocket) => {
           sendError(`Thread id must be a non-empty string of at most ${MAX_THREAD_ID_LENGTH} characters.`);
           return;
         }
-        if (hasThread && (role !== "execute" || mode !== "execute" || !hasPrompt || hasPromptId)) {
+        if (hasThread && (mode !== "execute" || !hasPrompt || hasPromptId)) {
           sendError("Only a custom execute prompt can belong to a Chat thread.");
           return;
         }
@@ -652,9 +692,9 @@ wss.on("connection", (ws: WebSocket) => {
           return;
         }
         if (role === "consult") {
-          void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question, parsed.clientRequestId);
+          void handleConsult(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model, parsed.question, parsed.clientRequestId, parsed.threadId?.trim(), parsed.freshContext === true);
         } else {
-          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question,parsed.clientRequestId,parsed.resumeSessionId?.trim(),parsed.threadId?.trim());
+          void handleRun(parsed.workspaceId, hasPrompt ? parsed.prompt : undefined, hasPromptId ? parsed.promptId : undefined, parsed.provider, model === "" ? null : model,mode,parsed.question,parsed.clientRequestId,parsed.resumeSessionId?.trim(),parsed.threadId?.trim(),parsed.freshContext === true);
         }
         return;
       }

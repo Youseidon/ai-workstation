@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useState, type ReactNode } from "react";
 import type { ProviderId } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/Button";
@@ -12,8 +12,9 @@ export interface PipelineRecoveryActions {
   /** Present only when the blocker is a lost-status run, not a human question. */
   onRetry?(): void;
   onSkip(): void;
-  /** Deep link into Tasks, where marking complete and auditing are also available. */
-  openHref: string;
+  /** Opens the stuck item in the side panel, where every other action lives. */
+  onOpen(): void;
+  label: string;
 }
 
 export interface PipelinePosition {
@@ -68,6 +69,8 @@ export function PipelineStatusBar({
   busy,
   onControl,
   onExplain,
+  inbox,
+  rules,
 }: {
   status: PipelineStatusView;
   position: PipelinePosition | null;
@@ -80,16 +83,21 @@ export function PipelineStatusBar({
   onControl(control: PipelineControl): void;
   /** Opens the rules panel. The pill is the affordance for "why these buttons?". */
   onExplain(): void;
+  /** The "needs you" counter, parked next to the controls. */
+  inbox?: ReactNode;
+  /** The rules the next Play runs under; folded away until asked for. */
+  rules?: ReactNode;
 }) {
   const primaryDisabled = busy || blockedReason !== null;
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   return (
     <section
       aria-label="Pipeline status"
-      className={cn("rounded-panel border", RING[status.tone])}
+      className={cn("rounded-panel border shadow-sm", RING[status.tone])}
     >
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 py-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
+        <div className="flex min-w-[min(100%,18rem)] flex-1 items-start gap-3">
           <button
             type="button"
             onClick={onExplain}
@@ -97,14 +105,14 @@ export function PipelineStatusBar({
             className="mt-[3px] flex shrink-0 items-center gap-2 rounded-sm underline decoration-transparent underline-offset-4 transition-colors hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <StatusDot tone={status.tone} pulse={status.pulse} size={8} />
-            <span className={cn("text-[11px] font-medium uppercase tracking-[0.16em]", PILL[status.tone])}>
+            <span className={cn("text-xs font-medium uppercase tracking-[0.16em]", PILL[status.tone])}>
               {status.label}
             </span>
           </button>
           {/* Three lines, in the order the questions get asked: what the run is
               doing, what put it there, and what the button will do about it. */}
           <div className="min-w-0">
-            <p className="text-[13px] leading-5 text-fg">{status.headline}</p>
+            <p className="text-sm leading-5 text-fg">{status.headline}</p>
             <p className="mt-0.5 text-xs leading-5 text-fg-muted">{status.because}</p>
             {status.hint !== null && (
               <p className="mt-0.5 text-xs leading-5 text-fg-dim">{status.hint}</p>
@@ -112,7 +120,9 @@ export function PipelineStatusBar({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {inbox}
+          {inbox !== undefined && <span aria-hidden className="mx-1 h-5 w-px bg-line" />}
           {status.secondary.map((control) => (
             <Button
               key={control}
@@ -139,8 +149,8 @@ export function PipelineStatusBar({
         </div>
       </div>
 
-      {(position !== null || blockedReason !== null) && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/70 px-4 py-2 text-[11px] text-fg-dim">
+      {(position !== null || blockedReason !== null || rules !== undefined) && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/70 px-4 py-2 text-xs text-fg-dim">
           {position !== null && (
             <>
               {position.stageCount > 0 && (
@@ -179,8 +189,20 @@ export function PipelineStatusBar({
               {CONTROL_LABEL[status.primary]} is unavailable — {blockedReason}.
             </span>
           )}
+          {rules !== undefined && (
+            <button
+              type="button"
+              onClick={() => setRulesOpen((value) => !value)}
+              aria-expanded={rulesOpen}
+              className={cn("text-fg-dim hover:text-fg", blockedReason === null || status.primary === null ? "ml-auto" : "ml-3")}
+            >
+              Run rules {rulesOpen ? "▴" : "▾"}
+            </button>
+          )}
         </div>
       )}
+
+      {rules !== undefined && rulesOpen && <div className="border-t border-line/70 px-3 py-2">{rules}</div>}
 
       {recoveryActions !== null && (
         <div className="flex flex-wrap items-center gap-2 border-t border-line/70 px-4 py-2">
@@ -198,9 +220,9 @@ export function PipelineStatusBar({
           >
             Skip
           </Button>
-          <Link href={recoveryActions.openHref} className="text-xs text-accent hover:underline">
-            Open work item for more options →
-          </Link>
+          <button type="button" onClick={recoveryActions.onOpen} className="text-xs text-accent hover:underline">
+            Open {recoveryActions.label} →
+          </button>
         </div>
       )}
     </section>

@@ -5,46 +5,62 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   OperationsPrompt,
-  HumanInterventionStep,
   OperationsSnapshot,
   PipelineFlowchartView,
-  PipelineBlockedStation,
   PipelineRecord,
   PipelineRunDetail,
-  PipelinePolicy,
   PipelineSubStepRule,
   ProgramRecord,
-  PromptPipelineRule,
   ProviderId,
   WorkspaceTree,
 } from "@agent-console/shared";
-import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, describeStopReason, PROVIDER_IDS } from "@agent-console/shared";
+import {
+  DEFAULT_PIPELINE_POLICY,
+  DEFAULT_STATUS_CATALOG,
+  DEFAULT_TRIGGER_SENTENCES,
+  defaultPromptPipelineRule,
+  describeStopReason,
+  PROVIDER_IDS,
+} from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Menu, type MenuItem } from "@/components/ui/Menu";
 import { Modal } from "@/components/ui/Modal";
+import { VerificationPanel } from "@/components/VerificationPanel";
 import { TextInput } from "@/components/ui/Field";
-import { Skeleton } from "@/components/ui/Spinner";
 import { useDialogs } from "@/components/ui/Dialogs";
+import { BtwBar } from "@/components/chat/BtwBar";
 import { useToast } from "@/components/ui/Toast";
 import { cn } from "@/lib/cn";
 import { SERVER_URL } from "@/lib/serverUrl";
 import { useAgentConsole } from "@/lib/agentConsole";
 import { agentState, type AgentActivity } from "@/lib/agentState";
 import { useModelSelection } from "@/lib/useModelSelection";
+import { usePreferredProvider } from "@/lib/usePreferredProvider";
 import { providerTheme } from "@/lib/providerTheme";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { useWorkspace } from "@/lib/workspaceContext";
-import { PageChrome } from "@/components/shell/chrome";
+import { ContentTitle } from "@/components/shell/PageCanvas";
+import { DetailDrawer, DetailReopen } from "@/components/shell/DetailDrawer";
+import { UnsavedChangesGuard } from "@/components/shell/UnsavedChangesGuard";
+import { SidebarBack, SidebarCollection, SidebarEmpty, SidebarGroup, SidebarRow } from "@/components/shell/SidebarCollection";
 import { PipelineArchive } from "./PipelineArchive";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
-import { PipelineOverview } from "./PipelineOverview";
 import { PipelineStatusBar, type PipelinePosition } from "./PipelineStatusBar";
 import { NewPipelineGuide, type NewPipelineGuideStep } from "./NewPipelineGuide";
 import { PipelineInspector, type InspectorTab } from "./PipelineInspector";
 import { RunConfidenceStrip } from "./RunConfidenceStrip";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
+import { StepConfigForm } from "./StepConfigForm";
+import { HumanGate } from "./station/HumanGate";
+import { collectInbox, NeedsYouInbox } from "./station/NeedsYouInbox";
+import { StationPanel, type StationTab } from "./station/StationPanel";
+import { ancestorIdsForPrompt, filterPromptTree, isTerminal, type WorkFilter } from "./station/tree";
+import { useBoardKeys } from "./station/useBoardKeys";
+import { useStationActions } from "./station/useStationActions";
+import { WorkList } from "./station/WorkList";
 import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
 import { nextPipelineLeaf } from "./continuation";
 import {
@@ -80,6 +96,7 @@ export function PipelineBoard({
   const dialogs = useDialogs();
   const params = useSearchParams();
   const models = useModelSelection(console_.providers);
+  const { selected: preferredProvider } = usePreferredProvider(console_.providers);
   const { workspaceId, status: workspaceStatus } = useWorkspace();
 
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
@@ -89,20 +106,29 @@ export function PipelineBoard({
   const [view, setView] = useState<PipelineFlowchartView | null>(null);
   const [viewSuiteId, setViewSuiteId] = useState<number | null>(null);
   const [hideCompleted, setHideCompleted] = useState(false);
-  const [blockedStations, setBlockedStations] = useState<PipelineBlockedStation[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [configId, setConfigId] = useState<number | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
-  const [archiveOpen, setArchiveOpen] = useState(true);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("policy");
+  /** The item shown in the side panel. Deep links seed it with ?prompt=. */
+  const [selectedId, setSelectedId] = useState<number | null>(() => positiveInt(params.get("prompt")));
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelMode, setPanelMode] = useState<"item" | "pipeline">(() => (positiveInt(params.get("prompt")) !== null ? "item" : "pipeline"));
+  const [pipelineTab, setPipelineTab] = useState<InspectorTab>("history");
+  const [itemTab, setItemTab] = useState<StationTab>(() => (params.get("tab") === "conversation" ? "conversation" : "overview"));
+  const [focusSignal, setFocusSignal] = useState(0);
+  const [layout, setLayout] = useState<BoardLayout>(() => (params.get("view") === "list" ? "list" : "flow"));
+  const [filter, setFilter] = useState<WorkFilter>(() => {
+    const value = params.get("filter");
+    return value === "attention" || value === "working" ? value : "all";
+  });
+  const [focusRecordId, setFocusRecordId] = useState<number | null>(null);
   const [guideStep, setGuideStep] = useState<NewPipelineGuideStep>("name");
   const [guideDismissed, setGuideDismissed] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
+  const [railQuery, setRailQuery] = useState("");
   /** Drill-down into the sub-steps a station spawned: station id first, deepest last. */
   const [subPath, setSubPath] = useState<number[]>([]);
 
@@ -197,6 +223,7 @@ export function PipelineBoard({
         draftSuiteIds.length !== pipeline.stages.length ||
         draftSuiteIds.some((id, index) => pipeline.stages[index]?.suiteId !== id);
 
+
   const programs = useMemo(() => tree?.programs ?? [], [tree]);
   const suitesById = useMemo(() => {
     const map = new Map<number, { program: ProgramRecord; suite: ProgramRecord["suites"][number] }>();
@@ -246,6 +273,42 @@ export function PipelineBoard({
 
   const showEditor = isNew || editing;
 
+  /*
+   * Unsaved edits survive leaving the editor by any route the leave dialog
+   * cannot intercept (browser back/forward, a workspace switch, a crashed tab):
+   * they are kept per pipeline in session storage and offered back on return.
+   */
+  const draftKey = workspaceId === null ? null : `agent-console.pipeline-draft:${workspaceId}:${pipelineId ?? "new"}`;
+  const [recovered, setRecovered] = useState<{ name: string; suiteIds: number[] } | null>(null);
+  const recoveryChecked = useRef<string | null>(null);
+  const recoveryPending = useRef(false);
+  useEffect(() => {
+    // Check once the saved pipeline (or, for a new one, the catalog) is applied to the draft.
+    const ready = pipelineId === null ? tree !== null : pipeline !== null && appliedPipelineId.current === pipelineId;
+    if (!ready || draftKey === null || recoveryChecked.current === draftKey) return;
+    recoveryChecked.current = draftKey;
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(draftKey) ?? "null") as { name?: unknown; suiteIds?: unknown } | null;
+      if (stored !== null && typeof stored.name === "string" && Array.isArray(stored.suiteIds) && stored.suiteIds.every((id) => Number.isSafeInteger(id))) {
+        recoveryPending.current = true;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- session storage is read after the pipeline loads
+        setRecovered({ name: stored.name, suiteIds: stored.suiteIds as number[] });
+      }
+    } catch { /* recovery is best-effort */ }
+  }, [draftKey, pipelineId, tree, pipeline, draftName, draftSuiteIds]);
+  useEffect(() => {
+    if (draftKey === null || recoveryChecked.current !== draftKey || recoveryPending.current) return;
+    try {
+      if (showEditor && dirty) sessionStorage.setItem(draftKey, JSON.stringify({ name: draftName, suiteIds: draftSuiteIds }));
+      else if (!dirty) sessionStorage.removeItem(draftKey);
+    } catch { /* recovery is best-effort */ }
+  }, [draftKey, showEditor, dirty, draftName, draftSuiteIds, recovered]);
+  const discardStoredDraft = () => {
+    recoveryPending.current = false;
+    setRecovered(null);
+    try { if (draftKey !== null) sessionStorage.removeItem(draftKey); } catch { /* best-effort */ }
+  };
+
   useEffect(() => {
     if (activeSuiteId === null || pipelineId === null) {
       setView(null);
@@ -290,27 +353,6 @@ export function PipelineBoard({
   );
 
   useEffect(() => {
-    if (workspaceId === null || pipelineId === null || !workbench) {
-      setBlockedStations([]);
-      return;
-    }
-    let disposed = false;
-    void workspaceApi
-      .pipelineDashboard(SERVER_URL, workspaceId)
-      .then((data) => {
-        if (!disposed) {
-          setBlockedStations(data.blockedStations.filter((station) => station.pipelineId === pipelineId));
-        }
-      })
-      .catch(() => {
-        if (!disposed) setBlockedStations([]);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [workspaceId, pipelineId, workbench, console_.operationsRevision]);
-
-  useEffect(() => {
     if (workbench) return;
     const next = new URLSearchParams();
     if (workspaceId !== null) next.set("workspace", String(workspaceId));
@@ -341,7 +383,7 @@ export function PipelineBoard({
   const resumeItem = resumeSuiteRun?.currentPromptId == null
     ? null
     : findPromptDeep(resumeSuiteOps?.prompts ?? [], resumeSuiteRun.currentPromptId);
-  const steps = viewSuiteId === activeSuiteId ? (view?.steps ?? []) : [];
+  const steps = useMemo(() => (viewSuiteId === activeSuiteId ? (view?.steps ?? []) : []), [view, viewSuiteId, activeSuiteId]);
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
   const flowSteps = steps.filter((step) => {
     if (!byId.has(step.promptId)) return false;
@@ -349,14 +391,7 @@ export function PipelineBoard({
     const item = byId.get(step.promptId);
     return item?.operationalState !== "DONE" && item?.operationalState !== "SKIPPED";
   });
-  const displayedSteps = flowSteps.flatMap((step) => {
-    const item = byId.get(step.promptId);
-    if (item?.humanIntervention === null || item?.humanIntervention === undefined) return [{ kind: "prompt" as const, step }];
-    return [
-      { kind: "prompt" as const, step },
-      { kind: "human" as const, step: item.humanIntervention, item },
-    ];
-  });
+  const displayedSteps = flowSteps;
 
   // Every prompt of the selected suite, stations and descendants alike, so a
   // drill-down can address a node at any depth by id.
@@ -440,7 +475,7 @@ export function PipelineBoard({
     if (draftSuiteIds.length === 0) return "it has no suites";
     if (dirty) return "there are unsaved changes";
     if (stages.some((stage) => stage.stepCount === 0)) return "every suite needs at least one step";
-    if (resumeItem?.humanIntervention?.status === "PENDING") return "the human intervention step below is unanswered";
+    if (resumeItem?.humanIntervention?.status === "PENDING") return "an approval point is waiting on you";
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
       return `${occupancy.provider} is already writing this workspace`;
     }
@@ -492,6 +527,8 @@ export function PipelineBoard({
     };
   }, [live, pipeline, resumeSuiteOps, resumeSuiteRun, occupancy]);
 
+  // The selected item is also the one whose step settings the Config tab edits.
+  const configId = selectedId;
   const configNode = configId === null ? null : (promptsByIdDeep.get(configId) ?? null);
   const configIsSubStep = configNode !== null && configNode.prompt.parentPromptId !== null;
   const configRule = configId === null
@@ -561,7 +598,12 @@ export function PipelineBoard({
         if (!confirmed) return;
         await workspaceApi.skipPrompt(SERVER_URL, stuckPrompt.prompt.id, "Operator skipped this step.");
       }, "Step skipped"),
-    openHref: `/tasks?suite=${stuckSuiteId}&prompt=${stuckPrompt.prompt.id}`,
+    onOpen: () => {
+      if (stuckSuiteId !== activeSuiteId) setSuiteId(stuckSuiteId);
+      if (stuckPrompt.operationalState === "BLOCKED") openConversation(stuckPrompt.prompt.id);
+      else selectItem(stuckPrompt.prompt.id, "overview");
+    },
+    label: stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title,
   };
 
   /**
@@ -674,16 +716,278 @@ export function PipelineBoard({
     return saved;
   };
 
+  /* ---------------------------------------------------------------------- */
+  /* Selection and the side panel                                            */
+  /* ---------------------------------------------------------------------- */
+
+  const selectItem = (promptId: number, tab?: StationTab) => {
+    setSelectedId(promptId);
+    setPanelMode("item");
+    setPanelOpen(true);
+    if (tab !== undefined) setItemTab(tab);
+  };
+  const openConversation = (promptId: number) => {
+    selectItem(promptId, "conversation");
+    setFocusSignal((value) => value + 1);
+  };
+  const openPipelinePanel = (tab: InspectorTab) => {
+    // Step settings live with the step: open the item that the chip is about.
+    if (tab === "station") {
+      const target = resumeItem ?? stuckPrompt;
+      if (target !== null) selectItem(target.prompt.id, "config");
+      return;
+    }
+    setPipelineTab(tab);
+    setPanelMode("pipeline");
+    setPanelOpen(true);
+  };
+  const closePanel = () => {
+    setPanelOpen(false);
+    setSelectedId(null);
+    setPanelMode("pipeline");
+  };
+
+  const stationActions = useStationActions({
+    pipelineId,
+    pipelineState: live?.state ?? null,
+    refresh: async () => {
+      await refreshCatalog();
+      if (pipelineId !== null) setRuns(await workspaceApi.pipelineRuns(SERVER_URL, pipelineId));
+      if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+    },
+  });
+  const anyBusy = busy || stationActions.busy;
+
+  const selectedItem = selectedId === null ? null : (promptsByIdDeep.get(selectedId) ?? null);
+  const selectedParent =
+    selectedItem?.prompt.parentPromptId == null ? null : (promptsByIdDeep.get(selectedItem.prompt.parentPromptId) ?? null);
+
+  const inboxEntries = useMemo(
+    () => collectInbox(stages.flatMap((stage) => (stage.operations === null ? [] : [stage.operations]))),
+    [stages],
+  );
+
+  // Items the list view shows: the flowchart's stations (with their sub-steps)
+  // on a saved pipeline; the whole suite while composing a draft.
+  const listItems = useMemo(() => {
+    const prompts = suiteOps?.prompts ?? [];
+    if (pipelineId === null || viewSuiteId !== activeSuiteId) return prompts;
+    const order = new Map(steps.map((step, index) => [step.promptId, index]));
+    return prompts
+      .filter((item) => order.has(item.prompt.id))
+      .sort((a, b) => (order.get(a.prompt.id) ?? 0) - (order.get(b.prompt.id) ?? 0));
+  }, [suiteOps, pipelineId, viewSuiteId, activeSuiteId, steps]);
+
+  // j / k walk the items in the order they are drawn.
+  const navOrder = useMemo(() => {
+    if (openSubNode !== null) return openSubNode.children.map((item) => item.prompt.id);
+    if (layout === "list") {
+      const ids: number[] = [];
+      const walk = (list: OperationsPrompt[]) => {
+        for (const item of list) {
+          ids.push(item.prompt.id);
+          walk(item.children);
+        }
+      };
+      walk(filterPromptTree(listItems, filter));
+      return ids;
+    }
+    return displayedSteps.map((step) => step.promptId);
+  }, [openSubNode, layout, listItems, filter, displayedSteps]);
+
+  // Remember the layout per pipeline, unless the link asked for one.
+  const layoutKey = `agent-console.pipeline-layout.${pipelineId ?? "draft"}`;
+  useEffect(() => {
+    if (params.get("view") !== null) return;
+    try {
+      const saved = window.localStorage.getItem(layoutKey);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is unavailable during SSR
+      if (saved === "list" || saved === "flow") setLayout(saved);
+    } catch {
+      // Storage is a convenience only.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per pipeline
+  }, [layoutKey]);
+  const changeLayout = (next: BoardLayout) => {
+    setLayout(next);
+    try {
+      window.localStorage.setItem(layoutKey, next);
+    } catch {
+      // Storage is a convenience only.
+    }
+  };
+
+  // Below xl the panel is a sheet over the board; start it closed there.
+  useEffect(() => {
+    if (positiveInt(params.get("prompt")) !== null) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- viewport is unknown during SSR
+    if (!window.matchMedia("(min-width: 1280px)").matches) setPanelOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- first paint only
+  }, []);
+
+  // Keep the address bar shareable without driving state from it.
+  useEffect(() => {
+    if (!workbench || pipelineId === null) return;
+    const next = new URLSearchParams();
+    if (editing) next.set("edit", "1");
+    if (activeSuiteId !== null) next.set("suite", String(activeSuiteId));
+    if (selectedId !== null && panelMode === "item") next.set("prompt", String(selectedId));
+    if (layout === "list") next.set("view", "list");
+    if (layout === "list" && filter !== "all") next.set("filter", filter);
+    const query = next.toString();
+    window.history.replaceState(window.history.state, "", `/pipeline/${pipelineId}${query === "" ? "" : `?${query}`}`);
+  }, [workbench, pipelineId, editing, activeSuiteId, selectedId, panelMode, layout, filter]);
+
+  useBoardKeys({
+    order: navOrder,
+    selectedId,
+    panelOpen,
+    select: (promptId) => selectItem(promptId),
+    reply: openConversation,
+    closePanel,
+    toggleRun: () => {
+      if (status.primary === null || anyBusy || statusBlocked !== null) return;
+      runControl(status.primary);
+    },
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* Header                                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  const deletePipeline = () =>
+    void act(async () => {
+      if (pipelineId === null) return;
+      const confirmed = await dialogs.confirm({
+        title: `Delete ${draftName}?`,
+        description: "Past runs of this pipeline are removed with it.",
+        confirmLabel: "Delete",
+        tone: "danger",
+        confirmPhrase: draftName,
+      });
+      if (!confirmed) return;
+      await workspaceApi.removePipeline(SERVER_URL, pipelineId);
+      router.push("/pipeline");
+    }, "Pipeline deleted");
+
+  const savePipeline = () => {
+    if (pipelineId !== null) {
+      void act(async () => {
+        await persist(draftName);
+      }, "Pipeline changes saved");
+      return;
+    }
+    setSaveName(draftName === "Untitled pipeline" ? "" : draftName);
+    setSaveOpen(true);
+  };
+
+  const headerMenu: MenuItem[] = [
+    // The layout switch is hidden on phones; it lives here there.
+    { id: "layout", label: layout === "flow" ? "Show as list" : "Show as flow", onSelect: () => changeLayout(layout === "flow" ? "list" : "flow"), className: "sm:hidden" },
+    { id: "history", label: "Run history", onSelect: () => openPipelinePanel("history") },
+    { id: "configure", label: "Configure pipeline", onSelect: () => openPipelinePanel("policy") },
+    {
+      id: "verify",
+      label: "Verify suite with agent…",
+      disabled: suiteOps === null || anyBusy,
+      onSelect: () => {
+        if (suiteOps === null) return;
+        void stationActions.verify(suiteOps, null).then((started) => {
+          if (started) openPipelinePanel("verification");
+        });
+      },
+      separated: true,
+    },
+    {
+      id: "audit",
+      label: "Audit recorded evidence…",
+      disabled: suiteOps === null || anyBusy,
+      onSelect: () => {
+        if (suiteOps === null) return;
+        void stationActions.auditEvidence(suiteOps).then((id) => {
+          if (id === null) return;
+          setFocusRecordId(id);
+          openPipelinePanel("verification");
+        });
+      },
+    },
+    {
+      id: "save",
+      label: pipelineId === null ? "Save pipeline…" : "Save changes",
+      disabled: anyBusy || !dirty || draftName.trim() === "",
+      onSelect: savePipeline,
+      separated: true,
+    },
+    {
+      id: "chat",
+      label: "Open workspace in Chat",
+      disabled: workspaceId === null,
+      onSelect: () => router.push(`/?workspace=${workspaceId}`),
+    },
+    ...(pipelineId === null
+      ? []
+      : [{ id: "delete", label: "Delete pipeline…", onSelect: deletePipeline, disabled: anyBusy || resumable, title: resumable ? "Stop the pipeline before deleting it" : undefined, tone: "danger" as const, separated: true }]),
+  ];
+
+  const editButton =
+    pipelineId === null ? (
+      <Button size="sm" variant="primary" disabled={anyBusy || draftName.trim() === ""} onClick={savePipeline}>
+        Save pipeline
+      </Button>
+    ) : (
+      <Button
+        size="sm"
+        variant={showEditor ? "primary" : "secondary"}
+        disabled={anyBusy || (showEditor && draftName.trim() === "")}
+        onClick={() => {
+          if (!showEditor) {
+            setEditing(true);
+            return;
+          }
+          if (!dirty) {
+            setEditing(false);
+            return;
+          }
+          void act(async () => {
+            await persist(draftName);
+            setEditing(false);
+          }, "Pipeline changes saved");
+        }}
+      >
+        {showEditor ? (dirty ? "Save & finish" : "Done") : "Edit"}
+      </Button>
+    );
+
+  const stationCount = stages.reduce((sum, stage) => sum + stage.stepCount, 0);
+
   return (
-    <main className="flex h-full flex-col bg-surface-0 text-fg">
-      <PageChrome
-        title="Pipeline"
+    <div className="flex h-full min-h-0 flex-col text-fg">
+      <ContentTitle
+        title={draftName}
+        titleEditor={
+          showEditor ? (
+            <input
+              type="text"
+              value={draftName}
+              onChange={(event) => setDraftName(event.target.value)}
+              maxLength={200}
+              aria-label="Pipeline name"
+              className="content-title-input"
+            />
+          ) : undefined
+        }
+        meta={
+          <>
+            Pipeline · {tree?.name ?? "Choose a workspace"} · {stages.length} suite{stages.length === 1 ? "" : "s"} · {stationCount} step{stationCount === 1 ? "" : "s"}
+            {dirty ? <span className="text-caution"> · unsaved changes</span> : ""}
+          </>
+        }
         actions={
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
             <CrewStrip crew={crew} />
-            <Badge tone={status.tone} dot pulse={status.pulse} uppercase>
-              {status.label}
-            </Badge>
+            <LayoutToggle value={layout} onChange={changeLayout} />
+            {editButton}
+            <Menu items={headerMenu} label="Pipeline actions" />
           </div>
         }
       />
@@ -705,26 +1009,34 @@ export function PipelineBoard({
 
       <div
         className={cn(
-          "grid min-h-0 flex-1",
-          showEditor && inspectorOpen
-            ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_360px]"
-            : showEditor
-              ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_280px]"
-              : inspectorOpen
-                ? "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_360px]"
-                : "lg:grid-cols-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_280px]",
+          "grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]",
+          "grid-cols-1",
         )}
       >
-        {showEditor && (
-        <aside className="min-h-0 overflow-y-auto border-r border-line bg-surface-1 p-3">
+        <SidebarCollection
+          label={showEditor ? "Pipeline suites" : "Pipeline"}
+        >
+          {workbench && <SidebarBack href="/pipeline">All pipelines</SidebarBack>}
+          {showEditor && (
+            <label className="mb-2 block">
+              <span className="sr-only">Search suites</span>
+              <input
+                type="search"
+                value={railQuery}
+                onChange={(event) => setRailQuery(event.target.value)}
+                placeholder="Search suites"
+                className="app-sidebar-search"
+              />
+            </label>
+          )}
           {!workbench && (
           <>
           <div className="mb-1 flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Pipelines</div>
+            <div className="text-xs uppercase tracking-[0.18em] text-fg-dim">Pipelines</div>
             <button
               type="button"
               onClick={() => selectPipeline(null)}
-              className="text-[11px] text-accent hover:underline"
+              className="text-xs text-accent hover:underline"
             >
               + New
             </button>
@@ -735,13 +1047,13 @@ export function PipelineBoard({
               onClick={() => selectPipeline(null)}
               aria-current={pipelineId === null ? "true" : undefined}
               className={cn(
-                "w-full rounded-md px-2.5 py-2 text-left text-[13px]",
+                "w-full rounded-md px-2.5 py-2 text-left text-sm",
                 pipelineId === null ? "bg-surface-3 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
               )}
             >
               Draft
               {draftSuiteIds.length > 0 && (
-                <span className="ml-2 text-[10px] text-fg-dim">{draftSuiteIds.length} suites</span>
+                <span className="ml-2 text-xs text-fg-dim">{draftSuiteIds.length} suites</span>
               )}
             </button>
             {pipelines.map((item) => {
@@ -757,7 +1069,7 @@ export function PipelineBoard({
                     item.id === pipelineId ? "bg-surface-3 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
                   )}
                 >
-                  <span className="min-w-0 truncate text-[13px]">{item.name}</span>
+                  <span className="min-w-0 truncate text-sm">{item.name}</span>
                   {badge !== null && (
                     <Badge tone={PIPELINE_TONE[badge.state]} pulse={badge.state === "PLAYING"}>
                       {PIPELINE_LABEL[badge.state]}
@@ -770,94 +1082,117 @@ export function PipelineBoard({
           </>
           )}
 
-          {workbench && (
-            <div className="mb-3">
-              <Link href="/pipeline" className="text-[11px] text-accent hover:underline">
-                ← All pipelines
-              </Link>
-            </div>
-          )}
-
-          <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-fg-dim">Programs</div>
-          {tree === null ? (
-            <Skeleton className="h-24 w-full" />
+          {!showEditor ? (
+            <SidebarGroup title={`Suites in this pipeline · ${stages.length}`}>
+              {stages.length === 0 ? (
+                <SidebarEmpty>No suites yet. Choose Edit to add some.</SidebarEmpty>
+              ) : (
+                stages.map((stage) => (
+                  <SidebarRow
+                    key={stage.suiteId}
+                    onSelect={() => {
+                      setSuiteId(stage.suiteId);
+                      setSubPath([]);
+                    }}
+                    selected={stage.suiteId === activeSuiteId}
+                    title={`${stage.suiteKey !== null ? `${stage.suiteKey} · ` : ""}${stage.suiteName}`}
+                    detail={stage.programName}
+                    status={stage.suiteId === live?.currentSuiteId ? "Running" : undefined}
+                  />
+                ))
+              )}
+            </SidebarGroup>
+          ) : tree === null ? (
+            <SidebarEmpty><span role="status">Loading programs…</span></SidebarEmpty>
           ) : programs.length === 0 ? (
-            <p className="text-xs text-fg-dim">This workspace has no programs yet.</p>
+            <SidebarEmpty>This workspace has no programs yet.</SidebarEmpty>
           ) : (
-            programs.map((program) => {
-              const open = expandedPrograms.has(program.id);
-              return (
-                <div key={program.id} className="mb-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedPrograms((current) => {
-                        const next = new Set(current);
-                        if (next.has(program.id)) next.delete(program.id);
-                        else next.add(program.id);
-                        return next;
-                      })
-                    }
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-fg hover:bg-surface-2"
-                    aria-expanded={open}
-                  >
-                    <span className="text-[10px] text-fg-dim">{open ? "▾" : "▸"}</span>
-                    <span className="min-w-0 truncate">
-                      {program.externalKey !== null && <span className="text-fg-muted">{program.externalKey} · </span>}
-                      {program.name}
-                    </span>
-                    <span className="ml-auto numeric text-[10px] text-fg-dim">{program.suites.length}</span>
-                  </button>
-                  {open && (
-                    <ul className="ml-4 border-l border-line pl-2">
-                      {program.suites.map((suite) => {
-                        const on = draftSuiteIds.includes(suite.id);
-                        const ops = operationsById.get(suite.id);
-                        return (
-                          <li key={suite.id}>
-                            <button
-                              type="button"
-                              onClick={() => toggleSuite(suite.id)}
-                              aria-pressed={on}
-                              className={cn(
-                                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
-                                on ? "bg-accent/10 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
-                                suite.id === activeSuiteId && "ring-1 ring-inset ring-accent/30",
-                              )}
-                            >
-                              <span
-                                aria-hidden
-                                className={cn(
-                                  "grid size-3.5 place-items-center rounded-[3px] text-[9px] ring-1 ring-inset",
-                                  on ? "bg-accent/20 text-accent ring-accent/50" : "ring-line text-fg-dim",
-                                )}
+            <>
+              <p className="app-sidebar-group">Programs · tick suites to add them</p>
+              {programs.map((program) => {
+                const needle = railQuery.trim().toLowerCase();
+                const suites = needle === ""
+                  ? program.suites
+                  : program.suites.filter((suite) =>
+                      `${program.name} ${program.externalKey ?? ""} ${suite.name} ${suite.externalKey ?? ""}`.toLowerCase().includes(needle),
+                    );
+                if (needle !== "" && suites.length === 0) return null;
+                const open = needle !== "" || expandedPrograms.has(program.id);
+                return (
+                  <div key={program.id} className="mb-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedPrograms((current) => {
+                          const next = new Set(current);
+                          if (next.has(program.id)) next.delete(program.id);
+                          else next.add(program.id);
+                          return next;
+                        })
+                      }
+                      className="app-sidebar-toggle-row text-fg"
+                      aria-expanded={open}
+                    >
+                      <span aria-hidden className="text-fg-muted">{open ? "▾" : "▸"}</span>
+                      <span className="min-w-0 truncate">
+                        {program.externalKey !== null && <span className="text-fg-muted">{program.externalKey} · </span>}
+                        {program.name}
+                      </span>
+                      <span className="ml-auto numeric text-fg-muted">{program.suites.length}</span>
+                    </button>
+                    {open && (
+                      <ul className="ml-5">
+                        {suites.map((suite) => {
+                          const on = draftSuiteIds.includes(suite.id);
+                          const ops = operationsById.get(suite.id);
+                          return (
+                            <li key={suite.id} className="app-sidebar-row" data-checked={on} data-selected={suite.id === activeSuiteId}>
+                              <button
+                                type="button"
+                                onClick={() => toggleSuite(suite.id)}
+                                aria-pressed={on}
+                                className="app-sidebar-toggle-row text-fg-muted"
                               >
-                                {on ? "✓" : ""}
-                              </span>
-                              <span className="min-w-0 truncate">
-                                {suite.externalKey !== null && <span className="text-fg-dim">{suite.externalKey} · </span>}
-                                {suite.name}
-                              </span>
-                              {ops?.pipeline?.active != null && (
-                                <span className="ml-auto size-1.5 rounded-full bg-info animate-breathe" />
-                              )}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-              );
-            })
+                                <span aria-hidden className="app-sidebar-check">{on ? "✓" : ""}</span>
+                                <span className={cn("min-w-0 truncate", on && "text-fg")}>
+                                  {suite.externalKey !== null && <span className="text-fg-muted">{suite.externalKey} · </span>}
+                                  {suite.name}
+                                </span>
+                                {ops?.pipeline?.active != null && (
+                                  <span className="ml-auto size-1.5 shrink-0 rounded-full bg-info animate-breathe" aria-label="Running in a pipeline" />
+                                )}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </>
           )}
-        </aside>
-        )}
-
-        <section className="pipeline-desk min-h-0 overflow-auto p-5">
-          <div className="w-full space-y-6">
-            {workbench && pipeline !== null && !showEditor && (
-              <PipelineOverview pipeline={pipeline} snapshot={snapshot} runs={runs} blockedStations={blockedStations} />
+        </SidebarCollection>
+        <section className="pipeline-desk min-h-0 overflow-auto">
+          <div className="w-full space-y-5 px-5 pt-1 pb-10">
+            {recovered !== null && (
+              <div role="status" className="flex flex-wrap items-center gap-3 rounded-panel border border-caution/40 px-4 py-3 text-sm text-fg">
+                <span className="min-w-0 flex-1">You left unsaved changes to this pipeline. Restore them to keep editing.</span>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => {
+                    recoveryPending.current = false;
+                    setDraftName(recovered.name);
+                    setDraftSuiteIds(recovered.suiteIds);
+                    setRecovered(null);
+                    setEditing(true);
+                  }}
+                >
+                  Restore
+                </Button>
+                <Button size="sm" variant="ghost" onClick={discardStoredDraft}>Discard</Button>
+              </div>
             )}
 
             {isNew && !guideDismissed && (
@@ -865,170 +1200,95 @@ export function PipelineBoard({
                 step={guideStep}
                 onStepChange={(next) => {
                   setGuideStep(next);
-                  if (next === "policy") {
-                    setInspectorTab("policy");
-                    setInspectorOpen(true);
-                  }
+                  if (next === "policy") openPipelinePanel("policy");
                 }}
-                onOpenPolicy={() => {
-                  setInspectorTab("policy");
-                  setInspectorOpen(true);
-                }}
+                onOpenPolicy={() => openPipelinePanel("policy")}
                 onFocusStations={() => {
-                  const first = displayedSteps.find((entry) => entry.kind === "prompt");
-                  if (first !== undefined && first.kind === "prompt") {
-                    setConfigId(first.step.promptId);
-                    setInspectorTab("station");
-                    setInspectorOpen(true);
-                  } else {
-                    setInspectorTab("station");
-                    setInspectorOpen(true);
-                  }
+                  const first = displayedSteps[0];
+                  if (first !== undefined) selectItem(first.promptId, "config");
                 }}
                 onDismiss={() => setGuideDismissed(true)}
               />
             )}
 
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.22em] text-accent">Pipeline</div>
-                {showEditor ? (
-                  <label className="mt-1 block">
-                    <span className="sr-only">Pipeline name</span>
-                    <input
-                      type="text"
-                      value={draftName}
-                      onChange={(event) => setDraftName(event.target.value)}
-                      maxLength={200}
-                      aria-label="Pipeline name"
-                      className="w-full min-w-64 rounded-md border border-line bg-surface-2 px-3 py-1.5 text-2xl tracking-tight text-fg outline-none transition-colors focus:border-accent"
+            {/* Run bar: what the pipeline is doing and the one control for it.
+                Sticky, so the controls are always in the same place. */}
+            {pipelineId !== null && (
+              <div className="sticky top-0 z-20 -mx-5 bg-surface-0 px-5 pt-2 pb-2">
+                <PipelineStatusBar
+                  status={status}
+                  position={runPosition}
+                  blockedReason={statusBlocked}
+                  recoveryActions={statusBlocked !== null ? recoveryActions : null}
+                  busy={anyBusy}
+                  onControl={runControl}
+                  onExplain={() => openPipelinePanel("policy")}
+                  inbox={
+                    <NeedsYouInbox
+                      entries={inboxEntries}
+                      onOpen={(entry) => {
+                        if (entry.suite.id !== activeSuiteId) setSuiteId(entry.suite.id);
+                        setSubPath([]);
+                        openConversation(entry.item.prompt.id);
+                      }}
                     />
-                  </label>
-                ) : (
-                  <h2 className="mt-1 text-2xl tracking-tight text-fg">{draftName}</h2>
-                )}
-                <p className="mt-1 text-xs text-fg-dim">
-                  {tree?.name ?? "Choose a workspace"} · {stages.length} suite{stages.length === 1 ? "" : "s"}
-                  {dirty ? " · unsaved" : ""}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant={inspectorOpen ? "secondary" : "ghost"}
-                  onClick={() => {
-                    setInspectorTab("policy");
-                    setInspectorOpen(true);
-                  }}
-                  title="Policy, budgets, statuses, definition of done, and station rules"
-                >
-                  Configure pipeline
-                </Button>
-                {workbench && pipelineId !== null && !isNew && (
-                  <Button
-                    size="sm"
-                    variant={showEditor ? "primary" : "secondary"}
-                    disabled={busy || (showEditor && draftName.trim() === "")}
-                    onClick={() => {
-                      if (!showEditor) {
-                        setEditing(true);
-                        return;
+                  }
+                  rules={
+                    <RunConfidenceStrip
+                      bare
+                      policy={policy}
+                      suiteFallbacks={
+                        activeSuiteId === null
+                          ? []
+                          : (view?.defaults.defaultFallbackProviders
+                            ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
+                            ?? [])
                       }
-                      if (!dirty) {
-                        setEditing(false);
-                        return;
+                      stationFallbacks={
+                        resumeItem === null
+                          ? null
+                          : (view?.steps.find((step) => step.promptId === resumeItem.prompt.id)?.fallbackProviders
+                            ?? resumeItem.pipelineRule?.fallbackProviders
+                            ?? null)
                       }
-                      void act(async () => {
-                        await persist(draftName);
-                        setEditing(false);
-                      }, "Pipeline changes saved");
-                    }}
-                  >
-                    {showEditor ? (dirty ? "Save and finish" : "Done editing") : "Edit pipeline"}
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy || !dirty || draftName.trim() === ""}
-                  onClick={() => {
-                    if (pipelineId !== null) {
-                      void act(async () => { await persist(draftName); }, "Pipeline changes saved");
-                      return;
-                    }
-                    setSaveName(draftName === "Untitled pipeline" ? "" : draftName);
-                    setSaveOpen(true);
-                  }}
-                >
-                  {pipelineId === null ? "Save pipeline" : "Save changes"}
-                </Button>
-                {pipelineId !== null && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy || resumable}
-                    onClick={() =>
-                      void act(async () => {
-                        const confirmed = await dialogs.confirm({
-                          title: `Delete ${draftName}?`,
-                          description: "Past runs of this pipeline are removed with it.",
-                          confirmLabel: "Delete",
-                          tone: "danger",
-                          confirmPhrase: draftName,
-                        });
-                        if (!confirmed) return;
-                        await workspaceApi.removePipeline(SERVER_URL, pipelineId);
-                        selectPipeline(null);
-                      }, "Pipeline deleted")
-                    }
-                  >
-                    Delete
-                  </Button>
-                )}
+                      continuation={resumeItem?.continuation ?? null}
+                      waitReason={live?.waitReason ?? null}
+                      occupancyWrapUp={
+                        resumeItem !== null &&
+                        stationOccupancy(resumeItem, console_.runs, view?.active)?.source.type === "wrapup"
+                      }
+                      latestAudit={resumeItem?.latestAudit ?? null}
+                      onOpenTab={openPipelinePanel}
+                    />
+                  }
+                />
               </div>
-            </div>
+            )}
 
-            <RunConfidenceStrip
-              policy={policy}
-              suiteFallbacks={
-                activeSuiteId === null
-                  ? []
-                  : (view?.defaults.defaultFallbackProviders
-                    ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
-                    ?? [])
-              }
-              stationFallbacks={
-                resumeItem === null
-                  ? null
-                  : (view?.steps.find((step) => step.promptId === resumeItem.prompt.id)?.fallbackProviders
-                    ?? resumeItem.pipelineRule?.fallbackProviders
-                    ?? null)
-              }
-              continuation={resumeItem?.continuation ?? null}
-              waitReason={live?.waitReason ?? null}
-              occupancyWrapUp={
-                resumeItem !== null &&
-                stationOccupancy(resumeItem, console_.runs, view?.active)?.source.type === "wrapup"
-              }
-              latestAudit={resumeItem?.latestAudit ?? null}
-              onOpenTab={(tab) => {
-                setInspectorTab(tab);
-                setInspectorOpen(true);
-              }}
-            />
-
-            <PipelineStatusBar
-              status={status}
-              position={runPosition}
-              blockedReason={statusBlocked}
-              recoveryActions={statusBlocked !== null ? recoveryActions : null}
-              busy={busy}
-              onControl={runControl}
-              onExplain={() => {
-                setInspectorTab("policy");
-                setInspectorOpen(true);
-              }}
-            />
+            {(() => {
+              // `/btw` to the station that is working right now. The
+              // conversation continues in Chat, in a tab named after the run.
+              const stationRun = live?.state === "PLAYING"
+                ? console_.runs.find((run) => run.role === "execute" && run.workspace.id === workspaceId && run.source.type === "saved") ?? null
+                : null;
+              if (stationRun === null) return null;
+              return (
+                <BtwBar
+                  key={stationRun.runId}
+                  runId={stationRun.runId}
+                  provider={stationRun.provider}
+                  canInterrupt
+                  trailing={
+                    <Link
+                      className="text-accent hover:underline"
+                      href={`/?thread=${encodeURIComponent(stationRun.runId)}&workspace=${stationRun.workspace.id}`}
+                    >
+                      Open in Chat ›
+                    </Link>
+                  }
+                />
+              );
+            })()}
 
             <PipelineConstellation
               stages={stages}
@@ -1036,11 +1296,16 @@ export function PipelineBoard({
               currentSuiteId={live?.currentSuiteId ?? null}
               pipelineState={live?.state ?? null}
               liveProviders={Object.fromEntries(crew.map((agent) => [agent.id, agent.activity])) as Partial<Record<ProviderId, AgentActivity>>}
-              onSelect={(id) => setSuiteId(id)}
+              onSelect={(id) => {
+                setSuiteId(id);
+                setSubPath([]);
+              }}
             />
 
             {suiteOps === null ? (
-              <p className="text-sm text-fg-dim">Select a suite on the rail to inspect its steps.</p>
+              <p className="text-sm text-fg-dim">
+                {showEditor ? "Tick suites in the sidebar to add them to this pipeline." : "Select a suite above to see its steps."}
+              </p>
             ) : openSubNode !== null ? (
               <SubPipeline
                 trail={subTrail}
@@ -1049,329 +1314,329 @@ export function PipelineBoard({
                 ruleFor={subRuleFor}
                 activeRun={view?.active ?? null}
                 runs={console_.runs}
-                readOnly={pipelineId === null}
-                busy={busy}
+                selectedId={selectedId}
                 onNavigate={(index) => setSubPath((current) => (index === null ? [] : current.slice(0, index + 1)))}
                 onOpen={(promptId) => setSubPath((current) => [...current, promptId])}
-                onConfig={(promptId) => {
-                  setConfigId(promptId);
-                  setInspectorTab("station");
-                  setInspectorOpen(true);
-                }}
-                onUseStationSettings={(promptId) =>
-                  void act(async () => {
-                    if (pipelineId === null) return;
-                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, suiteOps.id, promptId, showEditor);
-                    await refreshFlowchart(suiteOps.id);
-                  }, "Sub-step follows its station again")
-                }
-                onRetry={(promptId) =>
-                  void act(async () => {
-                    await workspaceApi.recover(SERVER_URL, promptId);
-                  }, "Sub-step recovered — play to run it again")
-                }
-                onSkip={(promptId) =>
-                  void act(async () => {
-                    const confirmed = await dialogs.confirm({
-                      title: "Skip this sub-step?",
-                      description: "The pipeline moves straight to the next sub-step. Skipped work is not retried.",
-                      confirmLabel: "Skip sub-step",
-                      tone: "danger",
-                    });
-                    if (!confirmed) return;
-                    await workspaceApi.skipPrompt(SERVER_URL, promptId, "Operator skipped this sub-step.");
-                  }, "Sub-step skipped")
+                onSelect={(promptId) => selectItem(promptId)}
+                renderGate={(item) =>
+                  item.humanIntervention === null ? null : (
+                    <HumanGate
+                      step={item.humanIntervention}
+                      selected={selectedId === item.prompt.id && itemTab === "conversation"}
+                      onOpen={() => openConversation(item.prompt.id)}
+                    />
+                  )
                 }
               />
             ) : (
               <div className="space-y-4" key={activeSuiteId ?? "none"}>
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">
-                    {suiteOps.programName} · {showEditor ? "flowchart" : "steps"}
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs uppercase tracking-[0.18em] text-fg-dim">
+                      {suiteOps.programName} · {showEditor ? "compose" : layout === "list" ? "list" : "flow"}
+                    </div>
+                    <h3 className="mt-1 truncate text-lg text-fg">
+                      {suiteOps.key !== null && <span className="text-fg-muted">{suiteOps.key} — </span>}
+                      {suiteOps.name}
+                    </h3>
                   </div>
-                  <h3 className="mt-1 text-lg text-fg">
-                    {suiteOps.key !== null && `${suiteOps.key} — `}
-                    {suiteOps.name}
-                  </h3>
-                  <p className="mt-1 text-xs text-fg-dim">
-                    {showEditor
-                      ? "Drag to set order. Only incomplete work items appear in Add remaining. Completed and skipped count as done."
-                      : "Steps configured for this pipeline. Edit pipeline to change suites or wiring."}
-                  </p>
+                  {layout === "flow" && pipelineId !== null && (
+                    <button
+                      type="button"
+                      onClick={() => setHideCompleted((current) => !current)}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      {hideCompleted ? "Show completed" : "Hide completed"}
+                    </button>
+                  )}
                 </div>
 
                 {pipelineId === null ? (
                   <p className="text-sm text-fg-dim">Save this pipeline first, then add steps to each suite.</p>
                 ) : (
                   <>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-[10px] uppercase tracking-wider text-fg-dim">Flowchart steps</div>
-                  <button
-                    type="button"
-                    onClick={() => setHideCompleted((current) => !current)}
-                    className="text-[11px] text-accent hover:underline"
-                  >
-                    {hideCompleted ? "Show completed" : "Hide completed"}
-                  </button>
-                </div>
-
-                {showEditor && view?.available.length ? (
-                  <div>
-                    <div className="mb-2 text-[10px] uppercase tracking-wider text-fg-dim">Add remaining work</div>
-                    <div className="flex flex-wrap gap-2">
-                      {view.available.map((prompt) => (
-                        <button
-                          key={prompt.id}
-                          type="button"
-                          disabled={busy}
-                          onClick={() =>
-                            void act(async () => {
-                              const result = await workspaceApi.addPipelineFlowchartStep(
-                                SERVER_URL,
-                                pipelineId,
-                                suiteOps.id,
-                                { promptId: prompt.id, provider: firstAvailable },
-                                true,
-                              );
-                              setView(result.flowchart);
-                              setViewSuiteId(suiteOps.id);
-                            })
-                          }
-                          className="rounded-full px-3 py-1 text-xs text-fg-muted ring-1 ring-inset ring-line hover:bg-surface-2 hover:text-fg"
-                        >
-                          + {prompt.externalKey ?? prompt.title}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {displayedSteps.length === 0 ? (
-                  <div className="rounded-panel border border-dashed border-line bg-surface-1/70 px-6 py-12 text-center text-sm text-fg-dim">
-                    {hideCompleted
-                      ? "No incomplete steps on this flowchart. Show completed or add remaining work above."
-                      : showEditor
-                        ? "This suite has no steps on this pipeline yet. Add remaining work items above."
-                        : "This suite has no steps on this pipeline yet. Edit pipeline to add steps."}
-                  </div>
-                ) : (
-                  <SnakeFlow
-                    items={displayedSteps}
-                    getKey={(entry) => entry.kind === "prompt" ? `prompt-${entry.step.promptId}` : entry.step.id}
-                    isLiveIndex={(index) => {
-                      const entry = displayedSteps[index];
-                      return entry?.kind === "prompt" && view?.active?.currentPromptId === entry.step.promptId;
-                    }}
-                    wrapItem={
-                      showEditor
-                        ? (node, entry) => entry.kind === "human" ? node : (
-                      <div
-                        className="h-full min-w-0 w-full"
-                        draggable
-                        onDragStart={() => setDragId(entry.step.promptId)}
-                        onDragOver={(event) => event.preventDefault()}
-                        onDrop={() => {
-                          if (dragId === null || dragId === entry.step.promptId || pipelineId === null) return;
-                          const ids = steps.map((entry) => entry.promptId);
-                          const from = ids.indexOf(dragId);
-                          const to = ids.indexOf(entry.step.promptId);
-                          if (from === -1 || to === -1) return;
-                          ids.splice(from, 1);
-                          ids.splice(to, 0, dragId);
-                          setDragId(null);
-                          void act(async () => {
-                            const result = await workspaceApi.reorderPipelineFlowchartSteps(
-                              SERVER_URL,
-                              pipelineId,
-                              suiteOps.id,
-                              ids,
-                              true,
-                            );
-                            setView(result.flowchart);
-                            setViewSuiteId(suiteOps.id);
-                          });
-                        }}
-                      >
-                        {node}
+                    {showEditor && view?.available.length ? (
+                      <div className="rounded-panel border border-dashed border-line bg-surface-1 p-3">
+                        <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Add remaining work</div>
+                        <div className="flex flex-wrap gap-2">
+                          {view.available.map((prompt) => (
+                            <button
+                              key={prompt.id}
+                              type="button"
+                              disabled={anyBusy}
+                              onClick={() =>
+                                void act(async () => {
+                                  const result = await workspaceApi.addPipelineFlowchartStep(
+                                    SERVER_URL,
+                                    pipelineId,
+                                    suiteOps.id,
+                                    { promptId: prompt.id, provider: firstAvailable },
+                                    true,
+                                  );
+                                  setView(result.flowchart);
+                                  setViewSuiteId(suiteOps.id);
+                                })
+                              }
+                              className="rounded-full px-3 py-1 text-xs text-fg-muted ring-1 ring-inset ring-line hover:bg-surface-2 hover:text-fg"
+                            >
+                              + {prompt.externalKey ?? prompt.title}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    )
-                        : undefined
-                    }
-                    renderCard={(entry, index) => {
-                      if (entry.kind === "human") {
-                        return (
-                          <HumanInterventionNode
-                            step={entry.step}
-                            busy={busy}
-                            onRespond={(content) => act(async () => {
-                              await workspaceApi.respond(SERVER_URL, entry.step.promptId, content);
-                            }, "Human response recorded")}
-                          />
-                        );
-                      }
-                      const step = entry.step;
-                      const item = byId.get(step.promptId);
-                      if (item === undefined) return null;
-                      const liveRun = stationOccupancy(item, console_.runs, view?.active);
-                      const current = view?.active?.currentPromptId === step.promptId;
-                      const doneChildren = item.children.filter(
-                        (child) => child.operationalState === "DONE" || child.operationalState === "SKIPPED",
-                      ).length;
-                      return (
-                        <StationCard
-                          index={index}
-                          item={item}
-                          rule={step}
-                          current={current}
-                          occupancy={liveRun}
-                          readOnly={!showEditor}
-                          subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
-                          onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
-                          onConfig={() => {
-                            setConfigId(step.promptId);
-                            setInspectorTab("station");
-                            setInspectorOpen(true);
-                          }}
-                          onRetry={
-                            item.prompt.recoverable
-                              ? () =>
-                                  void act(async () => {
-                                    await workspaceApi.recover(SERVER_URL, step.promptId);
-                                  }, "Station recovered — play to run it again")
-                              : undefined
-                          }
-                          onRemove={
-                            showEditor
-                              ? () =>
-                                  void act(async () => {
-                                    const result = await workspaceApi.removePipelineFlowchartStep(
-                                      SERVER_URL,
-                                      pipelineId,
-                                      suiteOps.id,
-                                      step.promptId,
-                                      true,
-                                    );
-                                    setView(result.flowchart);
-                                    setViewSuiteId(suiteOps.id);
-                                  })
-                              : undefined
-                          }
-                        />
-                      );
-                    }}
-                  />
-                )}
+                    ) : null}
+
+                    {layout === "list" && !showEditor ? (
+                      <WorkList
+                        items={listItems}
+                        filter={filter}
+                        selectedId={selectedId}
+                        currentId={view?.active?.currentPromptId ?? null}
+                        onFilterChange={setFilter}
+                        onSelect={(promptId) => selectItem(promptId)}
+                      />
+                    ) : displayedSteps.length === 0 ? (
+                      <div className="rounded-panel border border-dashed border-line bg-surface-1 px-6 py-12 text-center text-sm text-fg-dim">
+                        {hideCompleted
+                          ? "No unfinished steps. Show completed to see the rest."
+                          : showEditor
+                            ? "This suite has no steps on this pipeline yet. Add remaining work above."
+                            : "This suite has no steps on this pipeline yet. Edit the pipeline to add some."}
+                      </div>
+                    ) : (
+                      <SnakeFlow
+                        items={displayedSteps}
+                        getKey={(step) => `prompt-${step.promptId}`}
+                        isLiveIndex={(index) => view?.active?.currentPromptId === displayedSteps[index]?.promptId}
+                        renderGate={(step) => {
+                          const gate = byId.get(step.promptId)?.humanIntervention ?? null;
+                          return gate === null ? null : (
+                            <HumanGate
+                              step={gate}
+                              selected={selectedId === step.promptId && itemTab === "conversation"}
+                              onOpen={() => openConversation(step.promptId)}
+                            />
+                          );
+                        }}
+                        wrapItem={
+                          showEditor
+                            ? (node, step) => (
+                                <div
+                                  className="h-full min-w-0 w-full cursor-grab active:cursor-grabbing"
+                                  draggable
+                                  onDragStart={() => setDragId(step.promptId)}
+                                  onDragOver={(event) => event.preventDefault()}
+                                  onDrop={() => {
+                                    if (dragId === null || dragId === step.promptId) return;
+                                    const ids = steps.map((entry) => entry.promptId);
+                                    const from = ids.indexOf(dragId);
+                                    const to = ids.indexOf(step.promptId);
+                                    if (from === -1 || to === -1) return;
+                                    ids.splice(from, 1);
+                                    ids.splice(to, 0, dragId);
+                                    setDragId(null);
+                                    void act(async () => {
+                                      const result = await workspaceApi.reorderPipelineFlowchartSteps(SERVER_URL, pipelineId, suiteOps.id, ids, true);
+                                      setView(result.flowchart);
+                                      setViewSuiteId(suiteOps.id);
+                                    });
+                                  }}
+                                >
+                                  {node}
+                                </div>
+                              )
+                            : undefined
+                        }
+                        renderCard={(step, index) => {
+                          const item = byId.get(step.promptId);
+                          if (item === undefined) return null;
+                          const doneChildren = item.children.filter(isTerminal).length;
+                          return (
+                            <StationCard
+                              index={index}
+                              item={item}
+                              rule={step}
+                              current={view?.active?.currentPromptId === step.promptId}
+                              occupancy={stationOccupancy(item, console_.runs, view?.active)}
+                              selected={selectedId === step.promptId && panelOpen && panelMode === "item"}
+                              readOnly={!showEditor}
+                              subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
+                              onSelect={() => selectItem(step.promptId)}
+                              onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
+                              onRemove={
+                                showEditor
+                                  ? () =>
+                                      void act(async () => {
+                                        const result = await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, suiteOps.id, step.promptId, true);
+                                        setView(result.flowchart);
+                                        setViewSuiteId(suiteOps.id);
+                                        if (selectedId === step.promptId) closePanel();
+                                      })
+                                  : undefined
+                              }
+                            />
+                          );
+                        }}
+                      />
+                    )}
                   </>
                 )}
               </div>
             )}
+
+            <p className="hidden pt-2 text-xs text-fg-dim xl:block">
+              <Kbd>j</Kbd>/<Kbd>k</Kbd> move · <Kbd>r</Kbd> reply · <Kbd>Space</Kbd> play/pause · <Kbd>Esc</Kbd> close panel
+            </p>
           </div>
         </section>
 
-        {inspectorOpen ? (
-          <PipelineInspector
-            open={inspectorOpen}
-            tab={inspectorTab}
-            onTabChange={setInspectorTab}
-            onClose={() => {
-              setInspectorOpen(false);
-              setConfigId(null);
-            }}
-            status={status}
-            policy={policy}
-            stationLabel={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
-            suiteId={activeSuiteId}
-            pipelineId={pipelineId}
-            suiteFallbackProviders={
-              activeSuiteId === null
-                ? []
-                : (view?.defaults.defaultFallbackProviders
-                  ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
-                  ?? [])
-            }
-            onSuiteFallbacksChanged={() => {
-              if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
-              void refreshCatalog();
-            }}
-            onStatusesChanged={() => void refreshCatalog()}
-            onSettingsSaved={() => void refreshCatalog()}
-            onEditStationFromSummary={
-              resumeItem === null
-                ? undefined
-                : () => {
-                    setConfigId(resumeItem.prompt.id);
-                    setInspectorTab("station");
-                  }
-            }
-            station={
-              configId !== null && configRule !== null && configNode !== null
-                ? {
-                    rule: configRule,
-                    item: configNode,
-                    subStep: configIsSubStep,
-                    inherited: configInherited,
-                    providers: console_.providers,
-                    models,
-                    onUseStationSettings:
-                      configIsSubStep && !configInherited
-                        ? () =>
-                            void act(async () => {
-                              if (pipelineId === null || activeSuiteId === null) return;
-                              await workspaceApi.removePipelineFlowchartStep(
-                                SERVER_URL,
-                                pipelineId,
-                                activeSuiteId,
-                                configId,
-                                showEditor,
-                              );
-                              await refreshFlowchart(activeSuiteId);
-                            }, "Sub-step follows its station again")
-                        : undefined,
-                    onChange: (patch) =>
-                      void act(async () => {
-                        if (pipelineId === null) return;
-                        await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, configId, patch);
-                        if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
-                      }),
-                  }
-                : null
-            }
-          />
-        ) : (
-          <aside
-            className={cn(
-              "min-h-0 overflow-y-auto border-t border-line bg-surface-1 p-3 lg:border-t-0 xl:border-l",
-              archiveOpen ? "block" : "hidden xl:block",
-            )}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-[10px] uppercase tracking-[0.18em] text-fg-dim">Mission log</div>
-              <button
-                type="button"
-                className="text-[11px] text-fg-dim xl:hidden"
-                onClick={() => setArchiveOpen(false)}
-              >
-                Hide
+        {/* One side panel, two modes: the selected item, or the pipeline.
+            Docked on xl; a sheet over the board below that. */}
+        <DetailDrawer
+          open={panelOpen}
+          onClose={closePanel}
+          label={panelMode === "item" ? "Item details" : "Pipeline details"}
+          header={
+            <div className="app-detail-tabs" role="tablist" aria-label="Details">
+              <button type="button" role="tab" aria-selected={panelMode === "item"} disabled={selectedItem === null} onClick={() => setPanelMode("item")}>
+                {selectedItem === null ? "Item" : (selectedItem.prompt.externalKey ?? "Item")}
+              </button>
+              <button type="button" role="tab" aria-selected={panelMode === "pipeline"} onClick={() => setPanelMode("pipeline")}>
+                Pipeline
               </button>
             </div>
-            {pipelineId === null ? (
-              <p className="text-xs leading-relaxed text-fg-dim">Save a pipeline to keep a history of every run.</p>
-            ) : (
-              <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
-            )}
-          </aside>
-        )}
+          }
+        >
+          <div className="flex min-h-0 flex-1 flex-col">
+                {panelMode === "item" && selectedItem !== null ? (
+                  <StationPanel
+                    key={selectedItem.prompt.id}
+                    suite={suiteOps}
+                    item={selectedItem}
+                    parent={selectedParent}
+                    statusCatalog={snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG}
+                    triggerSentences={snapshot?.triggerSentences ?? DEFAULT_TRIGGER_SENTENCES}
+                    revision={`${console_.operationsRevision}:${selectedItem.lastActivityAt}:${selectedItem.operationalState}`}
+                    actions={stationActions}
+                    tab={itemTab}
+                    onTabChange={setItemTab}
+                    focusSignal={focusSignal}
+                    onFocusComposer={() => openConversation(selectedItem.prompt.id)}
+                    running={stationOccupancy(selectedItem, console_.runs, view?.active) !== null}
+                    verifying={console_.runs.some((run) => run.source.type === "verification" && run.source.suiteId === suiteOps?.id)}
+                    onSelect={(promptId) => selectItem(promptId)}
+                    onOpenSubSteps={
+                      selectedItem.children.length > 0
+                        ? () => setSubPath(ancestorIdsForPrompt(suiteOps?.prompts ?? [], selectedItem.prompt.id).concat(selectedItem.prompt.id))
+                        : undefined
+                    }
+                    configContent={
+                      pipelineId !== null && configRule !== null ? (
+                        <StepConfigForm
+                          rule={configRule}
+                          item={selectedItem}
+                          subStep={configIsSubStep}
+                          inherited={configInherited}
+                          providers={console_.providers}
+                          models={models}
+                          policy={policy}
+                          onUseStationSettings={
+                            configIsSubStep && !configInherited
+                              ? () =>
+                                  void act(async () => {
+                                    if (activeSuiteId === null) return;
+                                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, activeSuiteId, selectedItem.prompt.id, showEditor);
+                                    await refreshFlowchart(activeSuiteId);
+                                  }, "Sub-step follows its station again")
+                              : undefined
+                          }
+                          onChange={(patch) =>
+                            void act(async () => {
+                              await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, patch);
+                              if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+                            })
+                          }
+                        />
+                      ) : undefined
+                    }
+                  />
+                ) : (
+                  <PipelineInspector
+                    open
+                    tab={pipelineTab === "station" ? "history" : pipelineTab}
+                    onTabChange={setPipelineTab}
+                    status={status}
+                    policy={policy}
+                    stationLabel={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
+                    suiteId={activeSuiteId}
+                    pipelineId={pipelineId}
+                    suiteFallbackProviders={
+                      activeSuiteId === null
+                        ? []
+                        : (view?.defaults.defaultFallbackProviders
+                          ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
+                          ?? [])
+                    }
+                    onSuiteFallbacksChanged={() => {
+                      if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
+                      void refreshCatalog();
+                    }}
+                    onStatusesChanged={() => void refreshCatalog()}
+                    onSettingsSaved={() => void refreshCatalog()}
+                    onEditStationFromSummary={resumeItem === null ? undefined : () => selectItem(resumeItem.prompt.id, "config")}
+                    history={
+                      pipelineId === null ? (
+                        <p className="text-xs leading-relaxed text-fg-dim">Save a pipeline to keep a history of every run.</p>
+                      ) : (
+                        <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
+                      )
+                    }
+                    verification={
+                      suiteOps === null ? undefined : (
+                        <VerificationPanel
+                          key={suiteOps.id}
+                          suite={suiteOps}
+                          provider={preferredProvider}
+                          model={models.resolve(preferredProvider)}
+                          workspaceBusy={occupancy !== null}
+                          focusRecordId={focusRecordId}
+                          onFocusHandled={() => setFocusRecordId(null)}
+                        />
+                      )
+                    }
+                  />
+                )}
+              </div>
+        </DetailDrawer>
       </div>
 
-      {!archiveOpen && !inspectorOpen && (
-        <button
-          type="button"
-          onClick={() => setArchiveOpen(true)}
-          className="fixed right-3 bottom-16 z-20 rounded-full bg-surface-2 px-3 py-1.5 text-[11px] text-fg ring-1 ring-inset ring-line xl:hidden"
-        >
-          Mission log
-        </button>
+      {!panelOpen && (
+        <DetailReopen onClick={() => {
+            setPanelOpen(true);
+            if (selectedItem === null) setPanelMode("pipeline");
+          }}>
+          {inboxEntries.length > 0 ? `${inboxEntries.length} need you · details` : "Show details"}
+        </DetailReopen>
       )}
+
+      <UnsavedChangesGuard
+        dirty={showEditor && dirty}
+        onDiscard={discardStoredDraft}
+        what={draftName.trim() === "" ? "this pipeline" : `“${draftName.trim()}”`}
+        onSave={async () => {
+          if (draftName.trim() === "") {
+            toast.error("Name this pipeline first.");
+            return false;
+          }
+          try {
+            await persist(draftName);
+            return true;
+          } catch (error) {
+            toast.error("Could not save the pipeline", error instanceof Error ? error.message : String(error));
+            return false;
+          }
+        }}
+      />
 
       {saveOpen && (
         <Modal
@@ -1386,7 +1651,7 @@ export function PipelineBoard({
               </Button>
               <Button
                 variant="primary"
-                disabled={busy || saveName.trim() === ""}
+                disabled={anyBusy || saveName.trim() === ""}
                 onClick={() =>
                   void act(async () => {
                     const saved = await persist(saveName);
@@ -1409,9 +1674,41 @@ export function PipelineBoard({
           />
         </Modal>
       )}
-
-    </main>
+    </div>
   );
+}
+
+type BoardLayout = "flow" | "list";
+
+function positiveInt(raw: string | null): number | null {
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function LayoutToggle({ value, onChange }: { value: BoardLayout; onChange(next: BoardLayout): void }) {
+  return (
+    <div className="hidden rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line sm:flex" role="radiogroup" aria-label="Layout">
+      {(["flow", "list"] as const).map((option) => (
+        <button
+          key={option}
+          type="button"
+          role="radio"
+          aria-checked={value === option}
+          onClick={() => onChange(option)}
+          className={cn(
+            "rounded px-2.5 py-1 text-xs capitalize transition-colors",
+            value === option ? "bg-surface-3 text-fg shadow-sm" : "text-fg-dim hover:text-fg",
+          )}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return <kbd className="rounded border border-line bg-surface-2 px-1 font-mono text-xs text-fg-muted">{children}</kbd>;
 }
 
 function CrewStrip({
@@ -1426,51 +1723,6 @@ function CrewStrip({
           <AgentAvatar provider={agent.id} size={26} activity={agent.activity} />
         </span>
       ))}
-    </div>
-  );
-}
-
-function HumanInterventionNode({
-  step,
-  busy,
-  onRespond,
-}: {
-  step: HumanInterventionStep;
-  busy: boolean;
-  onRespond(content: string): Promise<void>;
-}) {
-  const [response, setResponse] = useState("");
-  const complete = step.status === "COMPLETE";
-  return (
-    <div className={cn("relative h-full min-w-0 rounded-panel border p-3", complete ? "border-success/40 bg-success/5" : "border-warning/50 bg-warning/5 ring-1 ring-warning/20")}>
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-[13px] text-fg">Human intervention</div>
-          <div className="mt-0.5 text-[10px] uppercase tracking-wider text-fg-dim">Required before AI continues</div>
-        </div>
-        <Badge tone={complete ? "success" : "warning"}>{complete ? "Responded" : "Action required"}</Badge>
-      </div>
-      <div className="mt-3 whitespace-pre-wrap text-xs leading-5 text-fg-muted">{step.requiredAction}</div>
-      {complete ? (
-        <div className="mt-3 border-t border-line pt-3 text-xs leading-5 text-fg-dim">
-          <span className="text-fg-muted">Human response:</span> {step.response}
-        </div>
-      ) : (
-        <div className="mt-3 space-y-2">
-          <label className="block text-[11px] text-fg-muted" htmlFor={`${step.id}-response`}>Your response or decision</label>
-          <textarea
-            id={`${step.id}-response`}
-            value={response}
-            onChange={(event) => setResponse(event.target.value)}
-            rows={4}
-            placeholder="Record the decision or action taken…"
-            className="w-full resize-y rounded-md border border-line bg-surface-2 px-2.5 py-2 text-xs text-fg outline-none focus:border-warning"
-          />
-          <Button size="sm" variant="primary" disabled={busy || response.trim() === ""} onClick={() => void onRespond(response.trim())}>
-            Submit response
-          </Button>
-        </div>
-      )}
     </div>
   );
 }

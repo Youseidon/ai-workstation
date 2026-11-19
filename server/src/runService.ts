@@ -1,7 +1,9 @@
+import { permissionForRun } from "./settings.ts";
+import { compatibleSession, conversationContext } from "./conversationContext.ts";
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { classifyFailure, INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@agent-console/shared";
+import { classifyFailure, INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type NormalizedEvent, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@agent-console/shared";
 import { detectProviders, getAdapter, resolveProviderModel } from "./adapters/registry.ts";
 import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "./agentContext.ts";
 import { programAuthorPrompt, programRevisionPrompt } from "./programAuthor.ts";
@@ -25,6 +27,8 @@ const CONSULT_LIMIT = 3;
 const log = createLogger("run");
 
 export interface StartExecuteArgs {
+  clientRequestId?: string;
+  freshContext?: boolean;
   workspaceId: number;
   provider: string;
   model: string | null;
@@ -37,9 +41,16 @@ export interface StartExecuteArgs {
   /** Provider-neutral Chat thread containing this custom turn. */
   threadId?: string;
   pipelineRunId?: string;
+  /**
+   * "Interrupt & deliver now": continue this saved item's interrupted provider
+   * session with the operator's note instead of re-sending the whole context.
+   */
+  redirect?: { sessionId: string; text: string };
 }
 
 export interface StartConsultArgs {
+  clientRequestId?: string;
+  freshContext?: boolean;
   workspaceId: number;
   provider: string;
   model: string | null;
@@ -48,9 +59,12 @@ export interface StartConsultArgs {
   question?: string;
   /** Ask about a whole program: its items, order, rules and pipelines. */
   programId?: number;
+  threadId?: string;
 }
 
 export interface StartProgramAuthorArgs {
+  clientRequestId?: string;
+  freshContext?: boolean;
   workspaceId: number;
   provider: string;
   model: string | null;
@@ -65,6 +79,8 @@ export interface StartProgramAuthorArgs {
 }
 
 export interface StartInstructionAuthorArgs {
+  clientRequestId?: string;
+  freshContext?: boolean;
   workspaceId: number;
   provider: string;
   model: string | null;
@@ -100,11 +116,18 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const prompt = args.prompt;
   const promptId = args.promptId;
   const question = args.question;
-  const resumeSessionId = args.resumeSessionId?.trim() || null;
+  const history = args.threadId && !args.freshContext ? workspaces.conversationHistory(args.workspaceId, args.threadId) : [];
+  const latest = history.at(-1);
+  // A native writable session is reusable only for the immediately preceding
+  // turn with the same provider and permission class. Otherwise hand off history.
+  let resumeSessionId = !args.threadId ? args.resumeSessionId?.trim() || null : latest?.provider === args.provider && latest.role === "execute" && latest.sessionId === args.resumeSessionId
+    ? args.resumeSessionId?.trim() || null : null;
   const threadId = args.threadId?.trim() || null;
   const pipelineManaged = args.pipelineRunId !== undefined;
 
-  if (resumeSessionId !== null && (mode !== "execute" || typeof prompt !== "string" || prompt.trim() === "" || promptId !== undefined)) {
+  const redirect = args.redirect !== undefined && promptId !== undefined && mode === "execute" && args.pipelineRunId !== undefined ? args.redirect : null;
+  if (redirect !== null) resumeSessionId = redirect.sessionId;
+  if (resumeSessionId !== null && redirect === null && (mode !== "execute" || typeof prompt !== "string" || prompt.trim() === "" || promptId !== undefined)) {
     throw new WorkspaceError(422, "invalid_session_resume", "Only a custom execute prompt can continue a provider session.");
   }
 
@@ -146,6 +169,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const providerInfo = await requireAvailableProvider(providerId);
   const provider = providerInfo.id;
   const model = resolveProviderModel(providerInfo, args.model);
+  const permissionKey = JSON.stringify(permissionForRun(provider, "inherit"));
+  if (threadId) resumeSessionId = compatibleSession(latest, provider, model, "execute", permissionKey);
 
   let resolvedPrompt: string;
   let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
@@ -213,7 +238,23 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       // serve as a cached prompt prefix, and led agents to fetch it more than
       // once and re-read a saved copy — three copies of the same text in one
       // transcript. The endpoint stays for refreshes and for the Progress API.
-      resolvedPrompt = [
+      // A resumed session already holds the work item; what it lacks is the
+      // note and this run's credentials (the old launcher was revoked with
+      // the old run).
+      if (redirect !== null) resolvedPrompt = [
+        "# Message from the operator",
+        "",
+        "You were interrupted so this message reaches you now. It overrides earlier instructions where they disagree.",
+        "",
+        redirect.text,
+        "",
+        "---",
+        "",
+        `Continue work item ${record.externalKey ?? record.title} in light of it. This run has new credentials: from now on use only the launcher below; the one from earlier in this conversation no longer works.`,
+        "",
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: true, canAsk: false, shimPath:executeShimPath }),
+      ].join("\n");
+      else resolvedPrompt = [
         `# Execute saved work item ${record.externalKey ?? record.title}`,
         "",
         "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit — this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Bank what you verify as you go, and report your own outcome before finishing.",
@@ -262,6 +303,9 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     }
   }
 
+  if (threadId && !resumeSessionId && !args.freshContext) resolvedPrompt += `
+
+${conversationContext(history)}`;
   let clarificationAnswer = "";
   let executionAnswer = "";
   // A clarification writes nothing, so it claims no repository — but its
@@ -429,6 +473,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   // run_started by refetching never reads a stale STARTING row.
   if (activeContextRunId !== null) workspaces.markAgentRunRunning(handle.runId);
   runHub.start({
+    clientRequestId: args.clientRequestId,
     handle,
     workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
     source: savedPrompt === null
@@ -439,6 +484,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     role: "execute",
     permissionMode: handle.permissionMode,
   });
+  if (threadId) { const contextEvent: NormalizedEvent = { id: newId("evt"), runId: plannedRunId, provider, model, timestamp: new Date().toISOString(), type: "status", payload: {state: "starting", elapsedMs: 0, usage: null, detail: null, conversation: { permissionKey, context: args.freshContext ? "Fresh conversation requested" : conversationContext(history), nativeSessionId: resumeSessionId }} }; workspaces.recordAgentEvent(plannedRunId, contextEvent); runHub.event(plannedRunId, contextEvent); }
   void handle.done.catch((error: unknown) => log.error("run failed", error));
   return { runId: handle.runId };
 }
@@ -777,6 +823,10 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     ? questionText
     : `Research ${savedPrompt!.externalKey ?? savedPrompt!.title}`;
 
+  const history = args.threadId && !args.freshContext ? workspaces.conversationHistory(workspaceId, args.threadId) : [];
+  const context = args.threadId ? conversationContext(history) : "";
+  const permissionKey = JSON.stringify(permissionForRun(provider, "consult"));
+  const nativeSessionId = compatibleSession(history.at(-1), provider, model, "consult", permissionKey);
   const plannedRunId = newId("run");
   const promptId = savedPrompt?.id ?? null;
   const credential = runContexts.create(plannedRunId, workspaceId, promptId, undefined, question, program?.id ?? null);
@@ -790,6 +840,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
       tokenHash: credential.tokenHash,
       expiresAt: credential.expiresAt,
       displayText: question,
+      threadId: args.threadId,
     });
   } catch (error) {
     runContexts.revoke(plannedRunId);
@@ -808,6 +859,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
   }
 
+  if (context) resolvedPrompt += `\n\n${context}`;
   materialize(workspace);
   const consultShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
   if (consultShimPath !== null) {
@@ -822,6 +874,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     model,
     role: "consult",
     permissionOverride: "consult",
+    resumeSessionId: nativeSessionId,
     onEvent: (event) => {
       workspaces.recordAgentEvent(plannedRunId, event);
       runHub.event(plannedRunId, event);
@@ -835,9 +888,10 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
   });
   workspaces.markAgentRunRunning(handle.runId);
   runHub.start({
+    clientRequestId: args.clientRequestId,
     handle,
     workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
-    source: {
+    source: args.threadId ? { type: "custom", displayText: question, threadId: args.threadId, title: question } : {
       type: "consult",
       promptId,
       promptKey: savedPrompt?.externalKey ?? program?.externalKey ?? null,
@@ -847,6 +901,7 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
     role: "consult",
     permissionMode: handle.permissionMode,
   });
+  if (context) { const contextEvent: NormalizedEvent = { id: newId("evt"), runId: plannedRunId, provider, model, timestamp: new Date().toISOString(), type: "status", payload: { state: "starting", elapsedMs: 0, usage: null, detail: null, conversation: { permissionKey, context, nativeSessionId } } }; workspaces.recordAgentEvent(plannedRunId, contextEvent); runHub.event(plannedRunId, contextEvent); }
   void handle.done.catch((error: unknown) => log.error("consult failed", error));
   return { runId: handle.runId };
 }

@@ -1,15 +1,8 @@
 import { redirect } from "next/navigation";
+import { legacyTarget, type SearchParams } from "@/lib/legacyRedirect";
 
-export default async function OperationsRedirect({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
+/** Operations merged into Pipeline; a linked item or suite resolves like a Tasks link. */
+export default async function OperationsRedirect({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
-  const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (typeof v === "string") q.set(k, v);
-  }
-  const qs = q.toString();
-  redirect(qs ? `/tasks?${qs}` : "/tasks");
+  redirect(Object.keys(params).length === 0 ? "/pipeline" : legacyTarget("/pipeline/open", params));
 }

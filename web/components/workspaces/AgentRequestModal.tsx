@@ -47,7 +47,7 @@ export function AgentRequestModal({ serverUrl, tree, target, mode, onClose, onPr
         onProposalOpened={onProposalOpened}
       />
       {newProgram && onCreateEmptyProgram !== undefined && (
-        <p className="mt-4 border-t border-line pt-3 text-[11px] text-fg-dim">
+        <p className="mt-4 border-t border-line pt-3 text-xs text-fg-dim">
           Already know the structure?{" "}
           <button type="button" className="text-accent hover:underline" onClick={onCreateEmptyProgram}>
             Create an empty program

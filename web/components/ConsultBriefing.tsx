@@ -48,8 +48,8 @@ export function ConsultBriefing({
         onClick={() => setExpanded((value) => !value)}
         className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-left"
       >
-        <span aria-hidden className="text-[10px] text-fg-dim">{expanded ? "▾" : "▸"}</span>
-        <span className="text-[10px] uppercase tracking-wider text-fg-dim">Asking</span>
+        <span aria-hidden className="text-xs text-fg-dim">{expanded ? "▾" : "▸"}</span>
+        <span className="text-xs uppercase tracking-wider text-fg-dim">Asking</span>
         {tabs.map((tab) => {
           const tabTheme = providerTheme[tab.provider];
           const isActive = tab.runId === active.runId;
@@ -63,7 +63,7 @@ export function ConsultBriefing({
                 setExpanded(true);
               }}
               className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset",
+                "rounded-full px-2 py-0.5 text-xs ring-1 ring-inset",
                 isActive ? tabTheme.active : "text-fg-muted ring-transparent",
               )}
             >
@@ -72,7 +72,7 @@ export function ConsultBriefing({
           );
         })}
         {question !== null && (
-          <span className="min-w-0 max-w-[36ch] truncate text-[11px] text-fg-dim" title={question}>
+          <span className="min-w-0 max-w-[36ch] truncate text-xs text-fg-dim" title={question}>
             {question}
           </span>
         )}
@@ -89,7 +89,7 @@ export function ConsultBriefing({
               Stop
             </Button>
           ) : (
-            <span className="text-[10px] uppercase tracking-wider text-fg-dim">{active.state}</span>
+            <span className="text-xs uppercase tracking-wider text-fg-dim">{active.state}</span>
           )}
         </span>
       </button>

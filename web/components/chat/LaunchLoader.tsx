@@ -99,7 +99,7 @@ export function LaunchLoader({
                 </span>
                 <span
                   className={cn(
-                    "grid size-4 shrink-0 place-items-center rounded-full text-[9px] ring-1 ring-inset",
+                    "grid size-4 shrink-0 place-items-center rounded-full text-xs ring-1 ring-inset",
                     done ? cn(theme.fill, "text-surface-0 ring-transparent") : active ? cn(theme.text, "ring-current") : "text-fg-dim ring-line",
                   )}
                 >
@@ -107,7 +107,7 @@ export function LaunchLoader({
                 </span>
                 <span className={cn("h-px flex-1", index === STEPS.length - 1 ? "bg-transparent" : index + 1 < current ? "bg-current" : "bg-line", theme.text)} />
               </span>
-              <span className={cn("text-[10px] uppercase tracking-wider", done || active ? "text-fg-muted" : "text-fg-dim")}>{label}</span>
+              <span className={cn("text-xs uppercase tracking-wider", done || active ? "text-fg-muted" : "text-fg-dim")}>{label}</span>
             </li>
           );
         })}
@@ -120,7 +120,7 @@ export function LaunchLoader({
         <span className="skeleton h-2 w-4/5 [animation-delay:0.4s]" />
       </div>
 
-      <p className={cn("text-[11px] text-fg-dim transition-opacity", elapsedMs >= REASSURE_AFTER_MS ? "opacity-100" : "opacity-0")}>
+      <p className={cn("text-xs text-fg-dim transition-opacity", elapsedMs >= REASSURE_AFTER_MS ? "opacity-100" : "opacity-0")}>
         Still going — no need to refresh. The run continues on the server.
       </p>
     </div>

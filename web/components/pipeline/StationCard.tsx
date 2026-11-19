@@ -3,7 +3,6 @@
 import type { OperationsPrompt, PromptPipelineRule } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
 import { LABEL, onUnfinishedChip, onDoneChip, overrideChip, TONE, type stationOccupancy } from "./status";
@@ -13,10 +12,27 @@ export interface SubStepSummary {
   total: number;
 }
 
+/** Fixed so a row of cards never grows with its content. */
+export const STATION_CARD_HEIGHT = 148;
+
+const EDGE: Record<string, string> = {
+  success: "before:bg-success",
+  info: "before:bg-info",
+  warning: "before:bg-warning",
+  caution: "before:bg-caution",
+  danger: "before:bg-danger",
+  accent: "before:bg-accent",
+  violet: "before:bg-violet",
+  neutral: "before:bg-line-strong",
+};
+
 /**
- * One card on a flowchart. Stations and sub-steps use the same card so a
- * nested sub-pipeline reads exactly like the pipeline that spawned it; only
- * the footer actions and the inheritance note differ.
+ * One card on a flowchart. Stations and sub-steps share it so a nested
+ * sub-pipeline reads like the pipeline that spawned it.
+ *
+ * The card is a selector, not a toolbar: clicking it opens the item panel,
+ * where every action lives in one fixed place. Only composing the flowchart
+ * (remove, in edit mode) is done on the card itself.
  */
 export function StationCard({
   index,
@@ -24,13 +40,12 @@ export function StationCard({
   rule,
   current,
   occupancy,
+  selected = false,
   readOnly = false,
   inherited = false,
   subSteps,
+  onSelect,
   onOpenSubPipeline,
-  onConfig,
-  onUseStationSettings,
-  onRetry,
   onRemove,
   removeLabel = "Remove",
 }: {
@@ -39,158 +54,126 @@ export function StationCard({
   rule: PromptPipelineRule;
   current: boolean;
   occupancy: ReturnType<typeof stationOccupancy>;
+  selected?: boolean;
   readOnly?: boolean;
   /** Sub-step only: the rule is the parent station's, not pinned here. */
   inherited?: boolean;
   subSteps?: SubStepSummary;
+  onSelect?(): void;
   onOpenSubPipeline?(): void;
-  onConfig?(): void;
-  /** Sub-step only: drop the override and follow the parent station again. */
-  onUseStationSettings?(): void;
-  /** Offered when a lost agent process left this item needing recovery. */
-  onRetry?(): void;
   onRemove?(): void;
   removeLabel?: string;
 }) {
   const theme = rule.provider === null ? null : providerTheme[rule.provider];
   const who = overrideChip(rule);
   const stuck = stuckNote(item);
-  // Configure / Retry stay available in view mode; only compose actions
-  // (remove, unpin) require the flowchart editor.
-  const canConfigure = onConfig !== undefined;
-  const canRetry = onRetry !== undefined;
   const canRemove = !readOnly && onRemove !== undefined;
-  const canUseStationSettings = !readOnly && inherited === false && onUseStationSettings !== undefined;
-  const hasActions = canConfigure || canRetry || canRemove || canUseStationSettings;
+  const tone = TONE[item.operationalState];
+  const label = item.prompt.externalKey ?? item.prompt.title;
 
   return (
     <div
+      style={{ height: STATION_CARD_HEIGHT }}
       className={cn(
-        "relative flex h-full min-w-0 flex-col rounded-panel border bg-surface-2 p-3",
-        current ? "border-accent/50 ring-1 ring-accent/30" : "border-line",
+        "group relative flex min-w-0 flex-col overflow-hidden rounded-panel border bg-surface-2 transition-[border-color,box-shadow,background-color]",
+        // Status edge: the one colour cue that reads at a glance across a row.
+        "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-['']",
+        EDGE[tone] ?? EDGE.neutral,
+        selected
+          ? "border-accent/70 bg-surface-3 shadow-[0_0_0_1px_var(--color-accent)]"
+          : current
+            ? "border-accent/50 ring-1 ring-accent/30"
+            : "border-line hover:border-line-strong hover:bg-surface-3",
       )}
     >
-      <div className="flex items-start gap-2">
-        {rule.provider !== null ? (
-          <AgentAvatar
-            provider={rule.provider}
-            size={28}
-            activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"}
-          />
-        ) : (
-          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted">
-            {index + 1}
-          </span>
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-[13px] text-fg">{item.prompt.externalKey ?? item.prompt.title}</div>
-              {item.prompt.externalKey !== null && (
-                <div className="truncate text-[11px] text-fg-dim">{item.prompt.title}</div>
+      {/* The whole card is the hit target; inner controls sit above it. */}
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-label={`Open ${label}`}
+        aria-pressed={selected}
+        className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      />
+
+      <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col py-2.5 pr-3 pl-3.5">
+        <div className="flex items-start gap-2">
+          {rule.provider !== null ? (
+            <AgentAvatar
+              provider={rule.provider}
+              size={26}
+              activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"}
+            />
+          ) : (
+            <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs numeric text-fg-muted">
+              {index + 1}
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm leading-5 text-fg" title={label}>{label}</div>
+            <div className="truncate text-xs leading-4 text-fg-dim" title={item.prompt.title}>
+              {item.prompt.externalKey !== null ? item.prompt.title : " "}
+            </div>
+          </div>
+          <Badge tone={tone} pulse={item.operationalState === "WORKING"}>{LABEL[item.operationalState]}</Badge>
+        </div>
+
+        <div className={cn("mt-2 flex min-w-0 items-center gap-1.5 text-xs", theme?.text ?? "text-fg-muted")}>
+          <span className="truncate">{who ?? "No agent — configure"}</span>
+          {inherited && (
+            <span
+              className="shrink-0 rounded-full px-1.5 py-px text-xs uppercase tracking-wider text-fg-dim ring-1 ring-inset ring-line"
+              title="Follows the parent station. Pick an agent in Config to pin one here."
+            >
+              inherited
+            </span>
+          )}
+        </div>
+        <div
+          className="mt-0.5 truncate text-xs text-fg-dim"
+          title={`${onDoneChip(rule.onDone)} · ${onUnfinishedChip(rule)}`}
+        >
+          {onDoneChip(rule.onDone)} · {onUnfinishedChip(rule)}
+          {item.continuation !== null && <> · cont. {item.continuation.attempt}/{item.continuation.of}</>}
+          {rule.fallbackProviders.length > 0 && <> · ↪ {rule.fallbackProviders.join("→")}</>}
+        </div>
+
+        {/* Footer line: exactly one of these, so the card height never moves. */}
+        <div className="mt-auto pt-1.5">
+          {occupancy !== null ? (
+            <div className="flex items-center gap-1.5 text-xs text-info">
+              <AgentAvatar provider={occupancy.provider} size={14} activity="tooling" />
+              {occupancy.source.type === "wrapup" ? "wrapping up" : "running now"}
+            </div>
+          ) : stuck !== null ? (
+            <p className="truncate text-xs text-caution" title={stuck.long}>
+              ⚠ {stuck.short}
+            </p>
+          ) : subSteps !== undefined && subSteps.total > 0 ? (
+            <div className="flex items-center gap-2 text-xs text-fg-muted">
+              <SubStepMeter done={subSteps.done} total={subSteps.total} />
+              <span className="min-w-0 flex-1 truncate">{subSteps.done}/{subSteps.total} sub-steps</span>
+              {item.childAttention !== null && (
+                <span className={cn("shrink-0", item.childAttention === "BLOCKED" ? "text-warning" : "text-caution")}>
+                  {item.childAttentionCount > 1 && `${item.childAttentionCount} `}
+                  {LABEL[item.childAttention].toLowerCase()}
+                </span>
               )}
             </div>
-            <Badge tone={TONE[item.operationalState]}>{LABEL[item.operationalState]}</Badge>
-          </div>
-          <div className={cn("mt-2 flex flex-wrap items-center gap-1.5 text-xs", theme?.text ?? "text-fg-muted")}>
-            <span className="truncate">{who ?? "No agent — open config"}</span>
-            {inherited && (
-              <span
-                className="rounded-full px-1.5 py-px text-[9.5px] uppercase tracking-wider text-fg-dim ring-1 ring-inset ring-line"
-                title="Follows the parent station. Pick an agent here to pin one for this sub-step only."
-              >
-                inherited
-              </span>
-            )}
-          </div>
-          <div className="mt-1 text-[10px] text-fg-dim">
-            {onDoneChip(rule.onDone)} · {onUnfinishedChip(rule)}
-            {item.continuation !== null && (
-              <> · continuation {item.continuation.attempt}/{item.continuation.of}</>
-            )}
-            {rule.fallbackProviders.length > 0 ? (
-              <> · fallbacks {rule.fallbackProviders.join("→")}</>
-            ) : (
-              <> · suite/house fallbacks</>
-            )}
-            {item.latestAudit?.report != null && (
-              <> · audit {item.latestAudit.report.confidence.toLowerCase()}</>
-            )}
-          </div>
-          {occupancy !== null && (
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-fg-muted">
-              <AgentAvatar provider={occupancy.provider} size={16} activity="tooling" />
-              {/* A wrap-up turn is not the work restarting. Saying "running"
-                  for it would have an operator waiting on progress from a run
-                  whose only job is to write down what the last one learned. */}
-              {occupancy.source.type === "wrapup" ? "wrap-up" : "running"}
-            </div>
-          )}
+          ) : item.latestAudit?.report != null ? (
+            <p className="truncate text-xs text-fg-dim">audit · {item.latestAudit.report.confidence.toLowerCase()} confidence</p>
+          ) : null}
         </div>
       </div>
 
-      {stuck !== null && (
-        <p className="mt-2.5 rounded-md bg-caution/10 px-2 py-1.5 text-[11px] leading-4 text-caution ring-1 ring-inset ring-caution/25">
-          {stuck}
-        </p>
-      )}
-
-      {subSteps !== undefined && subSteps.total > 0 && (
-        <button
-          type="button"
-          onClick={onOpenSubPipeline}
-          disabled={onOpenSubPipeline === undefined}
-          className={cn(
-            "mt-2.5 flex w-full items-center gap-2 rounded-md border border-dashed border-line px-2 py-1.5 text-left",
-            onOpenSubPipeline !== undefined && "hover:border-accent/40 hover:bg-surface-3",
-          )}
-        >
-          <SubStepMeter done={subSteps.done} total={subSteps.total} />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted">
-            {subSteps.done}/{subSteps.total} sub-steps done
-          </span>
-          {/* A parent with a failed sub-step used to read only "Waiting", which
-              is true and useless — the trouble was a drill-down away and the
-              card gave no reason to look. */}
-          {item.childAttention !== null && (
-            <Badge tone={TONE[item.childAttention]}>
-              {item.childAttentionCount > 1 && `${item.childAttentionCount} `}
-              {LABEL[item.childAttention].toLowerCase()}
-            </Badge>
-          )}
-          {onOpenSubPipeline !== undefined && (
-            <span className="shrink-0 text-[11px] text-accent">Open ›</span>
-          )}
-        </button>
-      )}
-
-      {hasActions && (
-        <div className="mt-3 flex flex-wrap gap-1">
-          {canRetry && (
-            <Button size="sm" variant="primary" aria-label="Retry this step" onClick={onRetry}>
-              Retry
-            </Button>
-          )}
-          {canConfigure && (
-            <Button size="sm" variant="secondary" aria-label="Configure step" onClick={onConfig}>
-              Config
-            </Button>
-          )}
-          {canUseStationSettings && (
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Use parent station settings"
-              title="Remove this sub-step's agent override. Execution status is unchanged."
-              onClick={onUseStationSettings}
-            >
-              Use station settings
-            </Button>
+      {(onOpenSubPipeline !== undefined || canRemove) && (
+        <div className="absolute top-1.5 right-1.5 z-10 hidden gap-1 group-focus-within:flex group-hover:flex">
+          {onOpenSubPipeline !== undefined && subSteps !== undefined && subSteps.total > 0 && (
+            <CardChip onClick={onOpenSubPipeline} title="Open the sub-step flow">Sub-flow ›</CardChip>
           )}
           {canRemove && (
-            <Button size="sm" variant="ghost" aria-label={removeLabel} onClick={onRemove}>
+            <CardChip onClick={onRemove} title={removeLabel} danger>
               {removeLabel}
-            </Button>
+            </CardChip>
           )}
         </div>
       )}
@@ -198,20 +181,56 @@ export function StationCard({
   );
 }
 
+function CardChip({
+  children,
+  title,
+  danger = false,
+  onClick,
+}: {
+  children: React.ReactNode;
+  title: string;
+  danger?: boolean;
+  onClick?(): void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.();
+      }}
+      className={cn(
+        "rounded-md bg-surface-1 px-2 py-0.5 text-xs shadow-sm ring-1 ring-inset",
+        danger ? "text-danger ring-danger/30 hover:bg-danger/10" : "text-accent ring-line hover:bg-surface-2",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 /**
  * The one line an operator needs when a card is why the rail will not move.
- * Both states hold up every later step, so they must read as actionable rather
- * than as just another status chip.
+ * Short form on the card; the long form is the tooltip and the panel.
  */
-function stuckNote(item: OperationsPrompt): string | null {
-  // "Mark complete" is named in both: the run ending without a status says
-  // nothing about whether the work got done, and re-running an agent to
-  // re-report finished work is the expensive way out of that.
-  if (item.operationalState === "BLOCKED") return "Blocked on a human response. Answer it on the work item, mark it complete if the work is already done, or skip it.";
-  // `recoverable` is broader than the RECOVERY_NEEDED label: it also covers a
-  // run that ended UNREPORTED or FAILED, which display under their own status
-  // but hold up the pipeline the same way and take the same fix.
-  if (item.prompt.recoverable) return "The run stopped without posting a status — a crash, or a spent budget. Retry to continue it, mark it complete if the work is already done, or skip it.";
+function stuckNote(item: OperationsPrompt): { short: string; long: string } | null {
+  if (item.humanIntervention?.status === "PENDING") {
+    return { short: "Waiting on your approval", long: "An approval point after this step needs your decision before the agent continues." };
+  }
+  if (item.operationalState === "BLOCKED") {
+    return {
+      short: "Blocked — needs your answer",
+      long: "Blocked on a human response. Answer it in the Conversation tab, mark it complete if the work is already done, or skip it.",
+    };
+  }
+  // `recoverable` also covers a run that ended UNREPORTED or FAILED — same fix.
+  if (item.prompt.recoverable) {
+    return {
+      short: "Run stopped without a status",
+      long: "The run stopped without posting a status — a crash, or a spent budget. Recover to continue it, mark it complete if the work is already done, or skip it.",
+    };
+  }
   return null;
 }
 

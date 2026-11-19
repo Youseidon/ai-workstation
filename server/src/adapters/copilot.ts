@@ -146,13 +146,14 @@ export class CopilotMapper implements StreamMapper {
   settled = false;
   private usage: TokenUsage | null = null;
   private lastText: string | null = null;
-  /** Message ids that already emitted a delta, so `assistant.message` is a no-op. */
-  private readonly streamed = new Set<string>();
+  /** Accumulated text per message/channel, for exact final reconciliation. */
+  private readonly textBlocks = new Map<string, string>();
   /** Tool name by call id: only `tool.execution_start` carries one. */
   private readonly openTools = new Map<string, string>();
   private readonly closedTools = new Set<string>();
 
   map(value: unknown): AdapterEvent[] {
+    if (this.settled) return [];
     const event = value as CopilotEvent;
     const data = event.data ?? {};
     switch (event.type) {
@@ -201,29 +202,31 @@ export class CopilotMapper implements StreamMapper {
 
   private mapDelta(messageId: string | undefined, text: string, phase: string | undefined): AdapterEvent[] {
     if (messageId === undefined || text === "") return [];
-    const first = !this.streamed.has(messageId);
-    this.streamed.add(messageId);
     const kind = this.blockKind(phase);
-    if (kind === "message") this.lastText = first ? text : (this.lastText ?? "") + text;
+    const blockId = `copilot-msg-${messageId}:${kind}`;
+    const first = !this.textBlocks.has(blockId);
+    const accumulated = (this.textBlocks.get(blockId) ?? "") + text;
+    this.textBlocks.set(blockId, accumulated);
+    if (kind === "message") this.lastText = accumulated;
     return [{
       type: "assistant_text",
-      payload: { blockId: `copilot-msg-${messageId}`, delta: !first, text, kind },
+      payload: { blockId, delta: !first, text, kind },
     }];
   }
 
   /**
-   * The terminal form of a message. When it streamed, the deltas already said
-   * everything — only its `content` is kept, as the run's final answer.
+   * The terminal snapshot is silent when exact, and replaces a corrected block.
    */
   private mapMessage(messageId: string | undefined, text: string, phase: string | undefined): AdapterEvent[] {
     if (messageId === undefined || text === "") return [];
     const kind = this.blockKind(phase);
+    const blockId = `copilot-msg-${messageId}:${kind}`;
     if (kind === "message") this.lastText = text;
-    if (this.streamed.has(messageId)) return [];
-    this.streamed.add(messageId);
+    if (this.textBlocks.get(blockId) === text) return [];
+    this.textBlocks.set(blockId, text);
     return [{
       type: "assistant_text",
-      payload: { blockId: `copilot-msg-${messageId}`, delta: false, text, kind },
+      payload: { blockId, delta: false, text, kind },
     }];
   }
 
@@ -366,7 +369,7 @@ export class CopilotAdapter extends SpawnAdapter {
     // `--resume=<id>` continues it. Verified against GitHub Copilot CLI 1.0.82.
     const resumeSessionId = opts.resumeSessionId ?? null;
     const sessionId = resumeSessionId ?? randomUUID();
-    const args = ["--allow-all-tools", "--output-format", "json", "--no-color", "--no-auto-update"];
+    const args = ["--allow-all-tools", "--output-format", "json", "--stream", "on", "--no-color", "--no-auto-update"];
     // An optional-value flag, so the id has to be attached with `=`.
     args.push(resumeSessionId === null ? `--session-id=${sessionId}` : `--resume=${resumeSessionId}`);
     if (mode === "yolo") args.push("--allow-all");
@@ -397,7 +400,7 @@ export class CopilotAdapter extends SpawnAdapter {
     return { args, env: Object.keys(env).length > 0 ? env : undefined, sessionId };
   }
 
-  protected createMapper(): StreamMapper {
+  protected override createMapper(): StreamMapper {
     return new CopilotMapper();
   }
 }

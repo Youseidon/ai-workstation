@@ -13,10 +13,10 @@
 
 import type { DbAccessPayload } from "@agent-console/shared";
 
-export type DbOperation = "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input";
+export type DbOperation = "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
 
 /** The endpoints that change state. Everything else is a read. */
-const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input"]);
+const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
 
 /**
  * What an accepted call touched.
@@ -39,6 +39,10 @@ const TABLES: Record<DbOperation, string[]> = {
   "propose-suite": ["program_draft"],
   "revise-program": ["program_draft"],
   input: ["agent_run_event"],
+  // `/btw`: reading the inbox marks notes delivered, but that is the agent
+  // receiving mail, not changing the work — it is logged as a read.
+  inbox: [],
+  reply: ["run_message", "agent_run_event"],
 };
 
 export function isDbWrite(operation: DbOperation): boolean {
@@ -123,7 +127,7 @@ export function describeRejectedWrite(args: {
 }
 
 export function describeRead(args: {
-  operation: Extract<DbOperation, "context" | "state">;
+  operation: Extract<DbOperation, "context" | "state" | "inbox">;
   summary: string;
   durationMs: number;
 }): DbAccessPayload {

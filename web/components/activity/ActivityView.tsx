@@ -17,11 +17,11 @@ import {
   type RunSource,
   type TokenUsage,
 } from "@agent-console/shared";
-import { LogPanel } from "@/components/LogPanel";
+import { ConversationPanel } from "@/components/chat/ConversationPanel";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Field";
-import { Skeleton } from "@/components/ui/Spinner";
+import { FilterControl, SidebarCollection, SidebarEmpty, SidebarRow } from "@/components/shell/SidebarCollection";
 import { cn } from "@/lib/cn";
 import { appendPrompt, applyEvent, type LogItem } from "@/lib/log";
 import { SERVER_URL } from "@/lib/serverUrl";
@@ -29,8 +29,6 @@ import { useAgentConsole, type RunStatus } from "@/lib/agentConsole";
 import { useWorkspace } from "@/lib/workspaceContext";
 import { workspaceApi } from "@/lib/workspacesApi";
 import { sessionEndReason } from "@/lib/sessionEndReason";
-
-type Pane = "list" | "detail";
 
 const SESSION_STATES = ["STARTING", "RUNNING", "DONE", "INTERRUPTED", "ERROR"] as const;
 
@@ -206,9 +204,9 @@ function rowFromLiveRun(run: RunStatus): ActivityRow {
 }
 
 function workItemHref(row: ActivityRow): string | null {
-  if (row.promptId !== null) return `/tasks?prompt=${row.promptId}`;
+  if (row.promptId !== null) return `/pipeline/open?prompt=${row.promptId}`;
   if (row.run?.source.type === "verification") {
-    return `/tasks?suite=${row.run.source.suiteId}`;
+    return `/pipeline/open?suite=${row.run.source.suiteId}`;
   }
   return null;
 }
@@ -223,7 +221,11 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
-  const [pane, setPane] = useState<Pane>(initialRunId === null ? "list" : "detail");
+  // The URL owns the selection: a deep link or browser navigation reselects.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the route's ?run= is external state
+    if (initialRunId !== null) setSelectedId(initialRunId);
+  }, [initialRunId]);
 
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [stateFilter, setStateFilter] = useState<string>("all");
@@ -249,39 +251,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     return () => clearInterval(timer);
   }, [refresh, operationsRevision, runs.length]);
 
-  const selectedSummary = selectedId === null ? undefined : (sessions ?? []).find((session) => session.id === selectedId);
-  const selectedRunIds = selectedId === null
-    ? []
-    : selectedSummary?.threadId == null
-      ? [selectedId]
-      : (sessions ?? []).filter((session) => session.threadId === selectedSummary.threadId).map((session) => session.id);
-  const selectedRunKey = selectedRunIds.join(":");
-
-  // List responses omit transcripts so a 30s poll cannot OOM the server. Load
-  // one session's events only when the operator opens it (and it is not live).
-  useEffect(() => {
-    const missing = selectedRunIds.filter(
-      (runId) => !runs.some((run) => run.runId === runId) && detailById[runId] === undefined,
-    );
-    if (missing.length === 0) return;
-    let cancelled = false;
-    setDetailError(null);
-    void Promise.all(missing.map((runId) => workspaceApi.session(SERVER_URL, runId)))
-      .then((loaded) => {
-        if (cancelled) return;
-        setDetailById((prev) => ({
-          ...prev,
-          ...Object.fromEntries(loaded.map((session) => [session.id, session])),
-        }));
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setDetailError(error instanceof Error ? error.message : "Session log could not be loaded.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRunKey, selectedRunIds, runs, detailById]);
 
   const rows = useMemo<ActivityRow[]>(() => {
     const byId = new Map((sessions ?? []).map((session) => [session.id, session]));
@@ -345,6 +314,43 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     ?? null;
   const activeId = selected?.id ?? null;
 
+  // List responses omit transcripts so a 30s poll cannot OOM the server. Load
+  // the shown thread's events only when it is opened (and not live). A detail
+  // fetched before a run finished (e.g. while it was still spawning) is stale:
+  // refetch it once the session list reports a different state or end time.
+  const selectedRunIds = selected?.runIds ?? [];
+  const selectedRunKey = selectedRunIds.join(":");
+  useEffect(() => {
+    const summaries = new Map((sessions ?? []).map((session) => [session.id, session]));
+    const missing = selectedRunIds.filter((runId) => {
+      if (runs.some((run) => run.runId === runId)) return false;
+      const detail = detailById[runId];
+      if (detail === undefined) return true;
+      const summary = summaries.get(runId);
+      return summary !== undefined && (summary.state !== detail.state || summary.endedAt !== detail.endedAt);
+    });
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void Promise.all(missing.map((runId) => workspaceApi.session(SERVER_URL, runId)))
+      .then((loaded) => {
+        if (cancelled) return;
+        setDetailError(null);
+        setDetailById((prev) => ({
+          ...prev,
+          ...Object.fromEntries(loaded.map((session) => [session.id, session])),
+        }));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setDetailError(error instanceof Error ? error.message : "Session log could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the shown run ids
+  }, [selectedRunKey, sessions, runs, detailById]);
+
+
   const logs = useMemo<LogItem[]>(() => {
     if (selected === null) return [];
     const summaries = (sessions ?? [])
@@ -354,15 +360,18 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
       const liveItems = runs.some((run) => run.runId === summary.id) ? itemsFor(summary.id) : null;
       if (liveItems !== null) return [...items, ...liveItems];
       const detail = detailById[summary.id];
-      const seeded = summary.displayText === null || summary.displayText === ""
-        ? items
-        : appendPrompt(items, {
-            runId: summary.id,
-            provider: summary.provider as ProviderId,
-            model: summary.model,
-            text: summary.displayText,
-            timestamp: summary.startedAt,
-          });
+      const base = { runId: summary.id, provider: summary.provider as ProviderId, model: summary.model, timestamp: summary.startedAt };
+      // Pipeline and saved work-item runs carry no typed text: show the work
+      // item instead, with its markdown available on demand.
+      const seeded = summary.displayText !== null && summary.displayText !== ""
+        ? appendPrompt(items, { ...base, text: summary.displayText })
+        : summary.promptId !== null
+          ? appendPrompt(items, {
+              ...base,
+              text: summary.promptKey === null ? summary.promptTitle : `${summary.promptKey} — ${summary.promptTitle}`,
+              workItem: { id: summary.promptId, key: summary.promptKey, title: summary.promptTitle },
+            })
+          : items;
       return (detail?.events ?? []).reduce<LogItem[]>((next, event) => applyEvent(next, event), seeded);
     }, []);
   }, [selected, sessions, runs, detailById, itemsFor]);
@@ -390,146 +399,62 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
         </div>
       )}
 
-      <div className="flex items-center gap-1 border-b border-line bg-surface-1 px-4 py-1.5 lg:hidden">
-        {(["list", "detail"] as Pane[]).map((option) => (
-          <button
-            key={option}
-            type="button"
-            onClick={() => setPane(option)}
-            aria-current={pane === option ? "true" : undefined}
-            className={cn(
-              "rounded-md px-3 py-1 text-xs capitalize transition-colors",
-              pane === option ? "bg-surface-3 text-fg" : "text-fg-dim hover:bg-surface-2 hover:text-fg",
-            )}
-          >
-            {option === "list" ? "Activity" : "Detail"}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[380px_minmax(0,1fr)]">
-        <aside
-          className={cn(
-            "flex min-h-0 flex-col border-line bg-surface-1 lg:border-r",
-            pane === "list" ? "flex" : "hidden lg:flex",
-          )}
-        >
-          <div className="grid grid-cols-2 gap-2 border-b border-line p-3">
-            <Select
-              label="Provider"
-              value={providerFilter}
-              onChange={(event) => setProviderFilter(event.target.value)}
-            >
+      <SidebarCollection
+        label="Conversations and runs"
+        tools={
+          <FilterControl active={[providerFilter, stateFilter, roleFilter].filter((value) => value !== "all").length}>
+            <Select label="Provider" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}>
               <option value="all">All</option>
-              {PROVIDER_IDS.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
+              {PROVIDER_IDS.map((id) => <option key={id} value={id}>{id}</option>)}
             </Select>
-            <Select
-              label="State"
-              value={stateFilter}
-              onChange={(event) => setStateFilter(event.target.value)}
-            >
+            <Select label="State" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
               <option value="all">All</option>
-              {SESSION_STATES.map((state) => (
-                <option key={state} value={state}>
-                  {state.toLowerCase()}
-                </option>
-              ))}
+              {SESSION_STATES.map((state) => <option key={state} value={state}>{state.toLowerCase()}</option>)}
             </Select>
-            <Select
-              label="Role"
-              value={roleFilter}
-              onChange={(event) => setRoleFilter(event.target.value)}
-            >
+            <Select label="Role" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
               <option value="all">All</option>
-              {RUN_ROLES.map((role) => (
-                <option key={role} value={role}>
-                  {role}
-                </option>
-              ))}
+              {RUN_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
             </Select>
-          </div>
+          </FilterControl>
+        }
+      >
+        <p className="app-sidebar-group">Conversations &amp; runs · {filtered.length}</p>
+        {sessions === null && runs.length === 0 ? (
+          <SidebarEmpty><span role="status">Loading activity…</span></SidebarEmpty>
+        ) : filtered.length === 0 ? (
+          <SidebarEmpty>No sessions match the current filters.</SidebarEmpty>
+        ) : (
+          filtered.map((row) => {
+            const reason = sessionEndReason(row.state, row.events);
+            const state = row.live ? "live" : normalizeState(row.state).toLowerCase();
+            return (
+              <SidebarRow
+                key={row.id}
+                href={`/activity?run=${encodeURIComponent(row.id)}`}
+                onSelect={() => setSelectedId(row.id)}
+                selected={activeId === row.id}
+                title={`${row.promptKey !== null ? `${row.promptKey} · ` : ""}${row.promptTitle}`}
+                detail={`${row.providers.join(" + ")} · ${row.role}${row.turnCount > 1 ? ` · ${row.turnCount} turns` : ""} · ${new Date(row.startedAt).toLocaleString()}`}
+                status={reason === null ? state : `${state} · ${reason}`}
+                statusTone={row.live ? "accent" : normalizeState(row.state) === "ERROR" ? "danger" : normalizeState(row.state) === "INTERRUPTED" ? "warning" : "muted"}
+              />
+            );
+          })
+        )}
+      </SidebarCollection>
 
-          <div className="flex items-center justify-between px-3 py-2 text-[10px] uppercase tracking-wider text-fg-dim">
-            <span>Conversations &amp; runs</span>
-            <span>{filtered.length}</span>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-            {sessions === null && runs.length === 0 ? (
-              <div className="space-y-2">
-                <Skeleton className="h-20 w-full" />
-                <Skeleton className="h-20 w-full" />
-              </div>
-            ) : filtered.length === 0 ? (
-              <p className="text-xs text-fg-dim">No sessions match the current filters.</p>
-            ) : (
-              filtered.map((row) => (
-                <button
-                  key={row.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedId(row.id);
-                    setPane("detail");
-                  }}
-                  aria-current={activeId === row.id ? "true" : undefined}
-                  className={cn(
-                    "mb-2 w-full rounded-panel border p-3 text-left transition-colors",
-                    activeId === row.id
-                      ? "border-line-strong bg-surface-3"
-                      : "border-line bg-surface-2 hover:bg-surface-3",
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="truncate text-[13px] text-fg">
-                      {row.promptKey !== null ? `${row.promptKey} · ` : ""}
-                      {row.promptTitle}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {row.live && (
-                        <Badge tone="info" dot pulse>
-                          live
-                        </Badge>
-                      )}
-                      <Badge tone={stateTone(row.state)}>{normalizeState(row.state).toLowerCase()}</Badge>
-                      <Badge tone="neutral">{row.role}</Badge>
-                      {row.turnCount > 1 && <Badge tone="info">{row.turnCount} turns</Badge>}
-                      {row.changes !== null && row.changes.state === "COMMITTED" && row.changes.filesChanged > 0 && (
-                        <Badge tone="success">{row.changes.filesChanged} files</Badge>
-                      )}
-                      {row.changes?.state === "UNCHANGED" && (
-                        <Badge tone="neutral">No code changes</Badge>
-                      )}
-                      {sessionEndReason(row.state, row.events) !== null && (
-                        <Badge tone="neutral">{sessionEndReason(row.state, row.events)}</Badge>
-                      )}
-                    </span>
-                  </div>
-                  <div className="mt-1 truncate text-xs text-fg-muted">
-                    {row.workspaceName} · {row.providers.join(" + ")}
-                    {row.model !== null && ` · ${row.model}`}
-                    {` · ${row.role}`}
-                  </div>
-                  <div className="mt-1 text-[10px] text-fg-dim">
-                    {new Date(row.startedAt).toLocaleString()}
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </aside>
-
-        <section
-          className={cn(
-            "min-h-0 min-w-0 overflow-y-auto p-5",
-            pane === "detail" ? "block" : "hidden lg:block",
-          )}
-        >
+      <div className="min-h-0 flex-1">
+        <section aria-label="Selected activity" className="h-full min-h-0 min-w-0 overflow-y-auto px-5 pb-6 max-sm:px-4">
           {selected === null ? (
-            <p className="text-sm text-fg-dim">Select a session to inspect its metadata and log.</p>
+            <p className="text-sm text-fg-muted" role="status">
+              {loadError !== null
+                ? "Session history could not be loaded."
+                : sessions === null && runs.length === 0
+                  ? "Loading activity…"
+                  : rows.some((row) => row.workspaceId === workspaceId)
+                    ? "No sessions match the current filters."
+                    : "No conversations or runs in this workspace yet."}
+            </p>
           ) : (
             <div className="flex h-full w-full flex-col gap-4">
               <div className="flex flex-wrap items-start gap-3">
@@ -659,7 +584,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                   </p>
                 ) : (
                   <div className="flex min-h-[50vh] flex-1 flex-col overflow-hidden rounded-panel border border-line lg:min-h-0">
-                    <LogPanel items={logs} workdir={selected.workDirectory} />
+                    <ConversationPanel key={selected.threadId ?? selected.id} items={logs} workdir={selected.workDirectory} workspaceId={selected.workspaceId} storageKey={selected.threadId ?? selected.id} />
                   </div>
                 )}
               </section>
@@ -689,14 +614,14 @@ function Meta({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[10px] uppercase tracking-wider text-fg-dim">{label}</dt>
+      <dt className="text-xs uppercase tracking-wider text-fg-dim">{label}</dt>
       <dd
         className={cn("mt-0.5 truncate text-sm text-fg", mono && "font-mono text-xs text-fg-muted")}
         title={hint !== undefined ? `${value} · ${hint}` : value}
       >
         {value}
       </dd>
-      {hint !== undefined && <p className="mt-0.5 text-[10px] text-fg-dim">{hint}</p>}
+      {hint !== undefined && <p className="mt-0.5 text-xs text-fg-dim">{hint}</p>}
     </div>
   );
 }

@@ -1,19 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conversationTitle, type PromptOption, type WorkspaceRecord } from "@agent-console/shared";
 import { Composer } from "@/components/Composer";
 import { DecisionDeck } from "@/components/DecisionDeck";
 import { ContextPicker } from "@/components/ContextPicker";
-import { LogPanel } from "@/components/LogPanel";
-import { LaunchLoader, type LaunchStage } from "./LaunchLoader";
-import { BudgetStrip } from "@/components/settings/BudgetStrip";
+import { BtwBar } from "./BtwBar";
+import { ConversationPanel } from "./ConversationPanel";
 import { useToast } from "@/components/ui/Toast";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { useAgentConsole } from "@/lib/useAgentConsole";
 import { useModelSelection } from "@/lib/useModelSelection";
 import { usePreferredProvider } from "@/lib/usePreferredProvider";
 import { SERVER_URL } from "@/lib/serverUrl";
+import { queuedScopeChanged, type QueuedChatScope } from "@/lib/chatSubmission";
 import { workspaceApi } from "@/lib/workspacesApi";
 
 const CONSULT_LIMIT = 3;
@@ -29,10 +29,15 @@ interface Props {
   visible: boolean;
   initialPromptId: number | null;
   onTitle(title: string): void;
+  hasEarlier?: boolean;
+  historyLoading?: boolean;
+  historyError?: string | null;
+  onLoadEarlier?(): void;
+  onRead?(timestamp:string): void;
 }
 
 /** One mounted tab. Inactive tabs stay mounted so their draft and context are preserved. */
-export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTitle }: Props) {
+export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTitle, hasEarlier, historyLoading, historyError, onLoadEarlier, onRead }: Props) {
   const console_ = useAgentConsole();
   const { providers, connection, operationsRevision } = console_;
   const toast = useToast();
@@ -41,6 +46,12 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   const models = useModelSelection(providers);
   const workspaceId = workspace.id;
   const liveRunIdentity = console_.runs.map((run) => run.runId).join(":");
+  const [freshContext, setFreshContext] = useState(false);
+  const [contextText, setContextText] = useState<string | null>(null);
+  const [queued, setQueued] = useState<(QueuedChatScope & { prompt: string; mode: "ask" | "run" }) | null>(null);
+  const queueSending = useRef(false);
+  const [quote, setQuote] = useState("");
+  const [suggestion,setSuggestion] = useState<{text:string;nonce:number;append?:boolean}>();
   const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
   const [savedPromptId, setSavedPromptId] = useState<number | null>(initialPromptId);
 
@@ -56,9 +67,9 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   }, [refreshPrompts, operationsRevision]);
 
   useEffect(() => {
-    // The first tab opened for a workspace adopts unowned runs, including runs
-    // started elsewhere in the app rather than from a Chat tab.
-    console_.claimWorkspaceRuns(tabId, workspaceId);
+    // Only the explicit run link adopts a non-chat run. Merely opening a draft
+    // must not absorb unrelated Pipeline or Activity work in this workspace.
+    if (console_.runs.some((run) => run.runId === tabId)) console_.claimRun(tabId, tabId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the console method changes with its state
   }, [tabId, workspaceId, liveRunIdentity]);
 
@@ -115,17 +126,9 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
     () => tabItems.filter((item) => !console_.consultIds.includes(item.runId)),
     [tabItems, console_.consultIds],
   );
-  // The gap between the click and the agent's first line: the request is in
-  // flight, or the run exists but has only echoed the prompt so far.
   const pendingLaunch = console_.pendingLaunches.find((launch) => launch.tabId === tabId) ?? null;
-  const silentRun = console_.runs.find((run) =>
-    console_.runTabIds[run.runId] === tabId
-    && console_.inputRequests[run.runId] === undefined
-    && !tabItems.some((item) => item.runId === run.runId && item.kind !== "prompt")) ?? null;
-  const launchStage: LaunchStage | null = silentRun !== null
-    ? silentRun.state === "starting" ? "starting" : "waiting"
-    : pendingLaunch !== null ? "sending" : null;
-  const empty = tabItems.length === 0 && consults.length === 0 && launchStage === null;
+  const liveRuns = console_.runs.filter(run => console_.runTabIds[run.runId] === tabId);
+  const empty = tabItems.length === 0 && liveRuns.length === 0 && pendingLaunch === null;
 
   const recover = async () => {
     if (savedPrompt === null) return;
@@ -145,6 +148,7 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   };
 
   const send = (prompt: string) => {
+    if (runBlockedReason) { toast.error("Could not start the run", runBlockedReason); return; }
     // The socket can announce a run between render and click; enforce the rules here too.
     if (asking) {
       toast.error("Ask already running in this tab", "Wait for it to finish, or open another tab.");
@@ -160,6 +164,7 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
       savedPrompt !== null ? { promptId: savedPrompt.id } : { prompt },
       models.resolve(selected),
       tabId,
+      freshContext,
     );
     if (!started) {
       toast.error("Could not start the run", "The agent connection is unavailable.");
@@ -171,6 +176,7 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   };
 
   const ask = (prompt: string) => {
+    if (askBlockedReason) { toast.error("Could not start Ask", askBlockedReason); return; }
     if (writingHere || asking) {
       toast.error("This tab is busy", "Open another tab to Ask while a run is in progress here.");
       return;
@@ -178,21 +184,57 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
     const source = savedPrompt !== null
       ? prompt !== "" ? { promptId: savedPrompt.id, prompt } : { promptId: savedPrompt.id }
       : { prompt };
-    const started = console_.startConsult(workspaceId, selected, source, models.resolve(selected), tabId);
+    const started = console_.startConsult(workspaceId, selected, source, models.resolve(selected), tabId, freshContext);
     if (!started) {
       toast.error("Could not start the consult", "The agent connection is unavailable.");
       return;
     }
-    onTitle(savedPrompt?.title ?? conversationTitle(prompt));
+    if (tabItems.length === 0) onTitle(savedPrompt?.title ?? conversationTitle(prompt));
   };
+
+  useEffect(() => {
+    if (!queued || queueSending.current) return;
+    const timer = setTimeout(() => {
+    if (queuedScopeChanged(queued, { provider: selected, model: models.resolve(selected), workspace: workspaceId, fresh: freshContext, permission: selectedInfo?.permissionMode, savedPromptId, directory: workspace.workDirectory }, connection === "open")) {
+      setSuggestion({text:queued.prompt,nonce:Date.now(),append:true});
+      setQueued(null);
+      toast.error("Queued message needs review", "The connection, target or context changed. Your draft is retained.");
+      return;
+    }
+    if (asking || running || starting) return;
+    const reason = queued.mode === "ask" ? askBlockedReason : runBlockedReason;
+    setQueued(null);
+    if (reason) { setSuggestion({text:queued.prompt,nonce:Date.now(),append:true}); toast.error("Queued message was not sent", reason); return; }
+    queueSending.current = true;
+    if (queued.mode === "ask") ask(queued.prompt); else send(queued.prompt);
+    queueSending.current = false;
+    }, 0);
+    return () => clearTimeout(timer);
+    // Revalidate against the current render before executing a queued request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queued, connection, selected, models, workspaceId, freshContext, selectedInfo?.permissionMode, savedPromptId, workspace.workDirectory, asking, running, starting, askBlockedReason, runBlockedReason]);
 
   const composer = (
     <Composer
+      suggestion={suggestion}
+      note={ownsWriter && writerRun !== null ? <BtwBar runId={writerRun.runId} provider={writerRun.provider} canInterrupt={writerRun.source.type === "saved"} autoFocus={false} /> : undefined}
+      defaultMode="run"
+      busy={writingHere || asking}
+      onQueue={(prompt, mode, stop) => {
+        setQueued({ prompt, mode, provider: selected, model: models.resolve(selected), workspace: workspaceId, fresh: freshContext, permission: selectedInfo?.permissionMode, savedPromptId, directory: workspace.workDirectory });
+        setQuote("");
+        if (stop) console_.interrupt((writerRun ?? consults[0])?.runId);
+      }}
+      quote={quote}
+      onClearQuote={() => setQuote("")}
+      launchPending={pendingLaunch !== null}
+      launchFailed={launchFailure}
+      draftKey={tabId}
       active={visible}
       disabled={inputDisabled}
-      running={running}
+      running={running || consults.length > 0}
       starting={starting}
-      ownsWriter={ownsWriter}
+      ownsWriter={ownsWriter || consults.length > 0}
       writer={writerRun === null ? null : { provider: writerRun.provider, model: writerRun.model }}
       providers={providers}
       models={models}
@@ -200,11 +242,20 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
       runBlockedReason={runBlockedReason}
       askBlockedReason={askBlockedReason}
       savedPrompt={savedPrompt}
-      context={<ContextPicker workspaceId={workspaceId} prompts={promptOptions} savedPromptId={savedPromptId} onPrompt={setSavedPromptId} disabled={false} activeWorkspace={workspace} onRecover={() => void recover()} />}
+      context={<><div className="mb-2 flex flex-wrap gap-3 text-xs text-fg-muted">
+        <details onToggle={event => {
+          if (!event.currentTarget.open) return;
+          setContextText("Loading recorded context…");
+          void fetch(`${SERVER_URL}/api/sessions/context?workspace=${workspaceId}&thread=${encodeURIComponent(tabId)}`).then(async response => {
+            if (!response.ok) throw new Error("Context unavailable");
+            const data = await response.json() as { context: string }; setContextText(data.context);
+          }).catch(() => setContextText("Recorded context unavailable. Sending may fail; no history will be invented."));
+        }}><summary>Context</summary><p>{workspace.workDirectory} · Ask always starts a read-only session with bounded recorded exchanges. Run resumes a compatible immediate session, otherwise uses the same handoff.</p><label><input type="checkbox" checked={freshContext} onChange={event => setFreshContext(event.target.checked)} /> Start fresh for next message</label><pre className="max-h-60 max-w-full overflow-auto whitespace-pre-wrap">{freshContext ? "No previous exchanges will be supplied." : contextText}</pre></details>
+      </div><ContextPicker workspaceId={workspaceId} prompts={promptOptions} savedPromptId={savedPromptId} onPrompt={setSavedPromptId} disabled={false} activeWorkspace={workspace} onRecover={() => void recover()} /></>}
       workdir={workspace.workDirectory}
       onSubmit={send}
       onAsk={ask}
-      onInterrupt={() => console_.interrupt(writerRun?.runId)}
+      onInterrupt={() => console_.interrupt((writerRun ?? consults[0])?.runId)}
       onClearSavedPrompt={() => setSavedPromptId(null)}
       onTarget={(provider, model) => {
         setPreferred(provider);
@@ -214,65 +265,27 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   );
 
   return (
-    <section aria-label={`${workspace.name} work tab`} aria-hidden={!visible} className={visible ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-      {empty ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4 pb-8">
-          <div className="max-w-xl text-center">
-            <h2 className="text-xl font-semibold text-fg">Talk to an agent</h2>
-            <p className="mt-1.5 text-sm text-fg-muted">Run a custom prompt, or attach a work item and send it into this working tree.</p>
-          </div>
-          <div className="flex max-w-2xl flex-wrap justify-center gap-2">
-            {EXAMPLES.map((example) => (
-              <button key={example} type="button" disabled={inputDisabled || running || runBlockedReason !== null} onClick={() => { setSavedPromptId(null); send(example); }} className="rounded-full bg-surface-2 px-3 py-1.5 text-left text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-3 hover:text-fg disabled:opacity-40">
-                {example}
-              </button>
-            ))}
-          </div>
-          <div className="w-full max-w-3xl">
-            {launchFailure !== null && (
-              <div role="alert" className="mb-2 flex items-start gap-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2 text-xs text-danger">
-                <span className="min-w-0 flex-1"><strong className="font-semibold">Run didn&apos;t start.</strong> {launchFailure}</span>
-                <button type="button" onClick={() => console_.dismissLaunchFailure(tabId)} className="shrink-0 text-danger/70 hover:text-danger" aria-label="Dismiss launch error">×</button>
-              </div>
-            )}
-            {composer}
-            <BudgetStrip provider={selected} providerLabel={selectedInfo?.label ?? selected} model={models.resolve(selected)} />
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* One transcript per tab: writer and Ask/Research runs share this pane. */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            {tabItems.length > 0 ? <LogPanel items={tabItems} workdir={workspace.workDirectory} /> : <div className="flex-1" />}
-            {launchStage !== null && (
-              <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center p-4">
-                <LaunchLoader
-                  stage={launchStage}
-                  role={(silentRun ?? pendingLaunch)!.role}
-                  provider={silentRun?.provider ?? selected}
-                  model={silentRun?.model ?? models.resolve(selected)}
-                  detail={silentRun?.detail ?? null}
-                />
-              </div>
-            )}
-          </div>
-          <div className="flex flex-col gap-2 px-3 pb-3 pt-1">
-            {launchFailure !== null && (
-              <div role="alert" className="flex items-start gap-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2 text-xs text-danger">
-                <span className="min-w-0 flex-1"><strong className="font-semibold">Run didn&apos;t start.</strong> {launchFailure}</span>
-                <button type="button" onClick={() => console_.dismissLaunchFailure(tabId)} className="shrink-0 text-danger/70 hover:text-danger" aria-label="Dismiss launch error">×</button>
-              </div>
-            )}
-            {decisionRequests.map((request) => {
-              const run = console_.runs.find((item) => item.runId === request.runId);
-              return run === undefined ? null : (
-                <DecisionDeck key={request.requestId} request={request} provider={run.provider} onSubmit={(answers) => console_.answerInput(request.runId, request.requestId, answers)} onCancel={() => console_.interrupt(request.runId)} />
-              );
-            })}
-            {composer}
-          </div>
-        </>
-      )}
+    <section aria-label={`${workspace.name} work tab`} aria-hidden={!visible} className={visible ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+      <ConversationPanel items={tabItems} workdir={workspace.workDirectory} workspaceId={workspaceId} storageKey={tabId}
+        active={visible} hasEarlier={hasEarlier} historyLoading={historyLoading} historyError={historyError} onLoadEarlier={onLoadEarlier} onRead={onRead}
+        onQuote={setQuote}
+        liveRuns={liveRuns}
+        disconnected={connection !== "open"}
+        pendingTurn={pendingLaunch ? { id: pendingLaunch.requestId, prompt: pendingLaunch.prompt, provider: selected, model: models.resolve(selected) } : undefined}
+        pending={empty ? <div className="chat-empty"><h2>What shall we work on?</h2><p>Ask a question, explore an idea, or build something together.</p><div className="chat-examples">{EXAMPLES.map(example => <button key={example} type="button" disabled={inputDisabled} onClick={() => setSuggestion({text:example,nonce:Date.now()})}>{example}</button>)}</div></div>
+          : null}
+        footer={<div className="flex flex-col gap-2">
+        {queued && <div className="flex min-w-0 items-start gap-3 rounded-lg border border-line bg-surface-1 px-3 py-2 text-xs text-fg-muted">
+          <details className="min-w-0 flex-1"><summary className="cursor-pointer">{queued.mode === "run" ? "Run" : "Ask"} queued · sends after this reply</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap">{queued.prompt}</pre></details>
+          <button type="button" onClick={() => { setSuggestion({text:queued.prompt,nonce:Date.now(),append:true}); setQueued(null); }}>Cancel queued message</button>
+        </div>}
+        {launchFailure !== null && <div role="alert" className="rounded-lg border border-danger bg-surface-1 px-3 py-2 text-sm text-danger"><strong>Message didn&apos;t start.</strong> {launchFailure}<button type="button" className="ml-3" onClick={() => console_.dismissLaunchFailure(tabId)}>Dismiss</button></div>}
+        {decisionRequests.map(request => {
+          const run = console_.runs.find(item => item.runId === request.runId);
+          return run ? <DecisionDeck key={request.requestId} request={request} provider={run.provider} onSubmit={answers => console_.answerInput(request.runId, request.requestId, answers)} onCancel={() => console_.interrupt(request.runId)} /> : null;
+        })}
+        {composer}
+      </div>} />
     </section>
   );
 }

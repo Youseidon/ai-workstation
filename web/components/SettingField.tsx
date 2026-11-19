@@ -19,7 +19,7 @@ interface Props {
 }
 
 const inputClass =
-  "mt-2 w-full rounded-md border border-line bg-surface-0 px-2.5 py-1.5 text-[12px] text-fg placeholder:text-fg-dim focus:border-line-strong focus:outline-none disabled:opacity-50";
+  "mt-2 w-full rounded-md border border-line bg-surface-0 px-2.5 py-1.5 text-xs text-fg placeholder:text-fg-dim focus:border-line-strong focus:outline-none disabled:opacity-50";
 
 /**
  * One setting: its name and current value on a single line, the control under
@@ -39,7 +39,7 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled, footer 
   return (
     <div className="border-b border-line py-3 last:border-b-0">
       <div className="flex min-h-6 items-center gap-2">
-        <label id={labelId} htmlFor={field.key} className="min-w-0 truncate text-[12px] font-medium text-fg">
+        <label id={labelId} htmlFor={field.key} className="min-w-0 truncate text-xs font-medium text-fg">
           {field.label}
         </label>
         <button
@@ -48,14 +48,14 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled, footer 
           aria-label={`${explained ? "Hide" : "Explain"} ${field.label}`}
           onClick={() => setExplained((current) => !current)}
           className={cn(
-            "grid size-4 shrink-0 place-items-center rounded-full text-[10px] leading-none ring-1 ring-inset transition-colors",
+            "grid size-4 shrink-0 place-items-center rounded-full text-xs leading-none ring-1 ring-inset transition-colors",
             explained ? "bg-accent/15 text-accent ring-accent/40" : "text-fg-dim ring-line hover:text-fg",
           )}
         >
           ?
         </button>
         {dirty && (
-          <span className="shrink-0 rounded bg-warning/15 px-1 text-[9px] uppercase tracking-wider text-warning">unsaved</span>
+          <span className="shrink-0 rounded bg-warning/15 px-1 text-xs uppercase tracking-wider text-warning">unsaved</span>
         )}
         {!dirty && field.overridden && (
           <button
@@ -63,13 +63,13 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled, footer 
             onClick={() => onRevert(field.key)}
             disabled={disabled}
             title="Revert to the value from .env"
-            className="shrink-0 rounded bg-surface-2 px-1 text-[9px] uppercase tracking-wider text-fg-muted hover:text-fg disabled:opacity-50"
+            className="shrink-0 rounded bg-surface-2 px-1 text-xs uppercase tracking-wider text-fg-muted hover:text-fg disabled:opacity-50"
           >
             reset
           </button>
         )}
         {field.requiresRestart && (
-          <span title="Takes effect after a server restart" className="shrink-0 rounded bg-surface-2 px-1 text-[9px] uppercase tracking-wider text-fg-dim">
+          <span title="Takes effect after a server restart" className="shrink-0 rounded bg-surface-2 px-1 text-xs uppercase tracking-wider text-fg-dim">
             restart
           </span>
         )}
@@ -122,13 +122,13 @@ export function SettingRow({ field, draft, onChange, onRevert, disabled, footer 
       {footer}
 
       {dangerous && (
-        <p className="mt-1.5 text-[11px] text-warning/90">⚠ Removes a safety check.</p>
+        <p className="mt-1.5 text-xs text-warning/90">⚠ Removes a safety check.</p>
       )}
 
       {explained && (
-        <div className="mt-2 rounded-md bg-surface-2/60 px-2.5 py-2 text-[11px] leading-snug text-fg-muted">
+        <div className="mt-2 rounded-md bg-surface-2 px-2.5 py-2 text-xs leading-snug text-fg-muted">
           <p>{field.description}</p>
-          <p className="mt-1.5 font-mono text-[10px] text-fg-dim">
+          <p className="mt-1.5 font-mono text-xs text-fg-dim">
             {field.envVar}
             {field.type === "number" && typeof field.defaultValue === "number" && (
               <> · default {field.scale === null ? field.defaultValue : formatSettingValue(field.defaultValue, field.scale)}</>

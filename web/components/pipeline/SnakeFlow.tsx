@@ -59,6 +59,7 @@ export function SnakeFlow<T>({
   renderCard,
   isLiveIndex,
   wrapItem,
+  renderGate,
 }: {
   items: T[];
   getKey(item: T, index: number): string | number;
@@ -67,6 +68,12 @@ export function SnakeFlow<T>({
   isLiveIndex?(index: number): boolean;
   /** Optional wrapper around each card cell (e.g. drag handlers). */
   wrapItem?(node: ReactNode, item: T, index: number): ReactNode;
+  /**
+   * A marker drawn on the link that leaves this card (an approval point, say).
+   * It sits on the arrow in the gutter, or under the card at a row turn, so it
+   * never takes a grid cell or changes a card's size.
+   */
+  renderGate?(item: T, index: number): ReactNode;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(1);
@@ -90,8 +97,9 @@ export function SnakeFlow<T>({
 
   if (items.length === 0) return null;
 
+
   return (
-    <div ref={scrollerRef} className="w-full min-w-0">
+    <div ref={scrollerRef} className="w-full min-w-0 pb-4">
       <div
         role="list"
         style={{ display: "flex", flexDirection: "column", gap: 0 }}
@@ -112,6 +120,7 @@ export function SnakeFlow<T>({
                 renderCard={renderCard}
                 wrapItem={wrapItem}
                 isLiveIndex={isLiveIndex}
+                renderGate={renderGate}
               />
               {hasTurn && nextRow !== undefined && nextRow !== null && (
                 <TurnJunction
@@ -138,6 +147,7 @@ function SnakeRow<T>({
   renderCard,
   wrapItem,
   isLiveIndex,
+  renderGate,
 }: {
   row: Row<T>;
   cols: number;
@@ -145,7 +155,9 @@ function SnakeRow<T>({
   renderCard(item: T, index: number): ReactNode;
   wrapItem?(node: ReactNode, item: T, index: number): ReactNode;
   isLiveIndex?(index: number): boolean;
+  renderGate?(item: T, index: number): ReactNode;
 }) {
+  const lastLogical = row.items[row.items.length - 1]?.index;
   // Visual order: LTR as-is; RTL reversed so the next item after a turn sits
   // under/near the junction and subsequent items grow to the left.
   const visual = row.rtl ? [...row.items].reverse() : row.items;
@@ -176,11 +188,35 @@ function SnakeRow<T>({
         // the arrow direction follows reading order: RTL uses ←).
         const direction = row.rtl ? "left" : "right";
 
+        const gate = renderGate?.(entry.item, entry.index) ?? null;
+        // The link to the next card in reading order: the right gutter on an
+        // LTR row, the left gutter on an RTL row, or under the card at a turn.
+        const gateSpot =
+          gate === null
+            ? null
+            : cols === 1 || entry.index === lastLogical
+              ? "below"
+              : row.rtl
+                ? "left"
+                : "right";
+
         const card = (
           <div className="relative h-full min-w-0 w-full">
             {renderCard(entry.item, entry.index)}
             {showConnectorAfter && cols > 1 && (
               <HorizontalLink direction={direction} live={live} />
+            )}
+            {gate !== null && (
+              <div
+                className={cn(
+                  "absolute z-20",
+                  gateSpot === "right" && "top-1/2 -right-5 translate-x-1/2 -translate-y-1/2",
+                  gateSpot === "left" && "top-1/2 -left-5 -translate-x-1/2 -translate-y-1/2",
+                  gateSpot === "below" && "-bottom-1 left-1/2 -translate-x-1/2 translate-y-1/2",
+                )}
+              >
+                {gate}
+              </div>
             )}
           </div>
         );

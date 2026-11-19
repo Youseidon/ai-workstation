@@ -89,11 +89,11 @@ export function SettingsGroupPanel({
       {header && !compact && (
         <div>
           <h3 className="text-sm font-medium text-fg">{title}</h3>
-          {blurb !== undefined && <p className="mt-1 text-[11px] leading-5 text-fg-dim">{blurb}</p>}
+          {blurb !== undefined && <p className="mt-1 text-xs leading-5 text-fg-dim">{blurb}</p>}
         </div>
       )}
       {header && compact && blurb !== undefined && (
-        <p className="text-[11px] leading-5 text-fg-dim">{blurb}</p>
+        <p className="text-xs leading-5 text-fg-dim">{blurb}</p>
       )}
 
       {settings.loading ? (

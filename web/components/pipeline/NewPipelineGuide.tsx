@@ -47,16 +47,16 @@ export function NewPipelineGuide({
     <div className="rounded-panel border border-accent/30 bg-accent/[0.06] px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
             New pipeline · step {index + 1} of {STEPS.length}
           </div>
           <h3 className="mt-1 text-sm font-medium text-fg">{current.title}</h3>
-          <p className="mt-1 text-[12px] leading-5 text-fg-muted">{current.body}</p>
+          <p className="mt-1 text-xs leading-5 text-fg-muted">{current.body}</p>
         </div>
         <button
           type="button"
           onClick={onDismiss}
-          className="text-[11px] text-fg-dim hover:text-fg"
+          className="text-xs text-fg-dim hover:text-fg"
         >
           Skip guide
         </button>
@@ -69,7 +69,7 @@ export function NewPipelineGuide({
             type="button"
             onClick={() => onStepChange(entry.id)}
             className={cn(
-              "rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset",
+              "rounded-full px-2.5 py-1 text-xs ring-1 ring-inset",
               entry.id === step
                 ? "bg-accent/15 text-accent ring-accent/40"
                 : "text-fg-dim ring-line hover:bg-surface-2 hover:text-fg",

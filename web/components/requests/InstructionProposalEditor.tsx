@@ -71,7 +71,7 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
 
   return (
     <div className="space-y-3 p-5">
-      <div className="space-y-1 text-[11px] leading-relaxed text-fg-dim">
+      <div className="space-y-1 text-xs leading-relaxed text-fg-dim">
         {proposal.goal !== "" && <p><span className="text-fg-muted">Asked for:</span> {proposal.goal}</p>}
         {proposal.origin === "run" && (
           <p>
@@ -106,7 +106,7 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
             </button>
           ))}
         </div>
-        <span className="text-[11px] tabular-nums">
+        <span className="text-xs tabular-nums">
           <span className="text-success">+{counts.added}</span> <span className="text-danger">−{counts.removed}</span>
         </span>
       </div>
@@ -118,14 +118,14 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
           {writing ? "Nothing proposed yet." : `No changes to ${name}.`}
         </p>
       ) : (
-        <div className="max-h-[32rem] overflow-auto rounded-md border border-line bg-surface-0 py-1 font-terminal text-[12px] leading-5">
+        <div className="max-h-[32rem] overflow-auto rounded-md border border-line bg-surface-0 py-1 font-terminal text-xs leading-5">
           {hunks(lines).map((hunk, index) =>
             hunk.kind === "fold" && !openFolds.has(index) ? (
               <button
                 key={index}
                 type="button"
                 onClick={() => setOpenFolds((open) => new Set(open).add(index))}
-                className="block w-full px-3 py-0.5 text-left text-[11px] text-fg-dim hover:bg-surface-2"
+                className="block w-full px-3 py-0.5 text-left text-xs text-fg-dim hover:bg-surface-2"
               >
                 ⋯ {hunk.lines.length} unchanged line{hunk.lines.length === 1 ? "" : "s"}
               </button>
@@ -193,7 +193,7 @@ export function InstructionProposalEditor({ proposal, current, writing, provider
       )}
 
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] text-fg-dim">
+        <p className="text-xs text-fg-dim">
           Proposal {proposal.id} · updated {new Date(proposal.updatedAt).toLocaleString()}
         </p>
         {!writing && <Button size="sm" variant="danger" disabled={busy} onClick={() => void onDelete()}>Delete</Button>}

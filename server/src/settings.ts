@@ -531,7 +531,7 @@ const FIELDS: FieldDef[] = [
     fallback: "",
     placeholder: "sk-…",
     description:
-      "Optional. Leave empty to reuse an existing `codex login`. Stored server-side only and never sent to the browser.",
+      "Optional. Leave empty to reuse an existing `codex login`. API-key runs authenticate in memory without replacing that login. The key stays server-side and is never sent to the browser.",
   },
   {
     key: "codex.binary",
@@ -552,7 +552,7 @@ const FIELDS: FieldDef[] = [
     fallback: "",
     placeholder: "leave empty for the codex default",
     description:
-      "Default model when no model is picked in the header, passed as `-m` to `codex exec`. The header dropdown overrides this per run.",
+      "Default model for Codex App Server when no model is picked in the header. The header dropdown overrides this per run.",
   },
   {
     key: "codex.reasoningEffort",
@@ -602,7 +602,7 @@ const FIELDS: FieldDef[] = [
     envVar: "CODEX_EXTRA_ARGS",
     fallback: "",
     placeholder: `-c model_reasoning_effort="high"`,
-    description: "Appended verbatim to `codex exec`. Quoted tokens are respected.",
+    description: "Codex App Server configuration arguments: -c/--config, --enable, --disable. Exec-only flags are rejected with an explanation. Quoted tokens are respected.",
   },
 
   {
@@ -1018,7 +1018,7 @@ const FIELDS: FieldDef[] = [
     type: "string",
     envVar: "KILOCODE_EXTRA_ARGS",
     fallback: "",
-    description: "Appended verbatim to the kilo invocation. Quoted tokens are respected.",
+    description: "Kilo streaming server options: --pure, --print-logs, --log-level. Choose model, variant and approvals with their dedicated settings. Quoted tokens are respected.",
   },
 ];
 

@@ -68,6 +68,13 @@ export interface AgentAdapter {
 
   run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void>;
   interrupt(runId: string): Promise<void>;
+  /**
+   * Delivers an operator message into a run that is still working (`/btw`).
+   * Present only on providers that keep an input channel open for the whole
+   * run. Resolves false when this run cannot take it right now, and the
+   * caller falls back to the agent's inbox.
+   */
+  sendUserMessage?(runId: string, text: string): Promise<boolean>;
 }
 
 export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInfo> {

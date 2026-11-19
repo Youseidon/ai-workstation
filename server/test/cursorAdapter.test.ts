@@ -87,4 +87,46 @@ test("Cursor assistant stream chunks append to one response block", () => {
     assert.equal(first[0].payload.delta, true);
     assert.equal(second[0].payload.delta, true);
   }
+  const [result] = mapper.map({ type: "result" });
+  assert.equal(result?.type, "result");
+  if (result?.type === "result") assert.equal(result.payload.text, "Hello world");
+});
+
+test("Cursor thinking and answer deltas use separate blocks", () => {
+  const mapper = new CursorMapper();
+  const [thinking] = mapper.map({ type: "assistant", session_id: "s", message: { content: [{ type: "thinking", text: "Considering" }] } });
+  const [answer] = mapper.map({ type: "assistant", session_id: "s", message: { content: [{ type: "text", text: "Answer" }] } });
+  assert.equal(thinking?.type, "assistant_text");
+  assert.equal(answer?.type, "assistant_text");
+  if (thinking?.type === "assistant_text" && answer?.type === "assistant_text") assert.notEqual(thinking.payload.blockId, answer.payload.blockId);
+});
+
+test("Cursor text after a tool starts a new block, preserving reply chronology", () => {
+  const mapper = new CursorMapper();
+  const chunk = (text: string) => mapper.map({ type: "assistant", session_id: "s", message: { content: [{ type: "text", text }] } })[0];
+  const before = chunk("Checking the file.");
+  mapper.map({ type: "tool_use", call_id: "read", name: "read_file", input: {} });
+  mapper.map({ type: "tool_result", call_id: "read", name: "read_file", output: "File contents" });
+  const after = chunk("The answer ");
+  const last = chunk("is ready.");
+  if (before?.type === "assistant_text" && after?.type === "assistant_text" && last?.type === "assistant_text") {
+    assert.notEqual(before.payload.blockId, after.payload.blockId);
+    assert.equal(after.payload.blockId, last.payload.blockId);
+  } else assert.fail("expected text events");
+  const result = mapper.map({ type: "result" })[0];
+  if (result?.type === "result") assert.equal(result.payload.text, "The answer is ready.");
+  else assert.fail("expected result");
+});
+
+test("Cursor final full-message snapshot after partial deltas is not appended twice", () => {
+  const mapper = new CursorMapper();
+  const chunk = (text: string) => mapper.map({ type: "assistant", session_id: "s", message: { content: [{ type: "text", text }] } });
+  const deltas = [...chunk("From the retained turns "), ...chunk("in this thread, your prompts were:")];
+  const snapshot = chunk("From the retained turns in this thread, your prompts were:");
+  assert.equal(deltas.length, 2);
+  assert.deepEqual(snapshot, []);
+  // A short repeated delta is ordinary streaming, not a snapshot.
+  const short = new CursorMapper();
+  const ha = (text: string) => short.map({ type: "assistant", session_id: "s", message: { content: [{ type: "text", text }] } });
+  assert.equal([...ha("ha"), ...ha("ha")].length, 2);
 });

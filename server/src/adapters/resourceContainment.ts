@@ -90,6 +90,20 @@ export function buildSpawnPlan(
   };
 }
 
+/** systemd services do not inherit the wrapper's cwd or environment. Forward
+ * variable names, never secret values in command-line arguments. */
+export function withSpawnEnvironment(plan: SpawnPlan, cwd: string, env: NodeJS.ProcessEnv): SpawnPlan {
+  if (plan.containment !== "systemd") return plan;
+  const separator = plan.args.indexOf("--");
+  return { ...plan, args: [
+    ...plan.args.slice(0, separator),
+    `--working-directory=${cwd}`,
+    ...Object.keys(env).filter(name => /^[A-Za-z_][A-Za-z_0-9]*$/.test(name) && env[name] !== undefined).map(name => `--setenv=${name}`),
+    "--property=UnsetEnvironment=AGENT_CONSOLE_DATA_DIR AGENT_CONSOLE_DATABASE_PATH AGENT_CONSOLE_DB DATABASE_URL SETTINGS_FILE",
+    ...plan.args.slice(separator),
+  ] };
+}
+
 export function parseSystemdProperties(output: string, memoryMaxBytes: number | null): UnitOutcome {
   const values = new Map(output.split(/\r?\n/).flatMap((line) => {
     const separator = line.indexOf("=");

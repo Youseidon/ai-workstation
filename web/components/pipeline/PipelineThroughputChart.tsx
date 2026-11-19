@@ -47,14 +47,14 @@ export function PipelineThroughputChart({ days }: { days: PipelineThroughputDay[
                 )}
                 {day.total === 0 && <div className="h-1 w-full rounded-sm bg-surface-3" />}
               </div>
-              <span className="mt-1 hidden truncate text-center text-[8px] text-fg-dim sm:block">
+              <span className="mt-1 hidden truncate text-center text-xs text-fg-dim sm:block">
                 {day.date.endsWith("-01") || day.date.endsWith("-15") ? label : ""}
               </span>
             </div>
           );
         })}
       </div>
-      <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-fg-dim">
+      <div className="mt-3 flex flex-wrap gap-4 text-xs text-fg-dim">
         <span className="flex items-center gap-1.5">
           <span className="size-2 rounded-sm bg-success/70" />
           Complete

@@ -233,7 +233,7 @@ export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = 
             blockedReason={(id) => (mode === "ask" && id === "cursor" ? "Cursor has no read-only mode, so it cannot answer questions" : null)}
           />
         ) : (
-          <span className="text-[11px] text-fg-dim">No agent runs — you write the proposal yourself.</span>
+          <span className="text-xs text-fg-dim">No agent runs — you write the proposal yourself.</span>
         )}
         <Button
           variant="primary"
@@ -246,7 +246,7 @@ export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = 
         </Button>
       </div>
 
-      {askedRunId !== null && answer === null && <p className="text-[11px] text-fg-dim">Starting the agent…</p>}
+      {askedRunId !== null && answer === null && <p className="text-xs text-fg-dim">Starting the agent…</p>}
       {answer !== null && (
         <ConsultBriefing
           key={answer.runId}

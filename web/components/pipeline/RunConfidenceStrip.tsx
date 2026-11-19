@@ -17,6 +17,7 @@ export function RunConfidenceStrip({
   occupancyWrapUp,
   latestAudit,
   onOpenTab,
+  bare = false,
 }: {
   policy: PipelinePolicy;
   suiteFallbacks: ProviderId[];
@@ -26,6 +27,8 @@ export function RunConfidenceStrip({
   occupancyWrapUp: boolean;
   latestAudit: OperationsPrompt["latestAudit"];
   onOpenTab(tab: InspectorTab): void;
+  /** Drop the frame when nested inside another panel. */
+  bare?: boolean;
 }) {
   const effectiveFallbacks =
     stationFallbacks !== null && stationFallbacks.length > 0
@@ -48,9 +51,12 @@ export function RunConfidenceStrip({
   return (
     <div
       aria-label="Run confidence"
-      className="flex flex-wrap items-center gap-1.5 rounded-panel border border-line bg-surface-1/80 px-3 py-2"
+      className={cn(
+        "flex flex-wrap items-center gap-1.5",
+        !bare && "rounded-panel border border-line bg-surface-1 px-3 py-2",
+      )}
     >
-      <span className="mr-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-dim">
+      <span className="mr-1 text-xs font-semibold uppercase tracking-[0.14em] text-fg-dim">
         Running under
       </span>
 
@@ -122,7 +128,7 @@ function Chip({
       title={title}
       onClick={onClick}
       className={cn(
-        "rounded-full px-2.5 py-1 text-[11px] ring-1 ring-inset transition-colors",
+        "rounded-full px-2.5 py-1 text-xs ring-1 ring-inset transition-colors",
         hot
           ? "bg-caution/15 text-caution ring-caution/40 hover:bg-caution/20"
           : "bg-surface-2 text-fg-muted ring-line hover:bg-surface-3 hover:text-fg",

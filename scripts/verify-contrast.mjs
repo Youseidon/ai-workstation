@@ -11,7 +11,7 @@ const foregrounds = [
   "danger", "info", "violet", "agent-claude", "agent-codex", "agent-cursor", "agent-grok",
   "agent-copilot",
 ];
-const surfaces = ["surface-0", "surface-1", "surface-2", "surface-3"];
+const surfaces = ["surface-0", "surface-1", "surface-2", "surface-3", "chat-user"];
 
 function tokens(block) {
   return Object.fromEntries([...block.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map((match) => [match[1], match[2]]));

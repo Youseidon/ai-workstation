@@ -182,12 +182,17 @@ export function WorkspaceUrlSync() {
   const { workspaces, workspaceId, setWorkspaceId } = useWorkspace();
   const raw = params.get("workspace");
   const urlId = raw !== null ? Number(raw) : null;
+  // Apply a URL value once per change. Re-applying it whenever the selection
+  // changed would revert a click in the workspace switcher to the stale
+  // `?workspace=` before the router observed the replaced URL.
+  const applied = useRef<number | null>(null);
 
   useEffect(() => {
     if (urlId === null || !Number.isSafeInteger(urlId) || urlId <= 0) return;
-    if (workspaceId === urlId) return;
+    if (applied.current === urlId) return;
     if (!workspaces.some((item) => item.id === urlId)) return;
-    setWorkspaceId(urlId);
+    applied.current = urlId;
+    if (workspaceId !== urlId) setWorkspaceId(urlId);
   }, [urlId, workspaceId, workspaces, setWorkspaceId]);
 
   return null;

@@ -1113,6 +1113,7 @@ export interface ToolResultPayload {
 }
 
 export interface StatusPayload {
+  conversation?: { permissionKey: string; context: string; nativeSessionId?: string | null };
   state: RunState;
   elapsedMs: number;
   /** Null when the provider does not report usage (never a fabricated number). */
@@ -1180,7 +1181,7 @@ interface EventBase {
 export interface DbAccessPayload {
   /** Whether this read the app's state or changed it. */
   direction: "read" | "write";
-  operation: "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input";
+  operation: "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
   method: string;
   /** Accepted, refused, or replayed from the idempotency ledger. */
   outcome: "accepted" | "rejected" | "replayed";
@@ -1227,6 +1228,35 @@ export interface AgentInputResponsePayload {
   answers: Record<string, AgentInputAnswer>;
 }
 
+/**
+ * `/btw`: one message between the operator and a run that is already working.
+ * `native` reached the provider's open input channel mid-turn; `inbox` waits
+ * for the agent's next `agent-step` call; `resume` interrupted the run and
+ * continues its provider session with the message.
+ */
+export type RunMessageDelivery = "native" | "inbox" | "resume";
+export type RunMessageState = "QUEUED" | "DELIVERED" | "SUPERSEDED";
+export interface RunMessage {
+  id: number;
+  runId: string;
+  direction: "OPERATOR" | "AGENT";
+  text: string;
+  delivery: RunMessageDelivery;
+  state: RunMessageState;
+  createdAt: string;
+  deliveredAt: string | null;
+}
+export interface OperatorMessagePayload {
+  messageId: number;
+  text: string;
+  delivery: RunMessageDelivery;
+  state: RunMessageState;
+}
+export interface AgentMessagePayload {
+  messageId: number;
+  text: string;
+}
+
 export type NormalizedEvent =
   | (EventBase & { type: "assistant_text"; payload: AssistantTextPayload })
   | (EventBase & { type: "tool_use"; payload: ToolUsePayload })
@@ -1236,7 +1266,9 @@ export type NormalizedEvent =
   | (EventBase & { type: "error"; payload: ErrorPayload })
   | (EventBase & { type: "db_access"; payload: DbAccessPayload })
   | (EventBase & { type: "input_request"; payload: AgentInputRequestPayload })
-  | (EventBase & { type: "input_response"; payload: AgentInputResponsePayload });
+  | (EventBase & { type: "input_response"; payload: AgentInputResponsePayload })
+  | (EventBase & { type: "operator_message"; payload: OperatorMessagePayload })
+  | (EventBase & { type: "agent_message"; payload: AgentMessagePayload });
 
 export type NormalizedEventType = NormalizedEvent["type"];
 
@@ -1527,7 +1559,7 @@ export interface ProgramGate {
  * brief a run left for the run that resumes the same work item on the same
  * working tree, recorded from an `agent-step continue`.
  */
-export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "CONTINUATION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE";
+export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "CONTINUATION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE" | "OPERATOR_BRIEFING";
 /**
  * Who caused a change. Named rather than repeated inline: it is the field that
  * separates "the agent said so" from "the system concluded it" from "you did
@@ -1613,6 +1645,23 @@ export interface RunFileDiff {
   patch:string;
   truncated:boolean;
 }
+
+export interface ChatThread {
+  id: string;
+  workspaceId: number;
+  title: string;
+  pinned: boolean;
+  archived: boolean;
+  updatedAt: string;
+  lastReplyAt: string | null;
+  lastReadAt: string | null;
+  unread: boolean;
+  lastRunState?: string | null;
+}
+
+export interface ChatThreadPage { threads: ChatThread[]; next: string | null }
+export interface ChatHistoryPage { sessions: AgentSession[]; next: string | null }
+export interface ChatThreadPatch { title?: string; pinned?: boolean; archived?: boolean; readAt?: string }
 
 export interface AgentSession extends AgentRunActivity {
   /** Provider-neutral Chat thread. Null for work-item, consult, author, and legacy runs. */
@@ -2216,6 +2265,7 @@ export interface ClientRunMessage {
    * tab. Unlike resumeSessionId, this remains stable when the provider changes.
    */
   threadId?: string;
+  freshContext?: boolean;
   /**
    * Provider-owned conversation id to continue for a custom chat turn.
    * Only valid with `prompt` on an execute run; saved work items and consults
@@ -2310,6 +2360,7 @@ export type RunSource =
   | { type: "instructions"; proposalId: number; file: string; goal: string };
 
 export interface ServerRunStartedMessage {
+  clientRequestId?: string;
   kind: "run_started";
   runId: string;
   provider: ProviderId;
@@ -2329,6 +2380,7 @@ export interface ServerRunStartedMessage {
  * showing an empty log and claiming the agent is idle.
  */
 export interface RunSnapshot {
+  clientRequestId?: string;
   runId: string;
   provider: ProviderId;
   model: string | null;

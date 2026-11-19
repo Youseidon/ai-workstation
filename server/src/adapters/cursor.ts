@@ -78,6 +78,7 @@ export function cursorAgentArgs(input: {
   resumeSessionId?: string | null;
 }): string[] {
   const args = ["-p", "--output-format", input.outputFormat];
+  if (input.outputFormat === "stream-json") args.push("--stream-partial-output");
   // `--resume [chatId]` takes an *optional* value, so the id has to be attached
   // with `=`; passed as a separate argv entry it is read as the prompt and a
   // session picker opens instead. Verified against cursor-agent 2026.09.02.
@@ -149,14 +150,20 @@ function stringifyContent(content: unknown): string {
   return JSON.stringify(content, null, 2);
 }
 
+/** Real deltas are token-sized; a chunk repeating this much streamed text is a snapshot. */
+const SNAPSHOT_MIN_LENGTH = 16;
+
 export class CursorMapper implements StreamMapper {
   settled = false;
   private usage: TokenUsage | null = null;
   private lastText: string | null = null;
   private blockCounter = 0;
   private readonly toolNames = new Map<string, string>();
+  private readonly textBlocks = new Map<string, string>();
+  private textSegment = 0;
 
   map(value: unknown): AdapterEvent[] {
+    if (this.settled) return [];
     const event = value as CursorEvent;
     switch (event.type) {
       case "system":
@@ -217,18 +224,19 @@ export class CursorMapper implements StreamMapper {
 
   private mapAssistant(event: CursorEvent): AdapterEvent[] {
     const content = event.message?.content;
-    if (typeof content === "string") return [this.textEvent(event, content)];
+    if (typeof content === "string") return this.textEvent(event, content);
     if (!Array.isArray(content)) return [];
 
     const events: AdapterEvent[] = [];
     content.forEach((block, index) => {
       if (block.type === "text" && typeof block.text === "string" && block.text !== "") {
-        events.push(this.textEvent(event, block.text, index));
+        events.push(...this.textEvent(event, block.text, index));
       } else if (block.type === "thinking" && typeof block.text === "string") {
-        events.push(this.textEvent(event, block.text, index, "thinking"));
+        events.push(...this.textEvent(event, block.text, index, "thinking"));
       } else if (block.type === "tool_use") {
         const toolUseId = block.id ?? `cursor_tool_${this.blockCounter++}`;
         const name = block.name ?? "tool";
+        if (!this.toolNames.has(toolUseId)) this.textSegment++;
         this.toolNames.set(toolUseId, name);
         events.push({
           type: "tool_use",
@@ -249,15 +257,24 @@ export class CursorMapper implements StreamMapper {
     text: string,
     index = 0,
     kind: "message" | "thinking" = "message",
-  ): AdapterEvent {
-    if (kind === "message") this.lastText = text;
-    const blockId = `${event.message?.id ?? event.session_id ?? "cursor"}:${index}`;
-    return {
+  ): AdapterEvent[] {
+    const blockId = `${event.message?.id ?? event.session_id ?? "cursor"}:${this.textSegment}:${index}:${kind}`;
+    const previous = this.textBlocks.get(blockId) ?? "";
+    // With --stream-partial-output, cursor-agent streams token deltas and then
+    // repeats the whole message as a final assistant event. A chunk that starts
+    // with everything streamed so far is that snapshot, not another delta:
+    // emit only what it adds, or nothing, so the text is not doubled.
+    if (previous.length >= SNAPSHOT_MIN_LENGTH && text.startsWith(previous)) text = text.slice(previous.length);
+    if (text === "") return [];
+    const accumulated = previous + text;
+    this.textBlocks.set(blockId, accumulated);
+    if (kind === "message") this.lastText = accumulated;
+    return [{
       type: "assistant_text",
       // stream-json assistant events are incremental chunks. They share a
       // session block id and must be concatenated to reconstruct the response.
       payload: { blockId, delta: true, text, kind },
-    };
+    }];
   }
 
   private mapUser(event: CursorEvent): AdapterEvent[] {
@@ -293,6 +310,7 @@ export class CursorMapper implements StreamMapper {
     const toolUseId = raw.id ?? event.call_id ?? `cursor_tool_${this.blockCounter++}`;
     const name = raw.name ?? "tool";
     if (phase === "start") {
+      if (!this.toolNames.has(toolUseId)) this.textSegment++;
       this.toolNames.set(toolUseId, name);
       return [{
         type: "tool_use",
@@ -458,7 +476,7 @@ export class CursorAdapter extends SpawnAdapter {
     };
   }
 
-  protected createMapper(): StreamMapper {
+  protected override createMapper(): StreamMapper {
     return new CursorMapper();
   }
 }

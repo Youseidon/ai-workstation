@@ -70,7 +70,7 @@ export function RulesPanel({
       description="One table decides which controls a run offers. The row you are on is highlighted."
     >
       <section className="space-y-3">
-        <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-dim">Right now</h3>
+        <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-fg-dim">Right now</h3>
         <dl className="space-y-2.5">
           <Line term="State">
             <span className="inline-flex items-center gap-2">
@@ -90,7 +90,7 @@ export function RulesPanel({
       </section>
 
       <section className="mt-6 space-y-3">
-        <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-dim">Every state</h3>
+        <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-fg-dim">Every state</h3>
         <div className="overflow-x-auto rounded-md border border-line">
           <table className="w-full min-w-[36rem] border-collapse text-left text-xs">
             <thead>
@@ -113,7 +113,7 @@ export function RulesPanel({
             </tbody>
           </table>
         </div>
-        <p className="text-[11px] leading-5 text-fg-dim">
+        <p className="text-xs leading-5 text-fg-dim">
           Pause is currently{" "}
           <span className="text-fg-muted">
             {policy.pauseMode === "immediate" ? "immediate" : "graceful"}
@@ -136,10 +136,10 @@ export function RulesPanel({
       </section>
 
       <section className="mt-6 space-y-3">
-        <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-dim">
+        <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-fg-dim">
           Provider fallbacks
         </h3>
-        <p className="text-[11px] leading-5 text-fg-dim">
+        <p className="text-xs leading-5 text-fg-dim">
           When an agent cannot start or dies before doing any work for a reason that says nothing
           about the work, the station is started on the next provider in its fallback list. That
           does not consume a continuation. The failing provider cools for a few minutes.
@@ -156,18 +156,18 @@ export function RulesPanel({
             <tbody>
               {TRANSIENT_PATTERNS.map((row) => (
                 <tr key={row.id} className="border-b border-line/60 last:border-b-0">
-                  <td className="px-3 py-2 font-mono text-[11px] text-fg">{row.id}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-fg">{row.id}</td>
                   <td className="px-3 py-2 text-fg-muted">{row.because}</td>
                   <td className="px-3 py-2 text-fg-dim">{COOLING_MINUTES[row.id] ?? 5} min</td>
                 </tr>
               ))}
               <tr className="border-b border-line/60 last:border-b-0">
-                <td className="px-3 py-2 font-mono text-[11px] text-fg">start_failed</td>
+                <td className="px-3 py-2 font-mono text-xs text-fg">start_failed</td>
                 <td className="px-3 py-2 text-fg-muted">The agent process failed to start.</td>
                 <td className="px-3 py-2 text-fg-dim">{COOLING_MINUTES.start_failed} min</td>
               </tr>
               <tr className="border-b border-line/60 last:border-b-0">
-                <td className="px-3 py-2 font-mono text-[11px] text-fg">died_before_work</td>
+                <td className="px-3 py-2 font-mono text-xs text-fg">died_before_work</td>
                 <td className="px-3 py-2 text-fg-muted">
                   The agent never made a tool call, so nothing about the work was learned.
                 </td>
@@ -182,7 +182,7 @@ export function RulesPanel({
           table because they are one subject: the table decides which state a run
           lands in, and this decides what that state is called and what it does. */}
       <section className="mt-6 border-t border-line pt-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
           Every status
         </h3>
         <div className="mt-2">
@@ -192,10 +192,10 @@ export function RulesPanel({
 
       {suiteId != null && (
         <section className="mt-6 border-t border-line pt-4">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
             This suite&rsquo;s provider fallbacks
           </h3>
-          <p className="mt-1 text-[11px] leading-5 text-fg-dim">
+          <p className="mt-1 text-xs leading-5 text-fg-dim">
             Used when a station leaves its own list empty. Empty here means the house default (
             {policy.fallbackProviders.join(" → ") || "none"}).
           </p>
@@ -214,10 +214,10 @@ export function RulesPanel({
 
       {suiteId != null && (
         <section className="mt-6 border-t border-line pt-4">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-dim">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
             This suite&rsquo;s definition of done
           </h3>
-          <p className="mt-1 text-[11px] leading-5 text-fg-dim">
+          <p className="mt-1 text-xs leading-5 text-fg-dim">
             Inherited by every work item in the suite that has not written its own. A single item can
             still say something different on its own detail panel.
           </p>
@@ -233,17 +233,17 @@ export function RulesPanel({
 function Line({ term, children }: { term: string; children: React.ReactNode }) {
   return (
     <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3">
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-dim sm:pt-[3px]">
+      <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim sm:pt-[3px]">
         {term}
       </dt>
-      <dd className="min-w-0 text-[13px] leading-5 text-fg-muted">{children}</dd>
+      <dd className="min-w-0 text-sm leading-5 text-fg-muted">{children}</dd>
     </div>
   );
 }
 
 function Th({ children }: { children: React.ReactNode }) {
   return (
-    <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-dim">
+    <th className="px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">
       {children}
     </th>
   );
@@ -280,7 +280,7 @@ function Row({
       >
         {row.condition}
         {here && (
-          <span className="ml-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-accent">
+          <span className="ml-2 text-xs font-semibold uppercase tracking-[0.1em] text-accent">
             you are here
           </span>
         )}

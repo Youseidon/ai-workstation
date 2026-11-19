@@ -1,247 +1,25 @@
 import { spawn } from "node:child_process";
-import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
-import { oneLine } from "@agent-console/shared";
+import type { ProviderUsage } from "@agent-console/shared";
 import { LineSplitter, tryParseJson } from "../lib/lines.ts";
 import { resolveBinary } from "../lib/process.ts";
 import { describeEffectiveAccess, effectiveCodexSandboxMode, settings } from "../settings.ts";
 import { parseCodexRateLimits, providerUsageOk, providerUsageUnavailable } from "./accountUsage.ts";
-import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
+import { CodexStreamMapper } from "./codexStream.ts";
+import { SpawnAdapter, type SpawnSpec } from "./spawnAdapter.ts";
 import type { RunOptions } from "./types.ts";
 
-/*
- * Codex emits JSONL on stdout with `codex exec --json`. Verified against
- * codex-cli 0.150.1; see README for how to re-check the flags/shapes.
- *
- *   {"type":"thread.started","thread_id":"..."}
- *   {"type":"turn.started"}
- *   {"type":"item.started","item":{"id":"item_1","type":"command_execution",...}}
- *   {"type":"item.completed","item":{"id":"item_1",...,"exit_code":0,"status":"completed"}}
- *   {"type":"turn.completed","usage":{"input_tokens":123,...}}
- */
-
-interface CodexUsage {
-  input_tokens?: number;
-  cached_input_tokens?: number;
-  cache_write_input_tokens?: number;
-  output_tokens?: number;
-  reasoning_output_tokens?: number;
-}
-
-interface CodexItem {
-  id?: string;
-  type?: string;
-  text?: string;
-  summary?: string;
-  command?: string;
-  aggregated_output?: string;
-  exit_code?: number | null;
-  status?: string;
-  changes?: Array<{ path?: string; kind?: string }> | Record<string, unknown>;
-  server?: string;
-  tool?: string;
-  result?: unknown;
-  error?: unknown;
-  query?: string;
-  items?: Array<{ text?: string; completed?: boolean }>;
-  message?: string;
-}
-
-interface CodexEvent {
-  type?: string;
-  thread_id?: string;
-  item?: CodexItem;
-  usage?: CodexUsage;
-  error?: { message?: string } | string;
-  message?: string;
-}
-
-/** Item types that are agent output rather than tool activity. */
-const TEXT_ITEM_TYPES = new Set(["agent_message", "reasoning"]);
-
-function toUsage(usage: CodexUsage | undefined): TokenUsage | null {
-  if (!usage) return null;
-  const inputTokens = usage.input_tokens ?? 0;
-  const outputTokens = usage.output_tokens ?? 0;
-  if (inputTokens === 0 && outputTokens === 0) return null;
-  return {
-    inputTokens,
-    outputTokens,
-    cachedInputTokens: usage.cached_input_tokens ?? 0,
-    reasoningOutputTokens: usage.reasoning_output_tokens ?? 0,
-    totalTokens: inputTokens + outputTokens,
-  };
-}
-
-class CodexMapper implements StreamMapper {
-  settled = false;
-  private readonly openTools = new Set<string>();
-  private lastAgentMessage: string | null = null;
-  private usage: TokenUsage | null = null;
-
-  map(value: unknown): AdapterEvent[] {
-    const event = value as CodexEvent;
-    switch (event.type) {
-      case "thread.started":
-        // The thread id is what `codex exec resume <id>` takes, and it is on the
-        // first line — banked here so a budget-stopped run can still be resumed
-        // for its wrap-up turn.
-        return [{
-          type: "status",
-          payload: { state: "running", detail: `thread ${event.thread_id ?? "?"}`, sessionId: event.thread_id ?? null },
-        }];
-      case "turn.started":
-        return [{ type: "status", payload: { state: "running", detail: "turn started" } }];
-      case "item.started":
-      case "item.updated":
-      case "item.completed":
-        return this.mapItem(event.type, event.item ?? {});
-      case "turn.completed": {
-        this.usage = toUsage(event.usage);
-        this.settled = true;
-        return [{
-          type: "result",
-          payload: { state: "done", usage: this.usage, text: this.lastAgentMessage, exitCode: 0 },
-        }];
-      }
-      case "turn.failed": {
-        this.settled = true;
-        const message = typeof event.error === "string"
-          ? event.error
-          : event.error?.message ?? "Codex turn failed";
-        return [
-          { type: "error", payload: { message, fatal: true } },
-          { type: "result", payload: { state: "error", usage: this.usage, exitCode: null } },
-        ];
-      }
-      case "error": {
-        const message = typeof event.error === "string"
-          ? event.error
-          : event.error?.message ?? event.message ?? "Codex reported an error";
-        return [{ type: "error", payload: { message, fatal: false } }];
-      }
-      default:
-        return [];
+/** Codex App Server supplies native text/reasoning deltas over JSON-RPC stdio. */
+export function codexServerArgs(extra: string[], apiKey = false): string[] {
+  for (let index = 0; index < extra.length; index++) {
+    const flag = extra[index]!;
+    if (["-c", "--config", "--enable", "--disable"].includes(flag)) {
+      if (!extra[++index]) throw new Error(`Missing value for Codex extra argument ${flag}`);
+    } else if (!/^--(?:config|enable|disable)=/.test(flag)) {
+      throw new Error(`Codex streaming uses App Server. Replace unsupported exec-only extra argument ${flag} with a -c configuration override.`);
     }
   }
-
-  private mapItem(phase: string, item: CodexItem): AdapterEvent[] {
-    const itemType = item.type ?? "unknown";
-    const itemId = item.id ?? `codex_${itemType}_${this.openTools.size}`;
-
-    if (TEXT_ITEM_TYPES.has(itemType)) {
-      const text = item.text ?? item.summary ?? "";
-      if (text === "") return [];
-      if (itemType === "agent_message") this.lastAgentMessage = text;
-      return [{
-        type: "assistant_text",
-        payload: {
-          blockId: itemId,
-          // Codex sends whole items, so each event replaces the block body.
-          delta: false,
-          text,
-          kind: itemType === "reasoning" ? "thinking" : "message",
-        },
-      }];
-    }
-
-    if (itemType === "error") {
-      return [{
-        type: "error",
-        payload: { message: item.message ?? item.text ?? "Codex item error", fatal: false },
-      }];
-    }
-
-    const events: AdapterEvent[] = [];
-    const { name, summary, input } = describeToolItem(itemType, item);
-
-    if (!this.openTools.has(itemId)) {
-      this.openTools.add(itemId);
-      events.push({ type: "tool_use", payload: { toolUseId: itemId, name, summary, input } });
-    }
-
-    if (phase === "item.completed") {
-      const output = renderToolOutput(itemType, item);
-      const exitCode = typeof item.exit_code === "number" ? item.exit_code : null;
-      const isError = item.status === "failed" || (exitCode !== null && exitCode !== 0);
-      events.push({
-        type: "tool_result",
-        payload: {
-          toolUseId: itemId,
-          name,
-          isError,
-          summary: oneLine(output || (isError ? "failed" : "completed"), 160),
-          output,
-          exitCode,
-        },
-      });
-    }
-
-    return events;
-  }
-
-  finish(): AdapterEvent[] {
-    return [];
-  }
-}
-
-function describeToolItem(itemType: string, item: CodexItem): {
-  name: string;
-  summary: string;
-  input: unknown;
-} {
-  switch (itemType) {
-    case "command_execution":
-      return {
-        name: "shell",
-        summary: oneLine(item.command ?? ""),
-        input: { command: item.command },
-      };
-    case "file_change": {
-      const changes = Array.isArray(item.changes) ? item.changes : [];
-      const paths = changes.map((change) => change.path ?? "?");
-      return {
-        name: "apply_patch",
-        summary: paths.length > 0 ? oneLine(paths.join(", ")) : "file change",
-        input: item.changes,
-      };
-    }
-    case "mcp_tool_call":
-      return {
-        name: `${item.server ?? "mcp"}.${item.tool ?? "call"}`,
-        summary: oneLine(JSON.stringify(item.result ?? {})),
-        input: item,
-      };
-    case "web_search":
-      return { name: "web_search", summary: oneLine(item.query ?? ""), input: { query: item.query } };
-    case "todo_list": {
-      const items = item.items ?? [];
-      const done = items.filter((entry) => entry.completed).length;
-      return {
-        name: "todo_list",
-        summary: `${done}/${items.length} done`,
-        input: items,
-      };
-    }
-    default:
-      return { name: itemType, summary: oneLine(JSON.stringify(item)), input: item };
-  }
-}
-
-function renderToolOutput(itemType: string, item: CodexItem): string {
-  switch (itemType) {
-    case "command_execution":
-      return item.aggregated_output ?? "";
-    case "file_change":
-      return JSON.stringify(item.changes ?? [], null, 2);
-    case "mcp_tool_call":
-      return JSON.stringify(item.error ?? item.result ?? {}, null, 2);
-    case "todo_list":
-      return (item.items ?? [])
-        .map((entry) => `${entry.completed ? "[x]" : "[ ]"} ${entry.text ?? ""}`)
-        .join("\n");
-    default:
-      return JSON.stringify(item, null, 2);
-  }
+  // API-key login is connection-local. Never replace a stored ChatGPT login.
+  return ["app-server", ...extra, ...(apiKey ? ["-c", 'cli_auth_credentials_store="ephemeral"'] : [])];
 }
 
 export class CodexAdapter extends SpawnAdapter {
@@ -289,33 +67,24 @@ export class CodexAdapter extends SpawnAdapter {
     }
   }
 
+  /** `/btw`: App Server takes input into the active turn (`turn/steer`). */
+  sendUserMessage(runId: string, text: string): Promise<boolean> {
+    return this.steerRun(runId, text);
+  }
+
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const resumeSessionId = opts.resumeSessionId ?? null;
     const sandbox = opts.permissionOverride !== "inherit" ? "read-only" : effectiveCodexSandboxMode();
-    // `codex exec resume <SESSION_ID> [PROMPT]` continues a recorded thread.
-    // Its flag set is *not* `codex exec`'s: `-C`, `-s` and `--color` are absent
-    // from it (checked against codex-cli 0.153.0, `codex exec resume --help`),
-    // so the working root comes from the spawn's own cwd and the sandbox goes
-    // through the `-c` config override that resume does accept — an unknown
-    // flag makes codex exit before it says anything, which reaches the operator
-    // as "the provider crashed" rather than as a flag drift. See README's
-    // "CLI flags drift" note; re-check both help pages when codex is upgraded.
-    const args = resumeSessionId === null
-      ? ["exec", "--json", "--color", "never", "-C", opts.cwd, "-s", sandbox]
-      : ["exec", "resume", resumeSessionId, "--json", "-c", `sandbox_mode="${sandbox}"`];
-    if (settings.codex.skipGitRepoCheck) args.push("--skip-git-repo-check");
-    const model = opts.model ?? settings.codex.model;
-    if (model !== null) args.push("-m", model);
-    args.push(...settings.codex.extraArgs);
-    args.push("-c", `model_reasoning_effort="${settings.reasoningEffortFor("codex")}"`);
-    // `-` makes codex read the prompt from stdin, so no argv escaping worries.
-    args.push("-");
-    return { args, stdin: prompt, ...(resumeSessionId === null ? {} : { sessionId: resumeSessionId }) };
+    return {
+      args: codexServerArgs(settings.codex.extraArgs, settings.codex.apiKey !== null),
+      interactive: true,
+      env: settings.codex.apiKey ? { OPENAI_API_KEY: settings.codex.apiKey } : undefined,
+      mapper: new CodexStreamMapper({ prompt, cwd: opts.cwd, model: opts.model ?? settings.codex.model,
+        sandbox, effort: settings.reasoningEffortFor("codex"), resumeSessionId,
+        requireGit: !settings.codex.skipGitRepoCheck, apiKey: settings.codex.apiKey ?? undefined }),
+    };
   }
 
-  protected createMapper(): StreamMapper {
-    return new CodexMapper();
-  }
 }
 
 const CODEX_APP_SERVER_TIMEOUT_MS = 25_000;
@@ -405,6 +174,8 @@ function sanitizedEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.AGENT_CONSOLE_DATA_DIR;
   delete env.AGENT_CONSOLE_DATABASE_PATH;
+  delete env.AGENT_CONSOLE_DB;
   delete env.DATABASE_URL;
+  delete env.SETTINGS_FILE;
   return env;
 }

@@ -19,11 +19,11 @@ test("Copilot streams a message once, and its terminal envelope adds nothing", (
 
   assert.deepEqual(first, [{
     type: "assistant_text",
-    payload: { blockId: "copilot-msg-m1", delta: false, text: "Ran ", kind: "message" },
+    payload: { blockId: "copilot-msg-m1:message", delta: false, text: "Ran ", kind: "message" },
   }]);
   assert.deepEqual(second, [{
     type: "assistant_text",
-    payload: { blockId: "copilot-msg-m1", delta: true, text: "the tests.", kind: "message" },
+    payload: { blockId: "copilot-msg-m1:message", delta: true, text: "the tests.", kind: "message" },
   }]);
   assert.deepEqual(terminal, []);
 
@@ -39,7 +39,7 @@ test("Copilot emits a message that never streamed", () => {
     mapper.map({ type: "assistant.message", data: { messageId: "m2", content: "DONE" } }),
     [{
       type: "assistant_text",
-      payload: { blockId: "copilot-msg-m2", delta: false, text: "DONE", kind: "message" },
+      payload: { blockId: "copilot-msg-m2:message", delta: false, text: "DONE", kind: "message" },
     }],
   );
 });

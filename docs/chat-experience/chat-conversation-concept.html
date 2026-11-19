@@ -1,0 +1,190 @@
+<div class="viz-dotted-background">
+  <section id="chat-conversation-concept" aria-label="Chat design proposal">
+    <style>
+      #chat-conversation-concept {
+        --cc-bg: light-dark(#ffffff, #171b24);
+        --cc-soft: light-dark(#f5f7fb, #12151c);
+        --cc-line: light-dark(#d8dee9, #343d4e);
+        --cc-fg: light-dark(#0f1520, #edf0f7);
+        --cc-muted: light-dark(#4a5566, #bac4d5);
+        --cc-accent: light-dark(#0d7287, #7ad6e7);
+        --cc-user: light-dark(#e8f2f6, #203745);
+        color: var(--cc-fg); background: var(--cc-bg);
+        border: 1px solid var(--cc-line); border-radius: 18px;
+        font: 15px/1.6 ui-sans-serif, system-ui, sans-serif;
+        overflow-wrap: anywhere;
+      }
+      #chat-conversation-concept * { box-sizing: border-box; }
+      #chat-conversation-concept [hidden] { display: none !important; }
+      #chat-conversation-concept button, #chat-conversation-concept textarea { font: inherit; }
+      #chat-conversation-concept button { color: inherit; }
+      #chat-conversation-concept button:focus-visible, #chat-conversation-concept summary:focus-visible, #chat-conversation-concept textarea:focus-visible { outline: 2px solid var(--cc-accent); outline-offset: 3px; }
+      #chat-conversation-concept .cc-header { padding: 18px 104px 16px 22px; border-bottom: 1px solid var(--cc-line); }
+      #chat-conversation-concept .cc-eyebrow { color: var(--cc-muted); font-size: 12px; }
+      #chat-conversation-concept .cc-title { font-size: 18px; font-weight: 600; margin: 2px 0 0; }
+      #chat-conversation-concept .cc-toolbar { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 22px 0; }
+      #chat-conversation-concept .cc-button { border: 1px solid var(--cc-line); border-radius: 7px; background: var(--cc-bg); padding: 5px 10px; font-size: 12px; }
+      #chat-conversation-concept .cc-button:hover { background: var(--cc-soft); }
+      #chat-conversation-concept .cc-button[aria-pressed="true"] { background: var(--cc-fg); color: var(--cc-bg); border-color: var(--cc-fg); }
+      #chat-conversation-concept .cc-reading { max-width: 720px; margin: 0 auto; padding: 26px 28px 22px; }
+      #chat-conversation-concept .cc-user { width: fit-content; max-width: 88%; margin-left: auto; background: var(--cc-user); border-radius: 16px 16px 4px 16px; padding: 12px 17px; }
+      #chat-conversation-concept[data-user-style="card"] .cc-user { max-width: none; width: 100%; border-radius: 12px; }
+      #chat-conversation-concept .cc-user-label { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+      #chat-conversation-concept .cc-reply { margin-top: 26px; }
+      #chat-conversation-concept .cc-byline { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 12px; }
+      #chat-conversation-concept .cc-avatar { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid var(--cc-line); border-radius: 8px; font-size: 13px; font-weight: 600; }
+      #chat-conversation-concept .cc-caption { color: var(--cc-muted); }
+      #chat-conversation-concept .cc-activity { background: var(--cc-soft); border: 1px solid var(--cc-line); border-radius: 10px; margin-bottom: 18px; }
+      #chat-conversation-concept summary { padding: 10px 12px; font-size: 12px; }
+      #chat-conversation-concept .cc-evidence { padding: 0 14px 14px; font-size: 13px; }
+      #chat-conversation-concept .cc-evidence p { margin: 8px 0 3px; }
+      #chat-conversation-concept pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0; }
+      #chat-conversation-concept code, #chat-conversation-concept pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+      #chat-conversation-concept .cc-answer p { margin: 0 0 12px; }
+      #chat-conversation-concept .cc-answer h3 { margin: 17px 0 6px; font-size: 16px; font-weight: 600; }
+      #chat-conversation-concept .cc-answer ul { margin: 7px 0 16px; padding-left: 21px; }
+      #chat-conversation-concept .cc-answer li { margin: 6px 0; }
+      #chat-conversation-concept .cc-answer code { background: var(--cc-soft); border: 1px solid var(--cc-line); border-radius: 4px; padding: 1px 4px; }
+      #chat-conversation-concept .cc-answer strong { font-weight: 600; }
+      #chat-conversation-concept .cc-code { background: var(--cc-soft); border: 1px solid var(--cc-line); border-radius: 9px; padding: 10px 13px; }
+      #chat-conversation-concept .cc-code pre code { border: 0; padding: 0; background: none; }
+      #chat-conversation-concept .cc-footer { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-top: 17px; font-size: 12px; }
+      #chat-conversation-concept .cc-link { padding: 0; background: none; border: none; color: var(--cc-accent); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+      #chat-conversation-concept .cc-turn-details { margin-top: 8px; font-size: 12px; }
+      #chat-conversation-concept .cc-turn-details summary { padding: 4px 0; }
+      #chat-conversation-concept .cc-turn-details p { margin: 3px 0; color: var(--cc-muted); }
+      #chat-conversation-concept .cc-composer-zone { padding: 0 22px 18px; }
+      #chat-conversation-concept .cc-context { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; margin: 0 3px 8px; }
+      #chat-conversation-concept .cc-composer { border: 1px solid var(--cc-line); border-radius: 13px; padding: 11px 13px; }
+      #chat-conversation-concept textarea { color: var(--cc-fg); background: var(--cc-bg); width: 100%; min-height: 54px; resize: vertical; border: none; padding: 3px 0; }
+      #chat-conversation-concept textarea::placeholder { color: var(--cc-muted); opacity: 1; }
+      #chat-conversation-concept .cc-composer-footer { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12px; color: var(--cc-muted); }
+      #chat-conversation-concept .cc-mode { border: 1px solid var(--cc-line); border-radius: 6px; padding: 1px 7px; color: var(--cc-fg); }
+      #chat-conversation-concept .cc-quote { border-left: 3px solid var(--cc-accent); margin-bottom: 8px; padding: 4px 9px; font-size: 12px; }
+      #chat-conversation-concept .cc-quote button { margin-left: 8px; }
+      #chat-conversation-concept .cc-log { padding: 24px 22px; }
+      #chat-conversation-concept .cc-log-row { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--cc-line); font-size: 12px; }
+      #chat-conversation-concept .cc-log-row time { color: var(--cc-muted); }
+      #chat-conversation-concept[data-density="compact"] .cc-reading { padding-top: 16px; padding-bottom: 16px; }
+      #chat-conversation-concept[data-density="compact"] .cc-reply { margin-top: 16px; }
+      #chat-conversation-concept[data-density="compact"] .cc-answer p, #chat-conversation-concept[data-density="compact"] .cc-answer li { margin-bottom: 6px; }
+      @media (max-width: 440px) {
+        #chat-conversation-concept .cc-header { padding-left: 15px; }
+        #chat-conversation-concept .cc-toolbar { padding-left: 15px; padding-right: 15px; }
+        #chat-conversation-concept .cc-reading { padding-left: 16px; padding-right: 16px; }
+        #chat-conversation-concept .cc-user { max-width: 95%; }
+        #chat-conversation-concept .cc-composer-zone { padding-left: 15px; padding-right: 15px; }
+      }
+      @media (pointer: coarse) {
+        #chat-conversation-concept button, #chat-conversation-concept summary { min-height: 44px; }
+        #chat-conversation-concept textarea { font-size: 16px; }
+      }
+    </style>
+    <header class="cc-header">
+      <div class="cc-eyebrow">Design proposal · Example conversation</div>
+      <h2 class="cc-title">Understanding sign-in</h2>
+    </header>
+    <nav class="cc-toolbar" aria-label="Transcript view">
+      <button class="cc-button cursor-interaction" type="button" data-view="conversation" aria-pressed="true" aria-controls="cc-conversation">Conversation</button>
+      <button class="cc-button cursor-interaction" type="button" data-view="log" aria-pressed="false" aria-controls="cc-execution">Execution log</button>
+    </nav>
+    <div id="cc-conversation" class="cc-reading">
+      <article class="cc-user" aria-label="Your message">
+        <div class="cc-user-label">You</div>
+        Explain how sign-in works, and where I should make changes.
+      </article>
+      <article class="cc-reply" aria-label="Assistant reply">
+        <div class="cc-byline"><span class="cc-avatar" aria-hidden="true">C</span><strong>Codex</strong><span class="cc-caption">Reply</span></div>
+        <details class="cc-activity" id="cc-activity">
+          <summary class="cursor-interaction">Read 3 files · Searched the sign-in flow</summary>
+          <div class="cc-evidence">
+            <p><strong>Repository search</strong> · completed</p>
+            <pre><code>rg -n 'signIn|createSession' src/auth</code></pre>
+            <p>Found the form, credential validation and session creation. Exit 0.</p>
+            <p class="cc-caption">Files read: login-form.tsx, sign-in.ts, session.ts</p>
+          </div>
+        </details>
+        <div class="cc-answer">
+          <p>Sign-in follows three steps: <strong>validate the input, check credentials, then create a session.</strong></p>
+          <ul>
+            <li><code>login-form.tsx</code> owns the fields and validation messages.</li>
+            <li><code>sign-in.ts</code> checks credentials and handles failures.</li>
+            <li><code>session.ts</code> creates the session used by subsequent requests.</li>
+          </ul>
+          <h3>Where to start</h3>
+          <p>For clearer error messages, start with the form. For a different sign-in method, start with the credential check.</p>
+          <div class="cc-code"><div class="cc-caption" style="font-size:12px">TypeScript · Example</div><pre><code>const session = await signIn(credentials);</code></pre></div>
+        </div>
+        <div class="cc-footer">
+          <span class="cc-caption">18 s</span>
+          <button type="button" class="cc-link cursor-interaction" id="cc-evidence-link">View evidence</button>
+          <button type="button" class="cc-link cursor-interaction" id="cc-quote-button">Quote to follow up</button>
+        </div>
+        <details class="cc-turn-details" id="cc-details"><summary class="cursor-interaction">Reply details</summary><p>Codex · Workspace default model · 10:42<br>Read-only research · No workspace changes</p></details>
+      </article>
+    </div>
+    <section id="cc-execution" class="cc-log" aria-label="Execution log example" hidden>
+      <div class="cc-caption" style="font-size:12px;margin-bottom:10px">Codex · Workspace default model · Exact event order</div>
+      <div class="cc-log-row"><time>10:42:00</time><div><strong>You</strong><br>Explain how sign-in works, and where I should make changes.</div></div>
+      <div class="cc-log-row"><time>10:42:03</time><div><strong>Search</strong><pre><code>rg -n 'signIn|createSession' src/auth</code></pre></div></div>
+      <div class="cc-log-row"><time>10:42:04</time><div>Search completed · exit 0</div></div>
+      <div class="cc-log-row"><time>10:42:07</time><div>Read login-form.tsx, sign-in.ts, session.ts</div></div>
+      <div class="cc-log-row"><time>10:42:18</time><div><strong>Reply</strong><br>Sign-in follows three steps: validate the input, check credentials, then create a session.</div></div>
+    </section>
+    <div class="cc-composer-zone">
+      <div class="cc-context"><span class="cc-caption">Next reply</span><strong>Codex · Workspace default</strong></div>
+      <div class="cc-composer">
+        <div class="cc-quote" id="cc-quote" hidden>“For clearer error messages, start with the form.”<button type="button" class="cc-link cursor-interaction" id="cc-remove-quote">Remove quote</button></div>
+        <label for="cc-draft" class="cc-caption" style="font-size:12px">Your follow-up</label>
+        <textarea id="cc-draft" rows="2" placeholder="Ask a follow-up…"></textarea>
+        <div class="cc-composer-footer"><span class="cc-mode">Ask</span><span>Read-only</span><span>·</span><span>Conversation context included</span></div>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const root = document.getElementById('chat-conversation-concept');
+        const activity = root.querySelector('#cc-activity');
+        const details = root.querySelector('#cc-details');
+        const quote = root.querySelector('#cc-quote');
+        const draft = root.querySelector('#cc-draft');
+        const state = { view: 'conversation', activityOpen: false, detailsOpen: false, quoted: false, density: 'comfortable', userStyle: 'bubble' };
+        const saved = window.openai?.widgetState?.privateContent;
+        function restore(value) {
+          if (!value || typeof value !== 'object') return;
+          if (['conversation', 'log'].includes(value.view)) state.view = value.view;
+          if (['comfortable', 'compact'].includes(value.density)) state.density = value.density;
+          if (['bubble', 'card'].includes(value.userStyle)) state.userStyle = value.userStyle;
+          for (const key of ['activityOpen', 'detailsOpen', 'quoted']) if (typeof value[key] === 'boolean') state[key] = value[key];
+        }
+        function render() {
+          root.dataset.density = state.density;
+          root.dataset.userStyle = state.userStyle;
+          root.querySelector('#cc-conversation').hidden = state.view !== 'conversation';
+          root.querySelector('#cc-execution').hidden = state.view !== 'log';
+          root.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === state.view)));
+          activity.open = state.activityOpen;
+          details.open = state.detailsOpen;
+          quote.hidden = !state.quoted;
+        }
+        function remember() {
+          const operation = window.openai?.setWidgetState?.({ modelContent: { density: state.density, userMessageStyle: state.userStyle }, privateContent: { ...state } });
+          operation?.catch?.(() => {});
+        }
+        restore(saved);
+        render();
+        root.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => { state.view = button.dataset.view; render(); remember(); }));
+        root.querySelector('#cc-evidence-link').addEventListener('click', () => { state.activityOpen = true; render(); remember(); activity.querySelector('summary').focus(); });
+        root.querySelector('#cc-quote-button').addEventListener('click', () => { state.quoted = true; render(); remember(); draft.focus(); });
+        root.querySelector('#cc-remove-quote').addEventListener('click', () => { state.quoted = false; render(); remember(); draft.focus(); });
+        activity.addEventListener('toggle', () => { if (state.activityOpen === activity.open) return; state.activityOpen = activity.open; remember(); });
+        details.addEventListener('toggle', () => { if (state.detailsOpen === details.open) return; state.detailsOpen = details.open; remember(); });
+        window.addEventListener('openai:set_globals', event => { const value = event.detail?.globals?.widgetState?.privateContent; if (value) { restore(value); render(); } });
+        if (globalThis.Tweak) {
+          const tweak = new Tweak({ container: root, onChange: () => { render(); remember(); } });
+          tweak.addSelect(state, 'userStyle', { label: 'User message layout', options: [{label: 'Right-aligned bubble', value: 'bubble'}, {label: 'Full-width tinted card', value: 'card'}] });
+          tweak.addSelect(state, 'density', { label: 'Reading density', options: ['comfortable', 'compact'] });
+        }
+      })();
+    </script>
+  </section>
+</div>

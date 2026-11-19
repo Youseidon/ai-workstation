@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@agent-console/shared";
 import { oneLine } from "@agent-console/shared";
 import {
@@ -11,6 +12,7 @@ import {
 import { fetchJson, parseKiloUsage, providerUsageOk, providerUsageUnavailable } from "./accountUsage.ts";
 import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
 import type { RunOptions } from "./types.ts";
+import { KiloStreamMapper } from "./kiloStream.ts";
 
 /*
  * `kilo run --format json <prompt>` emits opencode-style NDJSON, one object per
@@ -53,6 +55,7 @@ interface KiloPart {
     input?: unknown;
     output?: unknown;
     title?: string;
+    error?: string;
   };
 }
 
@@ -139,8 +142,10 @@ export class KiloMapper implements StreamMapper {
   private announcedSession = false;
   private readonly openTools = new Map<string, KiloToolState>();
   private readonly completedTools = new Set<string>();
+  private readonly texts = new Map<string, string>();
 
   map(value: unknown): AdapterEvent[] {
+    if (this.settled) return [];
     const event = value as KiloEvent;
     const part = event.part ?? {};
     const sessionId = event.sessionID ?? null;
@@ -148,7 +153,7 @@ export class KiloMapper implements StreamMapper {
     // The session id rides every event; announce it once, on the first line
     // that carries one, so a budget stop can still resume what was spent.
     const prelude: AdapterEvent[] = [];
-    if (sessionId !== undefined && !this.announcedSession) {
+    if (sessionId !== null && !this.announcedSession) {
       this.announcedSession = true;
       prelude.push({
         type: "status",
@@ -174,8 +179,14 @@ export class KiloMapper implements StreamMapper {
       case "text":
         prelude.push(...this.mapText(part, "message"));
         return prelude;
+      case "text_delta":
+        prelude.push(...this.mapText(part, "message", true));
+        return prelude;
       case "reasoning":
         prelude.push(...this.mapText(part, "thinking"));
+        return prelude;
+      case "reasoning_delta":
+        prelude.push(...this.mapText(part, "thinking", true));
         return prelude;
       case "tool_use":
         prelude.push(...this.mapTool(part));
@@ -188,7 +199,7 @@ export class KiloMapper implements StreamMapper {
   }
 
   finish(exitCode: number | null): AdapterEvent[] {
-    if (this.settled) return [];
+    if (this.settled || exitCode !== 0) return [];
     this.settled = true;
     // A clean exit without a final result line: the run simply ended. Only an
     // abnormal exit is an error — spawnAdapter already reports those.
@@ -198,15 +209,19 @@ export class KiloMapper implements StreamMapper {
     }];
   }
 
-  private mapText(part: KiloPart, kind: "message" | "thinking"): AdapterEvent[] {
+  private mapText(part: KiloPart, kind: "message" | "thinking", delta = false): AdapterEvent[] {
     const text = typeof part.text === "string" ? part.text : "";
-    if (text === "") return [];
-    if (kind === "message") this.lastText = text;
+    const blockId = part.id ?? `kilo-${kind}-${this.openTools.size}`;
+    const previous = this.texts.get(blockId) ?? "";
+    const next = delta ? previous + text : text;
+    if (next === previous) return [];
+    this.texts.set(blockId, next);
+    if (kind === "message") this.lastText = next;
     return [{
       type: "assistant_text",
       payload: {
-        blockId: part.id ?? `kilo-${kind}-${this.openTools.size}`,
-        delta: false,
+        blockId,
+        delta,
         text,
         kind,
       },
@@ -235,7 +250,7 @@ export class KiloMapper implements StreamMapper {
 
     if (TERMINAL_TOOL_STATUS.has(status) && !this.completedTools.has(toolUseId)) {
       this.completedTools.add(toolUseId);
-      const output = stringifyOutput(part.state?.output);
+      const output = stringifyOutput(part.state?.output ?? part.state?.error);
       const isError = status === "error";
       events.push({
         type: "tool_result",
@@ -348,31 +363,35 @@ export class KiloAdapter extends SpawnAdapter {
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const consult = opts.permissionOverride !== "inherit";
-    const args = ["run", "--format", "json"];
-    // The plan agent's own rules confine it to reads; execute runs pre-grant
-    // approvals because a headless run has nowhere to put an ask prompt.
-    if (consult) {
-      args.push("--agent", "plan");
-    } else {
-      args.push("--agent", "code");
-      if (settings.kilocode.autoApprove) args.push("--auto");
-    }
-    const resumeSessionId = opts.resumeSessionId ?? null;
-    if (resumeSessionId !== null) args.push("--session", resumeSessionId);
-    const model = opts.model ?? settings.kilocode.model;
-    if (model !== null) args.push("-m", model);
-    const variant = settings.kilocode.reasoningEffort ?? settings.kilocode.variant ?? settings.reasoningEffort;
-    args.push("--variant", variant);
-    args.push(...settings.kilocode.extraArgs);
-    // The prompt is the positional message. Kilo reads its project/cwd from the
-    // spawn's working directory, which the runner already sets.
-    args.push(prompt);
-    return { args };
+    const password = randomBytes(32).toString("hex");
+    return {
+      args: kiloServerArgs(settings.kilocode.extraArgs),
+      interactive: true,
+      env: { KILO_SERVER_USERNAME: "kilo", KILO_SERVER_PASSWORD: password },
+      mapper: new KiloStreamMapper({ prompt, cwd: opts.cwd, password,
+        agent: consult ? "plan" : "code", autoApprove: !consult && effectiveKilocodePermissionMode() === "auto",
+        model: opts.model ?? settings.kilocode.model,
+        variant: settings.kilocode.reasoningEffort ?? settings.kilocode.variant ?? settings.reasoningEffort,
+        resumeSessionId: opts.resumeSessionId,
+      }, new KiloMapper()),
+    };
   }
 
-  protected createMapper(): StreamMapper {
+  protected override createMapper(): StreamMapper {
     return new KiloMapper();
   }
+}
+
+export function kiloServerArgs(extra: string[]): string[] {
+  for (let index = 0; index < extra.length; index++) {
+    const flag = extra[index]!;
+    if (flag === "--log-level") {
+      if (!extra[++index]) throw new Error("Missing Kilo log level");
+    } else if (!["--pure", "--print-logs"].includes(flag) && !flag.startsWith("--log-level=")) {
+      throw new Error(`Kilo streaming uses its local server. Move unsupported run-only extra argument ${flag} to the corresponding model, variant or approval setting.`);
+    }
+  }
+  return ["serve", ...extra, "--hostname", "127.0.0.1", "--port", "0"];
 }
 
 const KILO_OAUTH_DUMMY_KEY = "kilo-oauth-dummy-key";

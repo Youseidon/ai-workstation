@@ -32,6 +32,10 @@ const USAGE = `agent-step — record progress and status for this work item.
   agent-step remark --kind KIND --text "…"  Bank what you just verified
   agent-step checkpoint --message "…"       Commit this run's workspace changes
   agent-step ask --file questions.json       Pause and ask the operator 1–8 questions
+  agent-step inbox                          Read messages the operator sent while you
+                                            work (/btw). Check between major steps and
+                                            before any long-running command
+  agent-step reply --text "…"               Answer the operator without pausing the run
   agent-step done --verification "…"        Finish: what you ran and what you observed
   agent-step repair-verify --file repair.json
                                             Replace one demonstrably broken Verify
@@ -178,6 +182,41 @@ function formatFields(fields) {
   return "\n" + entries.map(([field, message]) => `  ${field}: ${message}`).join("\n");
 }
 
+/**
+ * `/btw` notes from the operator ride on any response. Printed ahead of
+ * everything else, because a note that says "stop, I already did that" is
+ * worth nothing if it is read after the agent has acted on the old plan.
+ */
+function printOperatorMessages(parsed) {
+  const messages = parsed?.operatorMessages;
+  if (!Array.isArray(messages) || messages.length === 0) return;
+  const lines = ["", "=== MESSAGE FROM THE OPERATOR ==="];
+  for (const message of messages) {
+    lines.push(`[${message.sentAt ?? ""}]`, String(message.text ?? "").trim(), "");
+  }
+  lines.push(
+    "This overrides the work-item text where they disagree. Adjust your plan now.",
+    "Answer with: agent-step reply --text \"…\" (it does not pause the run).",
+    "=== END OF OPERATOR MESSAGE ===",
+    "",
+  );
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+async function checkInbox({ quietWhenEmpty }) {
+  const response = await send("/inbox", { method: "GET", headers: { Accept: "application/json" } });
+  const text = await response.text();
+  if (!response.ok) {
+    if (quietWhenEmpty) return;
+    fail(`agent-step: ${response.status} ${text}`, 2);
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { /* ignore */ }
+  const count = Array.isArray(parsed?.operatorMessages) ? parsed.operatorMessages.length : 0;
+  printOperatorMessages(parsed);
+  if (count === 0 && !quietWhenEmpty) process.stdout.write("No messages from the operator.\n");
+}
+
 async function post(path, body) {
   const response = await send(path, {
     method: "POST",
@@ -186,6 +225,7 @@ async function post(path, body) {
   const text = await response.text();
   let parsed = null;
   try { parsed = JSON.parse(text); } catch { /* not JSON; the raw body is the message */ }
+  printOperatorMessages(parsed);
   if (!response.ok) {
     const code = parsed?.error?.code ?? String(response.status);
     const message = parsed?.error?.message ?? text;
@@ -220,6 +260,8 @@ async function get(path) {
   const text = await response.text();
   if (!response.ok) fail(`agent-step: ${response.status} ${text}`, 2);
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+  // Text responses cannot carry the notes inline; ask for them separately.
+  await checkInbox({ quietWhenEmpty: true });
 }
 
 const [command, ...rest] = process.argv.slice(2);
@@ -241,6 +283,13 @@ switch (command) {
     break;
   }
   case "state": await get("/state"); break;
+  case "inbox": await checkInbox({ quietWhenEmpty: false }); break;
+  case "reply": {
+    const text = args.text ?? args.message ?? rest.filter((value) => !value.startsWith("--")).join(" ");
+    if (typeof text !== "string" || text.trim() === "") fail("agent-step reply needs --text \"your answer to the operator\"");
+    await post("/reply", { text });
+    break;
+  }
   case "remark": {
     const text = args.text ?? args.content;
     if (typeof text !== "string" || text.trim() === "") fail("agent-step remark needs --text \"what changed or was discovered\"");

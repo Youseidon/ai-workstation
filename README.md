@@ -123,11 +123,13 @@ never stashes, resets, or commits pre-existing operator changes.
 | Provider | Driven by | Needs | Reports tokens |
 |---|---|---|---|
 | Claude Code | `@anthropic-ai/claude-agent-sdk`, in-process | `ANTHROPIC_API_KEY`, **or** an existing `claude` login | yes |
-| Codex CLI | `codex exec --json` (spawned) | `codex` on `PATH` + `OPENAI_API_KEY` or `codex login` | yes |
+| Codex CLI | `codex app-server`, JSON-RPC over stdio | `codex` on `PATH` + `OPENAI_API_KEY` or `codex login` | yes |
 | Cursor CLI | `cursor-agent -p --output-format …` (spawned) | `cursor-agent` on `PATH` + `cursor-agent login` | not reliably — the stat is hidden rather than faked |
 | Grok CLI | `grok -p --output-format streaming-json` (spawned) | `grok` on `PATH` + `XAI_API_KEY` or `grok login` | yes |
 | GitHub Copilot | `copilot -p --output-format json` (spawned) | `copilot` on `PATH` + `copilot login`, `COPILOT_GITHUB_TOKEN`, or a Copilot-enabled `gh` login | yes |
-| Kilo Code | `kilo run --format json` (spawned) | `kilo` on `PATH` + `kilo auth login` | yes |
+| Kilo Code | `kilo serve`, authenticated loopback HTTP + SSE | `kilo` on `PATH` + `kilo auth login` | yes |
+
+All six adapters forward incremental text into the same conversation renderer. Codex uses App Server item deltas; Kilo subscribes to its event stream before starting the prompt. Claude requests partial SDK messages, Cursor enables partial stream-json output, Copilot enables streaming, and Grok uses streaming-json. Incoming chunks render immediately; the app does not animate a buffered final answer. See [the streaming implementation plan and acceptance checks](docs/provider-streaming-plan.md).
 
 ### How detection works
 
@@ -227,18 +229,12 @@ runs. The resolved model is stamped on every event it produces.
 ### ⚠️ CLI flags drift
 
 Codex's, Cursor's, Grok's, Copilot's, and Kilo's headless/JSON flags change between releases. The
-flags here were verified against **codex-cli 0.153.0**, **cursor-agent 2026.09.02**,
+streaming interfaces were checked against **codex-cli 0.169.0**, **cursor-agent 2026.09.02**,
 **grok 1.0.13**, **GitHub Copilot CLI 1.0.82**, and **kilo 7.8.1**; the Cursor mapper was written
 against the documented `stream-json` shape and is deliberately tolerant of
 unknown event types.
 
-The **session-resume** flags each adapter uses for a wrap-up turn drift the same way, and
-`codex exec resume` in particular takes a *different* option set from `codex exec` (no `-C`,
-no `-s`, no `--color`) — check `codex exec resume --help` too. **Check `codex --help`, `codex exec --help`,
-`cursor-agent --help`, `grok --help`, and `copilot --help` for your installed versions** before
-assuming a mis-behaving run is a bug in this app. The spawn adapters accept `CODEX_EXTRA_ARGS` /
-`CURSOR_EXTRA_ARGS` / `GROK_EXTRA_ARGS` / `COPILOT_EXTRA_ARGS` so you can adjust without editing
-code, and `CURSOR_OUTPUT_FORMAT` switches between `stream-json` and `json`.
+The session APIs and resume flags can drift too. Codex now resumes through `thread/resume`; Kilo reuses its session ID through the local server. Check `codex app-server --help`, `kilo serve --help`, `cursor-agent --help`, `grok --help`, and `copilot --help` for installed versions. Codex extra arguments accept App Server configuration flags (`-c`, `--enable`, `--disable`); Kilo extra arguments accept server flags (`--pure`, `--print-logs`, `--log-level`). Old run-only flags fail explicitly instead of silently falling back to buffered output. Model, reasoning effort and approval settings remain separate. Cursor's `stream-json` format is required for partial output; `json` remains a whole-response compatibility option.
 
 ---
 
@@ -477,11 +473,13 @@ server/src/
     types.ts             AgentAdapter interface
     registry.ts          provider table  ← the only file a new provider touches
     claude.ts            Agent SDK  → normalized events
-    codex.ts             codex JSONL → normalized events
+    codex.ts             Codex configuration, availability and usage
+    codexStream.ts       App Server handshake, native deltas and session lifecycle
     cursor.ts            cursor JSON → normalized events
     grok.ts              grok streaming-json → normalized events
     copilot.ts           copilot JSON envelopes → normalized events
-    kilocode.ts          kilo opencode-style JSONL → normalized events
+    kilocode.ts          Kilo configuration and part normalization
+    kiloStream.ts        authenticated loopback server and incremental SSE bridge
     spawnAdapter.ts      shared spawn/JSONL/stderr/interrupt machinery
 web/
   lib/useAgentConsole.ts WebSocket client, reconnect, state reduction
@@ -578,10 +576,19 @@ authentication mechanism.
 
 ## Known limits
 
-- One run at a time per WebSocket connection (per browser tab).
-- Custom prompts sent from the same Chat tab continue that provider's native
-  session. Each provider keeps its own session within the tab; `+` opens a new
-  thread. Saved work-item executions and read-only consults remain independent
-  runs, and browser-local Chat tabs are recreated on reload.
+- One writable run at a time per workspace, with up to three read-only consults.
+  Use another conversation for parallel research while a reply is running.
+- Every page shares one left sidebar: the workspace switcher, a section switcher,
+  the current section's records (Chat threads, Activity runs, change sets,
+  pipelines, workspaces) and running work. Details open in one shared drawer.
+  Checks: `scripts/verify-shell-browser.mjs`, `scripts/capture-shell-screenshots.mjs`
+  and `scripts/verify-shell-performance.mjs` (see
+  [the layout plan](docs/app-layout-unification-plan.md)).
+- Chat threads live in that sidebar. Names, pins, archives and read state
+  persist on the backend; drafts and reading positions remain browser-local.
+  Search covers titles in the selected workspace, and older turns load on demand.
+  Compatible immediate sessions resume natively; provider or mode changes use
+  bounded recorded conversation context. Saved work-item executions remain
+  separate from custom conversations. See the [Chat implementation notes](docs/chat-experience/layout-implementation.md).
 - Cursor's headless output does not reliably include token usage, so the token
   stat is omitted for Cursor runs rather than showing a made-up number.

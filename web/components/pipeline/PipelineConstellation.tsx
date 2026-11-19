@@ -38,8 +38,8 @@ export function PipelineConstellation({
 }) {
   if (stages.length === 0) {
     return (
-      <div className="rounded-panel border border-dashed border-line bg-surface-1/60 px-6 py-16 text-center">
-        <div className="text-[10px] uppercase tracking-[0.25em] text-accent">Awaiting stages</div>
+      <div className="rounded-panel border border-dashed border-line bg-surface-1 px-6 py-16 text-center">
+        <div className="text-xs uppercase tracking-[0.25em] text-accent">Awaiting stages</div>
         <p className="mt-2 text-sm text-fg-muted">
           Pick suites from the programs on the left. They become stations on this rail, in order.
         </p>
@@ -72,12 +72,12 @@ export function PipelineConstellation({
               "relative flex h-full min-w-0 w-full flex-col rounded-panel border p-4 text-left transition-[border-color,box-shadow,transform] duration-200",
               selected
                 ? "border-accent/50 bg-surface-2 ring-1 ring-accent/25"
-                : "border-line bg-surface-1/80 hover:border-line-strong hover:bg-surface-2",
+                : "border-line bg-surface-1 hover:border-line-strong hover:bg-surface-2",
               live && "pipeline-node-live glow text-accent",
             )}
           >
             <div className="flex items-start justify-between gap-2">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[11px] numeric text-fg-muted ring-1 ring-inset ring-line">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs numeric text-fg-muted ring-1 ring-inset ring-line">
                 {index + 1}
               </span>
               {current && pipelineState !== null && (
@@ -86,14 +86,14 @@ export function PipelineConstellation({
                 </Badge>
               )}
             </div>
-            <div className="mt-3 text-[10px] uppercase tracking-[0.18em] text-fg-dim">
+            <div className="mt-3 text-xs uppercase tracking-[0.18em] text-fg-dim">
               {stage.programKey ?? stage.programName}
             </div>
-            <div className="mt-0.5 truncate text-[15px] text-fg">
+            <div className="mt-0.5 truncate text-base text-fg">
               {stage.suiteKey !== null && <span className="text-fg-muted">{stage.suiteKey} · </span>}
               {stage.suiteName}
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-fg-dim">
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-fg-dim">
               <span className="numeric">
                 {done}/{total} done
               </span>
@@ -113,7 +113,7 @@ export function PipelineConstellation({
               </div>
             )}
             {ops !== undefined && ops !== null && ops.attentionCount > 0 && (
-              <div className="mt-2 text-[11px] text-warning">{ops.attentionCount} need you</div>
+              <div className="mt-2 text-xs text-warning">{ops.attentionCount} need you</div>
             )}
           </button>
         );
