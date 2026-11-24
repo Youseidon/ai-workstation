@@ -142,11 +142,15 @@ test("a command nobody ran is unverified, and unverified closes nothing", async 
   } finally { ctx.cleanup(); }
 });
 
-test("a prose criterion no reviewer has judged does not close the item either", async () => {
+test("a prose criterion nobody judged does not stop the close, and is not recorded as passed", async () => {
   const ctx = fixture();
   try {
     criterion(ctx.prompt.id, { kind: "PROSE", text: "the API returns 404 for a missing record" });
-    assert.equal(workspaces.completePrompt(ctx.prompt.id, "SYSTEM", { verificationSummary: "done" }), "NEEDS_REVIEW");
+    assert.equal(workspaces.completePrompt(ctx.prompt.id, "SYSTEM", { verificationSummary: "done" }), "DONE");
+    const evidence = JSON.stringify(latestEvent(ctx.prompt.id).evidence);
+    assert.match(evidence, /waived/);
+    assert.match(evidence, /not recorded as passed/);
+    assert.match(evidence, /the API returns 404 for a missing record/);
   } finally { ctx.cleanup(); }
 });
 

@@ -5,6 +5,8 @@ import {
   TRANSIENT_PATTERNS,
   classifyFailure,
   coolingMinutesFor,
+  exhaustedUsageWindow,
+  quotaCoolingMinutes,
 } from "../src/providerFailure";
 
 /**
@@ -115,6 +117,27 @@ const CASES: Array<{
     expectId: null,
   },
 ];
+
+test("reported caps block until the last exhausted window resets; unknown usage stays eligible", () => {
+  const now = Date.parse("2026-11-19T00:00:00Z");
+  const session = { kind: "session" as const, durationMinutes: 300, usedPercent: 100, resetsAt: "2026-11-19T05:00:00Z" };
+  const weekly = { kind: "weekly" as const, durationMinutes: 10080, usedPercent: 100, resetsAt: "2026-11-23T00:00:00Z" };
+  const usage = { provider: "claude" as const, available: true, reason: null, plan: null, fetchedAt: "2026-11-19T00:00:00Z", windows: [session, weekly], credits: null };
+  assert.deepEqual(exhaustedUsageWindow(usage, now), weekly);
+  assert.deepEqual(exhaustedUsageWindow({ ...usage, windows: [session] }, now), session);
+  assert.equal(exhaustedUsageWindow(usage, Date.parse("2026-11-24T00:00:00Z")), null);
+  assert.equal(exhaustedUsageWindow({ ...usage, available: false }, now), null);
+  assert.equal(exhaustedUsageWindow({ ...usage, windows: [{ ...session, usedPercent: 99.9 }, { ...weekly, usedPercent: null }] }, now), null);
+  assert.ok(exhaustedUsageWindow({ ...usage, windows: [{ ...weekly, resetsAt: null }] }, now));
+});
+
+test("quota errors at startup retain their real class and named window", () => {
+  for (const text of ["You've hit your 5-hour limit", "five hour usage limit exceeded", "session_limit reached", "weekly_limit exceeded"]) {
+    assert.equal(classifyFailure({ errorText: text, toolCalls: 0, startFailed: true }).id, "quota", text);
+    assert.equal(quotaCoolingMinutes(text), text.includes("weekly") ? 10080 : 300);
+  }
+  assert.equal(quotaCoolingMinutes("usage_limit_exceeded"), undefined);
+});
 
 test("classifyFailure enumerates every transient pattern with live error strings", () => {
   const seen = new Set<string>();

@@ -1,7 +1,9 @@
 import { conversationContext } from "./conversationContext.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
-import { WorkspaceError, workspaces, chatThreads } from "./workspaces.ts";
+import { adoptExecution, validatePlanOwnership } from "./executionSupervisor.ts";
+import { ExecutionError } from "./executionStore.ts";
+import { executionStore, WorkspaceError, workspaces, chatThreads } from "./workspaces.ts";
 import { ChatThreadError } from "./chatThreads.ts";
 import type { ChatThreadPatch } from "@agent-console/shared";
 import { inspectPromptPack } from "./promptImport.ts";
@@ -40,6 +42,7 @@ const AUDIT_BLOCK_MESSAGE: Record<AuditBlock, string> = {
 };
 
 function json(res: ServerResponse, status: number, body: unknown): void {
+  if(res.destroyed || res.writableEnded)return;
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
 }
@@ -69,6 +72,7 @@ function id(value: string): number {
 }
 
 function failure(res: ServerResponse, error: unknown): void {
+  if(error instanceof ExecutionError) {json(res,409,{error:{code:error.code,message:error.message}});return;}
   if (error instanceof ChatThreadError) { json(res,error.status,{error:{code:error.code,message:error.message}}); return; }
   if (error instanceof WorkspaceError) { json(res, error.status, { error: { code: error.code, message: error.message, ...(error.fields ? { fields: error.fields } : {}), ...(error.details ?? {}) } }); return; }
   console.error("workspace API failed", error);
@@ -181,6 +185,42 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   }
   try {
     const method = req.method ?? "GET";
+    const executionMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/execution$/);
+    if(executionMatch) {
+      const promptId=id(executionMatch[1]!);workspaces.promptHome(promptId);
+      const contract=executionStore.forPrompt(promptId);
+      if(method==="GET") {json(res,200,{execution:contract?executionStore.status(contract.id):null,contract,plan:contract?.revision?executionStore.plan(contract.id):null,events:contract?executionStore.events(contract.id):[],report:contract?.revision?executionStore.report(contract.id):null});return true;}
+      if(method!=="POST") {json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
+      const input=await body(req);
+      if(input.action==="adopt") {json(res,contract?200:201,{execution:contract?executionStore.status(contract.id):adoptExecution(promptId,input)});return true;}
+      if(!contract) throw new WorkspaceError(404,"contract_missing","Adopt the saved requirement first");
+      if(input.action==="plan") {
+        const plan=input.plan as unknown as import("@agent-console/shared").ExecutionPlan;
+        validatePlanOwnership(contract.promptId,plan);workspaces.activateExecutionPlan(contract.id,plan);
+      } else if(input.action==="amend") {
+        if(runHub.activeForWorkspace(workspaces.promptHome(promptId).workspaceId)) throw new WorkspaceError(409,"execution_active","Drain the worker before changing requirements");
+        const criteria=input.criteria as import("@agent-console/shared").ContractCriterion[],plan=input.plan as unknown as import("@agent-console/shared").ExecutionPlan;
+        if(!Array.isArray(criteria) || !plan) throw new WorkspaceError(422,"manifest_required","Supply the amended criterion manifest and complete plan");
+        for(const cr of criteria) {
+          const criterion=workspaces.resolvedDefinitionOfDone(cr.verifierPromptId).criteria.find(c=>c.id===cr.dodCriterionId);
+          if(criterion?.text!==cr.text) throw new WorkspaceError(422,"manifest_mismatch","Amendment must match the operator's required criteria");
+          cr.kind=criterion.kind;
+        }
+        validatePlanOwnership(contract.promptId,plan);
+        json(res,200,{execution:workspaces.amendExecutionRequirement(contract.id,{originalPrompt:workspaces.promptPreview(contract.promptId).content,criteria,plan,reason:typeof input.reason==="string"?input.reason:""})});return true;
+      } else if(input.action==="budget") {
+        executionStore.amendBudget(contract.id,input.policy as unknown as import("@agent-console/shared").ExecutionPolicy,typeof input.reason==="string"?input.reason:"");
+        await pipelineScheduler.onBudgetAmended(promptId);
+      } else if(input.action==="enable") {
+        const home=workspaces.promptHome(promptId);
+        if(runHub.activeForWorkspace(home.workspaceId) || workspaces.activePipelineForWorkspace(home.workspaceId)?.currentRunId) throw new WorkspaceError(409,"execution_active","Drain the current worker before enabling the supervisor");
+        executionStore.enable(contract.id);
+      } else if(input.action==="pause") executionStore.setDesired(contract.id,"PAUSED");
+      else if(input.action==="stop") executionStore.setDesired(contract.id,"STOPPED");
+      else throw new WorkspaceError(422,"invalid_action","Use adopt, plan, enable, pause or stop; Play starts the owning pipeline");
+      json(res,200,{execution:executionStore.status(contract.id)});return true;
+    }
+
     // The status catalog: what each state is called, what it means, and what
     // entering it sets in motion. Locked fields are refused with the reason
     // rather than silently dropped — see workspaces.updateStatusDefinition.
@@ -290,7 +330,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       const suiteId=id(suiteIdValue);
       const incompleteOnly=url.searchParams.get("incompleteOnly")==="1";
       if(method==="GET") json(res,200,workspaces.namedPipelineFlowchart(pipelineId,suiteId,{incompleteOnly}));
-      else if(method==="PATCH"){workspaces.updateSuitePipelineDefaults(suiteId,await body(req));json(res,200,workspaces.namedPipelineFlowchart(pipelineId,suiteId,{incompleteOnly}));}
+      else if(method==="PATCH"){workspaces.updateSuitePipelineDefaults(suiteId,await body(req),pipelineId);json(res,200,workspaces.namedPipelineFlowchart(pipelineId,suiteId,{incompleteOnly}));}
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }

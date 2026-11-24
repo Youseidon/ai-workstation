@@ -16,8 +16,8 @@ const STEPS = [
   },
   {
     id: "stations",
-    title: "Station agents",
-    body: "Open Configure on each station to pick the agent and outcomes. Save when the flowchart looks right.",
+    title: "Suite agents",
+    body: "Save the pipeline, then choose a suite agent in Agent assignments. Use prompt overrides for exceptions and optionally enable automatic reassignment.",
   },
 ] as const;
 
@@ -88,7 +88,7 @@ export function NewPipelineGuide({
         )}
         {step === "stations" && (
           <Button size="sm" variant="secondary" onClick={onFocusStations}>
-            Configure first station
+            Assign suite agent
           </Button>
         )}
         {index < STEPS.length - 1 ? (

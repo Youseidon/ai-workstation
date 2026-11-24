@@ -13,10 +13,10 @@
 
 import type { DbAccessPayload } from "@agent-console/shared";
 
-export type DbOperation = "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
+export type DbOperation = "execution" | "check" | "plan" | "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
 
 /** The endpoints that change state. Everything else is a read. */
-const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
+const WRITES = new Set<DbOperation>(["check", "plan", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
 
 /**
  * What an accepted call touched.
@@ -26,6 +26,9 @@ const WRITES = new Set<DbOperation>(["remarks", "status", "checkpoint", "decompo
  * reflected here deliberately.
  */
 const TABLES: Record<DbOperation, string[]> = {
+  execution: [],
+  check: ["command_task", "execution_lease", "dod_result"],
+  plan: ["execution_event", "agent_command"],
   context: [],
   state: [],
   remarks: ["prompt_remark"],
@@ -71,7 +74,9 @@ export function describeAcceptedWrite(args: AcceptedWrite): DbAccessPayload {
     ? args.before === args.after
     : false;
   const summary =
-    args.operation === "remarks"
+    args.operation === "check" ? "requested a managed verification recipe"
+      : args.operation === "plan" ? "proposed a coverage-preserving remaining plan"
+      : args.operation === "remarks"
       ? `+1 ${args.remarkKind ?? "PROGRESS"} remark`
       : args.operation === "decompose"
         ? "split into sub-steps"
@@ -127,7 +132,7 @@ export function describeRejectedWrite(args: {
 }
 
 export function describeRead(args: {
-  operation: Extract<DbOperation, "context" | "state" | "inbox">;
+  operation: Extract<DbOperation, "execution" | "context" | "state" | "inbox">;
   summary: string;
   durationMs: number;
 }): DbAccessPayload {

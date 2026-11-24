@@ -1,3 +1,4 @@
+import { processIdentity } from "../executionProcess.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -281,7 +282,7 @@ export class ClaudeAdapter implements AgentAdapter {
         delete childEnv.AGENT_CONSOLE_DB;
         delete childEnv.DATABASE_URL;
         delete childEnv.SETTINGS_FILE;
-        const plan = withSpawnEnvironment(buildSpawnPlan(spawnOptions.command, spawnOptions.args, opts.runId, limits), spawnOptions.cwd ?? opts.cwd, childEnv);
+        const plan = withSpawnEnvironment(buildSpawnPlan(spawnOptions.command, spawnOptions.args, opts.runId, limits,undefined,undefined,opts.deadlineMs), spawnOptions.cwd ?? opts.cwd, childEnv);
         opts.log.info(`Claude SDK subprocess containment=${plan.containment}`);
         if (plan.containment !== "systemd") {
           opts.log.warn("systemd user containment unavailable; Claude uses process-tree cancellation without aggregate memory/task limits");
@@ -292,6 +293,11 @@ export class ClaudeAdapter implements AgentAdapter {
           stdio: ["pipe", "pipe", "pipe"],
           detached: plan.detached,
         });
+        if(opts.onSpawn && child.pid!==undefined) {
+          try { opts.onSpawn(processIdentity(child.pid,plan.unitName,plan.containment)); }
+          catch(error) { signalProcessTree(child.pid,"SIGKILL"); if(plan.unitName) void signalSystemdUnit(plan.unitName,"SIGKILL"); child.on("error",()=>{}); throw error; }
+        }
+
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", (data: string) => opts.log.debug(`stderr: ${data.trimEnd()}`));
         this.processes.set(opts.runId, { child, plan });

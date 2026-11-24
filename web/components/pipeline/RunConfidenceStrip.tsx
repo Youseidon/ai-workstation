@@ -9,6 +9,7 @@ import type { InspectorTab } from "./PipelineInspector";
  * Chips open the matching inspector tab.
  */
 export function RunConfidenceStrip({
+  execution,
   policy,
   suiteFallbacks,
   stationFallbacks,
@@ -18,7 +19,9 @@ export function RunConfidenceStrip({
   latestAudit,
   onOpenTab,
   bare = false,
+  autoReassign = false,
 }: {
+  execution?: OperationsPrompt["execution"];
   policy: PipelinePolicy;
   suiteFallbacks: ProviderId[];
   stationFallbacks: ProviderId[] | null;
@@ -29,6 +32,7 @@ export function RunConfidenceStrip({
   onOpenTab(tab: InspectorTab): void;
   /** Drop the frame when nested inside another panel. */
   bare?: boolean;
+  autoReassign?: boolean;
 }) {
   const effectiveFallbacks =
     stationFallbacks !== null && stationFallbacks.length > 0
@@ -46,7 +50,7 @@ export function RunConfidenceStrip({
   const continuationsHot =
     waitReason === "continuations_exhausted" ||
     (continuation !== null && continuation.attempt >= continuation.of);
-  const budgetHot = occupancyWrapUp || (waitReason?.startsWith("budget_") ?? false);
+  const budgetHot = occupancyWrapUp || waitReason==="execution:budget_exhausted" || (waitReason?.startsWith("budget_") ?? false);
 
   return (
     <div
@@ -57,37 +61,40 @@ export function RunConfidenceStrip({
       )}
     >
       <span className="mr-1 text-xs font-semibold uppercase tracking-[0.14em] text-fg-dim">
-        Running under
+        Execution policy
       </span>
 
+      {execution && <Chip title="Cumulative requirement allowance, including reserved and unknown usage" hot={execution.attempts>=execution.policy.maxAttempts} onClick={()=>onOpenTab("budgets")}>
+        {execution.engine === "shadow" ? "Shadow" : execution.phase === "delivered" ? "Verified delivery" : execution.exception?.code === "budget_exhausted" ? "Budget exhausted" : execution.exception ? "Exception" : execution.phase === "verification" ? "Verification pending" : "Implementation"} · {execution.acceptedUnits.length} units accepted · {execution.attempts}/{execution.policy.maxAttempts} attempts
+      </Chip>}
       <Chip
         hot={continuationsHot}
-        title="How many times a station may continue on its own"
+        title="Automatic successors include agent-requested CONTINUE, crashed and unreported runs"
         onClick={() => onOpenTab("policy")}
       >
-        Continuations · max {policy.maxContinuations}
+        {execution?.engine==="supervised"?"Worker attempts":"Successors"} · max {execution?.engine==="supervised" ? execution.policy.unitAttempts : policy.maxContinuations}
         {continuation !== null && (
           <span className="text-fg-dim">
             {" "}
-            · live {continuation.attempt}/{continuation.of}
+            · {execution?.engine==="supervised"?"used":"live"} {continuation.attempt}/{continuation.of}
           </span>
         )}
-        {policy.reviewAfterContinuations ? " · then review" : ""}
+        {execution?.engine==="supervised" ? execution.exception || execution.phase==="delivered" ? "" : " · then recovery" : policy.reviewAfterContinuations ? " · then review" : ""}
       </Chip>
 
       <Chip
         title={`Fallback order (${fallbackSource})`}
         onClick={() => onOpenTab(fallbackSource === "station" ? "station" : "policy")}
       >
-        Fallbacks ·{" "}
-        {effectiveFallbacks.length > 0 ? effectiveFallbacks.join(" → ") : "none"}
-        {fallbackSource !== "house" && (
+        {autoReassign ? "Fallbacks" : "Auto reassignment"} ·{" "}
+        {autoReassign ? (effectiveFallbacks.length > 0 ? effectiveFallbacks.join(" → ") : "none") : "off"}
+        {autoReassign && fallbackSource !== "house" && (
           <span className="text-fg-dim"> · {fallbackSource}</span>
         )}
       </Chip>
 
       <Chip hot={budgetHot} title="Run budget ceilings" onClick={() => onOpenTab("budgets")}>
-        {budgetHot ? "Budget · wrap-up / ceiling hit" : "Budgets · ceilings apply"}
+        {execution?.exception?.code==="budget_exhausted" ? "Budget · allowance exhausted" : occupancyWrapUp ? "Budget · banking work" : budgetHot ? "Budget · ceiling hit" : "Budgets · ceilings apply"}
       </Chip>
 
       <Chip title="Definition of done enforcement" onClick={() => onOpenTab("definition")}>

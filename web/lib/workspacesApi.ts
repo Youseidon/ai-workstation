@@ -29,6 +29,8 @@ const json = (value: unknown): RequestInit => ({ body: JSON.stringify(value) });
 export interface ProgramRevisionApplied { added:number; updated:number; removed:number; moved:number; newPromptIds:number[]; pipelineSteps:number }
 
 export const workspaceApi = {
+  execution(serverUrl:string,promptId:number) {return request<{execution:import("@agent-console/shared").ExecutionStatus|null;plan:import("@agent-console/shared").ExecutionPlan|null;events:Array<{sequence:number;kind:string;payload:unknown;createdAt:number}>}>(serverUrl,`/api/prompts/${promptId}/execution`);},
+  executionAction(serverUrl:string,promptId:number,value:Record<string,unknown>) {return request<{execution:import("@agent-console/shared").ExecutionStatus}>(serverUrl,`/api/prompts/${promptId}/execution`,{method:"POST",...json(value)});},
   threads(serverUrl:string,workspaceId:number,options:{query?:string;archived?:boolean;cursor?:string}={}) {
     const params=new URLSearchParams();
     if(options.query)params.set("q",options.query);
@@ -124,7 +126,7 @@ export const workspaceApi = {
   skipPrompt(serverUrl:string,id:number,reason?:string){return request<{skipped:boolean}>(serverUrl,`/api/prompts/${id}/skip`,{method:"POST",...json(reason===undefined?{}:{reason})});},
   recover(serverUrl:string,id:number){return request<{recovered:boolean}>(serverUrl,`/api/prompts/${id}/recover`,{method:"POST",...json({})});},
   startAudit(serverUrl:string,id:number,value:{provider?:ProviderId;model?:string|null}={}){return request<{started:boolean;auditId:string}>(serverUrl,`/api/prompts/${id}/audit`,{method:"POST",...json(value)});},
-  updatePipelineDefaults(serverUrl:string,pipelineId:number,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null;defaultFallbackProviders?:ProviderId[]}){return request<PipelineFlowchartView>(serverUrl,`/api/pipelines/${pipelineId}/flowchart?suiteId=${suiteId}`,{method:"PATCH",...json(value)});},
+  updatePipelineDefaults(serverUrl:string,pipelineId:number,suiteId:number,value:{defaultProvider?:ProviderId|null;defaultModel?:string|null;defaultFallbackProviders?:ProviderId[];resetPromptAgents?:boolean}){return request<PipelineFlowchartView>(serverUrl,`/api/pipelines/${pipelineId}/flowchart?suiteId=${suiteId}`,{method:"PATCH",...json(value)});},
   listPipelines(serverUrl:string,workspaceId?:number){return request<{pipelines:PipelineRecord[]}>(serverUrl,`/api/pipelines${workspaceId===undefined?"":`?workspace=${workspaceId}`}`).then(r=>r.pipelines);},
   pipelineDashboard(serverUrl:string,workspaceId:number){return request<PipelineDashboard>(serverUrl,`/api/pipelines?workspace=${workspaceId}&dashboard=1`);},
   pipelineFlowchart(serverUrl:string,pipelineId:number,suiteId:number,incompleteOnly=false){return request<PipelineFlowchartView>(serverUrl,`/api/pipelines/${pipelineId}/flowchart?suiteId=${suiteId}${incompleteOnly?"&incompleteOnly=1":""}`);},
@@ -133,8 +135,8 @@ export const workspaceApi = {
   removePipelineFlowchartStep(serverUrl:string,pipelineId:number,suiteId:number,promptId:number,incompleteOnly=false){return request<{flowchart:PipelineFlowchartView}>(serverUrl,`/api/pipelines/${pipelineId}/flowchart/steps/${promptId}?suiteId=${suiteId}${incompleteOnly?"&incompleteOnly=1":""}`,{method:"DELETE"});},
   patchPipelineFlowchartRule(serverUrl:string,pipelineId:number,promptId:number,value:Partial<Omit<PromptPipelineRule,"promptId">>){return request<{rule:PromptPipelineRule}>(serverUrl,`/api/pipelines/${pipelineId}/flowchart/steps/${promptId}`,{method:"PATCH",...json(value)}).then(r=>r.rule);},
   getPipeline(serverUrl:string,id:number){return request<{pipeline:PipelineRecord}>(serverUrl,`/api/pipelines/${id}`).then(r=>r.pipeline);},
-  createPipeline(serverUrl:string,value:{workspaceId:number;name:string;description?:string;suiteIds:number[]}){return request<{pipeline:PipelineRecord}>(serverUrl,"/api/pipelines",{method:"POST",...json(value)}).then(r=>r.pipeline);},
-  updatePipeline(serverUrl:string,id:number,value:{name?:string;description?:string;suiteIds?:number[]}){return request<{pipeline:PipelineRecord}>(serverUrl,`/api/pipelines/${id}`,{method:"PATCH",...json(value)}).then(r=>r.pipeline);},
+  createPipeline(serverUrl:string,value:{workspaceId:number;name:string;description?:string;suiteIds:number[];autoReassign?:boolean}){return request<{pipeline:PipelineRecord}>(serverUrl,"/api/pipelines",{method:"POST",...json(value)}).then(r=>r.pipeline);},
+  updatePipeline(serverUrl:string,id:number,value:{name?:string;description?:string;suiteIds?:number[];autoReassign?:boolean}){return request<{pipeline:PipelineRecord}>(serverUrl,`/api/pipelines/${id}`,{method:"PATCH",...json(value)}).then(r=>r.pipeline);},
   removePipeline(serverUrl:string,id:number){return request<void>(serverUrl,`/api/pipelines/${id}`,{method:"DELETE"});},
   pipelineRuns(serverUrl:string,id:number){return request<{runs:PipelineRunDetail[]}>(serverUrl,`/api/pipelines/${id}/runs`).then(r=>r.runs);},
   playPipeline(serverUrl:string,id:number,value:{provider?:ProviderId|null;model?:string|null;briefing?:{promptId:number;content:string}}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/play`,{method:"POST",...json(value)}).then(r=>r.run);},

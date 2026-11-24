@@ -1,14 +1,18 @@
-import { classifyFailure, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type RunMessage, type SuitePipelineRun } from "@agent-console/shared";
-import { detectProviders, getAdapter } from "./adapters/registry.ts";
+import { classifyFailure, exhaustedUsageWindow, quotaCoolingMinutes, isProviderId, type CompletionAuditReport, type CompletionVerdict, type PipelineRun, type PromptPipelineRule, type PromptStatus, type ProviderId, type RunMessage, type SuitePipelineRun } from "@agent-console/shared";
+import { collectAccountUsage, detectProviders, getAdapter } from "./adapters/registry.ts";
 import { newId } from "./lib/ids.ts";
 import { createLogger } from "./lib/logger.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
-import { clearCooling, cooling, isCooling, markCooling } from "./providerHealth.ts";
+import { clearCooling, cooling, coolingFor, isCooling, markCooling } from "./providerHealth.ts";
 import { runHub } from "./runHub.ts";
 import { setResumeRequester } from "./runMessages.ts";
 import { settings } from "./settings.ts";
 import type { StartExecuteArgs } from "./runService.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { releaseSupervisedRun, trackRuntimeEffect, releaseRuntimeEffect, acceptSupervisedUnit, reserveSupervisedStart, settleSupervisedRun } from "./executionSupervisor.ts";
+import { cancelManagedCommands } from "./commandTasks.ts";
+import { repositoryResource } from "./sourceFingerprint.ts";
+import { ExecutionError } from "./executionStore.ts";
+import { executionStore, WorkspaceError, workspaces } from "./workspaces.ts";
 
 const log = createLogger("pipeline");
 
@@ -71,9 +75,12 @@ export function resolveExecuteTarget(args: {
       model: args.playModel ?? getAdapter(args.playProvider).model,
     };
   }
-  const provider = args.rule.provider ?? args.playProvider ?? args.defaultProvider;
+  const provider = args.rule.provider ?? args.defaultProvider ?? args.playProvider;
   if (provider === null) return null;
-  const model = args.rule.model ?? args.playModel ?? args.defaultModel ?? getAdapter(provider).model;
+  // Models belong to their provider; a suite model cannot follow a prompt
+  // override to a different provider (nor can a play-request model).
+  const model = (args.rule.provider !== null ? args.rule.model
+    : args.defaultProvider !== null ? args.defaultModel : args.playModel) ?? getAdapter(provider).model;
   return { provider, model };
 }
 
@@ -96,6 +103,7 @@ async function pickFallbackProvider(args: {
   list: ProviderId[];
   exclude: ReadonlySet<ProviderId>;
 }): Promise<ProviderId | null> {
+  await refreshUsageCooling();
   const providers = await detectProviders();
   const available = new Set(providers.filter((item) => item.available).map((item) => item.id));
   for (const candidate of args.list) {
@@ -105,6 +113,23 @@ async function pickFallbackProvider(args: {
     return candidate;
   }
   return null;
+}
+
+async function refreshUsageCooling(force = false): Promise<void> {
+  for (const usage of await collectAccountUsage(force)) {
+    const window = exhaustedUsageWindow(usage);
+    if (window === null) continue;
+    const reset = window.resetsAt === null ? NaN : Date.parse(window.resetsAt);
+    const minutes = Number.isFinite(reset) ? (reset - Date.now()) / 60_000 : window.durationMinutes ?? (window.kind === "weekly" ? 10080 : 300);
+    if (!Number.isFinite(reset) && isCooling(usage.provider)) continue;
+    markCooling(usage.provider, "quota", minutes,
+      `${usage.provider} reached its ${window.kind} limit${Number.isFinite(reset) ? `; resets ${window.resetsAt}` : ""}.`, Number.isFinite(reset) ? reset : undefined);
+  }
+}
+
+function autoReassignFor(pipeline: SuitePipelineRun): boolean {
+  const pipelineId = namedPipelineIdFor(pipeline);
+  return pipelineId === undefined ? false : workspaces.getPipeline(pipelineId).autoReassign;
 }
 
 async function terminate(pipeline: SuitePipelineRun, state: "COMPLETE" | "STOPPED", stopReason: string | null): Promise<SuitePipelineRun> {
@@ -159,7 +184,9 @@ async function syncNamedFromSuite(suiteRun: SuitePipelineRun): Promise<void> {
  * the decision of which run to act on is one function rather than two policies
  * spelled out at each call site.
  */
-function adoptsInterruptedRun(): boolean {
+function adoptsInterruptedRun(promptId?:number): boolean {
+  const contract=promptId===undefined?null:executionStore.forPrompt(promptId);
+  if(contract?.engine==="supervised" && contract.desired==="RUNNING") return true;
   const policy = settings.pipelinePolicy.onRestart;
   return policy === "autoResume" || policy === "resumeSameRun";
 }
@@ -188,6 +215,7 @@ export function startRefusalReason(error: unknown): string | null {
 /** Parks where nothing ran: the station is exactly as it was before the start. */
 function isStartPark(waitReason: string | null): boolean {
   return waitReason === "no_provider_available"
+    || waitReason === "provider_unavailable"
     || waitReason === "worktree_dirty"
     || (waitReason !== null && waitReason.startsWith("start_refused:"));
 }
@@ -263,7 +291,8 @@ async function startCurrentStation(
   const live = workspaces.pipelineById(pipeline.id) ?? pipeline;
   const pipelineId = namedPipelineIdFor(live);
   const rule = workspaces.pipelineRule(promptId, pipelineId);
-  const defaults = workspaces.suitePipelineDefaults(live.suiteId);
+  const defaults = workspaces.suitePipelineDefaults(live.suiteId, pipelineId);
+  const autoReassign = autoReassignFor(live);
   const resolved = opts.override !== undefined
     ? { provider: opts.override.provider, model: opts.override.model ?? getAdapter(opts.override.provider).model }
     : resolveExecuteTarget({
@@ -280,7 +309,8 @@ async function startCurrentStation(
   }
   // Skip a primary that is already cooling — go straight to a fallback.
   let target = resolved;
-  if (opts.override === undefined && isCooling(target.provider)) {
+  if (autoReassign && opts.override === undefined) await refreshUsageCooling();
+  if (autoReassign && opts.override === undefined && isCooling(target.provider)) {
     tried.add(target.provider);
     const list = resolveFallbackProviders({
       rule,
@@ -293,8 +323,8 @@ async function startCurrentStation(
     workspaces.queueProviderFallback(promptId, {
       from: target.provider,
       to: next,
-      failure: "start_failed",
-      because: `Primary ${target.provider} is cooling; starting ${next} instead.`,
+      failure: coolingFor(target.provider)?.id ?? "start_failed",
+      because: `${coolingFor(target.provider)?.because ?? `Primary ${target.provider} is cooling.`} Starting ${next} instead.`,
       previousRunId: null,
     });
     target = { provider: next, model: getAdapter(next).model };
@@ -307,14 +337,34 @@ async function startCurrentStation(
     const redirect = opts.redirect;
     const resumable = redirect !== undefined && redirect.sessionId !== null && redirect.provider === target.provider;
     if (redirect !== undefined && !resumable) workspaces.addPromptBriefing(promptId, { content: redirect.text });
-    const { runId } = await startStationFn({
-      workspaceId: live.workspaceId,
-      provider: target.provider,
-      model: target.model,
-      promptId,
-      pipelineRunId: live.id,
-      ...(resumable ? { redirect: { sessionId: redirect.sessionId!, text: redirect.text } } : {}),
-    });
+    const startArgs:StartExecuteArgs={
+      workspaceId:live.workspaceId,provider:target.provider,model:target.model,promptId,pipelineRunId:live.id,
+      ...(resumable?{redirect:{sessionId:redirect.sessionId!,text:redirect.text}}:{}),
+    };
+    const adopted=executionStore.forPrompt(promptId);
+    if(adopted?.engine==="shadow") executionStore.decision(adopted.id,"shadow_decision",{action:"start",promptId,target,legacyPipeline:live.id});
+    if(adopted?.engine==="supervised" && executionStore.pending().some(e=>e.contractId===adopted.id && e.promptId===promptId && e.payload.kind==="audit")) return park(live,promptId,"review_running");
+    const prepared=await reserveSupervisedStart(startArgs,undefined,autoReassign?async from=>{
+      const next=await pickFallbackProvider({list:resolveFallbackProviders({rule,suiteFallbackProviders:defaults.defaultFallbackProviders}),exclude:new Set([from as ProviderId])});
+      return next?{provider:next,model:getAdapter(next).model}:null;
+    }:undefined);
+    if(prepared && !executionStore.claim(prepared.effect.id)) return workspaces.pipelineById(live.id) ?? live;
+    if(prepared) trackRuntimeEffect(prepared.effect.id);
+    let result:{runId:string};
+    try { result=await startStationFn(prepared?.args ?? startArgs); }
+    catch(error) {
+      if(prepared) {
+        releaseRuntimeEffect(prepared.effect.id);
+        // startExecute rejects preflight before spawning; an attached process
+        // needs OS reconciliation even if the caller received an exception.
+        const effect=executionStore.effect(prepared.effect.id);
+        if(effect.process) executionStore.quarantine(effect.id,"Start failed after process registration");
+        else executionStore.settle(effect.id,{generation:effect.generation,actualMs:0,actualTokens:0,result:{startFailed:String(error)},writerDead:true});
+      }
+      throw error;
+    }
+    const {runId}=result;
+
     if (redirect !== undefined) {
       workspaces.settleRunMessage(redirect.messageId, "QUEUED", "DELIVERED");
       announceRedirect(runId, redirect, resumable);
@@ -324,6 +374,11 @@ async function startCurrentStation(
     await syncNamedFromSuite(updated);
     return updated;
   } catch (error) {
+    if(error instanceof ExecutionError) {
+      const c=executionStore.forPrompt(promptId);
+      if(c) executionStore.decision(c.id,"execution_exception",{code:error.code,reason:error.message,promptId});
+      return park(live,promptId,error.code==="provider_unavailable"?"provider_unavailable":`execution:${error.code}`);
+    }
     const message = error instanceof Error ? error.message : String(error);
     const refusal = startRefusalReason(error);
     if (refusal !== null) {
@@ -332,7 +387,9 @@ async function startCurrentStation(
       return park(live, promptId, refusal);
     }
     const failure = classifyFailure({ errorText: message, toolCalls: 0, startFailed: true });
-    markCooling(target.provider, failure.id ?? "start_failed", undefined, failure.because);
+    markCooling(target.provider, failure.id ?? "start_failed", failure.id === "quota" ? quotaCoolingMinutes(message) : undefined, failure.because);
+    if (!autoReassign) return park(live, promptId, "provider_unavailable");
+    if (failure.id === "quota" || failure.id === "rate_limit") await refreshUsageCooling(true);
     const list = resolveFallbackProviders({
       rule,
       suiteFallbackProviders: defaults.defaultFallbackProviders,
@@ -425,6 +482,43 @@ async function applyOnDone(pipeline: SuitePipelineRun, rule: PromptPipelineRule)
   return advance(pipeline);
 }
 
+/**
+ * An agent asked for a person. Close the station when command checks allow it,
+ * and keep working when they do not. Either way the rail does not park.
+ */
+async function waiveHumanGate(
+  pipeline: SuitePipelineRun,
+  rule: PromptPipelineRule,
+  promptId: number,
+  runId: string,
+): Promise<void> {
+  const note = workspaces.promptOutcome(promptId).result.trim();
+  const summary = note === ""
+    ? "Human review was waived by the pipeline rule. It was not recorded as passed."
+    : note;
+  let written: PromptStatus = "NEEDS_REVIEW";
+  try {
+    written = workspaces.completePrompt(promptId, "SYSTEM", {
+      reason: "The pipeline does not stop for a human review. The requested review was waived and was not recorded as passed.",
+      verificationSummary: summary,
+    });
+  } catch (error) {
+    log.warn(`human gate could not be waived prompt=${promptId}`, error);
+  }
+  if (written === "DONE") {
+    await applyOnDone(pipeline, rule);
+    return;
+  }
+  await continuation(
+    pipeline,
+    rule,
+    promptId,
+    runId,
+    "Human review is waived. Fix the failing commands and post done. Do not post blocked.",
+    "unfinished",
+  );
+}
+
 /** Park the run for a human, recording why without pretending it ended. */
 async function park(pipeline: SuitePipelineRun, promptId: number, waitReason: string | null): Promise<SuitePipelineRun> {
   log.info(`wait suite=${pipeline.suiteId} prompt=${promptId} reason=${waitReason ?? "station_rule"}`);
@@ -435,6 +529,11 @@ async function park(pipeline: SuitePipelineRun, promptId: number, waitReason: st
     waitReason,
     endedAt: null,
   });
+  const contract=executionStore.forPrompt(promptId);
+  if(contract?.engine==="supervised" && (waitReason==="no_provider_available"||waitReason==="provider_unavailable"||waitReason==="execution:resource_busy"||waitReason==="execution:writer_uncertain"||waitReason==="start_refused:git_repository_busy")) {
+    const next=cooling().map(c=>Date.parse(c.until)).filter(time=>Number.isFinite(time)&&time>Date.now()).sort((a,b)=>a-b)[0] ?? Date.now()+60000;
+    executionStore.scheduleWake(contract.id,pipeline.id,promptId,next,waitReason);
+  }
   await syncNamedFromSuite(updated);
   return updated;
 }
@@ -449,14 +548,15 @@ async function park(pipeline: SuitePipelineRun, promptId: number, waitReason: st
 export type ExecuteEndedDecision =
   | { action: "applyOnDone" }
   | { action: "advance" }
-  | { action: "park"; waitReason: "human_question" }
+  | { action: "waiveHuman" }
   | { action: "continuation"; causeKind: "agent_continue" | "unfinished" }
   | { action: "terminate"; stopReason: string };
 
 export function decideExecuteEnded(status: PromptStatus, trigger: string | null): ExecuteEndedDecision {
   if (status === "DONE") return { action: "applyOnDone" };
   if (status === "SKIPPED") return { action: "advance" };
-  if (status === "BLOCKED" && trigger === "agent_post") return { action: "park", waitReason: "human_question" };
+  // A blocked post is a request to stop for a person. The pipeline does not.
+  if (status === "BLOCKED" && trigger === "agent_post") return { action: "waiveHuman" };
   if (status === "TODO" && trigger === "agent_decompose") return { action: "advance" };
   if (status === "TODO" && trigger === "agent_continue") return { action: "continuation", causeKind: "agent_continue" };
   if (status === "UNREPORTED") return { action: "continuation", causeKind: "unfinished" };
@@ -486,15 +586,7 @@ function unfinishedCause(promptId: number, result: string): string {
   return parts.join("\n\n");
 }
 
-/**
- * Re-queue the same station, or park once the *unfinished* allowance is spent.
- *
- * An agent's own `agent-step continue` always re-queues and never parks — that
- * is the rail keeping moving. Crash / unreported / verification-failed endings
- * spend `rule_id=continuation` rows counted since the most recent USER row;
- * an operator Resume writes that USER row and grants a fresh allowance. The
- * station rule's `onUnfinished` can still short-circuit to skip or wait.
- */
+/** Every automatic successor, including CONTINUE, spends the same allowance. */
 async function continuation(
   pipeline: SuitePipelineRun,
   rule: PromptPipelineRule,
@@ -507,16 +599,28 @@ async function continuation(
     workspaces.skipPrompt(promptId, "SYSTEM", "Pipeline skipped this station after it did not finish.");
     return advance(pipeline);
   }
-  if (rule.onUnfinished === "wait") {
-    return park(pipeline, promptId, "station_rule_wait");
-  }
+  // `wait` asks the rail to stop for a person. The pipeline rule does not.
 
+  const adopted=executionStore.forPrompt(promptId);
+  if(adopted?.engine==="supervised") {
+    const evaluation=workspaces.definitionOfDoneEvaluation(promptId);
+    if(pipeline.state==="PLAYING" && adopted.desired==="RUNNING" && workspaces.runHasCompletionRemark(promptId,previousRunId) && evaluation.criteria.some(c=>c.required && c.kind==="PROSE" && c.result!=="PASSED") && evaluation.criteria.filter(c=>c.required && c.kind!=="PROSE").every(c=>c.result==="PASSED")) {
+      try {
+        const {scheduleCompletionAudit}=await import("./completionAudit.ts");
+        const source=workspaces.runSummary(previousRunId);
+        const audit=await scheduleCompletionAudit({workspaceId:pipeline.workspaceId,promptId,sourceRunId:previousRunId,sourceProvider:source.provider,automatic:true});
+        if(audit.started) return park(pipeline,promptId,"review_running");
+      } catch(error) {executionStore.decision(adopted.id,"review_start_failed",{reason:String(error)});}
+    }
+    workspaces.queueContinuation(promptId,{attempt:Math.min(executionStore.unitUsage(adopted.id,promptId).workers+1,adopted.policy.unitAttempts),of:adopted.policy.unitAttempts,cause,previousRunId,writeSystemRemark:!workspaces.runHasContinuationRemark(promptId,previousRunId)});
+    const updated=workspaces.updatePipelineRun(pipeline.id,{currentPromptId:promptId,currentRunId:null});
+    if(updated.state==="PAUSED") return updated;
+    return startCurrentStation(updated,promptId,{onExhausted:"park"});
+  }
   const N = settings.pipelinePolicy.maxContinuations;
-  const productive = causeKind === "agent_continue";
   const n = workspaces.continuationCount(promptId);
 
-  // Productive agent continues never exhaust. Unfinished endings still cap at N.
-  if (productive || n < N) {
+  if (n < N) {
     workspaces.queueContinuation(promptId, {
       attempt: n + 1,
       of: N,
@@ -526,12 +630,10 @@ async function continuation(
       // second SYSTEM one would bury it. For every other unfinished ending the
       // agent left none, so the cause sentence becomes the brief.
       writeSystemRemark: !workspaces.runHasContinuationRemark(promptId, previousRunId),
-      countsTowardAllowance: !productive,
+      countsTowardAllowance: true,
     });
     log.info(
-      productive
-        ? `agent-continue suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`
-        : `continuation ${n + 1}/${N} suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`,
+      `continuation ${n + 1}/${N} suite=${pipeline.suiteId} prompt=${promptId} cause=${cause.slice(0, 120)}`,
     );
     const updated = workspaces.updatePipelineRun(pipeline.id, { currentPromptId: promptId, currentRunId: null });
     // Pause means the operator asked the rail to stop; a continuation is still
@@ -568,7 +670,20 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
   // Replay / late onEnd: only the run the rail is currently pointing at may move it.
   if (live.currentRunId !== runId) return;
   workspaces.updatePipelineRun(live.id, { currentRunId: null });
-  const posted = workspaces.promptOutcome(promptId);
+  let posted = workspaces.promptOutcome(promptId);
+  const adopted=executionStore.forPrompt(promptId);
+  if(adopted?.engine==="supervised") {
+    const proposed=executionStore.events(adopted.id).filter(e=>e.kind==="plan_proposed").at(-1);
+    if(proposed && (proposed.payload as import("@agent-console/shared").ExecutionPlan).revision>adopted.revision) {
+      workspaces.activateExecutionPlan(adopted.id,proposed.payload as import("@agent-console/shared").ExecutionPlan);
+      posted=workspaces.promptOutcome(promptId);
+    }
+    if(posted.status==="DONE" && !acceptSupervisedUnit(promptId)) {
+      workspaces.refuseSupervisedCompletion(promptId,"Completion needs fresh evidence for every assigned criterion");
+      posted=workspaces.promptOutcome(promptId);
+    }
+  }
+  releaseSupervisedRun(runId);
   const pipelineId = namedPipelineIdFor(live);
   const rule = ruleByRun.get(runId) ?? workspaces.pipelineRule(promptId, pipelineId);
   ruleByRun.delete(runId);
@@ -625,8 +740,14 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
       startFailed: trigger === "run_start_failed",
     });
     if (failure.class === "transient_provider") {
-      markCooling(facts.provider, failure.id ?? "died_before_work", undefined, failure.because);
-      const defaults = workspaces.suitePipelineDefaults(live.suiteId);
+      markCooling(facts.provider, failure.id ?? "died_before_work", failure.id === "quota" ? quotaCoolingMinutes(facts.errorText || posted.result) : undefined, failure.because);
+      if (!autoReassignFor(live)) {
+        if (live.state !== "PAUSED") await park(live, promptId, "provider_unavailable");
+        else workspaces.updatePipelineRun(live.id, { waitReason: "provider_unavailable" });
+        return;
+      }
+      if (failure.id === "quota" || failure.id === "rate_limit") await refreshUsageCooling(true);
+      const defaults = workspaces.suitePipelineDefaults(live.suiteId, pipelineId);
       const list = resolveFallbackProviders({
         rule,
         suiteFallbackProviders: defaults.defaultFallbackProviders,
@@ -652,14 +773,9 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
         });
         return;
       }
-      // No fallback free: fall through to continuation with the failure class
-      // in the cause, so the same provider may recover on the next attempt.
-      const decision = decideExecuteEnded(posted.status, trigger);
-      if (decision.action === "continuation") {
-        const cause = `${failure.because} ${unfinishedCause(promptId, posted.result)}`.trim();
-        await continuation(live, rule, promptId, runId, cause, "unfinished");
-        return;
-      }
+      if (live.state !== "PAUSED") await park(live, promptId, "no_provider_available");
+      else workspaces.updatePipelineRun(live.id, { waitReason: "no_provider_available" });
+      return;
     }
   }
 
@@ -672,8 +788,8 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     await advance(live);
     return;
   }
-  if (decision.action === "park") {
-    await park(live, promptId, decision.waitReason);
+  if (decision.action === "waiveHuman") {
+    await waiveHumanGate(live, rule, promptId, runId);
     return;
   }
   if (decision.action === "continuation") {
@@ -687,6 +803,8 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
 }
 
 async function resume(pipeline: SuitePipelineRun, playProvider: ProviderId | null | undefined, playModel: string | null | undefined, preferPlayTarget = false): Promise<SuitePipelineRun> {
+  if(pipeline.currentPromptId!==null) {const c=executionStore.forPrompt(pipeline.currentPromptId);if(c)executionStore.setDesired(c.id,"RUNNING");}
+
   // Prompt 03 AC4: Resume after an exhausted / review park must write a USER
   // ledger row so continuationCount resets. Without this the next unfinished
   // ending re-parks immediately and the documented button is a treadmill.
@@ -766,6 +884,9 @@ function notReadyReason(
   }
   if (waitReason === "no_provider_available") {
     return `${label} could not start: every configured provider is unavailable or cooling. Resume tries them again now; assign another first if they are still out.`;
+  }
+  if (waitReason === "provider_unavailable") {
+    return `${label}'s assigned agent could not run. Choose another agent or enable automatic reassignment, then Resume.`;
   }
   if (waitReason === "worktree_dirty") {
     return `${label} could not start: the working tree has changes no agent run accounts for. Commit or stash them, then Resume.`;
@@ -874,6 +995,19 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   if (owner !== null && owner.suiteId !== suiteId) {
     throw new WorkspaceError(409, "workspace_busy", "Another suite pipeline already owns this workspace.");
   }
+  const latestInterrupted=workspaces.latestPipeline(suiteId);
+  if (adoptsInterruptedRun(latestInterrupted?.currentPromptId ?? undefined)) {
+    const latest = latestInterrupted;
+    if (latest !== null && latest.state === "INTERRUPTED" && (namedRunId === null || latest.pipelineRunId === namedRunId)) {
+      log.info(`adopt interrupted suite=${suiteId} pipeline=${latest.id}`);
+      const adopted=latest.currentPromptId===null?null:executionStore.forPrompt(latest.currentPromptId);
+      if(adopted?.engine==="supervised") requeueStation(latest);
+      return resume(latest, playProvider, playModel, preferPlayTarget);
+    }
+  }
+  for(const promptId of workspaces.remainingPipelinePromptIds(suiteId,namedPipelineId)) {
+    const c=executionStore.forPrompt(promptId);if(c && c.phase!=="delivered")executionStore.setDesired(c.id,"RUNNING");
+  }
   const topLevelReady = workspaces.readyPromptsInSuite(suite.workspaceId, suiteId, namedPipelineId);
   if (topLevelReady.length === 0) {
     const unfinished = workspaces.remainingPipelinePromptIds(suiteId, namedPipelineId).filter((promptId) => {
@@ -891,13 +1025,6 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
   // favour of a fresh one. Adopting it keeps the attempt counter and the station
   // it was holding, which is the whole point of both policies that continue a
   // run rather than replace it.
-  if (adoptsInterruptedRun()) {
-    const latest = workspaces.latestPipeline(suiteId);
-    if (latest !== null && latest.state === "INTERRUPTED" && (namedRunId === null || latest.pipelineRunId === namedRunId)) {
-      log.info(`adopt interrupted suite=${suiteId} pipeline=${latest.id}`);
-      return resume(latest, playProvider, playModel, preferPlayTarget);
-    }
-  }
   const created = workspaces.createPipelineRun({
     id: newId("pipe"),
     suiteId,
@@ -922,6 +1049,7 @@ async function pauseSuiteUnlocked(suiteId: number): Promise<{ paused: SuitePipel
   }
   const immediate = settings.pipelinePolicy.pauseMode === "immediate";
   log.info(`pause suite=${suiteId} mode=${immediate ? "immediate" : "graceful"}`);
+  if(active.currentPromptId!==null) {const c=executionStore.forPrompt(active.currentPromptId);if(c)executionStore.setDesired(c.id,"PAUSED");}
   const updated = workspaces.updatePipelineRun(active.id, { state: "PAUSED" });
   await syncNamedFromSuite(updated);
   return { paused: updated, interruptId: immediate ? active.currentRunId : null };
@@ -960,6 +1088,7 @@ async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipel
   // already working keeps its station and finishes on its own.
   const interruptId = settings.pipelinePolicy.stopInterruptsAgent ? active.currentRunId : null;
   log.info(`stop suite=${suiteId} interrupt=${interruptId !== null}`);
+  if(active.currentPromptId!==null) {const c=executionStore.forPrompt(active.currentPromptId);if(c)executionStore.setDesired(c.id,"STOPPED");}
   const stopped = workspaces.updatePipelineRun(active.id, {
     state: "STOPPED",
     stopReason: "operator_stop",
@@ -994,6 +1123,8 @@ async function startNextNamedStage(named: PipelineRun, preferPlayTarget = false)
   }
   const next = pipeline.stages[nextIndex];
   if (next === undefined) {
+    const pendingContracts=pipeline.stages.flatMap(stage=>workspaces.remainingPipelinePromptIds(stage.suiteId,named.pipelineId)).map(id=>executionStore.forPrompt(id)).filter(c=>c?.engine==="supervised" && c.phase!=="delivered");
+    if(pendingContracts.length>0) return workspaces.updateNamedPipelineRun(named.id,{state:"STOPPED",stopReason:"execution:unverified_obligations",endedAt:new Date().toISOString()});
     log.info(`named-complete pipeline=${named.pipelineId}`);
     return workspaces.updateNamedPipelineRun(named.id, {
       state: "COMPLETE",
@@ -1045,7 +1176,9 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
   // Same adoption as `playSuiteUnlocked`, one level up: a named run interrupted
   // by a restart owns the suite run under it, so continuing it here is what lets
   // that suite run be continued rather than superseded.
-  const interrupted = adoptsInterruptedRun() ? workspaces.latestNamedPipelineRun(pipelineId) : null;
+  const latestInterrupted=workspaces.latestNamedPipelineRun(pipelineId);
+  const interruptedPrompt=latestInterrupted?.currentSuiteRunId?workspaces.pipelineById(latestInterrupted.currentSuiteRunId)?.currentPromptId:undefined;
+  const interrupted = adoptsInterruptedRun(interruptedPrompt ?? undefined) ? latestInterrupted : null;
   const active = workspaces.activeNamedPipelineRun(pipelineId)
     ?? (interrupted !== null && interrupted.state === "INTERRUPTED" && interrupted.stopReason === "server_restart" ? interrupted : null);
   if (active !== null) {
@@ -1062,7 +1195,10 @@ async function playNamedUnlocked(pipelineId: number, body: Record<string, unknow
     if (live.playProvider !== null) suiteBody.provider = live.playProvider;
     if (live.playModel !== null) suiteBody.model = live.playModel;
     if (preferPlayTarget) suiteBody.preferPlayTarget = true;
+    if(live.state==="INTERRUPTED") workspaces.updateNamedPipelineRun(live.id,{state:"PLAYING",endedAt:null,stopReason:null});
     const suiteRun = await playSuiteUnlocked(live.currentSuiteId, suiteBody);
+    const progressed=workspaces.namedPipelineRunById(live.id)!;
+    if(suiteRun.state==="COMPLETE" && (progressed.currentSuiteId!==live.currentSuiteId || progressed.state==="COMPLETE")) return progressed;
     return workspaces.updateNamedPipelineRun(live.id, {
       state: suiteRun.state,
       currentSuiteId: live.currentSuiteId,
@@ -1148,9 +1284,10 @@ async function resumeAfterHumanResolution(promptId: number): Promise<void> {
 const AUDIT_COMPLETE_REASON = "A read-only completion audit verified this work item against its acceptance criteria after the station's continuations ran out.";
 
 /**
- * Act on the post-continuation audit. COMPLETE → close (DoD gate) → advance;
- * anything else → park `continuations_exhausted` with the report already on the
- * prompt's audit record. Runs inside the workspace queue.
+ * Act on the post-continuation audit. Every verdict tries to close the station.
+ * Command checks still have to pass. A human-review check is waived and is not
+ * recorded as passed. A refused close parks `continuations_exhausted`. Runs
+ * inside the workspace queue.
  */
 async function settleAudit(args: {
   promptId: number;
@@ -1160,23 +1297,46 @@ async function settleAudit(args: {
   report?: CompletionAuditReport | null;
   auditId?: string | null;
 }): Promise<boolean> {
+  const releaseAudit=()=>{const audit=args.auditId?workspaces.completionAuditById(args.auditId):null;if(audit?.auditRunId)releaseSupervisedRun(audit.auditRunId);};
   const home = workspaces.promptHome(args.promptId);
   const active = workspaces.activePipeline(home.suiteId);
+  const contract=executionStore.forPrompt(args.promptId);
+  if(contract?.engine==="supervised") {
+    if(workspaces.latestExecuteRunId(args.promptId)!==args.sourceRunId) return false;
+    if(args.auditId) {
+      const audit=workspaces.completionAuditById(args.auditId),effect=audit?.auditRunId?executionStore.byRun(audit.auditRunId):null;
+      if(effect && effect.generation!==contract.generation) return false;
+    }
+  }
   // Only a run parked on this exact station for the post-N review may be moved.
   const parked = active !== null
     && active.state === "WAITING_HUMAN"
     && active.currentPromptId === args.promptId
-    && active.waitReason === "review_running";
+    && (active.waitReason === "review_running" || (contract?.engine==="supervised" && contract.desired==="RUNNING"));
 
-  if (args.verdict === "COMPLETE") {
+  if (args.verdict === "COMPLETE" || args.verdict === "INCOMPLETE" || args.verdict === "UNVERIFIABLE" || args.verdict === null) {
     try {
       const { runDefinitionOfDoneCommands } = await import("./definitionOfDone.ts");
-      await runDefinitionOfDoneCommands(args.promptId, args.sourceRunId);
-      const written = workspaces.completePrompt(args.promptId, "SYSTEM", {
-        reason: AUDIT_COMPLETE_REASON,
-        verificationSummary: args.verificationSummary ?? "",
+      const adopted=executionStore.forPrompt(args.promptId);
+      if(adopted?.engine!=="supervised") await runDefinitionOfDoneCommands(args.promptId, args.sourceRunId);
+      const waived = args.verdict !== "COMPLETE";
+      const postedSummary = (args.verificationSummary ?? "").trim();
+      const verificationSummary = postedSummary !== ""
+        ? postedSummary
+        : waived
+          ? "Human-review checks were waived."
+          : "A read-only completion audit found the command checks satisfied.";
+      let written = workspaces.completePrompt(args.promptId, "SYSTEM", {
+        reason: waived
+          ? "The pipeline does not stop for a human review or an unobserved check. Command checks still have to pass. Waived checks were not recorded as passed."
+          : AUDIT_COMPLETE_REASON,
+        verificationSummary,
       });
+      if(written==="DONE" && !acceptSupervisedUnit(args.promptId)) {
+        workspaces.refuseSupervisedCompletion(args.promptId,"Completion evidence is missing or stale");written="NEEDS_REVIEW";
+      }
       if (written === "DONE") {
+        releaseAudit();
         log.info(`audit closed station suite=${home.suiteId} prompt=${args.promptId}`);
         if (parked) {
           const playing = workspaces.updatePipelineRun(active.id, { state: "PLAYING", stopReason: null, waitReason: null, endedAt: null });
@@ -1186,13 +1346,20 @@ async function settleAudit(args: {
         }
         return true;
       }
-      log.info(`audit COMPLETE refused by the definition of done suite=${home.suiteId} prompt=${args.promptId}`);
+      log.info(`audit close refused by the definition of done suite=${home.suiteId} prompt=${args.promptId}`);
     } catch (error) {
-      log.warn(`audit COMPLETE could not be applied prompt=${args.promptId}`, error);
+      log.warn(`audit close could not be applied prompt=${args.promptId}`, error);
     }
   }
 
+  releaseAudit();
   if (!parked) return false;
+  const adopted=executionStore.forPrompt(args.promptId);
+  if(adopted?.engine==="supervised" && adopted.desired==="RUNNING") {
+    const playing=workspaces.updatePipelineRun(active.id,{state:"PLAYING",waitReason:null,stopReason:null,endedAt:null});
+    workspaces.queueContinuation(args.promptId,{attempt:Math.min(executionStore.unitUsage(adopted.id,args.promptId).workers+1,adopted.policy.unitAttempts),of:adopted.policy.unitAttempts,cause:"Reviewer found remaining work; repair from the recorded criterion evidence",previousRunId:args.sourceRunId,writeSystemRemark:true});
+    await startCurrentStation(playing,args.promptId,{onExhausted:"park"});return false;
+  }
   // Report stays on the completion_audit row; the wait reason is what the rail shows.
   await park(active, args.promptId, "continuations_exhausted");
   return false;
@@ -1255,7 +1422,6 @@ async function resumeInterruptedNamed(run: PipelineRun): Promise<void> {
  * every other entry point, so a resume cannot interleave with a run ending.
  */
 async function resumeInterruptedAll(): Promise<void> {
-  if (settings.pipelinePolicy.onRestart !== "autoResume") return;
   if (runHub.isClosing()) return;
   /*
    * Only a `serve` process relaunches work, and this is not a formality.
@@ -1281,6 +1447,9 @@ async function resumeInterruptedAll(): Promise<void> {
   }
   const { suiteRuns, namedRuns } = workspaces.interruptedRunsToResume(RESUME_WINDOW_HOURS);
   for (const named of namedRuns) {
+    const station=named.currentSuiteRunId ? workspaces.pipelineById(named.currentSuiteRunId)?.currentPromptId : null;
+    const contract=station?executionStore.forPrompt(station):null;
+    if(settings.pipelinePolicy.onRestart!=="autoResume" && !(contract?.engine==="supervised"&&contract.desired==="RUNNING")) continue;
     try {
       await enqueue(named.workspaceId, () => resumeInterruptedNamed(named));
     } catch (error) {
@@ -1292,6 +1461,8 @@ async function resumeInterruptedAll(): Promise<void> {
     // just been resumed with this one underneath it; if it was not — stopped,
     // or outside the window — then neither is this.
     if (suiteRun.pipelineRunId !== null) continue;
+    const contract=suiteRun.currentPromptId?executionStore.forPrompt(suiteRun.currentPromptId):null;
+    if(settings.pipelinePolicy.onRestart!=="autoResume" && !(contract?.engine==="supervised"&&contract.desired==="RUNNING")) continue;
     try {
       await enqueue(suiteRun.workspaceId, () => resumeInterruptedSuite(suiteRun));
     } catch (error) {
@@ -1301,6 +1472,48 @@ async function resumeInterruptedAll(): Promise<void> {
 }
 
 export const pipelineScheduler = {
+  async wakeDue():Promise<void> {
+    if(currentLockMode()!=="serve" || runHub.isClosing()) return;
+    for(const wake of executionStore.dueWakes()) {
+      const c=executionStore.contract(wake.contractId);
+      if(c.desired!=="RUNNING") continue;
+      const pipeline=workspaces.pipelineById(wake.pipelineId);
+      if(!pipeline || pipeline.state!=="WAITING_HUMAN") {executionStore.clearWake(c.id);continue;}
+      if(Date.now()>=c.policy.deadline) {executionStore.clearWake(c.id);executionStore.decision(c.id,"execution_exception",{reason:"delivery_deadline",promptId:wake.promptId});continue;}
+      const resourceWait=wake.reason==="execution:resource_busy" || wake.reason==="execution:writer_uncertain" || wake.reason==="start_refused:git_repository_busy";
+      if(resourceWait && executionStore.writerOwner(repositoryResource(workspaces.get(pipeline.workspaceId).workDirectory))!==null) {executionStore.scheduleWake(c.id,pipeline.id,wake.promptId,Date.now()+15000,wake.reason);continue;}
+      const providers=await detectProviders(true);
+      const rule=workspaces.pipelineRule(wake.promptId,namedPipelineIdFor(pipeline));
+      const defaults=workspaces.suitePipelineDefaults(pipeline.suiteId,namedPipelineIdFor(pipeline));
+      const primary=rule.provider ?? defaults.defaultProvider ?? pipeline.playProvider;
+      const allowed=autoReassignFor(pipeline)?[primary,...resolveFallbackProviders({rule,suiteFallbackProviders:defaults.defaultFallbackProviders})]:[primary];
+      const available=providers.some(p=>allowed.includes(p.id)&&p.available&&!isCooling(p.id));
+      if(!available) {executionStore.scheduleWake(c.id,pipeline.id,wake.promptId,Date.now()+60000,wake.reason);continue;}
+      await enqueue(pipeline.workspaceId,async()=>{
+        const live=workspaces.pipelineById(pipeline.id);
+        if(live?.state!=="WAITING_HUMAN" || executionStore.contract(c.id).desired!=="RUNNING") return;
+        executionStore.clearWake(c.id);
+        workspaces.requeueTechnicalWait(wake.promptId,"Provider availability was restored; retrying automatically inside the original allowance");
+        const playing=workspaces.updatePipelineRun(live.id,{state:"PLAYING",waitReason:null,stopReason:null,endedAt:null});
+        const outcome=workspaces.promptOutcome(wake.promptId);
+        if(outcome.status==="DONE" || outcome.status==="SKIPPED") await advance(playing);
+        else await startCurrentStation(playing,wake.promptId);
+      });
+    }
+  },
+  async onBudgetAmended(promptId:number):Promise<void> {
+    const home=workspaces.promptHome(promptId),changed=executionStore.forPrompt(promptId);
+    if(!changed) return;
+    await enqueue(home.workspaceId,async()=>{
+      const live=workspaces.activePipelineForWorkspace(home.workspaceId);
+      if(!live || live.state!=="WAITING_HUMAN" || live.currentPromptId===null || !["execution:budget_exhausted","execution:recovery_exhausted","execution:recovery_required","execution:provider_change_limit"].includes(live.waitReason ?? ""))return;
+      const current=executionStore.forPrompt(live.currentPromptId);
+      if(!current || current.desired!=="RUNNING" || current.budgetScope!==changed.budgetScope)return;
+      const playing=workspaces.updatePipelineRun(live.id,{state:"PLAYING",waitReason:null,stopReason:null,endedAt:null});
+      workspaces.requeueTechnicalWait(live.currentPromptId,"The operator approved an additional allocation; historical usage and recovery history are retained");
+      await startCurrentStation(playing,live.currentPromptId);
+    });
+  },
   /** Boot-time auto-resume. `index.ts` calls it once the server is listening. */
   resumeInterrupted(): Promise<void> {
     return resumeInterruptedAll();
@@ -1320,7 +1533,7 @@ export const pipelineScheduler = {
       }
       if (active.currentSuiteId !== null) {
         const result = await pauseSuiteUnlocked(active.currentSuiteId);
-        if (result.interruptId !== null) await runHub.stop(result.interruptId);
+        if (result.interruptId !== null) {await cancelManagedCommands(result.interruptId);await runHub.stop(result.interruptId);}
       } else {
         workspaces.updateNamedPipelineRun(active.id, { state: "PAUSED" });
       }
@@ -1348,7 +1561,7 @@ export const pipelineScheduler = {
         endedAt: new Date().toISOString(),
       });
     });
-    if (interruptId !== null) await runHub.stop(interruptId);
+    if (interruptId !== null) {await cancelManagedCommands(interruptId);await runHub.stop(interruptId);}
     return stopped;
   },
 
@@ -1363,9 +1576,15 @@ export const pipelineScheduler = {
     // and orphan it. The pipeline is left PLAYING so the next boot marks it
     // interrupted and the operator resumes or retries deliberately.
     if (runHub.isClosing()) return;
+    if(!await settleSupervisedRun(args.runId,true)) {
+      const owner=workspaces.pipelineByCurrentRun(args.runId);
+      if(owner) await enqueue(args.workspaceId,()=>park(owner,args.promptId,"execution:writer_uncertain"));
+      return;
+    }
     const pointed = workspaces.pipelineByCurrentRun(args.runId);
-    if (pointed === null) return;
-    await enqueue(args.workspaceId, () => applyExecuteEnded(pointed, args.runId, args.promptId));
+    if (pointed === null) {releaseSupervisedRun(args.runId);return;}
+    try {await enqueue(args.workspaceId, () => applyExecuteEnded(pointed, args.runId, args.promptId));}
+    finally {releaseSupervisedRun(args.runId);}
   },
 
   /**
@@ -1375,7 +1594,7 @@ export const pipelineScheduler = {
    */
   async onAuditSettled(args: { promptId: number; sourceRunId: string; verdict: CompletionVerdict | null; verificationSummary?: string; report?: CompletionAuditReport | null; auditId?: string | null }): Promise<boolean> {
     const home = workspaces.promptHome(args.promptId);
-    return enqueue(home.workspaceId, () => settleAudit(args));
+    return enqueue(home.workspaceId,async()=>{try{return await settleAudit(args);}finally{const audit=args.auditId?workspaces.completionAuditById(args.auditId):null;if(audit?.auditRunId)releaseSupervisedRun(audit.auditRunId);}});
   },
 
   onPromptSkipped(promptId: number): Promise<void> {

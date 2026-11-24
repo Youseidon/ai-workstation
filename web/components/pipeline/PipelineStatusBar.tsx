@@ -71,6 +71,7 @@ export function PipelineStatusBar({
   onExplain,
   inbox,
   rules,
+  onReviewAllocation,
 }: {
   status: PipelineStatusView;
   position: PipelinePosition | null;
@@ -87,6 +88,7 @@ export function PipelineStatusBar({
   inbox?: ReactNode;
   /** The rules the next Play runs under; folded away until asked for. */
   rules?: ReactNode;
+  onReviewAllocation?(): void;
 }) {
   const primaryDisabled = busy || blockedReason !== null;
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -97,7 +99,7 @@ export function PipelineStatusBar({
       className={cn("rounded-panel border shadow-sm", RING[status.tone])}
     >
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 py-3">
-        <div className="flex min-w-[min(100%,18rem)] flex-1 items-start gap-3">
+        <div className="flex min-w-[min(100%,18rem)] flex-1 flex-wrap items-start gap-3">
           <button
             type="button"
             onClick={onExplain}
@@ -111,7 +113,7 @@ export function PipelineStatusBar({
           </button>
           {/* Three lines, in the order the questions get asked: what the run is
               doing, what put it there, and what the button will do about it. */}
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1 basis-56">
             <p className="text-sm leading-5 text-fg">{status.headline}</p>
             <p className="mt-0.5 text-xs leading-5 text-fg-muted">{status.because}</p>
             {status.hint !== null && (
@@ -121,6 +123,7 @@ export function PipelineStatusBar({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {onReviewAllocation && <Button size="sm" variant="primary" disabled={busy} onClick={onReviewAllocation}>Review new allocation</Button>}
           {inbox}
           {inbox !== undefined && <span aria-hidden className="mx-1 h-5 w-px bg-line" />}
           {status.secondary.map((control) => (

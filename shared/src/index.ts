@@ -700,6 +700,7 @@ export function isCustomModel(provider: ProviderId, modelId: string | null): boo
 /* -------------------------------------------------------------------------- */
 
 export interface ProviderInfo {
+  commandEnforcement?: "brokered" | "cooperative";
   id: ProviderId;
   label: string;
   /** Whether a run can actually be started with this provider right now. */
@@ -1181,7 +1182,7 @@ interface EventBase {
 export interface DbAccessPayload {
   /** Whether this read the app's state or changed it. */
   direction: "read" | "write";
-  operation: "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
+  operation: "execution" | "check" | "plan" | "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
   method: string;
   /** Accepted, refused, or replayed from the idempotency ledger. */
   outcome: "accepted" | "rejected" | "replayed";
@@ -1841,6 +1842,8 @@ export interface PipelineStage {
   suiteKey: string | null;
   promptCount: number;
   stepCount: number;
+  /** Suite lead and prompt overrides used in this pipeline stage. */
+  agentProviders: ProviderId[];
 }
 
 export interface PipelineRun {
@@ -1865,6 +1868,8 @@ export interface PipelineRecord {
   workspaceName: string;
   name: string;
   description: string;
+  /** Opt in to switching providers when an account limit or outage is detected. */
+  autoReassign: boolean;
   createdAt: string;
   updatedAt: string;
   stages: PipelineStage[];
@@ -1970,6 +1975,7 @@ export interface PipelineDashboard {
 }
 
 export interface OperationsPrompt {
+  execution?: import("./executionPlan").ExecutionStatus | null;
   prompt: PromptOption;
   workspace: Pick<WorkspaceRecord,"id"|"name"|"workDirectory"|"workDirectoryExists">;
   programKey: string|null;
@@ -2519,6 +2525,7 @@ export {
   coolingMinutesFor,
 } from "./providerFailure";
 export type { FailureClass } from "./providerFailure";
+export { exhaustedUsageWindow, quotaCoolingMinutes } from "./providerFailure";
 /*
  * Re-exported by name rather than with `export *`.
  *
@@ -2699,3 +2706,6 @@ export type {
   StatusTone,
   TransitionRow,
 } from "./pipelineRules";
+
+export { validateExecutionPlan, validateExecutionPolicy } from "./executionPlan";
+export type { ExecutionPhase, ExecutionDesiredState, ExecutionPolicy, ContractCriterion, ExecutionUnit, ExecutionPlan, ExecutionStatus } from "./executionPlan";

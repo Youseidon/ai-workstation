@@ -1,3 +1,6 @@
+import { ExecutionError } from "./executionStore.ts";
+import { stopAllManagedCommands, requestCommand, reconcileCommands } from "./commandTasks.ts";
+import { reconcileExecution, dispatchPendingExecution } from "./executionSupervisor.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AgentInputAnswer, ClientMessage, ServerMessage } from "@agent-console/shared";
@@ -14,7 +17,7 @@ import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./l
 import { runRoleStartError } from "./runner.ts";
 import { runDefinitionOfDoneCommands } from "./definitionOfDone.ts";
 import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspaceApi.ts";
-import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
+import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces, executionStore, evidenceStore } from "./workspaces.ts";
 import { runContexts } from "./runContext.ts";
 import { removeAllAgentShims } from "./agentShim.ts";
 import { budgetMarkdown, contextMarkdown, progressApiMarkdown } from "./agentContext.ts";
@@ -25,7 +28,7 @@ import { programDraftStateMarkdown, programRevisionStateMarkdown } from "./progr
 import { pipelineScheduler } from "./pipelineScheduler.ts";
 import { scheduleRetentionSweep } from "./retention.ts";
 import { settings } from "./settings.ts";
-import { assertRunChangesCommitted, checkpointRun } from "./gitChanges.ts";
+import { assertRunChangesCommitted, checkpointCommand, checkpointRun } from "./gitChanges.ts";
 import { answerAgentInput, normalizeAgentInputRequest, waitForAgentInput } from "./agentInput.ts";
 import { agentReply, inboxPayload } from "./runMessages.ts";
 
@@ -53,6 +56,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
 const agentInboxResponses = new WeakMap<ServerResponse, string>();
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  if(res.destroyed || res.writableEnded)return;
   const inboxRunId = agentInboxResponses.get(res);
   if (inboxRunId !== undefined && status < 500 && body !== null && typeof body === "object" && !Array.isArray(body) && !("operatorMessages" in body)) {
     try {
@@ -161,6 +165,7 @@ function recordDbAccess(runId:string,payload:DbAccessPayload):void{
   }
 }
 
+let executionRecovery:Promise<void>=Promise.resolve();
 const httpServer = createServer((req, res) => {
   applyCors(req, res);
   if (req.method === "OPTIONS") {
@@ -171,13 +176,43 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program|input|inbox|reply)$/);
+  const agentMatch=url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/(execution|check|plan|context|state|remarks|status|checkpoint|decompose|repair-verify|propose-program|propose-suite|revise-program|input|inbox|reply)$/);
   if(agentMatch){
     const runId=agentMatch[1]!;const operation=agentMatch[2]!;const authorization=req.headers.authorization??"";const token=authorization.startsWith("Bearer ")?authorization.slice(7):"";
     try{
       const memory=runContexts.authenticate(runId,token);if(!memory)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");
       const persisted=workspaces.authorizeAgentRun(runId,hashRunToken(token));if(memory.workspaceId!==persisted.workspaceId||memory.promptId!==persisted.promptId)throw new WorkspaceError(403,"run_scope_mismatch","Run credential scope does not match");
       res.setHeader("Cache-Control","no-store");
+      const execution=memory.promptId===null?null:executionStore.forPrompt(memory.promptId);
+      if(operation==="execution" && req.method==="GET") {
+        recordDbAccess(runId,describeRead({operation:"execution",summary:"read contract, plan and remaining envelope",durationMs:0}));
+        sendJson(res,200,{execution:execution?executionStore.status(execution.id):null,plan:execution?.revision?executionStore.plan(execution.id):null});return;
+      }
+      if((operation==="check"||operation==="plan") && req.method==="POST") {
+        if(!["STARTING","RUNNING"].includes(persisted.state))throw new WorkspaceError(409,"run_not_active","Only an active attempt may request checks or plans");
+        if(memory.promptId===null || (persisted.role!=="execute" && persisted.role!=="handoff")) throw new WorkspaceError(403,"run_scope_mismatch","This run has no verification capability");
+        const executionRequestStarted=Date.now();
+        void readJsonBody(req,MAX_BODY_BYTES).then(async body=>{
+          executionStore.assertRequest(runId,body as Record<string,unknown>);
+          if(operation==="check") {
+            if(!Number.isSafeInteger(body.criterionId)) throw new WorkspaceError(422,"recipe_required","Supply a command criterionId");
+            const evidenceId=await requestCommand(memory.promptId!,body.criterionId as number,runId,typeof body.requestId==="string"?body.requestId:undefined);
+            recordDbAccess(runId,describeAcceptedWrite({operation:"check",before:null,after:null,requestId:typeof body.requestId==="string"?body.requestId:null,durationMs:Date.now()-executionRequestStarted}));
+            const fact=evidenceStore.evidence([evidenceId])[0];
+            sendJson(res,200,{evidenceId,evidence:fact?{result:fact.result,evidence:fact.evidence,output:fact.output,exitCode:fact.exit_code,stableInputs:fact.stable_inputs===1}:null,execution:execution?executionStore.status(execution.id):null});
+          } else {
+            if(!execution || persisted.role!=="execute") throw new WorkspaceError(403,"planner_required","Only an active planned worker can propose a remaining plan");
+            workspaces.proposeExecutionPlan(runId,body as Record<string,unknown>);
+            recordDbAccess(runId,describeAcceptedWrite({operation:"plan",before:null,after:null,requestId:typeof body.requestId==="string"?body.requestId:null,durationMs:Date.now()-executionRequestStarted}));
+            sendJson(res,200,{decision:"plan_staged_until_worker_exit",execution:executionStore.status(execution.id)});
+          }
+        }).catch(error=>{
+          const status=error instanceof WorkspaceError?error.status:409,code=error instanceof ExecutionError?error.code:error instanceof WorkspaceError?error.code:"invalid_request",message=error instanceof Error?error.message:String(error);
+          recordDbAccess(runId,describeRejectedWrite({operation:operation as DbOperation,httpStatus:status,errorCode:code,message,requestId:null,durationMs:Date.now()-executionRequestStarted}));
+          sendJson(res,status,{error:{code,message}});
+        });return;
+      }
+
       // Two doors, and neither opens the other. An execute run works a work
       // item and may never write a draft; an author run writes a draft and has
       // no work item to post about. A consult run has neither.
@@ -259,7 +294,7 @@ const httpServer = createServer((req, res) => {
         else{
           const api=progressApiMarkdown({runId,token,port:config.port,canDecompose:depth<DECOMPOSE_MAX_DEPTH,canCheckpoint:workspaces.runChangeSet(runId)!==null});
           res.writeHead(200,{"Content-Type":"text/markdown; charset=utf-8"});
-          res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH,full})}\n\n${api}${budgetMarkdown(budget)}`);
+          res.end(`${contextMarkdown(context,"execute",{depth,maxDepth:DECOMPOSE_MAX_DEPTH,full,unattended:workspaces.pipelineOwnsRun(runId)})}\n\n${api}${budgetMarkdown(budget)}`);
         }
         recordDbAccess(runId,describeRead({operation:"context",summary:`read work item ${context.prompt.externalKey??context.prompt.title}`,durationMs:Date.now()-startedAt}));
         return;
@@ -275,7 +310,7 @@ const httpServer = createServer((req, res) => {
         if(persisted.role!=="execute"&&persisted.role!=="author")throw new WorkspaceError(403,"consult_read_only","Read-only runs cannot create commits.");
         void readJsonBody(req,MAX_BODY_BYTES).then(body=>{
           const run=workspaces.runSummary(runId);
-          sendJson(res,200,{changes:checkpointRun(runId,body.message,run.provider,run.model)});
+          sendJson(res,200,checkpointCommand(runId,body as Record<string,unknown>,run.provider,run.model));
           recordDbAccess(runId,describeAcceptedWrite({operation:"checkpoint",before:null,after:null,requestId:typeof body.requestId==="string"?body.requestId:null,durationMs:Date.now()-startedAt}));
           runHub.operationsChanged();
         }).catch(error=>{
@@ -289,6 +324,7 @@ const httpServer = createServer((req, res) => {
         void readJsonBody(req,authoring?MAX_AUTHOR_BODY_BYTES:MAX_BODY_BYTES).then(async body=>{
           const requestId=typeof (body as Record<string,unknown>).requestId==="string"?(body as Record<string,unknown>).requestId as string:null;
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
+          executionStore.assertRequest(runId,body as Record<string,unknown>);
           if(operation==="status"||operation==="decompose")assertRunChangesCommitted(runId);
           // An agent claiming DONE is the moment the definition-of-done commands
           // are worth running: the gate that reads their results is a synchronous
@@ -317,6 +353,7 @@ const httpServer = createServer((req, res) => {
               return;
             }
           }
+          executionStore.assertRequest(runId,body as Record<string,unknown>);
           const result=operation==="propose-program"?workspaces.proposeProgram(runId,body)
             :operation==="propose-suite"?workspaces.proposeSuite(runId,body)
             :operation==="revise-program"?workspaces.reviseProgram(runId,body)
@@ -332,7 +369,7 @@ const httpServer = createServer((req, res) => {
           // already making is the one channel that reaches every provider, so a
           // run learns to bank its work before the budget stops it.
           const live=runHub.get(runId)?.handle.budget()??null;
-          sendJson(res,200,live===null?result:{...result as Record<string,unknown>,budget:live});
+          sendJson(res,200,{...result as Record<string,unknown>,...(live?{budget:live}:{}),...(execution?{execution:executionStore.status(execution.id)}:{})});
           const after=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
           // An idempotent replay changed nothing; saying "IN_PROGRESS → DONE"
           // twice would have the operator hunting a transition that only ever
@@ -822,6 +859,9 @@ httpServer.listen(config.port, config.host, () => {
   // Safe only here: this process now demonstrably owns the database, so runs
   // still marked in flight really did die with the last one.
   workspaces.recoverAbandonedRuns();
+  executionRecovery = reconcileExecution().then(()=>reconcileCommands());
+  const executionWakeTimer=setInterval(()=>{void executionRecovery.then(()=>reconcileExecution()).then(()=>reconcileCommands()).then(()=>pipelineScheduler.resumeInterrupted()).then(()=>dispatchPendingExecution(startExecute)).then(()=>pipelineScheduler.wakeDue()).catch(error=>log.warn("execution wake failed",error));},15000);
+  executionWakeTimer.unref();
 
   log.info(`http  http://${config.host}:${config.port}`);
   log.info(`ws    ws://${config.host}:${config.port}/ws`);
@@ -862,7 +902,7 @@ function scheduleAutoResume(): void {
   if (settings.pipelinePolicy.onRestart !== "autoResume") return;
   setTimeout(() => {
     if (shuttingDown) return;
-    void pipelineScheduler.resumeInterrupted().catch((error: unknown) => {
+    void executionRecovery.then(()=>pipelineScheduler.resumeInterrupted()).then(()=>dispatchPendingExecution(startExecute)).catch((error: unknown) => {
       log.error("auto-resume failed", error);
     });
   }, AUTO_RESUME_DELAY_MS).unref();
@@ -893,7 +933,7 @@ const shutdown = () => {
   httpServer.close();
   // Runs are stopped before the database closes so each one records its own
   // terminal state. Without this the agents survive the server that owns them.
-  void runHub.stopAll().then(finish, (error: unknown) => {
+  void Promise.all([runHub.stopAll(),stopAllManagedCommands()]).then(finish, (error: unknown) => {
     log.error("failed to stop live runs", error);
     finish();
   });

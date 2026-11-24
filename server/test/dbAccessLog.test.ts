@@ -10,10 +10,10 @@ import {
 } from "../src/dbAccessLog.ts";
 import type { DbOperation } from "../src/dbAccessLog.ts";
 
-const OPERATIONS: DbOperation[] = ["context", "state", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "inbox", "reply"];
+const OPERATIONS: DbOperation[] = ["execution", "check", "plan", "context", "state", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "inbox", "reply"];
 
 test("reads and writes are told apart, and only writes name tables", () => {
-  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
+  assert.deepEqual(OPERATIONS.filter(isDbWrite), ["check", "plan", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
   for (const operation of OPERATIONS) {
     // A read that claimed to have changed a table would be the worst kind of
     // wrong here: the log exists precisely so the operator does not have to
@@ -99,6 +99,6 @@ test("every agent endpoint is instrumented", () => {
   assert.match(handler, /describeAcceptedWrite\(/, "accepted writes are not logged");
   assert.match(handler, /describeRejectedWrite\(/, "refused writes are not logged");
   assert.match(handler, /verification_failed/, "Verify refusals are not logged");
-  // Plus the `/btw` inbox read and reply write.
-  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 11);
+  // Plus the inbox, reply, execution-state read, check/plan writes and their rejection.
+  assert.equal((handler.match(/recordDbAccess\(/g) ?? []).length, 15);
 });

@@ -1,3 +1,4 @@
+import { executionHash } from "./executionStore.ts";
 import { permissionForRun } from "./settings.ts";
 import { compatibleSession, conversationContext } from "./conversationContext.ts";
 import { spawnSync } from "node:child_process";
@@ -19,8 +20,8 @@ import { startRun } from "./runner.ts";
 import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstructionFile } from "./workspaceInstructions.ts";
 import { instructionAuthorPrompt } from "./instructionAuthor.ts";
 import { pipelineScheduler } from "./pipelineScheduler.ts";
-import { DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
-import { prepareChangeCapture, refreshChangeCapture, releaseChangeCapture, type PreparedChangeCapture } from "./gitChanges.ts";
+import { executionStore, DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "./workspaces.ts";
+import { checkpointRun, prepareChangeCapture, refreshChangeCapture, releaseChangeCapture, type PreparedChangeCapture } from "./gitChanges.ts";
 
 const CONSULT_LIMIT = 3;
 
@@ -28,6 +29,9 @@ const log = createLogger("run");
 
 export interface StartExecuteArgs {
   clientRequestId?: string;
+  executionEffectId?: string;
+  recoveryBrief?: string;
+  reuseSavedSession?: boolean;
   freshContext?: boolean;
   workspaceId: number;
   provider: string;
@@ -127,8 +131,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
 
   const redirect = args.redirect !== undefined && promptId !== undefined && mode === "execute" && args.pipelineRunId !== undefined ? args.redirect : null;
   if (redirect !== null) resumeSessionId = redirect.sessionId;
-  if (resumeSessionId !== null && redirect === null && (mode !== "execute" || typeof prompt !== "string" || prompt.trim() === "" || promptId !== undefined)) {
-    throw new WorkspaceError(422, "invalid_session_resume", "Only a custom execute prompt can continue a provider session.");
+  if (resumeSessionId !== null && redirect === null && (mode !== "execute" || (promptId === undefined && (typeof prompt !== "string" || prompt.trim() === "")))) {
+    throw new WorkspaceError(422, "invalid_session_resume", "Only an execute turn can continue a compatible provider session.");
   }
 
   const owner = workspaces.activePipelineForWorkspace(workspaceId);
@@ -179,7 +183,14 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   let clarificationId: number | null = null;
   let activeContextRunId: string | null = null;
   let executeShimPath: string | null = null;
-  const plannedRunId = newId("run");
+  const managedEffect = args.executionEffectId ? executionStore.effect(args.executionEffectId) : null;
+  const adopted = promptId === undefined ? null : executionStore.forPrompt(promptId);
+  if (adopted?.engine === "supervised" && (!managedEffect || managedEffect.promptId !== promptId || managedEffect.state !== "CLAIMED")) {
+    throw new WorkspaceError(409,"managed_execution_required","Start adopted requirements through the supervised pipeline so budget and ownership are reserved.");
+  }
+  const plannedRunId = managedEffect?.runId ?? newId("run");
+  if(managedEffect) executionStore.assertAttempt(plannedRunId);
+
 
   const workspace = workspaces.get(workspaceId);
   if (!workspace.workDirectoryExists) {
@@ -209,6 +220,13 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     } else {
       if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
       capture = openCapture();
+      const context = workspaces.agentContext(workspaceId,promptId);
+      const instructionHash = executionHash({execution:managedEffect?{contractId:managedEffect.contractId,revision:managedEffect.revision,policy:adopted?.policy,unit:executionStore.plan(managedEffect.contractId).units.find(u=>u.promptId===promptId)}:null,workspace:context.workspace,program:context.program,suite:context.suite,prompt:record.content,briefings:context.briefings,files:(Object.keys(INSTRUCTION_FILE_NAMES) as WorkspaceInstructionField[]).map(field=>readInstructionFile(workspace.workDirectory,field))});
+      const compatible = workspaces.savedSession(promptId,provider,model,instructionHash,permissionKey);
+      if(redirect === null) {
+        if(resumeSessionId !== null && resumeSessionId !== compatible) { releaseChangeCapture(plannedRunId); throw new WorkspaceError(422,"invalid_session_resume","Saved-item resume must match its latest provider, model, instructions and permissions"); }
+        resumeSessionId = args.freshContext ? null : (args.reuseSavedSession ? compatible : resumeSessionId);
+      }
       const credential = runContexts.create(plannedRunId, workspaceId, promptId);
       try {
         workspaces.beginAgentRun({
@@ -227,12 +245,13 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         throw error;
       }
       activeContextRunId = plannedRunId;
+      workspaces.recordExecutionManifest(plannedRunId,instructionHash,permissionKey);
       const depth = workspaces.decomposeDepth(promptId);
       // One command with this run's credentials already in it, rather than a
       // curl the model has to assemble. Per-run rather than per-process: the
       // Claude adapter runs in this process, so credentials on process.env
       // would be shared by every concurrent run.
-      executeShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+      executeShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port,...(managedEffect?{generation:managedEffect.generation,planRevision:managedEffect.revision}:{}) });
       // The context is inlined rather than fetched. Handing it over as a tool
       // result cost a turn before any work started, put it where it could not
       // serve as a cached prompt prefix, and led agents to fetch it more than
@@ -261,7 +280,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
         "",
         "---",
         "",
-        contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH }),
+        contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH, unattended: pipelineManaged }),
         "",
         progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: true, canAsk: !pipelineManaged, shimPath:executeShimPath }),
       ].join("\n");
@@ -303,6 +322,17 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
     }
   }
 
+  if(args.recoveryBrief) resolvedPrompt += `
+
+## Supervisor handoff
+
+${args.recoveryBrief}
+
+Use only this run's launcher and current instructions. Checkpoint does not end the session; keep working until the bounded unit is ready to verify or a genuine execution boundary is reached.`;
+  if(resumeSessionId && redirect===null && promptId!==undefined) resolvedPrompt = `This resumes the same work unit. The following instructions and credentials supersede the previous turn's launcher.
+
+${resolvedPrompt}`;
+
   if (threadId && !resumeSessionId && !args.freshContext) resolvedPrompt += `
 
 ${conversationContext(history)}`;
@@ -340,6 +370,8 @@ ${conversationContext(history)}`;
       role: "execute",
       permissionOverride: "inherit",
       resumeSessionId,
+      preserveModel:resumeSessionId!==null,
+      ...(managedEffect ? {budget:{maxWallClockMs:adopted!.policy.workerMs,maxInputTokens:adopted!.policy.workerTokens,maxTotalTokens:adopted!.policy.workerTokens},onSpawn:(identity:import("./executionStore.ts").ProcessIdentity)=>executionStore.attachProcess(managedEffect.id,identity)} : {}),
       onEvent: (event) => {
         if (event.type === "assistant_text" && event.payload.kind === "message") {
           if (clarificationId !== null) clarificationAnswer += event.payload.text;
@@ -353,6 +385,9 @@ ${conversationContext(history)}`;
         runHub.event(plannedRunId, event);
       },
       onEnd: (runId, state, metrics) => {
+        if(managedEffect) {
+          try {executionStore.assertAttempt(runId);} catch {runContexts.revoke(runId);removeAgentShim(runId);runHub.end(runId,state);return;}
+        }
         const endedPromptId = savedPrompt?.id ?? promptId;
         const endedWorkspaceId = workspace.id;
         let changesNeedCommit=false;
@@ -368,8 +403,12 @@ ${conversationContext(history)}`;
         // The status transition is held back for exactly as long as that takes:
         // applying it here would move the item out of IN_PROGRESS and the wrap-up
         // run's own post would be refused as an invalid transition.
+        if (managedEffect && changesNeedCommit && capture) {
+          try { checkpointRun(runId,"Preserve supervised worker checkpoint",provider,model); changesNeedCommit=false; }
+          catch(error) { log.warn(`supervised checkpoint failed for ${runId}`,error); }
+        }
         const wrapUp =
-          mode === "execute" &&
+          managedEffect === null && mode === "execute" &&
           activeContextRunId !== null &&
           endedPromptId !== undefined &&
           (changesNeedCommit||(typeof metrics.stopReason === "string"&&metrics.stopReason.startsWith("budget_"))) &&

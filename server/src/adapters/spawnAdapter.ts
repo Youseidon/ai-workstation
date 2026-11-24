@@ -1,3 +1,4 @@
+import { processIdentity } from "../executionProcess.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AdapterEvent, ProviderId, ProviderUsage } from "@agent-console/shared";
 import { AsyncQueue } from "../lib/asyncQueue.ts";
@@ -129,7 +130,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
     delete childEnv.AGENT_CONSOLE_DB;
     delete childEnv.DATABASE_URL;
     delete childEnv.SETTINGS_FILE;
-    const plan = withSpawnEnvironment(buildSpawnPlan(binary, spec.args, opts.runId, limits), opts.cwd, childEnv);
+    const plan = withSpawnEnvironment(buildSpawnPlan(binary, spec.args, opts.runId, limits,undefined,undefined,opts.deadlineMs), opts.cwd, childEnv);
     opts.log.info(`spawn ${binary} ${spec.args.map(redactArg).join(" ")} · containment=${plan.containment}`);
     if (plan.containment !== "systemd") {
       opts.log.warn("systemd user containment unavailable; using process-tree cancellation without aggregate memory/task limits");
@@ -156,6 +157,15 @@ export abstract class SpawnAdapter implements AgentAdapter {
       return;
     }
 
+    if (opts.onSpawn && child.pid !== undefined) {
+      try { opts.onSpawn(processIdentity(child.pid,plan.unitName,plan.containment)); }
+      catch (error) {
+        if(plan.unitName) await signalSystemdUnit(plan.unitName,"SIGKILL");
+        else signalProcessTree(child.pid,"SIGKILL");
+        child.on("error",()=>{});
+        throw error;
+      }
+    }
     this.children.set(opts.runId, { child, plan, mapper });
     const emit = (event: AdapterEvent) => {
       queue.push(event);

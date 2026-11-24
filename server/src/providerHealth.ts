@@ -18,9 +18,12 @@ interface CoolingEntry {
 
 const coolingByProvider = new Map<ProviderId, CoolingEntry>();
 
-export function markCooling(provider: ProviderId, id: string, minutes?: number, because?: string): void {
+export function markCooling(provider: ProviderId, id: string, minutes?: number, because?: string, reportedResetAt?: number): void {
   const mins = minutes ?? coolingMinutesFor(id);
-  const until = Date.now() + Math.max(0, mins) * 60_000;
+  const until = reportedResetAt ?? Date.now() + Math.max(0, mins) * 60_000;
+  // A reported reset supersedes an estimate; ordinary failures must not shorten
+  // a known account limit just because they use a shorter cooling period.
+  if (reportedResetAt === undefined && (coolingByProvider.get(provider)?.until ?? 0) > until) return;
   coolingByProvider.set(provider, {
     provider,
     until,

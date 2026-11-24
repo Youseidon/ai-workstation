@@ -1,0 +1,17 @@
+import Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
+import { createExecutionStore } from '../../src/executionStore.ts';
+import { processIdentity } from '../../src/executionProcess.ts';
+const [path,mode]=process.argv.slice(2);
+const db=new Database(path),store=createExecutionStore(db,()=>1000);
+const c=store.contract('root');
+const effect=store.reserve({contractId:'root',promptId:1,requestId:'crash-effect',expectedGeneration:c.generation,revision:c.revision,resource:'repo',payload:{provider:'codex'}});
+if(mode==='before-dispatch') process.exit(0);
+store.claim(effect.id);
+if(mode==='after-claim') process.exit(0);
+const child=spawn(process.execPath,['-e','setTimeout(()=>{},10000)'],{detached:true,stdio:'ignore'});
+const identity=processIdentity(child.pid);
+if(mode!=='unregistered-spawn') store.attachProcess(effect.id,identity);
+process.stdout.write(JSON.stringify({effectId:effect.id,identity})+'\n');
+child.unref();
+process.exit(0);

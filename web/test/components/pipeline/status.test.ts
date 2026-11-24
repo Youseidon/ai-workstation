@@ -57,6 +57,15 @@ interface Cell {
 
 const TABLE: Cell[] = [
   {
+    name: "exhausted execution allowance cannot be renewed with Resume",
+    args: {run:{state:"WAITING_HUMAN",stopReason:null,waitReason:"execution:budget_exhausted"},stationState:"UNREPORTED"},
+    label: "Allowance exhausted",
+    tone: "warning",
+    pulse: false,
+    primary: null,
+    secondary: ["stop"],
+  },
+  {
     name: "no run yet → Play",
     args: { run: null },
     label: "Not started",

@@ -45,12 +45,14 @@ export function buildSystemdSpawnPlan(
   args: readonly string[],
   runId: string,
   limits: ResourceLimits,
+  runtimeMs?:number,
 ): SpawnPlan {
   const unitName = safeUnitName(runId);
   const properties = [
     "MemoryAccounting=yes",
     "OOMPolicy=kill",
     "KillMode=control-group",
+    ...(runtimeMs===undefined?[]:[`RuntimeMaxSec=${Math.max(1,Math.ceil(runtimeMs/1000))}s`,"TimeoutStopSec=2s"]),
     `MemorySwapMax=${limits.memorySwapMaxBytes}`,
     ...(limits.memoryHighBytes === null ? [] : [`MemoryHigh=${limits.memoryHighBytes}`]),
     ...(limits.memoryMaxBytes === null ? [] : [`MemoryMax=${limits.memoryMaxBytes}`]),
@@ -77,8 +79,9 @@ export function buildSpawnPlan(
   limits: ResourceLimits,
   systemdAvailable = systemdUserManagerAvailable(),
   platform = process.platform,
+  runtimeMs?:number,
 ): SpawnPlan {
-  if (platform === "linux" && systemdAvailable) return buildSystemdSpawnPlan(binary, args, runId, limits);
+  if (platform === "linux" && systemdAvailable) return buildSystemdSpawnPlan(binary, args, runId, limits,runtimeMs);
   return {
     command: binary,
     args: [...args],

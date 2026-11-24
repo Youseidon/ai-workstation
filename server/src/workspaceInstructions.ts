@@ -11,18 +11,17 @@ const log = createLogger("instructions");
  * Repo-level instruction files are owned by the workspace, but they have to
  * exist on disk to do their job.
  *
- * A provider CLI loads these itself — Claude Code resolves CLAUDE.md through
- * `--setting-sources`, codex/cursor/grok look for AGENTS.md — and only a real
- * file reaches a spawned subagent, survives a context compaction, and takes
- * part in nested per-directory loading. The same text pasted into a run's
- * prompt gets none of that: it is user-turn content that a 500-turn run will
- * summarise away and a subagent will never see.
+ * Claude Code resolves CLAUDE.md through `--setting-sources`; Codex and Cursor
+ * discover AGENTS.md. Headless Grok does not reliably discover the root file,
+ * so its adapter also passes the projected AGENTS.md explicitly as --rules.
+ * Real files remain necessary for tools, nested instruction loading, and
+ * agents that discover their own workspace instructions.
  *
  * So the database stays the source of truth and these files are its projection,
  * rewritten before every run. An edit a run makes to one is not read back into
  * the workspace: it becomes a proposal the operator applies.
  *
- * Claude Code reads only CLAUDE.md; codex, cursor and grok read only AGENTS.md.
+ * Claude Code reads CLAUDE.md; Codex, Cursor and the Grok adapter use AGENTS.md.
  * Neither file substitutes for the other, which is why both are kept.
  */
 const FILES = [

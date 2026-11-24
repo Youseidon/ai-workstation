@@ -345,6 +345,7 @@ function FallbacksReference() {
       <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">
         Transient failure cooling
       </h4>
+      <p className="text-xs leading-5 text-fg-dim">Reported account reset times take precedence. Quota errors naming a five-hour or weekly cap use that window when no reset time is available. Automatic reassignment is controlled per pipeline in Agent assignments.</p>
       <div className="overflow-x-auto rounded-md border border-line">
         <table className="w-full min-w-[16rem] border-collapse text-left text-xs">
           <thead>

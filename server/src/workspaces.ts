@@ -1,10 +1,14 @@
 import Database from "better-sqlite3";
+import { createEvidenceStore } from "./evidenceStore.ts";
+import { recipeFingerprint, sourceFingerprint, environmentFingerprint } from "./sourceFingerprint.ts";
+import { executionHash, createExecutionStore, executionSchema } from "./executionStore.ts";
 import { createChatThreadStore } from "./chatThreads.ts";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { INSTRUCTION_CONTENT_MAX, INSTRUCTION_FILE_NAMES, isInstructionField, type InstructionProposalOrigin, type InstructionProposalRecord, type InstructionProposalState, type WorkspaceInstructionField } from "@agent-console/shared";
 import { DRAFT_GOAL_MAX, DRAFT_KEY_PATTERN, applyRevisionChanges, conversationTitle, diffProgramRevision, promptKeyAt, suiteKeyAt, type ProgramDraftPrompt, type ProgramDraftSuite, bodyFromProgramProposal, canApplyProgramDraft, emptyProgramDraftBody, normalizeProgramDraftBody, normalizeProgramProposal, normalizeSuiteProposal, programDraftIssues, programDraftPreview, programKeyFrom, resolvedDependencies, withSuiteProposal, type ProgramDraftBody, type ProgramDraftRecord, type ProgramDraftState, DEFAULT_STATUS_CATALOG, DEFAULT_TRIGGER_SENTENCES, DOD_COMMAND_MAX_LENGTH, DOD_COMMAND_OUTPUT_MAX_BYTES, DOD_COMMAND_TIMEOUT_DEFAULT_MS, clampDodTimeout, dodUnmetEvidence, dodUnmetReason, isDodCriterionKind, isDodEnforcement, isDodResult, isDodResultSource, isDodScope, matchStepTransition, parseVerifyBlock, unmetCriteria, type DefinitionOfDone, type DodCriterion, type DodCriterionResult, type DodEnforcement, type DodEvaluation, type DodResult, type DodResultSource, type DodScope, defaultStatusDefinition, isStatusIcon, isStatusTrigger, isStepDisplayStatus, isStepStatus, isStatusOnEnter, isStatusTone, isTerminalDisplayStatus, rollupStatus, statusDefinition, statusFieldEditable, type ActorType, type RemarkKind, type StatusDefinition, type StatusEditableKey, type StatusTrigger, type StepStatus, USAGE_REPORT_PRICING_NOTE, addUsageToTotals, defaultPromptPipelineRule, emptyUsageTotals, estimateCost, isOnUnfinishedAction, isOnDoneAction, isProviderId, isRunRole, usageFromEvents, type AgentRunActivity, type AgentSession, type ClarificationExchange, type CompletionAuditRecord, type CompletionAuditReport, type CompletionVerdict, type HumanInputRequest, type NormalizedEvent, type OperationsPrompt, type OperationsSession, type OperationsSnapshot, type OperationsSuite, type PipelineAvailablePrompt, type PipelineBlockedStation, type PipelineDashboard, type PipelineDashboardItem, type PipelineFlowchartView, type PipelineRecord, type PipelineRun, type PipelineRunDetail, type PipelineSubStepRule, type PipelineStage, type PipelineState, type PipelineThroughputDay, type ProgramRecord, type PromptActivity, type PromptOperationalState, type PromptOption, type PromptPipelineRule, type PromptRecord, type PromptRemark, type PromptStatusEvent, type ProviderId, type RunMessage, type RunMessageDelivery, type RunMessageState, type RunChangeState, type RunChangeSummary, type RunRole, type SessionUsageRow, type SuitePipelineDefaults, type SuitePipelineRun, type SuiteRecord, type SuiteUsageRow, type SuiteVerificationBadge, type SuiteVerificationContext, type SuiteVerificationDetail, type SuiteVerificationItem, type SuiteVerificationRecord, type SuiteVerificationStats, type SuiteVerificationVerdict, type TaskUsageRow, type TokenUsage, type WorkspaceRevision, type UsageReport, type UsageTotals, type WorkspaceRecord, type WorkspaceTree } from "@agent-console/shared";
+import { evaluationIgnoringProse, waivedProseChecks } from "./pipelineGoldenRule.ts";
 import { config } from "./config.ts";
 import { currentLockMode } from "./lib/instanceLock.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -1488,6 +1492,35 @@ if (afterFortyOne < 42) {
   })();
 }
 
+const afterFortyTwo = (db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migration").get() as { version: number }).version;
+if (afterFortyTwo < 43) {
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE pipeline ADD COLUMN auto_reassign INTEGER NOT NULL DEFAULT 0 CHECK(auto_reassign IN (0,1));
+      CREATE TABLE pipeline_suite_agent (
+        pipeline_id INTEGER NOT NULL REFERENCES pipeline(id) ON DELETE CASCADE,
+        suite_id INTEGER NOT NULL REFERENCES suite(id) ON DELETE CASCADE,
+        default_provider TEXT,
+        default_model TEXT,
+        default_fallback_providers TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY(pipeline_id,suite_id)
+      );
+    `);
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(43,?)").run(new Date().toISOString());
+  })();
+}
+
+const afterFortyThree = (db.prepare("SELECT COALESCE(MAX(version),0) version FROM schema_migration").get() as {version:number}).version;
+if (afterFortyThree < 44) {
+  db.transaction(() => {
+    db.exec(executionSchema);
+    db.exec("ALTER TABLE agent_run ADD COLUMN instruction_hash TEXT; ALTER TABLE agent_run ADD COLUMN permission_key TEXT; ALTER TABLE agent_run ADD COLUMN process_started INTEGER; ALTER TABLE agent_command ADD COLUMN request_hash TEXT;");
+    db.prepare("INSERT INTO schema_migration(version,applied_at) VALUES(44,?)").run(new Date().toISOString());
+  })();
+}
+export const executionStore = createExecutionStore(db);
+export const evidenceStore = createEvidenceStore(db);
+
 export const chatThreads = createChatThreadStore(db);
 
 /** Turns a suite_verification row plus its items into the wire shape. */
@@ -1549,12 +1582,17 @@ const recoverAbandonedRuns=db.transaction(()=>{
     const reason="The server restarted while this run was in flight, so the run never reported how it ended. Whether the work was finished is unknown.";
     writeStatus({promptId:prompt.id,to:"UNREPORTED",trigger:"run_ended_without_post",actor:"SYSTEM",runId:prompt.runId,reason,result:reason,evidence:{cause:"server_restart"},remark:{kind:"BLOCKER",content:reason}});
   }
-  db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
-  db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
+  db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state='PLAYING'").run(now);
+  db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state='PLAYING'").run(now);
+  db.prepare(`UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart'
+    WHERE state='WAITING_HUMAN' AND wait_reason='review_running' AND current_prompt_id IN
+    (SELECT u.prompt_id FROM work_unit_meta u JOIN delivery_contract c ON c.id=u.contract_id WHERE c.engine='supervised' AND c.desired='RUNNING')`).run(now);
+  db.prepare(`UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart'
+    WHERE state='WAITING_HUMAN' AND current_suite_run_id IN(SELECT id FROM suite_pipeline_run WHERE state='INTERRUPTED' AND stop_reason='server_restart')`).run(now);
 });
 
 /** What a finished run spent, as recorded by the runner. */
-export interface RunCostMetrics { usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null; peakMemoryBytes?: number | null; sessionId?: string | null }
+export interface RunCostMetrics { processStarted?:boolean|null; usage: TokenUsage | null; toolCalls: number; toolOutputBytes: number; stopReason: string | null; peakMemoryBytes?: number | null; sessionId?: string | null }
 
 type WorkspaceRow = { id: number; name: string; description: string; work_directory: string; created_at: string; updated_at: string; claude_md: string; agents_md: string };
 type ProgramRow = { id: number; workspace_id: number; name: string; overview: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null };
@@ -1562,7 +1600,7 @@ type SuiteRow = { id: number; program_id: number; name: string; overview: string
 type PromptRow = { id: number; suite_id: number; title: string; content: string; sort_order: number; created_at: string; updated_at: string; external_key: string | null; status: PromptRecord["status"]; completed_at: string | null; result: string; is_gate: number; parent_prompt_id: number | null; child_order: number };
 type PipelineStepRow = { pipeline_id: number; prompt_id: number; provider: string | null; model: string | null; on_done: string; on_unfinished?: string; fallback_providers?: string; step_order: number; updated_at: string };
 type PipelineRunRow = { id: string; suite_id: number; workspace_id: number; state: string; current_prompt_id: number | null; current_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null; pipeline_run_id: string | null };
-type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; created_at: string; updated_at: string };
+type NamedPipelineRow = { id: number; workspace_id: number; name: string; description: string; auto_reassign: number; created_at: string; updated_at: string };
 type NamedPipelineRunRow = { id: string; pipeline_id: number; workspace_id: number; state: string; current_suite_id: number | null; current_suite_run_id: string | null; play_provider: string | null; play_model: string | null; started_at: string; ended_at: string | null; stop_reason: string | null; wait_reason?: string | null };
 
 function asProviderId(value: string | null | undefined): ProviderId | null {
@@ -1885,11 +1923,22 @@ function endedWithoutAgentStatus(status:string):boolean {
 }
 
 const REMARK_KINDS=new Set(["PROGRESS","FINDING","DECISION_NEEDED","BLOCKER","VERIFICATION","COMPLETION"]);
-function commandResult(runId:string,requestId:unknown,operation:string,execute:()=>unknown):unknown {
+function commandResult(runId:string,requestId:unknown,operation:string,input:Record<string,unknown>,execute:()=>unknown):unknown {
   if(typeof requestId!=="string"||!/^[-0-9a-zA-Z]{8,100}$/.test(requestId)) throw new WorkspaceError(422,"validation_error","requestId must be a unique 8-100 character identifier");
-  const existing=db.prepare("SELECT operation,response FROM agent_command WHERE run_id=? AND request_id=?").get(runId,requestId) as {operation:string;response:string}|undefined;
-  if(existing){if(existing.operation!==operation)throw new WorkspaceError(409,"request_id_conflict","requestId was already used for another operation");return JSON.parse(existing.response) as unknown;}
-  const response=execute(); db.prepare("INSERT INTO agent_command(run_id,request_id,operation,response,created_at) VALUES(?,?,?,?,?)").run(runId,requestId,operation,JSON.stringify(response),new Date().toISOString()); return response;
+  const effect=executionStore.assertRequest(runId,input);
+  if(effect) {
+    if(input.unitId!==undefined && String(input.unitId)!==String(effect.promptId)) throw new WorkspaceError(409,"unit_mismatch","Continuation must refer to this attempt's work unit");
+    const c=executionStore.contract(effect.contractId),unit=executionStore.plan(c.id).units.find(u=>u.promptId===effect.promptId)!;
+    if(Array.isArray(input.completedCriterionIds) && input.completedCriterionIds.some(id=>!unit.criterionIds.includes(String(id)))) throw new WorkspaceError(422,"unknown_criterion","Report only criteria assigned to the current unit");
+    if(input.checkpointCommit!==undefined) {
+      const checkpoint=db.prepare("SELECT head_commit FROM run_change_set WHERE run_id=?").get(runId) as {head_commit:string|null}|undefined;
+      if(checkpoint?.head_commit!==input.checkpointCommit) throw new WorkspaceError(409,"checkpoint_stale","Refresh the owned checkpoint before requesting continuation");
+    }
+  }
+  const existing=db.prepare("SELECT operation,response,request_hash FROM agent_command WHERE run_id=? AND request_id=?").get(runId,requestId) as {operation:string;response:string;request_hash:string|null}|undefined;
+  if(existing){if(existing.operation!==operation || ((effect!==null || operation==="execution-plan") && existing.request_hash!==null && existing.request_hash!==executionHash(input)))throw new WorkspaceError(409,"request_id_conflict","requestId was already used for another operation");return JSON.parse(existing.response) as unknown;}
+  const requestHash=executionHash(input);
+  const response=execute(); db.prepare("INSERT INTO agent_command(run_id,request_id,operation,response,created_at,request_hash) VALUES(?,?,?,?,?,?)").run(runId,requestId,operation,JSON.stringify(response),new Date().toISOString(),requestHash); return response;
 }
 
 const beginRunTransaction=db.transaction((args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;role?:RunRole})=>{
@@ -1961,6 +2010,7 @@ function applyEndOfRunStatus(runId:string,promptId:number,wrapupOf:string|null,s
 }
 
 function requireActiveExecuteRun(runId:string):{prompt_id:number;role:RunRole} {
+  executionStore.assertAttempt(runId);
   const run=db.prepare("SELECT prompt_id,role FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId) as {prompt_id:number|null;role:RunRole}|undefined;
   if(!run)throw new WorkspaceError(409,"run_not_active","Run is not active");
   // An author run is not read-only — it is working on a draft and has no work
@@ -2008,13 +2058,13 @@ const beginCustomExecuteTransaction=db.transaction((args:{runId:string;workspace
   return threadTitle;
 });
 
-const agentRemarkTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"remark",()=>{
+const agentRemarkTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"remark",input,()=>{
   const run=requireActiveExecuteRun(runId);
   const kind=typeof input.kind==="string"?input.kind:"";if(!REMARK_KINDS.has(kind))throw new WorkspaceError(422,"validation_error","Unknown remark kind");const content=requireText(input.content,"content",20000);
   const now=new Date().toISOString();const id=Number(db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,?,?, 'AGENT',?)").run(run.prompt_id,runId,kind,content,now).lastInsertRowid);return{id,promptId:run.prompt_id,runId,kind,content,actorType:"AGENT",createdAt:now};
 }));
 
-const agentStatusTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"status",()=>{
+const agentStatusTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"status",input,()=>{
   const run=requireActiveExecuteRun(runId);
   const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"]};const expected=input.expectedStatus;const target=input.status;
   if(expected!==prompt.status)throw new WorkspaceError(409,"stale_status",`Prompt status is ${prompt.status}, not ${String(expected)}`);
@@ -2078,13 +2128,14 @@ const agentStatusTransaction=db.transaction((runId:string,input:Record<string,un
  * the new definition immediately. This is deliberately not a general prompt
  * editor: task scope and prose still belong to the operator.
  */
-const agentVerifyRepairTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"repair-verify",()=>{
+const agentVerifyRepairTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"repair-verify",input,()=>{
   const run=requireActiveExecuteRun(runId);
   const oldCommand=requireText(input.oldCommand,"oldCommand",DOD_COMMAND_MAX_LENGTH);
   const newCommand=requireText(input.newCommand,"newCommand",DOD_COMMAND_MAX_LENGTH);
   const reason=requireText(input.reason,"reason",2000);
-  const failures=workspaces.agentDoneVerificationFailures(run.prompt_id)??[];
-  if(!failures.some(entry=>entry.result==="FAILED"&&entry.command===oldCommand)){
+  const criterion=resolveDefinitionOfDone(run.prompt_id).criteria.find(c=>c.command===oldCommand);
+  const observed=criterion ? latestDodResults(run.prompt_id,[criterion.id]).get(criterion.id) : undefined;
+  if(!criterion || observed?.result!=="FAILED" || observed.source!=="RUNNER" || (observed.recipe_hash!==null && observed.recipe_hash!==recipeFingerprint(criterion))){
     throw new WorkspaceError(409,"verify_not_failed","The server has not observed that exact current Verify command fail. Post done first, then repair only the command named in the refusal.");
   }
   validateVerifyRepair(oldCommand,newCommand);
@@ -2095,7 +2146,11 @@ const agentVerifyRepairTransaction=db.transaction((runId:string,input:Record<str
   db.prepare("INSERT INTO prompt_revision(prompt_id,title,content,actor_type,reason,created_at) VALUES(?,?,?,'AGENT',?,?)")
     .run(run.prompt_id,row.title,row.content,`Verify repair: ${reason}`.slice(0,500),now);
   db.prepare("UPDATE prompt SET content=?,updated_at=? WHERE id=?").run(content,now,run.prompt_id);
-  syncPromptVerifyCriteria(run.prompt_id,content);
+  const contract=executionStore.forPrompt(run.prompt_id);
+  if(contract?.engine==="supervised") {
+    db.prepare("UPDATE dod_criterion SET command=? WHERE id=?").run(newCommand,criterion.id);
+    executionStore.decision(contract.id,"recipe_substituted",{criterionId:criterion.id,oldCommand,newCommand,reason,effectivePromptHash:executionHash(content)});
+  } else syncPromptVerifyCriteria(run.prompt_id,content);
   db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'VERIFICATION',?,'AGENT',?)")
     .run(run.prompt_id,runId,`Repaired a failing Verify command.\n\nReason: ${reason}\n\nBefore:\n$ ${oldCommand}\n\nAfter:\n$ ${newCommand}`.slice(0,20000),now);
   return {promptId:run.prompt_id,oldCommand,newCommand,reason};
@@ -2230,7 +2285,7 @@ export const DECOMPOSE_MAX_DEPTH=2;
 const DECOMPOSE_MIN_CHILDREN=2;
 const DECOMPOSE_MAX_CHILDREN=12;
 
-const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"decompose",()=>{
+const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"decompose",input,()=>{
   const run=requireActiveExecuteRun(runId);
   const prompt=db.prepare("SELECT status,suite_id suiteId,external_key externalKey,parent_prompt_id parentPromptId FROM prompt WHERE id=?").get(run.prompt_id) as {status:PromptRecord["status"];suiteId:number;externalKey:string|null;parentPromptId:number|null};
   if(prompt.status!=="IN_PROGRESS")throw new WorkspaceError(422,"invalid_transition","Agents may only decompose an IN_PROGRESS work item");
@@ -2288,6 +2343,21 @@ const agentDecomposeTransaction=db.transaction((runId:string,input:Record<string
     syncPromptVerifyCriteria(id, child.content);
     return{id,externalKey,title:child.title};
   });
+  const execution=executionStore.forPrompt(run.prompt_id);
+  if(execution?.engine==="supervised") {
+    const plan=executionStore.plan(execution.id),parentUnit=plan.units.find(u=>u.promptId===run.prompt_id);
+    if(!parentUnit) throw new WorkspaceError(422,"unit_missing","Current unit is missing from the active plan");
+    const additions=children.map((child,index)=>{
+      const raw=rawChildren[index] as Record<string,unknown>;
+      const criterionIds=Array.isArray(raw.criterionIds)?raw.criterionIds.filter((id):id is string=>typeof id==="string"):[];
+      const targets=Array.isArray(raw.targets)?raw.targets.filter((id):id is string=>typeof id==="string"):[];
+      if(criterionIds.length===0 || criterionIds.some(id=>!parentUnit.criterionIds.includes(id)) || targets.length===0) throw new WorkspaceError(422,"plan_coverage_required","Each child needs assigned original criterionIds and concrete targets; read agent-step execution");
+      const recipeIds=criterionIds.map(id=>execution.criteria.find(c=>c.id===id)!.dodCriterionId).filter(id=>parentUnit.recipeIds.includes(id));
+      return {promptId:child.id,coverage:"contribution" as const,criterionIds,targets,dependencies:[],phase:parentUnit.phase,recipeIds,rationale:typeof raw.rationale==="string"?raw.rationale:child.title};
+    });
+    const proposal={revision:plan.revision+1,rationale:resumeBrief,units:plan.units.map(unit=>unit.promptId===run.prompt_id?{...unit,dependencies:[...unit.dependencies,...children.map(c=>c.id)]}:unit).concat(additions)};
+    executionStore.proposePlan(execution.id,proposal);
+  }
   writeStatus({promptId:run.prompt_id,to:"TODO",trigger:"agent_decompose",ruleId:"agent-decomposed",actor:"AGENT",runId,reason:"The agent split this work item into sub-steps; they carry the work now."});
   db.prepare("INSERT INTO prompt_status_event(prompt_id,run_id,previous_status,new_status,reason,verification_summary,actor_type,created_at) VALUES(?,?,'IN_PROGRESS','TODO',?,?, 'AGENT',?)")
     .run(run.prompt_id,runId,`Decomposed into ${children.length} sub-steps`,resumeBrief,now);
@@ -2457,7 +2527,7 @@ function requireActiveAuthorRun(runId:string):{draft:ProgramDraftRow} {
   return {draft:row};
 }
 
-const proposeProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-program",()=>{
+const proposeProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-program",input,()=>{
   const {draft}=requireActiveAuthorRun(runId);
   if(draft.target_program_id!==null)throw new WorkspaceError(409,"revision_draft","This draft revises an existing program. Post changes with revise-program; proposing a whole program would throw its history away.");
   const parsed=normalizeProgramProposal(input);
@@ -2476,7 +2546,7 @@ const proposeProgramTransaction=db.transaction((runId:string,input:Record<string
   };
 }));
 
-const proposeSuiteTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-suite",()=>{
+const proposeSuiteTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"propose-suite",input,()=>{
   const {draft}=requireActiveAuthorRun(runId);
   if(draft.target_program_id!==null)throw new WorkspaceError(409,"revision_draft","This draft revises an existing program. Post changes with revise-program; re-posting a suite would throw its items' history away.");
   const current=draftRecord(draft).body;
@@ -2599,7 +2669,7 @@ function programRevisionBody(programId:number):ProgramDraftBody {
   return normalized.value;
 }
 
-const reviseProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"revise-program",()=>{
+const reviseProgramTransaction=db.transaction((runId:string,input:Record<string,unknown>)=>commandResult(runId,input.requestId,"revise-program",input,()=>{
   const {draft}=requireActiveAuthorRun(runId);
   if(draft.target_program_id===null){
     throw new WorkspaceError(409,"not_a_revision","This draft proposes a new program. Use propose-program and propose-suite.");
@@ -3027,7 +3097,20 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
   let remark = write.remark;
   if (write.to === "DONE") {
     const dod = evaluateDefinitionOfDone(write.promptId);
-    if (!dod.satisfied && dod.blocking && write.overrideDefinitionOfDone !== true) {
+    // A prose check is a human review. It does not stop a pipeline. Command
+    // checks still refuse the close, and a waived prose check is not recorded
+    // as passed.
+    const waived = waivedProseChecks(dod);
+    const gate = evaluationIgnoringProse(dod);
+    if (waived.length > 0) {
+      evidence = {
+        ...(evidence ?? {}),
+        goldenRule: "Human-review checks do not stop a pipeline. They were waived, not recorded as passed.",
+        waivedChecks: waived.map((entry) => entry.text),
+      };
+    }
+    if (!gate.satisfied && gate.blocking && write.overrideDefinitionOfDone !== true) {
+      const dodForRefusal = gate;
       const rule = matchStepTransition({ signal: "dod_unmet" });
       to = rule?.to ?? "NEEDS_REVIEW";
       ruleId = rule?.id ?? "dod-unmet";
@@ -3035,19 +3118,19 @@ function writeStatus(write: StatusWrite): { previous: StepStatus; changed: boole
       // wrong, and those are two fields on the ledger for a reason. A failing
       // command is a sharper answer than "a criterion did not pass", and it is
       // the sentence the operator reads next to the badge.
-      trigger = dod.criteria.some((entry) => entry.required && entry.kind === "COMMAND" && entry.result === "FAILED")
+      trigger = dodForRefusal.criteria.some((entry) => entry.required && entry.kind === "COMMAND" && entry.result === "FAILED")
         ? "dod_command_failed"
         : (rule?.trigger ?? "dod_unmet");
-      reason = dodUnmetReason(dod);
+      reason = dodUnmetReason(dodForRefusal);
       result = reason;
-      evidence = dodUnmetEvidence(dod);
+      evidence = { ...dodUnmetEvidence(dodForRefusal), ...(waived.length > 0 ? { goldenRule: "Human-review checks do not stop a pipeline. They were waived, not recorded as passed.", waivedChecks: waived.map((entry) => entry.text) } : {}) };
       remark = { kind: "BLOCKER", content: reason };
-    } else if (!dod.satisfied) {
+    } else if (!gate.satisfied) {
       // Closed anyway, under `warn` or an operator override. The criteria that
       // did not pass are recorded on the very event that closed it, so nobody
       // reading this later has to work out that it was closed over a red check.
       evidence = {
-        ...(write.evidence ?? {}),
+        ...(evidence ?? {}),
         ...dodUnmetEvidence(dod),
         definitionOfDone: write.overrideDefinitionOfDone === true
           ? "Not met; you closed this work item anyway."
@@ -3150,7 +3233,7 @@ function dodScopeChain(promptId: number): Array<[DodScope, number]> {
 }
 
 const selectDod = () => db.prepare("SELECT id,scope,scope_id,enforcement FROM definition_of_done WHERE scope=? AND scope_id=?");
-const selectCriteria = () => db.prepare("SELECT * FROM dod_criterion WHERE dod_id=? ORDER BY sort_order,id");
+const selectCriteria = () => db.prepare("SELECT * FROM dod_criterion WHERE dod_id=? AND supervisor_only=0 ORDER BY sort_order,id");
 
 /** What one scope says on its own, with nothing inherited. For the editors. */
 function ownDefinitionOfDone(scope: DodScope, scopeId: number): DefinitionOfDone {
@@ -3197,21 +3280,33 @@ function resolveDefinitionOfDone(promptId: number): DefinitionOfDone {
   return { scope: "prompt", scopeId: promptScopeId, enforcement, inheritedFrom, criteria };
 }
 
+/** Supervised units inherit only their explicitly assigned immutable criteria. */
+function phaseDefinitionOfDone(promptId:number):DefinitionOfDone {
+  const definition=resolveDefinitionOfDone(promptId);
+  const contract=executionStore.forPrompt(promptId);
+  if(contract?.engine!=="supervised" || !contract.revision) return definition;
+  const unit=executionStore.plan(contract.id).units.find(u=>u.promptId===promptId);
+  if(!unit) return definition;
+  const ids=[...new Set([...unit.criterionIds.map(id=>contract.criteria.find(c=>c.id===id)!.dodCriterionId),...executionStore.sharedConsumers(promptId).flatMap(consumer=>consumer.unit.criterionIds.map(id=>consumer.contract.criteria.find(c=>c.id===id)!.dodCriterionId))])];
+  const criteria=ids.map(id=>db.prepare("SELECT * FROM dod_criterion WHERE id=?").get(id) as DodCriterionRow|undefined).filter((row):row is DodCriterionRow=>!!row).map(criterionDto);
+  return {...definition,enforcement:"block",criteria};
+}
+
 /** The newest thing anyone recorded about each criterion on this work item. */
 function latestDodResults(promptId: number, criterionIds: number[]): Map<number, {
   source: string; result: string; evidence: string; output: string; exit_code: number | null;
-  run_id: string | null; created_at: string;
+  run_id: string | null; created_at: string;input_hash:string|null;recipe_hash:string|null;environment_hash:string|null;stable_inputs:number;
 }> {
   const results = new Map<number, ReturnType<typeof latestDodResults> extends Map<number, infer V> ? V : never>();
   if (criterionIds.length === 0) return results;
   const select = db.prepare(`
-    SELECT source,result,evidence,output,exit_code,run_id,created_at FROM dod_result
+    SELECT source,result,evidence,output,exit_code,run_id,created_at,input_hash,recipe_hash,environment_hash,stable_inputs FROM dod_result
     WHERE prompt_id=? AND criterion_id=? ORDER BY created_at DESC, id DESC LIMIT 1
   `);
   for (const id of criterionIds) {
     const row = select.get(promptId, id) as {
       source: string; result: string; evidence: string; output: string; exit_code: number | null;
-      run_id: string | null; created_at: string;
+      run_id: string | null; created_at: string;input_hash:string|null;recipe_hash:string|null;environment_hash:string|null;stable_inputs:number;
     } | undefined;
     if (row !== undefined) results.set(id, row);
   }
@@ -3298,8 +3393,22 @@ function syncPromptVerifyCriteria(promptId: number, content: string): void {
   }
 }
 
+const dodSnapshots=new Map<number,{inputHash:string|null;environmentHash:string|null}>();
+function withDodSnapshot<T>(promptId:number,work:()=>T):T {
+  const previous=dodSnapshots.get(promptId);
+  try {
+    try {const home=workspaces.promptHome(promptId);dodSnapshots.set(promptId,{inputHash:sourceFingerprint(workspaces.get(home.workspaceId).workDirectory),environmentHash:environmentFingerprint(workspaces.get(home.workspaceId).workDirectory)});}
+    catch {dodSnapshots.set(promptId,{inputHash:null,environmentHash:null});}
+    return work();
+  } finally {if(previous)dodSnapshots.set(promptId,previous);else dodSnapshots.delete(promptId);}
+}
+
 function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
-  const definition = resolveDefinitionOfDone(promptId);
+  const definition = phaseDefinitionOfDone(promptId);
+  const contract=executionStore.forPrompt(promptId);
+
+  let currentHash:string|null=null;
+  const directory=()=>{const home=workspaces.promptHome(promptId);return workspaces.get(home.workspaceId).workDirectory;};
   if (definition.enforcement === "off" || definition.criteria.length === 0) {
     return { enforcement: definition.enforcement, satisfied: true, blocking: false, criteria: [] };
   }
@@ -3318,11 +3427,20 @@ function evaluateDefinitionOfDone(promptId: number): DodEvaluation {
         output: "", exitCode: null, runId: null, createdAt: null,
       };
     }
+    let stale=false;
+    if(row.input_hash!==null || contract?.engine==="supervised") {
+      try {
+        const snapshot=dodSnapshots.get(promptId);
+        currentHash ??= snapshot?.inputHash ?? (db.inTransaction ? null : sourceFingerprint(directory()));
+        const environmentHash=snapshot?.environmentHash ?? (db.inTransaction ? null : environmentFingerprint(directory()));
+        stale=row.stable_inputs!==1 || !currentHash || row.input_hash!==currentHash || row.recipe_hash!==recipeFingerprint(criterion) || row.environment_hash!==environmentHash;
+      } catch { stale=true; }
+    }
     return {
       ...base,
-      result: isDodResult(row.result) ? row.result : "UNVERIFIED",
+      result: stale ? "UNVERIFIED" : isDodResult(row.result) ? row.result : "UNVERIFIED",
       source: isDodResultSource(row.source) ? row.source : null,
-      evidence: row.evidence,
+      evidence: stale ? "Evidence is stale or its input provenance is unknown." : row.evidence,
       output: row.output,
       exitCode: row.exit_code,
       runId: row.run_id,
@@ -3433,7 +3551,30 @@ export const workspaces = {
     return ownDefinitionOfDone(scope, scopeId);
   },
   /** What a work item is judged against, after inheritance. */
-  resolvedDefinitionOfDone(promptId: number): DefinitionOfDone { return resolveDefinitionOfDone(promptId); },
+  executionIntake<T>(work:()=>T):T {return db.transaction(work)();},
+  ensureScopedAcceptance(promptId:number,text:string):DodCriterion {
+    const now=new Date().toISOString();
+    db.prepare("INSERT OR IGNORE INTO definition_of_done(scope,scope_id,updated_at) VALUES('prompt',?,?)").run(promptId,now);
+    const definition=db.prepare("SELECT id FROM definition_of_done WHERE scope='prompt' AND scope_id=?").get(promptId) as {id:number};
+    const existing=db.prepare("SELECT * FROM dod_criterion WHERE dod_id=? AND supervisor_only=1 AND text=?").get(definition.id,text) as DodCriterionRow|undefined;
+    if(existing)return criterionDto(existing);
+    const inserted=db.prepare("INSERT INTO dod_criterion(dod_id,kind,text,command,cwd,expect_exit_code,timeout_ms,required,sort_order,supervisor_only) VALUES(?,'PROSE',?,NULL,NULL,0,120000,1,9999,1)").run(definition.id,text);
+    return this.definitionCriterion(Number(inserted.lastInsertRowid))!;
+  },
+  ensureOriginalAcceptance(promptId:number,contentHash:string):DodCriterion {
+    const text=`Verify every implementation and handoff obligation in original requirement ${contentHash}. Check actual targets, source and scenarios; compiler success alone is insufficient. A check that needs a person does not stop delivery. Finish the station and record anything you could not observe.`;
+    const now=new Date().toISOString();
+    db.prepare("INSERT OR IGNORE INTO definition_of_done(scope,scope_id,updated_at) VALUES('prompt',?,?)").run(promptId,now);
+    const definition=db.prepare("SELECT id FROM definition_of_done WHERE scope='prompt' AND scope_id=?").get(promptId) as {id:number};
+    const existing=db.prepare("SELECT * FROM dod_criterion WHERE dod_id=? AND supervisor_only=1 AND text=?").get(definition.id,text) as DodCriterionRow|undefined;
+    if(existing) return criterionDto(existing);
+    const inserted=db.prepare("INSERT INTO dod_criterion(dod_id,kind,text,command,cwd,expect_exit_code,timeout_ms,required,sort_order,supervisor_only) VALUES(?,'PROSE',?,NULL,NULL,0,120000,1,9999,1)").run(definition.id,text);
+    return this.definitionCriterion(Number(inserted.lastInsertRowid))!;
+  },
+  definitionCriterion(id:number):DodCriterion|null {
+    const row=db.prepare("SELECT * FROM dod_criterion WHERE id=?").get(id) as DodCriterionRow|undefined;return row?criterionDto(row):null;
+  },
+  resolvedDefinitionOfDone(promptId: number): DefinitionOfDone { return phaseDefinitionOfDone(promptId); },
   /** The gate, as a read. See `evaluateDefinitionOfDone`. */
   definitionOfDoneEvaluation(promptId: number): DodEvaluation { return evaluateDefinitionOfDone(promptId); },
 
@@ -3524,24 +3665,28 @@ export const workspaces = {
    */
   dodCommandPlan(promptId: number): { workDirectory: string; criteria: DodCriterion[] } {
     const home = this.promptHome(promptId);
-    const definition = resolveDefinitionOfDone(promptId);
+    const definition = phaseDefinitionOfDone(promptId);
     const workDirectory = (db.prepare("SELECT work_directory FROM workspace WHERE id=?").get(home.workspaceId) as { work_directory: string }).work_directory;
     if (definition.enforcement === "off") return { workDirectory, criteria: [] };
-    return { workDirectory, criteria: definition.criteria.filter((entry) => entry.kind === "COMMAND" && entry.command !== null) };
+    const contract=executionStore.forPrompt(promptId);
+    const unit=contract?.revision ? executionStore.plan(contract.id).units.find(u=>u.promptId===promptId) : undefined;
+    return { workDirectory, criteria: definition.criteria.filter((entry) => entry.kind === "COMMAND" && entry.command !== null && (contract?.engine!=="supervised" || (unit?.recipeIds.includes(entry.id) || executionStore.sharedConsumers(promptId).some(consumer=>consumer.unit.recipeIds.includes(entry.id))))) };
   },
 
   /** File what something concluded about one criterion. Append-only. */
   recordDodResult(args: {
     promptId: number; criterionId: number; runId?: string | null; source: DodResultSource;
     result: DodResult; evidence?: string; output?: string; exitCode?: number | null;
-  }): void {
-    sqliteGuard(() => {
-      db.prepare("INSERT INTO dod_result(prompt_id,criterion_id,run_id,source,result,evidence,output,exit_code,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+    inputHash?:string; recipeHash?:string; environmentHash?:string; stableInputs?:boolean;
+  }): number {
+    return sqliteGuard(() => {
+      const inserted = db.prepare("INSERT INTO dod_result(prompt_id,criterion_id,run_id,source,result,evidence,output,exit_code,created_at,input_hash,recipe_hash,environment_hash,stable_inputs) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(
           args.promptId, args.criterionId, args.runId ?? null, args.source, args.result,
           (args.evidence ?? "").slice(0, 4000), (args.output ?? "").slice(0, DOD_COMMAND_OUTPUT_MAX_BYTES),
-          args.exitCode ?? null, new Date().toISOString(),
+          args.exitCode ?? null, new Date().toISOString(),args.inputHash ?? null,args.recipeHash ?? null,args.environmentHash ?? null,args.stableInputs ? 1 : 0,
         );
+      return Number(inserted.lastInsertRowid);
     });
   },
 
@@ -4204,6 +4349,125 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt,args.sourceRunId,args.sessionId);
   }); },
   /** The provider session a run had, for a wrap-up turn to resume. */
+  beginCheckpointCommand(runId:string,input:Record<string,unknown>,intent:{changes:RunChangeSummary;inputHash:string}):{state:"PENDING";intent:{changes:RunChangeSummary;inputHash:string}}|{state:"SETTLED";response:unknown} {
+    return db.transaction(()=>{
+      executionStore.assertRequest(runId,input);
+      const run=db.prepare("SELECT role FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId) as {role:string}|undefined;
+      if(!run || !["execute","author"].includes(run.role))throw new WorkspaceError(409,"run_not_active","Only a current writer can checkpoint");
+      if(typeof input.requestId!=="string" || !/^[-0-9a-zA-Z]{8,100}$/.test(input.requestId))throw new WorkspaceError(422,"request_id_required","Checkpoint needs a unique requestId");
+      const prior=db.prepare("SELECT operation,request_hash,response FROM agent_command WHERE run_id=? AND request_id=?").get(runId,input.requestId) as {operation:string;request_hash:string|null;response:string}|undefined;
+      if(prior) {
+        if(prior.operation!=="checkpoint" || prior.request_hash!==executionHash(input))throw new WorkspaceError(409,"request_id_conflict","Checkpoint requestId was reused for a different action");
+        return JSON.parse(prior.response);
+      }
+      const result={state:"PENDING" as const,intent};
+      db.prepare("INSERT INTO agent_command(run_id,request_id,operation,response,created_at,request_hash) VALUES(?,?,'checkpoint',?,?,?)").run(runId,input.requestId,JSON.stringify(result),new Date().toISOString(),executionHash(input));
+      return result;
+    })();
+  },
+  finishCheckpointCommand(runId:string,requestId:string,response:unknown):void {
+    db.prepare("UPDATE agent_command SET response=? WHERE run_id=? AND request_id=? AND operation='checkpoint'").run(JSON.stringify({state:"SETTLED",response}),runId,requestId);
+  },
+  proposeExecutionPlan(runId:string,input:Record<string,unknown>):unknown {
+    return sqliteGuard(()=>db.transaction(()=>commandResult(runId,input.requestId,"execution-plan",input,()=>{
+      const run=requireActiveExecuteRun(runId);
+      let contract=executionStore.forPrompt(run.prompt_id);
+      if(!contract) throw new WorkspaceError(409,"contract_missing","No adopted execution contract");
+      const proposal=structuredClone(input.plan) as import("@agent-console/shared").ExecutionPlan;
+      if(!proposal || !Array.isArray(proposal.units)) throw new WorkspaceError(422,"plan_required","Supply a structured execution plan");
+      const rootPromptId=contract.promptId;
+      if(!proposal.units.some(unit=>unit.promptId===rootPromptId && unit.coverage!=="contribution")) throw new WorkspaceError(422,"integration_owner_required","Keep the original requirement's final integration owner");
+      const additions:import("@agent-console/shared").ContractCriterion[]=[];
+      const rootHome=this.promptHome(contract.promptId);
+      for(const derived of proposal.additionalCriteria ?? []) {
+        if(!/^[-a-zA-Z0-9]{1,100}$/.test(derived.id) || !Number.isSafeInteger(derived.sourceStart) || !Number.isSafeInteger(derived.sourceEnd) || contract.originalPrompt.slice(derived.sourceStart,derived.sourceEnd).trim()!==derived.text.trim()) throw new WorkspaceError(422,"invalid_derivation","Derived verification must quote an exact span of the original prompt");
+        const owner=this.resolvePrompt(rootHome.workspaceId,derived.verifierPromptId);
+        const ownerName=owner.externalKey ?? owner.title;
+        if(owner.id===contract.promptId || !derived.text.includes(ownerName)) throw new WorkspaceError(422,"verification_owner_ambiguous","The original source span must name the existing verifier by its key or title");
+        const existingOwner=executionStore.forPrompt(owner.id);
+        if(existingOwner && existingOwner.id!==contract.id && existingOwner.budgetScope!==contract.budgetScope) throw new WorkspaceError(422,"unit_owned","Shared verifiers must use the same approved budget scope");
+        const unit=proposal.units.find(unit=>unit.promptId===owner.id && unit.phase==="verification");
+        if(!unit) throw new WorkspaceError(422,"verification_owner_missing","Assign the derived obligation to a verification work unit");
+        const fact=this.ensureScopedAcceptance(owner.id,derived.text);
+        additions.push({id:derived.id,text:fact.text,kind:"PROSE",sourceStart:derived.sourceStart,sourceEnd:derived.sourceEnd,phase:"verification",verifierPromptId:owner.id,dodCriterionId:fact.id,sourceCriterionId:derived.sourceCriterionId});
+        unit.criterionIds=[...new Set([...unit.criterionIds,derived.id])];
+        // A named future stage keeps every required command and prose gate it
+        // already had; deriving its handoff cannot weaken those gates.
+        for(const criterion of resolveDefinitionOfDone(owner.id).criteria.filter(cr=>cr.required)) {
+          const id=`verifier-${owner.id}-${criterion.id}`;
+          additions.push({id,text:criterion.text,kind:criterion.kind,sourceStart:derived.sourceStart,sourceEnd:derived.sourceEnd,phase:"verification",verifierPromptId:owner.id,dodCriterionId:criterion.id,sourceCriterionId:derived.sourceCriterionId});
+          unit.criterionIds=[...new Set([...unit.criterionIds,id])];
+          if(criterion.kind==="COMMAND")unit.recipeIds=[...new Set([...unit.recipeIds,criterion.id])];
+        }
+      }
+      if(additions.length>0) {executionStore.extendManifest(contract.id,additions);contract=executionStore.contract(contract.id);}
+      for(const unit of proposal.units) {
+        const assigned=new Set(unit.criterionIds.map(id=>contract!.criteria.find(criterion=>criterion.id===id)?.dodCriterionId));
+        if(unit.recipeIds.some(id=>!assigned.has(id)||this.definitionCriterion(id)?.kind!=="COMMAND"))throw new WorkspaceError(422,"recipe_unknown","Plan recipes must be command facts assigned to the unit's original criteria");
+        const isVerifier=contract.criteria.some(c=>c.verifierPromptId===unit.promptId && c.phase==="verification");
+        let parent:number|null=unit.promptId,owned=isVerifier;
+        while(parent!==null) {if(parent===contract.promptId) {owned=true;break;} parent=this.parentPromptId(parent);}
+        if(!owned) throw new WorkspaceError(422,"plan_scope_mismatch","Plan may only schedule owned descendants or assigned verifiers");
+      }
+      executionStore.proposePlan(contract.id,proposal);return {decision:"plan_staged_until_worker_exit"};
+    }))());
+  },
+  requeueTechnicalWait(promptId:number,reason:string):void {
+    const status=this.promptOutcome(promptId).status;
+    if(status==="DONE" || status==="SKIPPED") return;
+    writeStatus({promptId,to:"TODO",trigger:"provider_fallback",actor:"SYSTEM",reason,result:""});
+  },
+  refuseSupervisedCompletion(promptId:number,reason:string):void {
+    writeStatus({promptId,to:"NEEDS_REVIEW",trigger:"dod_unmet",actor:"SYSTEM",reason,result:reason});
+  },
+  acceptExecutionUnits(promptId:number,evidenceIds:number[],current:Parameters<typeof executionStore.acceptUnit>[3]):void {
+    db.transaction(()=>{
+      const owner=executionStore.forPrompt(promptId);
+      if(!owner)throw new WorkspaceError(404,"contract_missing","No execution owner");
+      executionStore.acceptUnit(owner.id,promptId,evidenceIds,current);
+      for(const consumer of executionStore.sharedConsumers(promptId)) executionStore.acceptUnit(consumer.contract.id,promptId,evidenceIds,current);
+    })();
+  },
+  activateExecutionPlan(id:string,proposal:import("@agent-console/shared").ExecutionPlan):void {
+    db.transaction(()=>{
+      const before=executionStore.plan(id),accepted=new Set(executionStore.accepted(id));
+      executionStore.activatePlan(id,proposal);
+      for(const retired of before.units.filter(unit=>!accepted.has(unit.promptId)&&!proposal.units.some(next=>next.promptId===unit.promptId))) {
+        writeStatus({promptId:retired.promptId,to:"SKIPPED",actor:"SYSTEM",trigger:"agent_decompose",reason:`Remaining targets reassigned in execution plan revision ${proposal.revision}`,evidence:{retiredUnitId:retired.promptId,targets:retired.targets,planRevision:proposal.revision}});
+      }
+    })();
+  },
+  amendExecutionRequirement(id:string,args:Parameters<typeof executionStore.amendRequirement>[1]) {
+    return db.transaction(()=>{
+      const contract=executionStore.contract(id);
+      const oldGuards=contract.criteria.filter(c=>c.text.startsWith("Verify every implementation and handoff obligation in original requirement "));
+      const guard=this.ensureOriginalAcceptance(contract.promptId,executionHash(args.originalPrompt));
+      const guardId=`original-${guard.id}`;
+      const criteria=args.criteria.filter(c=>!oldGuards.some(old=>old.id===c.id));
+      criteria.push({id:guardId,text:guard.text,sourceStart:0,sourceEnd:args.originalPrompt.length,phase:"implementation",verifierPromptId:contract.promptId,dodCriterionId:guard.id,kind:"PROSE"});
+      const plan={...args.plan,units:args.plan.units.map(unit=>({...unit,criterionIds:[...new Set([...unit.criterionIds.map(criterionId=>oldGuards.some(old=>old.id===criterionId)?guardId:criterionId),...(unit.promptId===contract.promptId?[guardId]:[])])]}))};
+      const reopened=executionStore.amendRequirement(id,{...args,criteria,plan});
+      for(const promptId of reopened) {
+        const retained=plan.units.some(unit=>unit.promptId===promptId);
+        writeStatus({promptId,to:retained?"TODO":"SKIPPED",trigger:retained?"operator_retry":"operator_skip",actor:"USER",reason:args.reason,result:"",evidence:{contractVersion:executionStore.contract(id).version}});
+      }
+      return executionStore.status(id);
+    })();
+  },
+  adoptExecutionContract(args:Parameters<typeof executionStore.adopt>[0],plan:import("@agent-console/shared").ExecutionPlan) {
+    return db.transaction(()=>{const contract=executionStore.adopt(args);executionStore.activatePlan(contract.id,plan);return executionStore.status(contract.id);})();
+  },
+  recordExecutionManifest(runId:string,instructionHash:string,permissionKey:string):void {
+    db.prepare("UPDATE agent_run SET instruction_hash=?,permission_key=? WHERE id=?").run(instructionHash,permissionKey,runId);
+  },
+  savedSession(promptId:number,provider:string,model:string|null,instructionHash:string,permissionKey:string):string|null {
+    const row=db.prepare("SELECT session_id,provider,model,instruction_hash,permission_key FROM agent_run WHERE prompt_id=? AND role='execute' AND state NOT IN ('STARTING','RUNNING') ORDER BY started_at DESC,rowid DESC LIMIT 1").get(promptId) as {session_id:string|null;provider:string;model:string|null;instruction_hash:string|null;permission_key:string|null}|undefined;
+    return row && row.provider===provider && row.model===model && row.instruction_hash===instructionHash && row.permission_key===permissionKey ? row.session_id : null;
+  },
+  executionRunMetrics(runId:string):{actualMs:number|null;actualTokens:number|null;stopReason:string|null;processStarted:boolean|null} {
+    const row=db.prepare("SELECT started_at,ended_at,input_tokens,output_tokens,stop_reason,process_started FROM agent_run WHERE id=?").get(runId) as {started_at:string;ended_at:string|null;input_tokens:number|null;output_tokens:number|null;stop_reason:string|null;process_started:number|null}|undefined;
+    return {actualMs:row?.ended_at ? Math.max(0,Date.parse(row.ended_at)-Date.parse(row.started_at)) : null,actualTokens:row && row.input_tokens!==null && row.output_tokens!==null ? row.input_tokens+row.output_tokens : null,stopReason:row?.stop_reason ?? null,processStarted:row?.process_started==null?null:row.process_started===1};
+  },
   runSessionId(runId:string):string|null { const row=db.prepare("SELECT session_id sessionId FROM agent_run WHERE id=?").get(runId) as {sessionId:string|null}|undefined;return row?.sessionId??null; },
   agentRunActive(runId:string):boolean { return db.prepare("SELECT 1 FROM agent_run WHERE id=? AND state IN ('STARTING','RUNNING')").get(runId)!==undefined; },
   /** The run a wrap-up turn is speaking for, or null for an ordinary run. */
@@ -4227,12 +4491,11 @@ export const workspaces = {
     return row?.triggerId??null;
   },
   /**
-   * Unfinished continuations since the most recent operator (USER) ledger row.
+   * Automatic continuations since the most recent operator (USER) ledger row.
    *
    * An operator Resume / override / recover grants a fresh allowance: that is
    * what a human intervening means. Counted by `rule_id = "continuation"` rows
-   * only — an agent's own `agent-step continue` uses a different rule id and
-   * does not spend this allowance.
+   * only — agent-requested CONTINUE successors spend this allowance too.
    */
   continuationCount(promptId:number):number {
     const since=(db.prepare("SELECT COALESCE(MAX(id),0) id FROM prompt_status_event WHERE prompt_id=? AND actor_type='USER'").get(promptId) as {id:number}).id;
@@ -4286,13 +4549,15 @@ export const workspaces = {
   runHasContinuationRemark(promptId:number,runId:string):boolean {
     return db.prepare("SELECT 1 FROM prompt_remark WHERE prompt_id=? AND run_id=? AND kind='CONTINUATION' LIMIT 1").get(promptId,runId)!==undefined;
   },
+  runHasCompletionRemark(promptId:number,runId:string):boolean {
+    return db.prepare("SELECT 1 FROM prompt_remark WHERE prompt_id=? AND run_id=? AND kind='COMPLETION' AND actor_type='AGENT' LIMIT 1").get(promptId,runId)!==undefined;
+  },
   /**
    * Re-queue a station for another run on the same working tree.
    *
    * When `countsTowardAllowance` is true (default), writes
    * `rule_id=continuation` so `continuationCount` can bound unfinished loops.
-   * An agent's own `continue` passes false — those re-queues must not park the
-   * rail. Only invents a SYSTEM CONTINUATION remark when the agent left none.
+   * Only operator redirects may pass false. Only invents a SYSTEM CONTINUATION remark when the agent left none.
    */
   queueContinuation(promptId:number,args:{
     attempt:number;
@@ -4300,7 +4565,7 @@ export const workspaces = {
     cause:string;
     previousRunId:string;
     writeSystemRemark:boolean;
-    /** Default true. False for agent_continue — does not spend the unfinished allowance. */
+    /** Default true. False only for an operator redirect. */
     countsTowardAllowance?:boolean;
   }):void {
     sqliteGuard(()=>db.transaction(()=>{
@@ -4417,9 +4682,11 @@ export const workspaces = {
    */
   finishAgentRun(runId:string,state:string,answer="",metrics?:RunCostMetrics,options?:{deferStatus?:boolean}):void { sqliteGuard(()=>db.transaction(()=>{
     const run=db.prepare("SELECT prompt_id,role,wrapup_of wrapupOf FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null;role:RunRole;wrapupOf:string|null}|undefined;if(!run)return;
+    const managed=executionStore.byRun(runId);
+    if(managed) {try {executionStore.assertAttempt(runId);} catch {executionStore.decision(managed.contractId,"stale_result_rejected",{runId});return;}}
     const now=new Date().toISOString();
-    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,peak_memory_bytes=?,session_id=COALESCE(?,session_id) WHERE id=?")
-      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,metrics?.peakMemoryBytes??null,metrics?.sessionId??null,runId);
+    db.prepare("UPDATE agent_run SET state=?,ended_at=?,input_tokens=?,output_tokens=?,cached_input_tokens=?,tool_calls=?,tool_output_bytes=?,stop_reason=?,peak_memory_bytes=?,session_id=COALESCE(?,session_id),process_started=? WHERE id=?")
+      .run(state.toUpperCase(),now,metrics?.usage?.inputTokens??null,metrics?.usage?.outputTokens??null,metrics?.usage?.cachedInputTokens??null,metrics?.toolCalls??null,metrics?.toolOutputBytes??null,metrics?.stopReason??null,metrics?.peakMemoryBytes??null,metrics?.sessionId??null,metrics?.processStarted==null?null:Number(metrics.processStarted),runId);
     if(run.role!=="execute"||run.prompt_id===null)return;
     if(answer.trim()!=="")db.prepare("INSERT INTO prompt_remark(prompt_id,run_id,kind,content,actor_type,created_at) VALUES(?,?,'AGENT_RESPONSE',?,'AGENT',?)").run(run.prompt_id,runId,answer.trim().slice(0,20000),now);
     if(options?.deferStatus===true)return;
@@ -4437,9 +4704,13 @@ export const workspaces = {
     if(!run||run.role!=="execute"||run.prompt_id===null)return;
     applyEndOfRunStatus(runId,run.prompt_id,run.wrapupOf,run.state.toLowerCase(),run.stopReason,run.toolCalls);
   })()); },
-  authorizeAgentRun(runId:string,tokenHash:string):{workspaceId:number;promptId:number|null;state:string;role:RunRole} { const row=db.prepare("SELECT workspace_id workspaceId,prompt_id promptId,state,role FROM agent_run WHERE id=? AND context_token_hash=? AND token_expires_at>?").get(runId,tokenHash,new Date().toISOString()) as {workspaceId:number;promptId:number|null;state:string;role:RunRole}|undefined;if(!row)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");return row; },
+  authorizeAgentRun(runId:string,tokenHash:string):{workspaceId:number;promptId:number|null;state:string;role:RunRole} { const row=db.prepare("SELECT workspace_id workspaceId,prompt_id promptId,state,role FROM agent_run WHERE id=? AND context_token_hash=? AND token_expires_at>?").get(runId,tokenHash,new Date().toISOString()) as {workspaceId:number;promptId:number|null;state:string;role:RunRole}|undefined;if(!row)throw new WorkspaceError(401,"invalid_run_token","Run credential is invalid or expired");executionStore.assertAttempt(runId);return row; },
   addAgentRemark(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentRemarkTransaction(runId,input)); },
-  updateAgentStatus(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentStatusTransaction(runId,input)); },
+  updateAgentStatus(runId:string,input:Record<string,unknown>):unknown {
+    const run=db.prepare("SELECT prompt_id FROM agent_run WHERE id=?").get(runId) as {prompt_id:number|null}|undefined;
+    const write=()=>sqliteGuard(()=>agentStatusTransaction(runId,input));
+    return input.status==="DONE" && run?.prompt_id ? withDodSnapshot(run.prompt_id,write) : write();
+  },
   repairAgentVerifyCommand(runId:string,input:Record<string,unknown>):Record<string,unknown> { return sqliteGuard(()=>agentVerifyRepairTransaction(runId,input)) as Record<string,unknown>; },
   decomposePrompt(runId:string,input:Record<string,unknown>):unknown { return sqliteGuard(()=>agentDecomposeTransaction(runId,input)); },
   /**
@@ -4459,7 +4730,7 @@ export const workspaces = {
   },
   humanInputRequests():HumanInputRequest[] {
     const rows=db.prepare(`SELECT p.id promptId,g.workspace_id workspaceId FROM prompt p JOIN suite s ON s.id=p.suite_id JOIN program g ON g.id=s.program_id WHERE p.status='BLOCKED' OR EXISTS(SELECT 1 FROM prompt_remark r WHERE r.prompt_id=p.id AND r.kind='HUMAN_RESPONSE') ORDER BY p.updated_at DESC`).all() as Array<{promptId:number;workspaceId:number}>;
-    return rows.map(({promptId,workspaceId})=>{const prompt=this.resolvePrompt(workspaceId,promptId);const workspace=this.get(workspaceId);const history=this.promptHistory(promptId);const remarks=history.remarks as PromptRemark[];return{prompt,workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},latestBlocker:remarks.find(item=>item.kind==="BLOCKER")??null,remarks,events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),currentRun:this.latestRunActivity(promptId)};});
+    return rows.map(({promptId,workspaceId})=>{const prompt=this.resolvePrompt(workspaceId,promptId);const workspace=this.get(workspaceId);const history=this.promptHistory(promptId);const remarks=history.remarks as PromptRemark[];return{prompt,execution:(()=>{const c=executionStore.forPrompt(prompt.id);return c?executionStore.status(c.id):null;})(),workspace:{id:workspace.id,name:workspace.name,workDirectory:workspace.workDirectory,workDirectoryExists:workspace.workDirectoryExists},latestBlocker:remarks.find(item=>item.kind==="BLOCKER")??null,remarks,events:history.events as PromptStatusEvent[],clarifications:this.clarifications(promptId),currentRun:this.latestRunActivity(promptId)};});
   },
   /**
    * Newest transcript events for one run, capped so a single detail view cannot
@@ -4928,6 +5199,10 @@ export const workspaces = {
     return row;
   },
 
+  /** True while this run is the one a pipeline is currently holding. */
+  pipelineOwnsRun(runId: string): boolean {
+    return db.prepare("SELECT 1 FROM suite_pipeline_run WHERE current_run_id=?").get(runId) !== undefined;
+  },
   promptOutcome(promptId:number):{status:PromptRecord["status"];result:string;suiteId:number} {
     const row=db.prepare("SELECT status,result,suite_id suiteId FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"];result:string;suiteId:number}|undefined;
     if(!row)throw new WorkspaceError(404,"not_found","Prompt not found");
@@ -4969,9 +5244,11 @@ export const workspaces = {
     return (db.prepare("SELECT count(*) count FROM prompt WHERE suite_id=?").get(suiteId) as {count:number}).count;
   },
 
-  suitePipelineDefaults(suiteId:number):SuitePipelineDefaults {
+  suitePipelineDefaults(suiteId:number,pipelineId?:number):SuitePipelineDefaults {
     this.suiteHeader(suiteId);
-    const row=db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM suite WHERE id=?").get(suiteId) as {defaultProvider:string|null;defaultModel:string|null;defaultFallbackProviders?:string|null};
+    if(pipelineId!==undefined && !db.prepare("SELECT 1 FROM pipeline_stage WHERE pipeline_id=? AND suite_id=?").get(pipelineId,suiteId)) throw new WorkspaceError(404,"not_found","Suite is not a stage of this pipeline");
+    const row=((pipelineId===undefined ? undefined : db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM pipeline_suite_agent WHERE pipeline_id=? AND suite_id=?").get(pipelineId,suiteId))
+      ?? db.prepare("SELECT default_provider defaultProvider,default_model defaultModel,default_fallback_providers defaultFallbackProviders FROM suite WHERE id=?").get(suiteId)) as {defaultProvider:string|null;defaultModel:string|null;defaultFallbackProviders?:string|null};
     return {
       suiteId,
       defaultProvider:asProviderId(row.defaultProvider),
@@ -4980,17 +5257,30 @@ export const workspaces = {
     };
   },
 
-  updateSuitePipelineDefaults(suiteId:number,input:Record<string,unknown>):SuitePipelineDefaults {
+  updateSuitePipelineDefaults(suiteId:number,input:Record<string,unknown>,pipelineId?:number):SuitePipelineDefaults {
+    return sqliteGuard(()=>db.transaction(()=>{
     this.suiteHeader(suiteId);
-    const current=this.suitePipelineDefaults(suiteId);
+    const current=this.suitePipelineDefaults(suiteId,pipelineId);
+    if("resetPromptAgents" in input && (typeof input.resetPromptAgents!=="boolean" || pipelineId===undefined)) throw new WorkspaceError(422,"validation_error","resetPromptAgents requires a pipeline and a boolean");
     const defaultProvider="defaultProvider" in input ? optionalProviderField(input.defaultProvider,"defaultProvider") : current.defaultProvider;
-    const defaultModel="defaultModel" in input ? optionalModelField(input.defaultModel,"defaultModel") : current.defaultModel;
+    const defaultModel="defaultModel" in input ? optionalModelField(input.defaultModel,"defaultModel") : defaultProvider!==current.defaultProvider ? null : current.defaultModel;
     const defaultFallbackProviders="defaultFallbackProviders" in input
       ? validateFallbackProviders(input.defaultFallbackProviders,defaultProvider,"defaultFallbackProviders")
       : current.defaultFallbackProviders;
-    db.prepare("UPDATE suite SET default_provider=?,default_model=?,default_fallback_providers=?,updated_at=? WHERE id=?")
-      .run(defaultProvider,defaultModel,JSON.stringify(defaultFallbackProviders),new Date().toISOString(),suiteId);
-    return this.suitePipelineDefaults(suiteId);
+    if(pipelineId===undefined){
+      db.prepare("UPDATE suite SET default_provider=?,default_model=?,default_fallback_providers=?,updated_at=? WHERE id=?")
+        .run(defaultProvider,defaultModel,JSON.stringify(defaultFallbackProviders),new Date().toISOString(),suiteId);
+    }else{
+      db.prepare(`INSERT INTO pipeline_suite_agent(pipeline_id,suite_id,default_provider,default_model,default_fallback_providers) VALUES(?,?,?,?,?)
+        ON CONFLICT(pipeline_id,suite_id) DO UPDATE SET default_provider=excluded.default_provider,default_model=excluded.default_model,default_fallback_providers=excluded.default_fallback_providers`)
+        .run(pipelineId,suiteId,defaultProvider,defaultModel,JSON.stringify(defaultFallbackProviders));
+      if(input.resetPromptAgents===true){
+        db.prepare("DELETE FROM pipeline_step WHERE pipeline_id=? AND prompt_id IN (SELECT id FROM prompt WHERE suite_id=? AND parent_prompt_id IS NOT NULL)").run(pipelineId,suiteId);
+        db.prepare("UPDATE pipeline_step SET provider=NULL,model=NULL,updated_at=? WHERE pipeline_id=? AND prompt_id IN (SELECT id FROM prompt WHERE suite_id=?)").run(new Date().toISOString(),pipelineId,suiteId);
+      }
+    }
+    return this.suitePipelineDefaults(suiteId,pipelineId);
+    })());
   },
 
   pipelineRule(promptId:number,pipelineId?:number):PromptPipelineRule {
@@ -5138,7 +5428,7 @@ export const workspaces = {
 
   namedPipelineFlowchart(pipelineId:number,suiteId:number,options:{incompleteOnly?:boolean}={}):PipelineFlowchartView {
     this.assertPipelineSuite(pipelineId,suiteId);
-    const defaults=this.suitePipelineDefaults(suiteId);
+    const defaults=this.suitePipelineDefaults(suiteId,pipelineId);
     const prompts=db.prepare("SELECT id,title,external_key externalKey,status FROM prompt WHERE suite_id=? AND parent_prompt_id IS NULL ORDER BY sort_order,id").all(suiteId) as Array<{id:number;title:string;externalKey:string|null;status:PromptRecord["status"]}>;
     const steps=this.enabledNamedPipelineSteps(pipelineId,suiteId);
     const enabled=new Set(steps.map(step=>step.promptId));
@@ -5358,7 +5648,7 @@ export const workspaces = {
    * goes on blocking, because `blockedBy` clears only on DONE.
    */
   completePrompt(promptId:number,actor:"SYSTEM"|"USER",input:{reason?:unknown;verificationSummary:unknown}):StepStatus {
-    return sqliteGuard(()=>db.transaction(()=>{
+    return withDodSnapshot(promptId,()=>sqliteGuard(()=>db.transaction(()=>{
       const prompt=db.prepare("SELECT status FROM prompt WHERE id=?").get(promptId) as {status:PromptRecord["status"]}|undefined;
       if(!prompt)throw new WorkspaceError(404,"not_found","Prompt not found");
       if(prompt.status==="DONE")throw new WorkspaceError(409,"already_complete","Work item is already complete");
@@ -5382,7 +5672,7 @@ export const workspaces = {
       // this is done" is the one authority it was never meant to override. It
       // is recorded either way — see the evidence written in `writeStatus`.
       return writeStatus({promptId,to:"DONE",trigger:actor==="USER"?"operator_override":"review_complete",ruleId:actor==="USER"?null:"review-complete",actor,runId,reason,verificationSummary:verification,result:verification,remark:{kind:"COMPLETION",content:verification},overrideDefinitionOfDone:actor==="USER"}).to;
-    })());
+    })()));
   },
 
   /**
@@ -5477,8 +5767,8 @@ export const workspaces = {
 
   interruptPipelinesOnRestart():void {
     const now=new Date().toISOString();
-    db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
-    db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state IN ('PLAYING','PAUSED','WAITING_HUMAN')").run(now);
+    db.prepare("UPDATE suite_pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state='PLAYING'").run(now);
+    db.prepare("UPDATE pipeline_run SET state='INTERRUPTED',ended_at=?,stop_reason='server_restart' WHERE state='PLAYING'").run(now);
   },
 
   /* ---------------------------------------------------------------- */
@@ -5486,7 +5776,7 @@ export const workspaces = {
   /* ---------------------------------------------------------------- */
 
   pipelineStages(pipelineId:number):PipelineStage[] {
-    return db.prepare(`
+    const stages=db.prepare(`
       SELECT st.suite_id suiteId, st.sort_order sortOrder,
              g.id programId, g.name programName, g.external_key programKey,
              s.name suiteName, s.external_key suiteKey,
@@ -5497,7 +5787,12 @@ export const workspaces = {
       JOIN program g ON g.id=s.program_id
       WHERE st.pipeline_id=?
       ORDER BY st.sort_order, s.id
-    `).all(pipelineId) as PipelineStage[];
+    `).all(pipelineId) as Omit<PipelineStage,"agentProviders">[];
+    return stages.map(stage=>{
+      const defaults=this.suitePipelineDefaults(stage.suiteId,pipelineId);
+      const overrides=db.prepare("SELECT DISTINCT ps.provider FROM pipeline_step ps JOIN prompt p ON p.id=ps.prompt_id WHERE ps.pipeline_id=? AND p.suite_id=? AND ps.provider IS NOT NULL").all(pipelineId,stage.suiteId) as Array<{provider:ProviderId}>;
+      return {...stage,agentProviders:[...new Set([...(defaults.defaultProvider===null?[]:[defaults.defaultProvider]),...overrides.map(row=>row.provider)])]};
+    });
   },
 
   namedPipelineRunById(id:string):PipelineRun|null {
@@ -5528,6 +5823,7 @@ export const workspaces = {
       workspaceName:workspace.name,
       name:row.name,
       description:row.description,
+      autoReassign:row.auto_reassign===1,
       createdAt:row.created_at,
       updatedAt:row.updated_at,
       stages:this.pipelineStages(row.id),
@@ -5572,10 +5868,11 @@ export const workspaces = {
       this.get(workspaceId);
       const name=requireText(input.name,"name",120);
       const description=requireText(input.description??"","description",4000,true);
+      if("autoReassign" in input && typeof input.autoReassign!=="boolean") throw new WorkspaceError(422,"validation_error","autoReassign must be a boolean");
       const suiteIds=Array.isArray(input.suiteIds)?input.suiteIds.filter((value):value is number=>typeof value==="number"):[];
       const now=new Date().toISOString();
-      const result=db.prepare("INSERT INTO pipeline(workspace_id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)")
-        .run(workspaceId,name,description,now,now);
+      const result=db.prepare("INSERT INTO pipeline(workspace_id,name,description,auto_reassign,created_at,updated_at) VALUES(?,?,?,?,?,?)")
+        .run(workspaceId,name,description,input.autoReassign===true?1:0,now,now);
       const id=Number(result.lastInsertRowid);
       this.replacePipelineStages(id,workspaceId,suiteIds);
       return this.getPipeline(id);
@@ -5587,14 +5884,16 @@ export const workspaces = {
       const current=this.getPipeline(id);
       const name=input.name===undefined?current.name:requireText(input.name,"name",120);
       const description=input.description===undefined?current.description:requireText(input.description,"description",4000,true);
+      if("autoReassign" in input && typeof input.autoReassign!=="boolean") throw new WorkspaceError(422,"validation_error","autoReassign must be a boolean");
       if("suiteIds" in input && current.active!==null){
         throw new WorkspaceError(409,"pipeline_active","Stop the running pipeline before changing its stages");
       }
-      db.prepare("UPDATE pipeline SET name=?,description=?,updated_at=? WHERE id=?").run(name,description,new Date().toISOString(),id);
+      db.prepare("UPDATE pipeline SET name=?,description=?,auto_reassign=?,updated_at=? WHERE id=?").run(name,description,(input.autoReassign??current.autoReassign)?1:0,new Date().toISOString(),id);
       if("suiteIds" in input){
         const suiteIds=Array.isArray(input.suiteIds)?input.suiteIds.filter((value):value is number=>typeof value==="number"):[];
         db.prepare("DELETE FROM pipeline_stage WHERE pipeline_id=?").run(id);
         this.replacePipelineStages(id,current.workspaceId,suiteIds);
+        db.prepare("DELETE FROM pipeline_suite_agent WHERE pipeline_id=? AND suite_id NOT IN (SELECT suite_id FROM pipeline_stage WHERE pipeline_id=?)").run(id,id);
       }
       return this.getPipeline(id);
     })());

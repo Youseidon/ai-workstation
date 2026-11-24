@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterEvent,
   NormalizedEvent,
@@ -53,6 +54,7 @@ export function truncateToolOutput(output: string, limit: number): { output: str
  * `null` disables an individual budget.
  */
 export interface RunBudget {
+  maxTotalTokens?:number|null;
   maxToolCalls: number | null;
   maxWallClockMs: number | null;
   maxInputTokens: number | null;
@@ -73,6 +75,7 @@ export function emptyBudgetSnapshot(): BudgetSnapshot {
 
 /** What a run actually spent. Persisted on `agent_run` when it ends. */
 export interface RunMetrics {
+  processStarted?:boolean|null;
   usage: TokenUsage | null;
   toolCalls: number;
   toolOutputBytes: number;
@@ -120,6 +123,7 @@ export interface RunHandle {
 }
 
 export interface StartRunArgs {
+  onSpawn?: (identity: import("./executionStore.ts").ProcessIdentity) => void;
   runId?: string;
   adapter: AgentAdapter;
   prompt: string;
@@ -194,6 +198,7 @@ export function startRun(args: StartRunArgs): RunHandle {
   // killed runs three minutes in while they were still reading.
   const base = settings.budgetFor();
   const budget: RunBudget = {
+    maxTotalTokens:args.budget?.maxTotalTokens ?? null,
     maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : base.maxToolCalls,
     maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : base.maxWallClockMs,
     // The spend cap, priced for this run's own provider and model.
@@ -205,6 +210,7 @@ export function startRun(args: StartRunArgs): RunHandle {
     maxToolResultBytes: args.budget?.maxToolResultBytes ?? base.maxToolResultBytes,
     maxOpenToolCallMs: args.budget?.maxOpenToolCallMs !== undefined ? args.budget.maxOpenToolCallMs : base.maxOpenToolCallMs,
   };
+  let processStarted:boolean|null=args.onSpawn ? false : null;
   let toolCalls = 0;
   let toolOutputBytes = 0;
   let repeatSignature: string | null = null;
@@ -248,6 +254,8 @@ export function startRun(args: StartRunArgs): RunHandle {
 
   /** Returns a stop reason once any budget is spent, otherwise null. */
   const breachedBudget = (): string | null => {
+    if(budget.maxTotalTokens!==null && budget.maxTotalTokens!==undefined && usage && Math.max(usage.totalTokens,usage.inputTokens+usage.outputTokens)>=budget.maxTotalTokens) return `budget_total_tokens:${budget.maxTotalTokens}`;
+
     if (budget.maxToolCalls !== null && toolCalls >= budget.maxToolCalls) return `budget_tool_calls:${budget.maxToolCalls}`;
     if (budget.maxWallClockMs !== null && elapsed() >= budget.maxWallClockMs) return `budget_wall_clock_ms:${budget.maxWallClockMs}`;
     if (budget.maxInputTokens !== null && spentInputTokens() >= budget.maxInputTokens) return `budget_input_tokens:${budget.maxInputTokens}`;
@@ -325,7 +333,7 @@ export function startRun(args: StartRunArgs): RunHandle {
       // A thrash loop repeats the same call with the same input. Hashing the
       // head of the input rather than all of it keeps a long file write from
       // looking unique on a trailing byte.
-      const signature = `${normalized.payload.name}:${JSON.stringify(normalized.payload.input).slice(0, 200)}`;
+      const signature = `${normalized.payload.name}:${createHash("sha256").update(JSON.stringify(normalized.payload.input)).digest("hex")}`;
       if (signature === repeatSignature) repeatCount += 1;
       else { repeatSignature = signature; repeatCount = 1; }
       const previous = openTools.get(normalized.payload.toolUseId);
@@ -352,8 +360,8 @@ export function startRun(args: StartRunArgs): RunHandle {
       if (open?.timer !== null && open?.timer !== undefined) clearTimeout(open.timer);
       openTools.delete(normalized.payload.toolUseId);
       toolOutputBytes += Buffer.byteLength(normalized.payload.output);
-      // A write means the run is making progress, whatever it repeated to get there.
-      if (!normalized.payload.isError) repeatCount = Math.min(repeatCount, 1);
+      // A successful response establishes liveness, not advancement. In
+      // particular, identical status polls must still trip the repeat bound.
     }
     if (normalized.type === "result") {
       if (normalized.payload.stopReason !== null && normalized.payload.stopReason !== undefined) {
@@ -413,7 +421,9 @@ export function startRun(args: StartRunArgs): RunHandle {
         signal: abortController.signal,
         log,
         permissionOverride,
+        deadlineMs:budget.maxWallClockMs ?? undefined,
         resumeSessionId: args.resumeSessionId ?? null,
+        onSpawn: args.onSpawn ? identity=>{processStarted=true;args.onSpawn!(identity);} : undefined,
       })) {
         const event = completionRequested && incoming.type === "result"
           ? { ...incoming, payload: { ...incoming.payload, state: "done" as const } }
@@ -454,7 +464,7 @@ export function startRun(args: StartRunArgs): RunHandle {
 
     emit({ type: "status", payload: { state: finalState } });
     log.info(`run ${finalState} in ${elapsed()}ms · ${toolCalls} tool calls · ${toolOutputBytes} bytes of tool output`);
-    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason, peakMemoryBytes, sessionId });
+    args.onEnd(runId, finalState, { usage, toolCalls, toolOutputBytes, stopReason: budgetStopReason, peakMemoryBytes, sessionId, processStarted });
     return finalState;
   })();
 

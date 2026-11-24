@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertRunChangesCommitted, checkpointRun, prepareChangeCapture, refreshChangeCapture, releaseChangeCapture, runChangeDetail, runFileDiff } from "../src/gitChanges.ts";
+import { assertRunChangesCommitted, checkpointCommand, checkpointRun, prepareChangeCapture, refreshChangeCapture, releaseChangeCapture, runChangeDetail, runFileDiff } from "../src/gitChanges.ts";
 import { runContexts } from "../src/runContext.ts";
 import { workspaces } from "../src/workspaces.ts";
 
@@ -122,4 +122,31 @@ test("a live writer's uncommitted work is never taken over",()=>{
     assert.throws(()=>prepareChangeCapture(item.directory),(error:unknown)=>(error as {code?:string}).code==="git_worktree_dirty");
     assert.match(item.command("log","-1","--format=%s"),/Initial source/);
   }finally{releaseChangeCapture(item.runId);item.cleanup();}
+});
+
+
+test("checkpoint retries do not commit changes made after the original request",()=>{
+  const item=fixture();try {
+    writeFileSync(join(item.directory,"app.ts"),"export const value = 12;\n");
+    const request={requestId:"checkpoint-request-one",message:"Record the scoped change"};
+    const first=checkpointCommand(item.runId,request,"codex",null);
+    const committed=item.command("rev-parse","HEAD").trim();
+    writeFileSync(join(item.directory,"app.ts"),"export const value = 13;\n");
+    assert.deepEqual(checkpointCommand(item.runId,request,"codex",null),first);
+    assert.equal(item.command("rev-parse","HEAD").trim(),committed);
+    assert.match(item.command("diff","--","app.ts"),/value = 13/);
+    assert.throws(()=>checkpointCommand(item.runId,{...request,message:"Different intent"},"codex",null),(error:unknown)=>(error as {code?:string}).code==="request_id_conflict");
+  } finally {releaseChangeCapture(item.runId);item.cleanup();}
+});
+
+test("a commit whose response was lost is reconciled by its stable checkpoint marker",()=>{
+  const item=fixture();try {
+    writeFileSync(join(item.directory,"app.ts"),"export const value = 14;\n");
+    checkpointRun(item.runId,"Record the durable checkpoint","codex",null,"checkpoint-lost-response");
+    const committed=item.command("rev-parse","HEAD").trim();
+    writeFileSync(join(item.directory,"app.ts"),"export const value = 15;\n");
+    const result=checkpointRun(item.runId,"Record the durable checkpoint","codex",null,"checkpoint-lost-response");
+    assert.equal((result as {checkpointCommit?:string}).checkpointCommit,committed);
+    assert.equal(item.command("rev-parse","HEAD").trim(),committed);
+  } finally {releaseChangeCapture(item.runId);item.cleanup();}
 });

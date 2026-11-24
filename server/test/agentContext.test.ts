@@ -142,6 +142,8 @@ test("description dedupe: copy of AGENTS.md is omitted; distinct text is kept", 
   }), "execute");
   assert.doesNotMatch(omitted, /^## Standing instructions$/m);
   assert.match(omitted, /Repository rules are in `AGENTS\.md`\/`CLAUDE\.md`/);
+  assert.doesNotMatch(omitted, /your CLI has loaded them/);
+  assert.match(omitted, /read any applicable instruction file not already included/);
 
   const kept = contextMarkdown(baseContext({
     workspace: {
@@ -159,7 +161,8 @@ test("protocol and progress sections stay under their byte bounds", () => {
   const protocol = markdown.slice(markdown.indexOf("## How this run ends"));
   assert.ok(Buffer.byteLength(protocol) < 1300, `protocol was ${Buffer.byteLength(protocol)} bytes`);
   assert.match(protocol, /mostly independent slices/);
-  assert.match(protocol, /Do not split because the work is large/);
+  assert.match(protocol, /server grants another bounded attempt/);
+  assert.match(protocol, /checkpoint stays in this session/);
   assert.doesNotMatch(protocol, /report BLOCKED/);
   assert.doesNotMatch(protocol, /execution window/);
 
@@ -177,6 +180,20 @@ test("protocol and progress sections stay under their byte bounds", () => {
   assert.doesNotMatch(progress, /curl/);
   assert.doesNotMatch(progress, /reviewer is sent/i);
   assert.match(progress, /requestId must be unique/);
+});
+
+test("a pipeline run is told that a person-only check does not stop the station", () => {
+  const markdown = contextMarkdown(baseContext(), "execute", { unattended: true });
+  const ruleAt = markdown.indexOf("## Pipeline rule");
+  const workAt = markdown.indexOf("## Work item");
+  assert.ok(ruleAt >= 0 && workAt >= 0 && ruleAt < workAt, "the pipeline rule has to override the work item");
+  assert.match(markdown, /Do not post `blocked`/);
+  assert.match(markdown, /`blocked` does not stop a pipeline/);
+  assert.match(markdown, /Finish the station and post `done`/);
+
+  const attended = contextMarkdown(baseContext(), "execute");
+  assert.doesNotMatch(attended, /## Pipeline rule/);
+  assert.match(attended, /only a human can take/);
 });
 
 test("operator-started runs are not told to checkpoint the working tree", () => {

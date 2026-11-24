@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import type { ProviderId, RunChangeDetail, RunChangedFile, RunCommit, RunFileDiff } from "@agent-console/shared";
 import { createLogger } from "./lib/logger.ts";
-import { WorkspaceError, workspaces } from "./workspaces.ts";
+import { sourceFingerprint } from "./sourceFingerprint.ts";
+import { realpathSync } from "node:fs";
+import { executionStore, WorkspaceError, workspaces } from "./workspaces.ts";
 
 const log=createLogger("changes");
 
@@ -30,6 +32,8 @@ export function prepareChangeCapture(cwd:string,runId?:string):PreparedChangeCap
   const root=git(cwd,["rev-parse","--show-toplevel"],true);
   if(root.stdout.trim()==="")throw new WorkspaceError(409,"git_repository_required","Writable agent runs require a Git repository.",undefined,{detail:"Initialize Git and create an initial commit before starting a writer. Read-only consults are still available."});
   const repositoryRoot=root.stdout.trim();
+  const durableOwner=executionStore.writerOwner(`repository:${realpathSync(repositoryRoot)}`);
+  if(durableOwner!==null && durableOwner!==runId) throw new WorkspaceError(409,"git_repository_busy","A durable writer lease still owns this repository; reconcile its process before starting another writer");
   const owner=repositoryWriters.get(repositoryRoot);
   if(runId!==undefined&&owner!==undefined&&owner!==runId)throw new WorkspaceError(409,"git_repository_busy","Another agent is already writing in this Git repository.");
   const head=git(repositoryRoot,["rev-parse","--verify","HEAD"],true).stdout.trim();
@@ -140,7 +144,7 @@ export function assertRunChangesCommitted(runId:string):void {
   if(refreshed.state==="NEEDS_COMMIT")throw new WorkspaceError(409,"git_commit_required","Checkpoint the working-tree changes before ending this run.",undefined,{detail:refreshed.message});
 }
 
-export function checkpointRun(runId:string,message:unknown,provider:ProviderId,model:string|null) {
+export function checkpointRun(runId:string,message:unknown,provider:ProviderId,model:string|null,requestId?:string,inputHash?:string) {
   if(typeof message!=="string"||message.trim()===""||message.includes("\n")||message.trim().length>72){
     throw new WorkspaceError(422,"checkpoint_message_invalid","Use one meaningful commit subject of 72 characters or fewer.");
   }
@@ -148,10 +152,15 @@ export function checkpointRun(runId:string,message:unknown,provider:ProviderId,m
   const capture=workspaces.runChangeSet(captureId);
   if(capture===null)throw new WorkspaceError(409,"change_set_not_found","This run was not opened as a writable Git run.");
   const before=currentHead(capture.repositoryRoot);ensureDescendant(capture.repositoryRoot,capture.baseCommit,before);
+  if(requestId) {
+    const prior=git(capture.repositoryRoot,["log",`${capture.baseCommit}..HEAD`,"--format=%H",`--grep=^Agent-Checkpoint-Request: ${requestId}$`,"-1"]).stdout.trim();
+    if(prior)return {...refreshChangeCapture(captureId),checkpointCommit:prior};
+    if(inputHash && sourceFingerprint(capture.repositoryRoot)!==inputHash) throw new WorkspaceError(409,"checkpoint_inputs_changed","The owned tree changed before this checkpoint was dispatched; request a new checkpoint ID");
+  }
   const dirty=git(capture.repositoryRoot,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
   if(dirty==="")return refreshChangeCapture(captureId);
   commitWorkingTree(capture.repositoryRoot,provider,message.trim(),[
-    `Agent-Run: ${captureId}`,...(captureId===runId?[]:[`Agent-Finalizer-Run: ${runId}`]),`Agent-Provider: ${provider}`,...(model===null?[]:[`Agent-Model: ${model}`]),
+    ...(requestId?[`Agent-Checkpoint-Request: ${requestId}`]:[]),`Agent-Run: ${captureId}`,...(captureId===runId?[]:[`Agent-Finalizer-Run: ${runId}`]),`Agent-Provider: ${provider}`,...(model===null?[]:[`Agent-Model: ${model}`]),
   ]);
   return refreshChangeCapture(captureId);
 }
@@ -197,4 +206,16 @@ export function runFileDiff(runId:string,path:string):RunFileDiff {
   const raw=git(detail.repositoryRoot,["diff","--no-ext-diff","--unified=4",`${detail.baseCommit}..${head}`,"--",file.previousPath??file.path,file.path]).stdout;
   const truncated=Buffer.byteLength(raw)>MAX_PATCH_BYTES;
   return{runId,path:file.path,previousPath:file.previousPath,patch:truncated?raw.slice(0,MAX_PATCH_BYTES)+"\n… diff truncated by Agent Console\n":raw,truncated};
+}
+
+/** Intent and response are durable; Git runs outside both short transactions. */
+export function checkpointCommand(runId:string,input:Record<string,unknown>,provider:ProviderId,model:string|null):unknown {
+  const capture=workspaces.runChangeSet(runId) ?? (workspaces.wrapupSourceRunId(runId)?workspaces.runChangeSet(workspaces.wrapupSourceRunId(runId)!):null);
+  if(!capture)throw new WorkspaceError(409,"change_set_not_found","This run has no owned Git capture");
+  const initial=refreshChangeCapture(capture.runId);
+  const intent=workspaces.beginCheckpointCommand(runId,input,{changes:initial,inputHash:sourceFingerprint(capture.repositoryRoot)});
+  if(intent.state==="SETTLED")return intent.response;
+  const response=intent.intent.changes.state!=="NEEDS_COMMIT" ? {changes:intent.intent.changes} : {changes:checkpointRun(runId,input.message,provider,model,String(input.requestId),intent.intent.inputHash)};
+  workspaces.finishCheckpointCommand(runId,String(input.requestId),response);
+  return response;
 }

@@ -1,5 +1,6 @@
 import type { AgentPromptContext } from "./workspaces.ts";
 import type { BudgetSnapshot } from "./runner.ts";
+import { PIPELINE_GOLDEN_RULE } from "./pipelineGoldenRule.ts";
 
 export type ContextPurpose = "execute" | "clarify" | "consult";
 
@@ -36,6 +37,8 @@ export interface ContextExtras {
    * `agent-step context --full`.
    */
   full?: boolean;
+  /** Pipeline run. The golden rule is prepended and overrides the work item. */
+  unattended?: boolean;
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
@@ -59,7 +62,7 @@ export function cappedSection(text: string, maxBytes: number): string {
 
 /**
  * True when ≥ 80 % of the description's non-empty lines already appear in the
- * projected AGENTS.md / CLAUDE.md the CLI has loaded from disk.
+ * projected AGENTS.md / CLAUDE.md supplied to the agent by its adapter or CLI.
  */
 export function descriptionContainedInInstructions(description: string, agentsMd: string, claudeMd: string): boolean {
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
@@ -73,23 +76,26 @@ export function descriptionContainedInInstructions(description: string, agentsMd
   return hits / lines.length >= 0.8;
 }
 
-function executeProtocol(canDecompose: boolean): string {
+function executeProtocol(canDecompose: boolean, unattended: boolean): string {
   // Two sentences on when to / when not to split; depth refusal points at
   // continue instead of BLOCKED — remaining work is never a human question.
   const decompose = canDecompose
-    ? `\`decompose\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Do not split because the work is large or the run is long — \`continue\` re-queues this station until the work is done.`
+    ? `\`decompose\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Choose coherent units from the remaining acceptance criteria and verification prerequisites.`
     : `\`decompose\` is refused at this depth — sub-steps cannot be split further. Finish it, or post \`continue\` with what remains; it will be resumed on this working tree.`;
+  const blocked = unattended
+    ? `\`blocked\` does not stop a pipeline. Finish the station and post \`done\`.`
+    : `\`blocked\` is only for action only a human can take (credentials, undelegated decisions, external
+systems); remaining work is never a blocker.`;
   return `## How this run ends
 
 Post exactly one of \`done\`, \`continue\`, \`blocked\`, or \`decompose\` through \`agent-step\` (below).
 \`done\` is checked by the server: the Verification commands above run in the workspace and \`done\`
 is refused with their output if any fails. \`continue\` records what remains and re-queues this
-item on this working tree — keep posting it until \`done\` passes, or until a real human question
-needs \`blocked\`. The rail does not stop for \`continue\`.
-\`blocked\` is only for action only a human can take (credentials, undelegated decisions, external
-systems); remaining work is never a blocker.
+item only when the server grants another bounded attempt. Every automatic successor spends the
+approved allowance. A checkpoint stays in this session: keep working after checkpointing.
+${blocked}
 ${decompose}
-Bank verified pieces with \`remark --kind PROGRESS\`. A budget stop gets a short wrap-up turn.
+Record work advancement with \`remark --kind PROGRESS\`; only fresh checks establish acceptance.
 The database is the tracker; do not find or edit a tracker file.
 Before an outcome, checkpoint workspace changes with a short imperative message.
 The server refuses terminal outcomes while changes are uncommitted.
@@ -122,6 +128,7 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
   if (purpose !== "execute") return legacyContextMarkdown(context, purpose, extras);
 
   const full = extras?.full === true;
+  const unattended = extras?.unattended === true;
   const key = context.prompt.externalKey ?? String(context.prompt.id);
   const canDecompose = (extras?.depth ?? 0) < (extras?.maxDepth ?? 2);
   const cap = (text: string, max: number) => (full ? text.trim() : cappedSection(text, max));
@@ -131,7 +138,7 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     "",
     `Working directory: ${context.workspace.workDirectory}`,
     "",
-    "Repository rules are in `AGENTS.md`/`CLAUDE.md` at the root; your CLI has loaded them. They are not repeated here.",
+    "Repository rules are in `AGENTS.md`/`CLAUDE.md` at the root. Follow them; read any applicable instruction file not already included in your context.",
   ].join("\n");
 
   const omitStanding = !full && descriptionContainedInInstructions(
@@ -227,12 +234,13 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     + `## Suite\n\n${cap(suiteBody, 4 * 1024)}\n\n`
     + parentSection
     + depSection
+    + (unattended ? `${PIPELINE_GOLDEN_RULE}\n\n` : "")
     + `## Work item\n\n${context.prompt.content.trim()}\n\n`
     + subStepsSection
     + verification
     + section("Where the last run stopped", cap(stopped, 6 * 1024))
     + section("Clarifications", cap(clarifications, 2 * 1024))
-    + executeProtocol(canDecompose);
+    + executeProtocol(canDecompose, unattended);
 }
 
 /** Consult / clarify keep the pre-diet layout. */
@@ -330,22 +338,24 @@ export function progressApiMarkdown(args: ProgressApiArgs): string {
     : "";
   const askGuidance = args.canAsk === true
     ? `\nIf a user decision materially changes the result, put all questions in questions.json and run \`${cmd} ask --file questions.json\`. Each question has \`id\`, \`prompt\`, \`kind\` (\`single\`, \`multiple\`, or \`text\`), optional \`options\` (\`value\`, \`label\`, \`description\`), \`recommendation\`, and \`why\`. Ask once, only when the answer cannot be safely inferred; the command waits and returns every answer.\n`
-    : "\nThis is an unattended pipeline run. Do not ask conversational questions; make the safest reversible assumption, record it, and continue.\n";
+    : "\nUnattended pipeline run: record safe, reversible assumptions and continue.\n";
   return `## Recording your progress
 
 ${cmd}
 
+${cmd} execution
+${cmd} check --criterion ID
 ${cmd} remark --kind PROGRESS --text "What changed or was verified"
 ${checkpoint}${ask}${cmd} done --verification "Commands run and observable results"
 ${cmd} repair-verify --file repair.json
 ${cmd} continue --remaining "What still has to happen"
 ${cmd} blocked --reason "Observed evidence" --action "Exact human action"
 ${decompose}Every requestId must be unique for this run.
-The launcher supplies one; do not reuse a requestId across calls.
+The launcher supplies it.
 ${askGuidance}
 ## Operator messages
 
-Run \`${cmd} inbox\` between major steps and before any long build or test run. A MESSAGE FROM THE OPERATOR overrides the work item; answer with \`${cmd} reply --text "…"\` (does not pause).
+Run \`${cmd} inbox\` before major steps and long checks. Operator messages override the work item; answer with \`${cmd} reply --text "…"\` (does not pause).
 `;
 }
 
@@ -363,7 +373,7 @@ function curlProgressApiMarkdown(args: ProgressApiArgs): string {
     : "";
   const askGuidance = args.canAsk === true
     ? "\nIf a user decision materially changes the result, write questions.json with 1–8 typed questions and POST it to /input. The request waits and returns every answer. Ask once, only when the answer cannot be safely inferred.\n"
-    : "\nThis is an unattended pipeline run. Do not ask conversational questions; make the safest reversible assumption, record it, and continue.\n";
+    : "\nUnattended pipeline run: record safe, reversible assumptions and continue.\n";
   return `## Recording your progress
 
 Post through the Progress API (no launcher available for this provider):

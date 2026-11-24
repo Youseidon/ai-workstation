@@ -150,6 +150,37 @@ function summarizeToolInput(name: string, input: unknown): string {
   }
 }
 
+/** Headless Grok does not reliably discover root instruction files. */
+export function grokInstructionArgs(cwd: string, extraArgs: readonly string[]): string[] {
+  const args: string[] = [];
+  const rules: string[] = [];
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index]!;
+    if (arg === "--rules") {
+      const value = extraArgs[++index];
+      if (value === undefined || value.startsWith("--")) throw new Error("Grok --rules requires a value");
+      rules.push(value);
+    } else if (arg.startsWith("--rules=")) {
+      rules.push(arg.slice("--rules=".length));
+    } else {
+      args.push(arg);
+    }
+  }
+  let workspaceRules: string;
+  try {
+    workspaceRules = readFileSync(join(cwd, "AGENTS.md"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    workspaceRules = "";
+  }
+  if (workspaceRules.trim() !== "") {
+    rules.push(`Workspace instructions from root AGENTS.md. Follow these for this working directory; the current task and permission restrictions still apply.\n\n${workspaceRules}`);
+  }
+  const combined = rules.filter((rule) => rule.trim() !== "").join("\n\n");
+  if (combined !== "") args.push("--rules", combined);
+  return args;
+}
+
 export class GrokMapper implements StreamMapper {
   settled = false;
   private usage: TokenUsage | null = null;
@@ -427,7 +458,10 @@ export class GrokAdapter extends SpawnAdapter {
     const model = opts.model ?? settings.grok.model;
     if (model !== null) args.push("-m", model);
     if (settings.grok.maxTurns !== null) args.push("--max-turns", String(settings.grok.maxTurns));
-    args.push(...settings.grok.extraArgs);
+    // Projected files alone are insufficient: headless sessions have reported
+    // agents_md_files:[] despite a populated root file. --rules also applies
+    // when resuming and leaves Grok's built-in system prompt in place.
+    args.push(...grokInstructionArgs(opts.cwd, settings.grok.extraArgs));
     args.push("--reasoning-effort", settings.reasoningEffortFor("grok"));
     // `-p` takes the prompt as its argument. Headless grok does not read stdin
     // into the prompt (unlike `codex exec -`).

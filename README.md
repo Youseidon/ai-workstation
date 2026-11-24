@@ -62,19 +62,42 @@ already holds the lock, the message says so and points at `dev:sandbox`.
 
 ### Pipeline behaviour
 
-When a station's run ends, the scheduler has exactly three answers:
+The **Agent assignments** panel above a suite's flowchart sets its agent and
+model for this pipeline. Prompts and new sub-steps inherit that choice. Expand
+**Prompt overrides** to choose a different agent for an individual prompt, or
+use the **Agent** button on its card. **Use suite agent for all prompts** clears
+existing agent overrides while preserving the flowchart and station outcomes.
+Assignments are scoped to the pipeline, including when another pipeline uses
+the same suite.
+
+**Automatically reassign agents** is off by default for every pipeline. When
+enabled, the scheduler checks provider-reported usage before jobs and skips
+exhausted session (typically five-hour), weekly, and other allowance windows
+until their reset. Provider errors also trigger fallback, including providers
+without usage telemetry. The ordered fallback list resolves prompt → suite →
+house; only available providers outside their cooling period are eligible.
+Reassignment keeps the saved primary assignment and records the handoff in the
+prompt history. If none are available, the pipeline waits. With reassignment
+off, a provider failure waits for the operator without switching agents. Unknown
+usage does not block a job; quota errors without reset telemetry use a cooling
+period (five hours or a week when the error names that window).
+
+When a station's run ends, the scheduler follows these rules:
 
 | The run ended… | Decision | What the rail does |
 |---|---|---|
 | Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
-| Agent posted **BLOCKED** with a concrete external action only a human can take | **park** `human_question` | the only human stop — answer it, then Resume |
+| Agent posted **BLOCKED**, or a check says to wait for a person | **waive and continue** | the pipeline does not stop. The station closes when its command checks pass; a human-review check is waived and is not recorded as passed |
 | Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
+| Provider hit a limit or could not run | **fallback or park** | with automatic reassignment on, try the next available provider without spending a continuation; otherwise wait for the operator |
 | Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
 
-There is no automatic handoff, remediation, or retry/recover chain. Resume on a
+There is no automatic remediation or retry/recover chain. Resume on a
 parked station writes a USER ledger row and grants a fresh unfinished-continuation
 allowance. Station rules expose `onDone` (`continue` / `stop` / `skip_rest`) and
-`onUnfinished` (`continue` / `skip` / `wait`).
+`onUnfinished` (`continue` / `skip` / `wait`). `wait` does not park the
+pipeline. A sentence in a prompt that says to stop for a human review does
+not either.
 
 A pipeline that *is* interrupted — the machine rebooted, the console was
 restarted or killed — comes back by itself: about ten seconds after boot, every
@@ -267,6 +290,11 @@ Adding a new tunable is one entry there — label, group, type, `.env` variable,
 options, description — and it appears in the UI with no frontend change.
 
 ### Per-run resource containment
+
+Workspace instruction files are projected before each run. Headless Grok also
+receives the complete root `AGENTS.md` through its `--rules` option, including
+on resumed launches; a root file alone does not ensure Grok discovers it.
+Custom Grok `--rules` arguments are merged into that single rules argument.
 
 On Linux, when the user systemd manager is available, each agent run is launched
 in its own transient service/cgroup. `MemoryHigh`, `MemoryMax`,

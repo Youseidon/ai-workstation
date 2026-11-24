@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type ProgramRecord, type PromptRecord, type PromptStatus, type SuiteRecord } from "@agent-console/shared";
+import { PROVIDER_IDS, type ProviderId, type ProviderUsage, type ProgramRecord, type PromptRecord, type PromptStatus, type SuiteRecord } from "@agent-console/shared";
 import { newId } from "../src/lib/ids.ts";
 import { decideExecuteEnded, pipelineScheduler, resolveExecuteTarget, resolveFallbackProviders, setPipelineStationStarter } from "../src/pipelineScheduler.ts";
 import { resetSettings, updateSettings } from "../src/settings.ts";
@@ -29,7 +29,7 @@ test("decideExecuteEnded enumerates the continuation-loop decision table", () =>
     { status: "DONE", trigger: null, action: "applyOnDone" },
     { status: "SKIPPED", trigger: "operator_skip", action: "advance" },
     { status: "SKIPPED", trigger: null, action: "advance" },
-    { status: "BLOCKED", trigger: "agent_post", action: "park", detail: "human_question" },
+    { status: "BLOCKED", trigger: "agent_post", action: "waiveHuman" },
     { status: "TODO", trigger: "agent_decompose", action: "advance" },
     { status: "TODO", trigger: "agent_continue", action: "continuation", detail: "agent_continue" },
     { status: "UNREPORTED", trigger: "run_ended_without_post", action: "continuation", detail: "unfinished" },
@@ -50,7 +50,6 @@ test("decideExecuteEnded enumerates the continuation-loop decision table", () =>
   for (const row of rows) {
     const decision = decideExecuteEnded(row.status, row.trigger);
     assert.equal(decision.action, row.action, `${row.status}/${row.trigger}`);
-    if (decision.action === "park") assert.equal(decision.waitReason, row.detail);
     if (decision.action === "continuation") assert.equal(decision.causeKind, row.detail);
     if (decision.action === "terminate") assert.equal(decision.stopReason, row.detail);
   }
@@ -70,6 +69,11 @@ test("resolveExecuteTarget prefers the play target when asked, else the station 
     resolveExecuteTarget({ rule: { ...rule, provider: null }, playProvider: null, playModel: null, defaultProvider: null, defaultModel: null }),
     null,
   );
+  const overridden = resolveExecuteTarget({ rule: { ...rule, model: null }, playProvider: "codex", playModel: "codex-only", defaultProvider: "grok", defaultModel: "grok-only" });
+  assert.equal(overridden?.provider, "claude");
+  assert.notEqual(overridden?.model, "codex-only");
+  assert.notEqual(overridden?.model, "grok-only");
+  assert.deepEqual(resolveExecuteTarget({ rule: { ...rule, provider: null, model: null }, playProvider: "claude", playModel: "play-only", defaultProvider: "codex", defaultModel: "suite-only" }), { provider: "codex", model: "suite-only" });
 });
 
 function fixture(promptCount = 1) {
@@ -151,7 +155,7 @@ test("UNREPORTED continues up to maxContinuations then parks continuations_exhau
   }
 });
 
-test("agent_post BLOCKED parks human_question and is never continued", async () => {
+test("agent_post BLOCKED closes the station and the suite finishes", async () => {
   const ctx = fixture(1);
   stubStarts();
   try {
@@ -167,36 +171,92 @@ test("agent_post BLOCKED parks human_question and is never continued", async () 
     });
     workspaces.finishAgentRun(runId, "done");
     await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
-    const parked = workspaces.activePipeline(ctx.suite.id)!;
-    assert.equal(parked.state, "WAITING_HUMAN");
-    assert.equal(parked.waitReason, "human_question");
+    assert.equal(workspaces.activePipeline(ctx.suite.id), null);
+    const finished = workspaces.latestPipeline(ctx.suite.id)!;
+    assert.equal(finished.state, "COMPLETE");
+    assert.equal(finished.waitReason, null);
+    assert.equal(workspaces.promptOutcome(promptId).status, "DONE");
     assert.equal(workspaces.continuationCount(promptId), 0);
   } finally {
     ctx.cleanup();
   }
 });
 
-test("answering a human question resumes the parked pipeline and starts its station", async () => {
+test("agent_post BLOCKED keeps working when a command check has not passed", async () => {
   const ctx = fixture(1);
   const started = stubStarts();
+  updateSettings({ "pipeline.maxContinuations": 2, "pipeline.reviewAfterContinuations": false });
   try {
     const promptId = ctx.prompts[0]!.id;
+    workspaces.saveDodCriterion({
+      scope: "prompt",
+      scopeId: promptId,
+      patch: { kind: "COMMAND", text: "the tests pass", command: "exit 1" },
+    });
     await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
-    const firstRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
-    workspaces.updateAgentStatus(firstRunId, {
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(runId, {
       requestId: randomUUID(),
       expectedStatus: "IN_PROGRESS",
       status: "BLOCKED",
       reason: "need a decision",
-      verificationSummary: "Choose the deployment region",
+      verificationSummary: "Pick which payment provider to use",
     });
-    workspaces.finishAgentRun(firstRunId, "done");
-    await pipelineScheduler.onExecuteEnded({
-      runId: firstRunId,
-      workspaceId: ctx.workspace.id,
-      promptId,
-      processState: "done",
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
+    const live = workspaces.activePipeline(ctx.suite.id)!;
+    assert.equal(live.state, "PLAYING");
+    assert.equal(live.waitReason, null);
+    assert.equal(workspaces.continuationCount(promptId), 1);
+    assert.equal(started.length, 2);
+    assert.match(workspaces.latestContinuationRemark(promptId) ?? "", /Do not post blocked/);
+    assert.notEqual(workspaces.promptOutcome(promptId).status, "DONE");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/** An older rail parked on a question. A new blocked post no longer creates this wait. */
+async function leaveParkedOnHumanQuestion(
+  ctx: ReturnType<typeof fixture>,
+  verificationSummary: string,
+): Promise<{ promptId: number; runId: string }> {
+  const promptId = ctx.prompts[0]!.id;
+  await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
+  const live = workspaces.activePipeline(ctx.suite.id)!;
+  const runId = live.currentRunId!;
+  workspaces.updateAgentStatus(runId, {
+    requestId: randomUUID(),
+    expectedStatus: "IN_PROGRESS",
+    status: "BLOCKED",
+    reason: "need a decision",
+    verificationSummary,
+  });
+  workspaces.finishAgentRun(runId, "done");
+  workspaces.updatePipelineRun(live.id, {
+    state: "WAITING_HUMAN",
+    waitReason: "human_question",
+    currentRunId: null,
+    stopReason: null,
+    endedAt: null,
+  });
+  if (live.pipelineRunId !== null) {
+    workspaces.updateNamedPipelineRun(live.pipelineRunId, {
+      state: "WAITING_HUMAN",
+      waitReason: "human_question",
+      stopReason: null,
+      endedAt: null,
     });
+  }
+  return { promptId, runId };
+}
+
+test("answering a human question resumes the parked pipeline and starts its station", async () => {
+  const ctx = fixture(1);
+  const started = stubStarts();
+  try {
+    const { promptId, runId: firstRunId } = await leaveParkedOnHumanQuestion(ctx, "Choose the deployment region");
+    assert.equal(workspaces.activePipeline(ctx.suite.id)!.waitReason, "human_question");
 
     workspaces.respondToBlockedPrompt(promptId, { content: "Deploy to Sydney." });
     await pipelineScheduler.onPromptResponded(promptId);
@@ -217,23 +277,7 @@ test("answering after a server restart revives the interrupted human-wait pipeli
   const ctx = fixture(1);
   const started = stubStarts();
   try {
-    const promptId = ctx.prompts[0]!.id;
-    await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
-    const firstRunId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
-    workspaces.updateAgentStatus(firstRunId, {
-      requestId: randomUUID(),
-      expectedStatus: "IN_PROGRESS",
-      status: "BLOCKED",
-      reason: "need a decision",
-      verificationSummary: "Delete or retain the unused routes",
-    });
-    workspaces.finishAgentRun(firstRunId, "done");
-    await pipelineScheduler.onExecuteEnded({
-      runId: firstRunId,
-      workspaceId: ctx.workspace.id,
-      promptId,
-      processState: "done",
-    });
+    const { promptId } = await leaveParkedOnHumanQuestion(ctx, "Delete or retain the unused routes");
     const parked = workspaces.activePipeline(ctx.suite.id)!;
     workspaces.updatePipelineRun(parked.id, {
       state: "INTERRUPTED",
@@ -356,6 +400,7 @@ test("capacity failure swaps to the next fallback without consuming a continuati
   setAdapterOverride("codex", stubAdapter("codex"));
 
   const ctx = fixture(1);
+  workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
   const started: StartExecuteArgs[] = [];
   let claudeAttempts = 0;
   setPipelineStationStarter(async (args) => {
@@ -435,6 +480,7 @@ test("when every fallback is cooling, a continuation that cannot start parks no_
   setAdapterOverride("codex", stubAdapter("codex"));
 
   const ctx = fixture(1);
+  workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
   setPipelineStationStarter(async () => {
     throw new Error("Selected model is at capacity. Please try a different model.");
   });
@@ -568,6 +614,7 @@ test("Resume after no_provider_available is a real retry: cooling is cleared and
   markCooling("codex", "quota", 60, "test");
   markCooling("cursor", "capacity", 60, "test");
   const ctx = fixture(1);
+  workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
   const started: StartExecuteArgs[] = [];
   let outOfAllowance = true;
   setPipelineStationStarter(async (args) => {
@@ -591,7 +638,7 @@ test("Resume after no_provider_available is a real retry: cooling is cleared and
     assert.equal(parked.state, "WAITING_HUMAN");
     assert.equal(parked.waitReason, "no_provider_available");
     assert.equal(workspaces.promptOutcome(promptId).status, "FAILED");
-    assert.equal(coolingFor("claude")?.id, "start_failed");
+    assert.equal(coolingFor("claude")?.id, "quota");
 
     // The operator topped up and pressed Resume. Nothing else changed.
     outOfAllowance = false;
@@ -611,35 +658,28 @@ test("Resume after no_provider_available is a real retry: cooling is cleared and
   }
 });
 
-test("agent_continue keeps re-queueing without spending the unfinished allowance or parking", async () => {
+test("twenty voluntary CONTINUE requests cannot bypass the successor allowance", async () => {
   const ctx = fixture(1);
   const started = stubStarts();
   updateSettings({ "pipeline.maxContinuations": 2, "pipeline.reviewAfterContinuations": false });
   try {
     const promptId = ctx.prompts[0]!.id;
     await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
-    // Far more agent continues than N — the rail must stay PLAYING.
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 20; i++) {
       const live = workspaces.activePipeline(ctx.suite.id)!;
-      assert.equal(live.state, "PLAYING", `loop ${i}`);
-      const runId = live.currentRunId!;
+      if (live.currentRunId === null) break;
+      const runId = live.currentRunId;
       workspaces.updateAgentStatus(runId, {
-        requestId: randomUUID(),
-        expectedStatus: "IN_PROGRESS",
-        status: "CONTINUE",
-        reason: `slice ${i + 1} banked; more endpoints remain`,
+        requestId: randomUUID(), expectedStatus: "IN_PROGRESS", status: "CONTINUE",
+        reason: `slice ${i + 1} banked; more targets remain`,
       });
       workspaces.finishAgentRun(runId, "done");
       await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
-      assert.equal(workspaces.continuationCount(promptId), 0, `agent continue must not spend allowance (loop ${i})`);
     }
-    const after = workspaces.activePipeline(ctx.suite.id)!;
-    assert.equal(after.state, "PLAYING");
-    assert.equal(after.waitReason, null);
-    assert.ok(started.length >= 7); // initial + 6 continues
-  } finally {
-    ctx.cleanup();
-  }
+    assert.equal(started.length, 3);
+    assert.equal(workspaces.continuationCount(promptId), 2);
+    assert.equal(workspaces.activePipeline(ctx.suite.id)!.waitReason, "continuations_exhausted");
+  } finally { ctx.cleanup(); }
 });
 
 test("Resume after continuations_exhausted grants a fresh unfinished allowance", async () => {
@@ -724,3 +764,134 @@ test("a fresh play skips named stages that are already finished", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Deterministic account telemetry without contacting any real provider. */
+async function usageProviders(capped: ProviderId[] = []) {
+  const { setAdapterOverride } = await import("../src/adapters/registry.ts");
+  const { resetProviderHealth } = await import("../src/providerHealth.ts");
+  resetProviderHealth();
+  const reset = new Date(Date.now() + 5 * 60 * 60_000).toISOString();
+  for (const id of PROVIDER_IDS) {
+    const available = id === "claude" || id === "codex";
+    setAdapterOverride(id, {
+      id, label: id, transport: "sdk", reportsTokens: true, permissionMode: "bypass", model: null,
+      checkAvailability: async () => ({ available, reason: null, version: null, binary: null }),
+      isAvailable: async () => available, getVersion: async () => null,
+      getAccountUsage: async (): Promise<ProviderUsage> => ({ provider: id, available: true, reason: null, plan: null,
+        fetchedAt: new Date().toISOString(), windows: [{ kind: "session", durationMinutes: 300, usedPercent: capped.includes(id) ? 100 : 15, resetsAt: reset }], credits: null }),
+      async *run() {}, interrupt: async () => {},
+    });
+  }
+  return { reset, restore() { for (const id of PROVIDER_IDS) setAdapterOverride(id, null); resetProviderHealth(); } };
+}
+
+test("suite assignment covers unassigned prompts while a prompt override selects its own model", async () => {
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    workspaces.updateSuitePipelineDefaults(ctx.suite.id, { defaultProvider: "codex", defaultModel: "suite-model", resetPromptAgents: true }, ctx.pipeline.id);
+    workspaces.upsertNamedPipelineRule(ctx.pipeline.id, ctx.prompts[1]!.id, { provider: "claude", model: "override-model" });
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.equal(started[0]?.provider, "codex");
+    assert.equal(started[0]?.model, "suite-model");
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(runId, { requestId: randomUUID(), expectedStatus: "IN_PROGRESS", status: "DONE", reason: "done", verificationSummary: "verified" });
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, processState: "done" });
+    assert.equal(started[1]?.provider, "claude");
+    assert.equal(started[1]?.model, "override-model");
+  } finally { ctx.cleanup(); }
+});
+
+test("automatic reassignment is off by default and a quota failure never switches provider", async () => {
+  const providers = await usageProviders();
+  const ctx = fixture();
+  const attempted: string[] = [];
+  setPipelineStationStarter(async (args) => { attempted.push(args.provider); throw new Error("You've hit your weekly limit"); });
+  try {
+    assert.equal(ctx.pipeline.autoReassign, false);
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.deepEqual(attempted, ["claude"]);
+    assert.equal(workspaces.activePipeline(ctx.suite.id)?.waitReason, "provider_unavailable");
+    assert.equal(workspaces.continuationCount(ctx.prompts[0]!.id), 0);
+    const { coolingFor } = await import("../src/providerHealth.ts");
+    assert.ok(Date.parse(coolingFor("claude")!.until) - Date.now() > 6 * 24 * 60 * 60_000);
+    // Disabling reassignment keeps the chosen agent even while it is cooling.
+    const started = stubStarts();
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.equal(started[0]?.provider, "claude");
+  } finally { providers.restore(); ctx.cleanup(); }
+});
+
+test("reported session cap skips the primary for future jobs and preserves saved assignments", async () => {
+  const providers = await usageProviders(["claude"]);
+  const ctx = fixture(2);
+  const started = stubStarts();
+  try {
+    workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
+    workspaces.updateSuitePipelineDefaults(ctx.suite.id, { defaultFallbackProviders: ["codex"] }, ctx.pipeline.id);
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.deepEqual(started.map((args) => args.provider), ["codex"]);
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.updateAgentStatus(runId, { requestId: randomUUID(), expectedStatus: "IN_PROGRESS", status: "DONE", reason: "done", verificationSummary: "verified" });
+    workspaces.finishAgentRun(runId, "done");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, processState: "done" });
+    assert.deepEqual(started.map((args) => args.provider), ["codex", "codex"]);
+    assert.equal(workspaces.pipelineRule(ctx.prompts[1]!.id, ctx.pipeline.id).provider, "claude");
+    const { coolingFor } = await import("../src/providerHealth.ts");
+    assert.equal(coolingFor("claude")?.until, providers.reset);
+    assert.equal(workspaces.continuationCount(ctx.prompts[0]!.id), 0);
+  } finally { providers.restore(); ctx.cleanup(); }
+});
+
+test("all reported caps park without launching a provider or spending continuations", async () => {
+  const providers = await usageProviders(["claude", "codex"]);
+  const ctx = fixture();
+  const started = stubStarts();
+  try {
+    workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
+    workspaces.updateSuitePipelineDefaults(ctx.suite.id, { defaultFallbackProviders: ["codex"] }, ctx.pipeline.id);
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    assert.equal(started.length, 0);
+    assert.equal(workspaces.activePipeline(ctx.suite.id)?.waitReason, "no_provider_available");
+    assert.equal(workspaces.continuationCount(ctx.prompts[0]!.id), 0);
+  } finally { providers.restore(); ctx.cleanup(); }
+});
+
+test("a quota error after a run starts switches agents without spending continuations", async () => {
+  const providers = await usageProviders();
+  const ctx = fixture();
+  const started = stubStarts();
+  try {
+    workspaces.updatePipeline(ctx.pipeline.id, { autoReassign: true });
+    workspaces.updateSuitePipelineDefaults(ctx.suite.id, { defaultFallbackProviders: ["codex"] }, ctx.pipeline.id);
+    await pipelineScheduler.playNamed(ctx.pipeline.id);
+    const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+    workspaces.recordAgentEvent(runId, { id: newId("evt"), runId, provider: "claude", model: null, timestamp: new Date().toISOString(), type: "error", payload: { message: "You've hit your weekly limit", fatal: true, detail: null } });
+    workspaces.finishAgentRun(runId, "error");
+    await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, processState: "error" });
+    assert.deepEqual(started.map((args) => args.provider), ["claude", "codex"]);
+    assert.equal(workspaces.continuationCount(ctx.prompts[0]!.id), 0);
+  } finally { providers.restore(); ctx.cleanup(); }
+});
+
+for (const paused of [false, true]) {
+  test(`quota failure with reassignment off ${paused ? "while paused resumes" : "parks"} on the assigned agent`, async () => {
+    const providers = await usageProviders();
+    const ctx = fixture();
+    const started = stubStarts();
+    try {
+      await pipelineScheduler.playNamed(ctx.pipeline.id);
+      const runId = workspaces.activePipeline(ctx.suite.id)!.currentRunId!;
+      if (paused) await pipelineScheduler.pauseNamed(ctx.pipeline.id);
+      workspaces.recordAgentEvent(runId, { id: newId("evt"), runId, provider: "claude", model: null, timestamp: new Date().toISOString(), type: "error", payload: { message: "5-hour usage limit reached", fatal: true, detail: null } });
+      workspaces.finishAgentRun(runId, "error");
+      await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId: ctx.prompts[0]!.id, processState: "error" });
+      assert.deepEqual(started.map((args) => args.provider), ["claude"]);
+      assert.equal(workspaces.activePipeline(ctx.suite.id)?.state, paused ? "PAUSED" : "WAITING_HUMAN");
+      assert.equal(workspaces.activePipeline(ctx.suite.id)?.waitReason, "provider_unavailable");
+      await pipelineScheduler.playNamed(ctx.pipeline.id);
+      assert.deepEqual(started.map((args) => args.provider), ["claude", "claude"]);
+    } finally { providers.restore(); ctx.cleanup(); }
+  });
+}

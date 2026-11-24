@@ -125,9 +125,11 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   assert.match(body, /canCheckpoint: true/);
   assert.match(body, /if \(capture !== null\) \{\s*const checkpoint=/);
   const onEnd = body.slice(firstIndex(body, "onEnd:"), running);
-  assert.ok(firstIndex(onEnd, "finishAgentRun") < firstIndex(onEnd, "finishClarification"));
-  assert.ok(firstIndex(onEnd, "finishClarification") < firstIndex(onEnd, "runHub.end"));
-  assert.ok(firstIndex(onEnd, "runHub.end") < firstIndex(onEnd, "onExecuteEnded"));
+  assert.ok(firstIndex(onEnd,"assertAttempt") < firstIndex(onEnd,"refreshChangeCapture"),"stale callbacks must be fenced before touching Git");
+  const currentEnd=onEnd.slice(firstIndex(onEnd,"const endedPromptId"));
+  assert.ok(firstIndex(currentEnd, "finishAgentRun") < firstIndex(currentEnd, "finishClarification"));
+  assert.ok(firstIndex(currentEnd, "finishClarification") < firstIndex(currentEnd, "runHub.end"));
+  assert.ok(firstIndex(currentEnd, "runHub.end") < firstIndex(currentEnd, "onExecuteEnded"));
 });
 
 test("startConsult does not take the writer lock and forces the consult sandbox", () => {

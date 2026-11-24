@@ -790,7 +790,7 @@ function AgentCard({
           {updating ? "Updating…" : info.transport === "sdk" ? "Update SDK" : "Update CLI"}
         </button>
         <span title="permission mode" className="min-w-0 flex-1 truncate text-right">
-          {info.permissionMode}
+          {info.permissionMode} · {info.commandEnforcement ?? "cooperative"} commands
         </span>
       </footer>
     </li>

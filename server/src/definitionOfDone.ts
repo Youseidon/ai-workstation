@@ -15,7 +15,8 @@
  */
 
 import { unmetCriteria, type DodEvaluation } from "@agent-console/shared";
-import { commandPassed, describeOutcome, runDodCommand } from "./dodCommands.ts";
+import { recipeFingerprint } from "./sourceFingerprint.ts";
+import { requestCommand } from "./commandTasks.ts";
 import { createLogger } from "./lib/logger.ts";
 import { workspaces } from "./workspaces.ts";
 
@@ -47,24 +48,7 @@ export async function runDefinitionOfDoneCommands(promptId: number, runId: strin
   for (const criterion of plan.criteria) {
     if (criterion.command === null) continue;
     try {
-      const outcome = await runDodCommand({
-        command: criterion.command,
-        workDirectory: plan.workDirectory,
-        cwd: criterion.cwd,
-        timeoutMs: criterion.timeoutMs,
-      });
-      const passed = commandPassed(outcome, criterion.expectExitCode);
-      workspaces.recordDodResult({
-        promptId,
-        criterionId: criterion.id,
-        runId,
-        source: "RUNNER",
-        result: passed ? "PASSED" : "FAILED",
-        evidence: describeOutcome(outcome, criterion.expectExitCode),
-        output: outcome.output,
-        exitCode: outcome.exitCode,
-      });
-      log.info(`dod ${passed ? "passed" : "FAILED"} prompt=${promptId} exit=${outcome.exitCode} ${criterion.command.slice(0, 80)}`);
+      await requestCommand(promptId,criterion.id,runId);
     } catch (error) {
       // Refused before it ran at all — a cwd outside the workspace is the one
       // that gets here. Recorded as a failure with the refusal as its reason,
@@ -97,10 +81,16 @@ export function recordReviewerVerdicts(args: {
   promptId: number;
   runId: string | null;
   checks: ReadonlyArray<{ criterionId: number | null; criterion: string; result: string; evidence: string }>;
+  inputHash?:string;environmentHash?:string;
 }): number {
   const criteria = new Map(
     workspaces.resolvedDefinitionOfDone(args.promptId).criteria.map((entry) => [entry.id, entry]),
   );
+  const seen=new Set<number>();
+  for(const check of args.checks) {
+    if(check.criterionId!==null && (!criteria.has(check.criterionId) || seen.has(check.criterionId))) return 0;
+    if(check.criterionId!==null) seen.add(check.criterionId);
+  }
   let filed = 0;
   for (const check of args.checks) {
     if (check.criterionId === null) continue;
@@ -114,6 +104,7 @@ export function recordReviewerVerdicts(args: {
       source: "REVIEWER",
       result,
       evidence: check.evidence === "" ? check.criterion : check.evidence,
+      inputHash:args.inputHash,environmentHash:args.environmentHash,recipeHash:recipeFingerprint(criterion),stableInputs:!!args.inputHash && !!args.environmentHash,
     });
     filed += 1;
   }

@@ -21,6 +21,14 @@ export interface StationActionContext {
   pipelineState: PipelineState | null;
   /** Re-read everything the board shows. Called after every action. */
   refresh(): Promise<unknown>;
+  /** Opens the explicit allocation review when an execution limit prevents Run. */
+  onAllocationRequired?(promptId: number): void;
+}
+
+class AllocationRequiredError extends Error {
+  constructor(readonly promptId: number) {
+    super("Review the proposed limits and approve a new allocation to continue from the saved work.");
+  }
 }
 
 /**
@@ -38,7 +46,7 @@ export type Gate = string | null;
  * picks the item back up in order), on a bare suite it starts a run for the
  * item directly.
  */
-export function useStationActions({ pipelineId, pipelineState, refresh }: StationActionContext) {
+export function useStationActions({ pipelineId, pipelineState, refresh, onAllocationRequired }: StationActionContext) {
   const console_ = useAgentConsole();
   const dialogs = useDialogs();
   const toast = useToast();
@@ -86,6 +94,18 @@ export function useStationActions({ pipelineId, pipelineState, refresh }: Statio
       if (success !== undefined) toast.success(success);
       return true;
     } catch (error) {
+      if (error instanceof AllocationRequiredError) {
+        onAllocationRequired?.(error.promptId);
+        toast.show({
+          title: "Approve a new allocation to continue",
+          description: error.message,
+          tone: "warning",
+          duration: 0,
+          ...(onAllocationRequired ? { action: { label: "Review new allocation", onClick: () => onAllocationRequired(error.promptId) } } : {}),
+        });
+        await refresh();
+        return false;
+      }
       toast.error("That did not work", error instanceof Error ? error.message : String(error));
       return false;
     } finally {
@@ -105,6 +125,7 @@ export function useStationActions({ pipelineId, pipelineState, refresh }: Statio
       if (playing) return;
       const run = await workspaceApi.playPipeline(SERVER_URL, pipelineId);
       if (run.state === "WAITING_HUMAN") {
+        if (run.waitReason === "execution:budget_exhausted") throw new AllocationRequiredError(item.prompt.id);
         return describeStopReason(run.waitReason) ?? "It parked again before any agent started.";
       }
       return;
@@ -113,7 +134,7 @@ export function useStationActions({ pipelineId, pipelineState, refresh }: Statio
   };
 
   const run = (item: OperationsPrompt) =>
-    act(async () => startItem(item), `Started ${label(item)}`);
+    act(async () => resume(item), pipelineId !== null ? "Pipeline is running" : `Run requested for ${label(item)}`);
 
   const stop = async (item: OperationsPrompt) => {
     const runId = item.prompt.currentRun?.id;

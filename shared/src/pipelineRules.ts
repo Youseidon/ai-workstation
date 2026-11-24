@@ -85,10 +85,9 @@ export interface PipelinePolicy {
   /** What a run interrupted by a server restart offers when you come back. */
   onRestart: RestartPolicy;
   /**
-   * How many *unfinished* endings (crash, unreported, verification-failed) one
-   * station may take before a reviewer is sent and the rail parks. An agent's
-   * own `agent-step continue` does not spend this allowance. An operator Resume
-   * grants a fresh count: see `continuationCount` in `workspaces.ts`.
+   * Maximum automatic successors, including agent-requested CONTINUE,
+   * crashes and unreported endings. An explicit operator Resume allocates
+   * another legacy allowance; adopted requirements also retain a root ledger.
    */
   maxContinuations: number;
   /**
@@ -203,6 +202,7 @@ export interface TransitionRow {
 
 /** Human sentences for the reasons the scheduler persists on a finished run. */
 export const STOP_REASON: Record<string, string> = {
+  "execution:budget_exhausted": "The approved execution or recovery allowance is exhausted. Work is preserved. Resume cannot renew it; a new explicit allocation is required.",
   operator_stop: "You stopped it.",
   server_restart: "The server restarted mid-run.",
   nothing_ready: "Nothing on the flowchart was ready to run.",
@@ -210,6 +210,7 @@ export const STOP_REASON: Record<string, string> = {
   on_done_stop: "A station's rule said stop when done.",
   skip_rest: "A station's rule skipped the rest of the stage.",
   no_provider: "A station had no agent assigned.",
+  provider_unavailable: "The assigned agent hit a limit or could not run. Automatic reassignment is off. Choose another agent, enable automatic reassignment, or Resume to retry.",
   start_failed: "The agent process failed to start.",
   no_provider_available:
     "Every configured provider is unavailable or cooling. Resume tries them again now; assign another first if they are still out.",
@@ -369,6 +370,20 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     policy: { kind: "locked", reason: "A held run can only be continued or ended." },
   },
   {
+    id: "waiting-execution-budget",
+    when: { runState: "WAITING_HUMAN", waitReason: "execution:budget_exhausted" },
+    condition: "Approved execution or recovery allowance exhausted",
+    label: "Allowance exhausted",
+    tone: "warning",
+    pulse: false,
+    primary: null,
+    secondary: ["stop"],
+    headline: (ctx) => `${where(ctx)} reached its approved execution or recovery limit.`,
+    hint: () => "Work is preserved. Review the execution exception and approve a new allocation before restarting. Resume cannot renew the allowance.",
+    because: () => STOP_REASON["execution:budget_exhausted"]!,
+    policy: { kind: "locked", reason: "Play and Resume retain all recorded consumption and cannot renew an exhausted approved allowance." },
+  },
+  {
     id: "waiting-human-recovery",
     when: { runState: "WAITING_HUMAN", stationState: "RECOVERY_NEEDED" },
     condition: "Blocked · the station lost its agent",
@@ -406,12 +421,12 @@ export const TRANSITIONS: readonly TransitionRow[] = [
   /*
    * The park reasons, one row each.
    *
-   * `human_question` is the only human stop the redesign keeps: an agent that
-   * posted BLOCKED itself. `review_running` and `continuations_exhausted` are
-   * what the continuation loop lands on once a station's allowance is spent —
-   * a read-only reviewer's say, and then the operator's. `station_rule_wait`
-   * falls through to the catch-all row below, since its sentence is exactly
-   * what that row already says for a station whose rule is "wait".
+   * `human_question` is kept so a rail already parked on an agent's question can
+   * still be answered. A new blocked post does not create this wait: the
+   * pipeline waives it and keeps going. `review_running` and
+   * `continuations_exhausted` are what the continuation loop lands on once a
+   * station's allowance is spent. `station_rule_wait` falls through to the
+   * catch-all row below; a wait-for-a-person rule no longer parks the rail.
    */
   {
     id: "waiting-human-question",
@@ -443,7 +458,7 @@ export const TRANSITIONS: readonly TransitionRow[] = [
       `${where(ctx)} ${endedAs(ctx)} after using up its continuations. A read-only agent is checking whether the work is actually finished.`,
     hint: () => "Nothing is needed yet — the rail acts on the verdict by itself. Resume overrides it.",
     because: (ctx) =>
-      `${where(ctx)} hit unfinished continuations the full number of times its allowance permits, so a reviewer is checking it before the run parks.`,
+      `${where(ctx)} hit automatic continuations the full number of times its allowance permits, so a reviewer is checking it before the run parks.`,
     policy: {
       kind: "setting",
       key: "pipeline.maxContinuations",
@@ -460,14 +475,28 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     primary: "resume",
     secondary: ["stop"],
     headline: (ctx) => `${where(ctx)} hit unfinished endings repeatedly and is still not finished.`,
-    hint: () => "Resume re-queues the station with a fresh unfinished-continuation allowance. No separate fix is required unless a real blocker is in the last brief.",
+    hint: () => "Resume re-queues the station with a fresh automatic-continuation allowance. No separate fix is required unless a real blocker is in the last brief.",
     because: (ctx) =>
-      `${where(ctx)} ${endedAs(ctx)} without settling (crash, unreported, or verification failure) until its unfinished continuations allowance ran out.`,
+      `${where(ctx)} ${endedAs(ctx)} with work remaining (CONTINUE, crash, unreported, or verification failure) until its automatic continuations allowance ran out.`,
     policy: {
       kind: "setting",
       key: "pipeline.maxContinuations",
       reason: "How many times a station is re-run on its own before it parks here is a house rule.",
     },
+  },
+  {
+    id: "waiting-human-provider-unavailable",
+    when: { runState: "WAITING_HUMAN", waitReason: "provider_unavailable" },
+    condition: "Blocked · assigned agent unavailable; automatic reassignment off",
+    label: "Needs you",
+    tone: "warning",
+    pulse: true,
+    primary: "resume",
+    secondary: ["stop"],
+    headline: (ctx) => `${where(ctx)}'s assigned agent hit a limit or could not run.`,
+    hint: () => "Choose another agent in Agent assignments or enable automatic reassignment, then Resume. Resume alone retries the assigned agent.",
+    because: () => "Automatic reassignment is off for this pipeline, so the assigned agent was kept.",
+    policy: { kind: "locked", reason: "Enable automatic reassignment in this pipeline's Agent assignments to allow provider changes." },
   },
   {
     id: "waiting-human-no-provider-available",
@@ -780,7 +809,7 @@ export function onUnfinishedConsequence(
   policy: PipelinePolicy,
 ): string {
   if (rule.onUnfinished === "wait") {
-    return landsIn(policy, "WAITING_HUMAN", "Parks the run and waits for you", { waitReason: "station_rule_wait" });
+    return "Does not stop the pipeline. A wait-for-a-person rule is ignored and the station keeps going.";
   }
   if (rule.onUnfinished === "skip") {
     return "Marks this station SKIPPED and carries on. Anything depending on it stays blocked.";

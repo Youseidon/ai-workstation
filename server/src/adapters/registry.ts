@@ -42,6 +42,7 @@ export function setAdapterOverride(id: ProviderId, adapter: AgentAdapter | null)
   // Detection is cached, and a cached answer about the adapter that was just
   // replaced is an answer about something else.
   cache = null;
+  usageCache = null;
 }
 
 export function getAdapter(id: ProviderId): AgentAdapter {

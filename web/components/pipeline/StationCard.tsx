@@ -45,6 +45,7 @@ export function StationCard({
   inherited = false,
   subSteps,
   onSelect,
+  onConfigure,
   onOpenSubPipeline,
   onRemove,
   removeLabel = "Remove",
@@ -60,6 +61,7 @@ export function StationCard({
   inherited?: boolean;
   subSteps?: SubStepSummary;
   onSelect?(): void;
+  onConfigure?(): void;
   onOpenSubPipeline?(): void;
   onRemove?(): void;
   removeLabel?: string;
@@ -122,7 +124,7 @@ export function StationCard({
           {inherited && (
             <span
               className="shrink-0 rounded-full px-1.5 py-px text-xs uppercase tracking-wider text-fg-dim ring-1 ring-inset ring-line"
-              title="Follows the parent station. Pick an agent in Config to pin one here."
+              title="Uses inherited agent settings. Choose an agent to override them for this prompt."
             >
               inherited
             </span>
@@ -136,6 +138,8 @@ export function StationCard({
           {item.continuation !== null && <> · cont. {item.continuation.attempt}/{item.continuation.of}</>}
           {rule.fallbackProviders.length > 0 && <> · ↪ {rule.fallbackProviders.join("→")}</>}
         </div>
+
+        {item.execution && <p className="mt-1 truncate text-xs text-fg-dim">{item.execution.engine === "shadow" ? "Shadow" : item.execution.phase === "delivered" ? "Verified delivery" : item.execution.phase === "verification" ? "Verification pending" : "Implementation"} · {item.execution.acceptedUnits.length} accepted · {item.execution.attempts}/{item.execution.policy.maxAttempts} attempts</p>}
 
         {/* Footer line: exactly one of these, so the card height never moves. */}
         <div className="mt-auto pt-1.5">
@@ -164,6 +168,10 @@ export function StationCard({
           ) : null}
         </div>
       </div>
+
+      {onConfigure !== undefined && <button type="button" onClick={onConfigure}
+        aria-label={`Configure agent for ${label}`}
+        className="absolute right-2 bottom-2 z-10 rounded-md bg-surface-2 px-2 py-1 text-xs text-accent ring-1 ring-inset ring-line hover:bg-surface-3">Agent</button>}
 
       {(onOpenSubPipeline !== undefined || canRemove) && (
         <div className="absolute top-1.5 right-1.5 z-10 hidden gap-1 group-focus-within:flex group-hover:flex">

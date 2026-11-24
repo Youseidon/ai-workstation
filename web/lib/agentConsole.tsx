@@ -42,6 +42,8 @@ export interface RunStatus {
   permissionMode: string | null;
   state: RunState;
   elapsedMs: number;
+  /** Server timestamp accompanying the last elapsed sample, for waiting clocks. */
+  clockAt?: string;
   usage: TokenUsage | null;
   detail: string | null;
   workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
@@ -54,10 +56,14 @@ export interface PendingLaunch {
   tabId: string;
   role: RunRole;
   prompt: string;
+  provider?: ProviderId;
+  model?: string | null;
+  workspaceId?: number;
 }
 
 export interface PendingAgentInput extends AgentInputRequestPayload {
   runId: string;
+  requestedAt?: string;
 }
 
 interface ConsoleState {
@@ -66,6 +72,8 @@ interface ConsoleState {
   items: LogItem[];
   /** Every run in flight, oldest first. Empty when nothing is running. */
   runs: RunStatus[];
+  /** Frozen fleet display until an authoritative hello arrives after a disconnect. */
+  disconnectedRuns: RunStatus[];
   /** Kept after a run ends so the status bar can show the final numbers. */
   lastRun: RunStatus | null;
   /** Last consult that ended, so the briefing pane can stay open. */
@@ -111,6 +119,7 @@ const initialState: ConsoleState = {
   providers: [],
   items: [],
   runs: [],
+  disconnectedRuns: [],
   lastRun: null,
   lastConsult: null,
   lastConsults: {},
@@ -143,7 +152,7 @@ function sessionAnnouncedBy(events: NormalizedEvent[]): string | undefined {
 function replayInputRequests(base: Record<string, PendingAgentInput>, events: NormalizedEvent[]): Record<string, PendingAgentInput> {
   const next = { ...base };
   for (const event of events) {
-    if (event.type === "input_request") next[event.runId] = { runId: event.runId, ...event.payload };
+    if (event.type === "input_request") next[event.runId] = { runId: event.runId, ...event.payload, requestedAt: event.timestamp };
     if (event.type === "input_response") delete next[event.runId];
   }
   return next;
@@ -193,6 +202,7 @@ function toRunStatus(snapshot: RunSnapshot): RunStatus {
     permissionMode: snapshot.permissionMode ?? null,
     state: snapshot.state,
     elapsedMs: snapshot.elapsedMs,
+    clockAt: [...snapshot.events].reverse().find(event => event.type === "status")?.timestamp,
     usage: snapshot.usage,
     detail: snapshot.detail,
     workspace: snapshot.workspace,
@@ -258,6 +268,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
         return {
           ...state,
           connection: action.value,
+          disconnectedRuns: state.runs,
           runs: [],
           lastRun: lastExecute ?? state.lastRun,
           lastConsult: lastConsultLive ?? state.lastConsult,
@@ -404,6 +415,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             providers: message.providers,
             items: [...finished, ...replayed],
             runs: message.activeRuns.map(toRunStatus),
+            disconnectedRuns: [],
             runWorkspaceIds: message.activeRuns.reduce<Record<string, number>>(
               (owners, snapshot) => ({ ...owners, [snapshot.runId]: snapshot.workspace.id }),
               state.runWorkspaceIds,
@@ -509,7 +521,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           const event = message.event;
           const items = applyEvent(state.items, event);
           if (event.type === "input_request") {
-            return { ...state, items, inputRequests: { ...state.inputRequests, [event.runId]: { runId: event.runId, ...event.payload } } };
+            return { ...state, items, inputRequests: { ...state.inputRequests, [event.runId]: { runId: event.runId, ...event.payload, requestedAt: event.timestamp } } };
           }
           if (event.type === "input_response") {
             const inputRequests = { ...state.inputRequests };
@@ -525,6 +537,7 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             ...current,
             state: event.payload.state,
             elapsedMs: event.payload.elapsedMs,
+            clockAt: event.timestamp,
             usage: mergeUsage(current.usage, event.payload.usage),
             detail: event.payload.detail ?? current.detail,
           };
@@ -761,7 +774,7 @@ export function AgentConsoleProvider({ children }: { children: ReactNode }) {
     const startOwnedRun = (message: Extract<ClientMessage, { kind: "run" }>, tabId?: string) => {
       const requestId = `launch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       if (tabId !== undefined) {
-        const launch = { requestId, tabId, role: message.role ?? "execute", prompt: message.prompt ?? "Saved work item" };
+        const launch = { requestId, tabId, role: message.role ?? "execute", prompt: message.prompt ?? "Saved work item", provider: message.provider, model: message.model, workspaceId: message.workspaceId };
         dispatch({ type: "launch_queued", launch });
         pendingTabsRef.current.push({
           workspaceId: message.workspaceId,

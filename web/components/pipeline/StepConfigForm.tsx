@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
 import { useModelSelection } from "@/lib/useModelSelection";
+import { ExecutionPanel } from "./ExecutionPanel";
 import { onDoneChip } from "./status";
 
 /**
@@ -24,7 +25,10 @@ export function StepConfigForm({
   models,
   policy,
   onUseStationSettings,
+  onUseSuiteSettings,
+  suiteProvider,
   onChange,
+  onExecutionChanged,
 }: {
   rule: PromptPipelineRule;
   item: OperationsPrompt;
@@ -34,12 +38,16 @@ export function StepConfigForm({
   models: ReturnType<typeof useModelSelection>;
   policy: PipelinePolicy;
   onUseStationSettings?(): void;
+  onUseSuiteSettings?(): void;
+  suiteProvider?: ProviderId | null;
   onChange(patch: Partial<Omit<PromptPipelineRule, "promptId">>): void;
+  onExecutionChanged?(): void;
 }) {
   const [modelFor, setModelFor] = useState<ProviderId | null>(null);
 
   return (
     <div className="space-y-4">
+      <ExecutionPanel key={item.prompt.id} promptId={item.prompt.id} onChanged={onExecutionChanged} />
       <div>
         <div className="text-xs uppercase tracking-[0.16em] text-fg-dim">
           {subStep ? "Sub-step" : "Station"}
@@ -67,6 +75,8 @@ export function StepConfigForm({
 
       <section>
         <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">AI for this step</div>
+        {!subStep && rule.provider === null && <p className="mb-2 text-xs text-fg-muted">Follows suite agent{suiteProvider ? ` · ${suiteProvider}` : " (choose one in Agent assignments)"}.</p>}
+        {!subStep && rule.provider !== null && onUseSuiteSettings !== undefined && <Button size="sm" variant="ghost" onClick={onUseSuiteSettings}>Use suite agent</Button>}
         <div className="flex flex-wrap gap-1">
           {PROVIDER_IDS.map((id) => {
             const info = providers.find((entry) => entry.id === id);
@@ -181,8 +191,8 @@ export function StepConfigForm({
       <section className={subStep ? "hidden" : undefined} aria-hidden={subStep || undefined}>
         <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">Fallback providers</div>
         <p className="mb-2 text-xs leading-4 text-fg-dim">
-          Ordered list tried when this station&apos;s agent cannot start or dies before doing any
-          work. Empty means the suite / house default (
+          Tried when automatic reassignment is enabled for this pipeline and this
+          agent hits a limit or becomes unavailable. Empty uses the suite / house order (
           {policy.fallbackProviders.join(" → ") || "none"}).
         </p>
         <div className="flex flex-wrap gap-1">

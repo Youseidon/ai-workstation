@@ -54,6 +54,8 @@ import { RunConfidenceStrip } from "./RunConfidenceStrip";
 import { SnakeFlow } from "./SnakeFlow";
 import { StationCard } from "./StationCard";
 import { StepConfigForm } from "./StepConfigForm";
+import { ExecutionAllocationDialog } from "./ExecutionPanel";
+import { AgentAssignments } from "./AgentAssignments";
 import { HumanGate } from "./station/HumanGate";
 import { collectInbox, NeedsYouInbox } from "./station/NeedsYouInbox";
 import { StationPanel, type StationTab } from "./station/StationPanel";
@@ -117,6 +119,7 @@ export function PipelineBoard({
   const [panelMode, setPanelMode] = useState<"item" | "pipeline">(() => (positiveInt(params.get("prompt")) !== null ? "item" : "pipeline"));
   const [pipelineTab, setPipelineTab] = useState<InspectorTab>("history");
   const [itemTab, setItemTab] = useState<StationTab>(() => (params.get("tab") === "conversation" ? "conversation" : "overview"));
+  const [allocationPromptId, setAllocationPromptId] = useState<number | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
   const [layout, setLayout] = useState<BoardLayout>(() => (params.get("view") === "list" ? "list" : "flow"));
   const [filter, setFilter] = useState<WorkFilter>(() => {
@@ -243,13 +246,7 @@ export function PipelineBoard({
     const ops = operationsById.get(id) ?? null;
     if (home === undefined && ops === null) return [];
     const saved = pipeline?.stages.find((stage) => stage.suiteId === id);
-    const providers = [
-      ...new Set(
-        (ops?.prompts ?? [])
-          .filter((item) => item.pipelineRule.enabled && item.pipelineRule.provider !== null)
-          .map((item) => item.pipelineRule.provider as ProviderId),
-      ),
-    ];
+    const providers = saved?.agentProviders ?? [];
     return [
       {
         suiteId: id,
@@ -368,7 +365,6 @@ export function PipelineBoard({
       : (console_.runs.find((run) => run.workspace.id === workspaceId && run.role === "execute") ?? null);
   const resumable = pipeline?.active != null;
 
-  const firstAvailable = console_.providers.find((item) => item.available)?.id ?? "claude";
   const suiteOps = activeSuiteId === null ? null : (operationsById.get(activeSuiteId) ?? null);
   const resumeSuiteOps = live?.currentSuiteId === null || live?.currentSuiteId === undefined ? null : (operationsById.get(live.currentSuiteId) ?? null);
   const resumeSuiteRun = resumeSuiteOps?.pipeline?.active ?? resumeSuiteOps?.pipeline?.latest ?? null;
@@ -750,6 +746,7 @@ export function PipelineBoard({
   const stationActions = useStationActions({
     pipelineId,
     pipelineState: live?.state ?? null,
+    onAllocationRequired: (promptId) => setAllocationPromptId(resumeItem?.prompt.id ?? promptId),
     refresh: async () => {
       await refreshCatalog();
       if (pipelineId !== null) setRuns(await workspaceApi.pipelineRuns(SERVER_URL, pipelineId));
@@ -1204,8 +1201,7 @@ export function PipelineBoard({
                 }}
                 onOpenPolicy={() => openPipelinePanel("policy")}
                 onFocusStations={() => {
-                  const first = displayedSteps[0];
-                  if (first !== undefined) selectItem(first.promptId, "config");
+                  document.getElementById("agent-assignments")?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
                 onDismiss={() => setGuideDismissed(true)}
               />
@@ -1223,6 +1219,7 @@ export function PipelineBoard({
                   busy={anyBusy}
                   onControl={runControl}
                   onExplain={() => openPipelinePanel("policy")}
+                  onReviewAllocation={live?.waitReason === "execution:budget_exhausted" && resumeItem ? () => setAllocationPromptId(resumeItem.prompt.id) : undefined}
                   inbox={
                     <NeedsYouInbox
                       entries={inboxEntries}
@@ -1235,7 +1232,9 @@ export function PipelineBoard({
                   }
                   rules={
                     <RunConfidenceStrip
+                      execution={resumeItem?.execution}
                       bare
+                      autoReassign={pipeline?.autoReassign ?? false}
                       policy={policy}
                       suiteFallbacks={
                         activeSuiteId === null
@@ -1302,6 +1301,35 @@ export function PipelineBoard({
               }}
             />
 
+            {pipeline !== null && activeSuiteId !== null && viewSuiteId === activeSuiteId && view !== null && pipeline.stages.some((stage) => stage.suiteId === activeSuiteId) && (
+              <AgentAssignments
+                pipeline={pipeline}
+                suiteName={suiteOps?.name ?? "this suite"}
+                view={view}
+                providers={console_.providers}
+                policy={policy}
+                busy={anyBusy}
+                promptLabel={(id) => {
+                  const prompt = promptsByIdDeep.get(id)?.prompt;
+                  return prompt?.externalKey ?? prompt?.title ?? `Prompt ${id}`;
+                }}
+                onDefaults={(patch) => void act(async () => {
+                  await workspaceApi.updatePipelineDefaults(SERVER_URL, pipeline.id, activeSuiteId, patch);
+                  await refreshFlowchart(activeSuiteId);
+                }, "Suite agent assignments saved")}
+                onAutoReassign={(autoReassign) => void act(async () => {
+                  const updated = await workspaceApi.updatePipeline(SERVER_URL, pipeline.id, { autoReassign });
+                  setPipelines((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
+                }, autoReassign ? "Automatic reassignment enabled" : "Automatic reassignment disabled")}
+                onPrompt={(id, choice, inheritFromParent) => void act(async () => {
+                  if (inheritFromParent) await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipeline.id, activeSuiteId, id, showEditor);
+                  else await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipeline.id, id, choice);
+                  await refreshFlowchart(activeSuiteId);
+                }, "Prompt agent saved")}
+                onConfigure={(id) => selectItem(id, "config")}
+              />
+            )}
+
             {suiteOps === null ? (
               <p className="text-sm text-fg-dim">
                 {showEditor ? "Tick suites in the sidebar to add them to this pipeline." : "Select a suite above to see its steps."}
@@ -1310,8 +1338,16 @@ export function PipelineBoard({
               <SubPipeline
                 trail={subTrail}
                 items={openSubNode.children}
-                parentRule={subRuleFor(openSubNode.prompt.id).rule}
-                ruleFor={subRuleFor}
+                parentRule={(() => {
+                  const rule = subRuleFor(openSubNode.prompt.id).rule;
+                  return rule.provider === null && view?.defaults.defaultProvider != null
+                    ? { ...rule, provider: view.defaults.defaultProvider, model: view.defaults.defaultModel } : rule;
+                })()}
+                ruleFor={(id) => {
+                  const entry = subRuleFor(id);
+                  return entry.rule.provider === null && view?.defaults.defaultProvider != null
+                    ? { ...entry, rule: { ...entry.rule, provider: view.defaults.defaultProvider, model: view.defaults.defaultModel } } : entry;
+                }}
                 activeRun={view?.active ?? null}
                 runs={console_.runs}
                 selectedId={selectedId}
@@ -1370,7 +1406,7 @@ export function PipelineBoard({
                                     SERVER_URL,
                                     pipelineId,
                                     suiteOps.id,
-                                    { promptId: prompt.id, provider: firstAvailable },
+                                    { promptId: prompt.id },
                                     true,
                                   );
                                   setView(result.flowchart);
@@ -1455,13 +1491,17 @@ export function PipelineBoard({
                             <StationCard
                               index={index}
                               item={item}
-                              rule={step}
+                              rule={step.provider === null && view?.defaults.defaultProvider != null
+                                ? { ...step, provider: view.defaults.defaultProvider, model: view.defaults.defaultModel }
+                                : step}
+                              inherited={step.provider === null && view?.defaults.defaultProvider != null}
                               current={view?.active?.currentPromptId === step.promptId}
                               occupancy={stationOccupancy(item, console_.runs, view?.active)}
                               selected={selectedId === step.promptId && panelOpen && panelMode === "item"}
                               readOnly={!showEditor}
                               subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
                               onSelect={() => selectItem(step.promptId)}
+                              onConfigure={() => selectItem(step.promptId, "config")}
                               onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
                               onRemove={
                                 showEditor
@@ -1540,6 +1580,12 @@ export function PipelineBoard({
                           providers={console_.providers}
                           models={models}
                           policy={policy}
+                          suiteProvider={view?.defaults.defaultProvider ?? null}
+                          onExecutionChanged={() => {void refreshCatalog();if(activeSuiteId !== null) void refreshFlowchart(activeSuiteId);}}
+                          onUseSuiteSettings={!configIsSubStep ? () => void act(async () => {
+                            await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, { provider: null, model: null });
+                            if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+                          }) : undefined}
                           onUseStationSettings={
                             configIsSubStep && !configInherited
                               ? () =>
@@ -1638,6 +1684,11 @@ export function PipelineBoard({
         }}
       />
 
+      <ExecutionAllocationDialog promptId={allocationPromptId} onClose={() => setAllocationPromptId(null)} onChanged={() => {
+          void refreshCatalog();
+          if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
+          if (pipelineId !== null) void workspaceApi.pipelineRuns(SERVER_URL, pipelineId).then(setRuns);
+        }}/>
       {saveOpen && (
         <Modal
           open

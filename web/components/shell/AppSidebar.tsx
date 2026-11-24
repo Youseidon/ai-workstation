@@ -5,7 +5,7 @@ import { ChatCollection } from "@/components/chat/ChatCollection";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import type { AppSection } from "@/lib/navigation";
 import { useAgentConsole } from "@/lib/useAgentConsole";
-import { RunAttentionSummary, attentionLabel, useAttentionCounts } from "./RunAttention";
+import { attentionLabel, useAttentionCounts } from "./RunAttention";
 import { SectionSwitcher } from "./SectionSwitcher";
 import { WorkspaceBeacon } from "./WorkspaceBeacon";
 
@@ -45,9 +45,9 @@ export function useSidebarState(pathname: string) {
   return useMemo(() => ({ collapsed, drawerOpen, mobile, open, close, closeDrawer }), [collapsed, drawerOpen, mobile, open, close, closeDrawer]);
 }
 
-interface BodyProps { section: AppSection | null; onClose(): void; onNavigate(): void; onAttention(): void; slot(node: HTMLDivElement | null): void }
+interface BodyProps { section: AppSection | null; onClose(): void; onNavigate(): void; slot(node: HTMLDivElement | null): void }
 
-function SidebarBody({ section, onClose, onNavigate, onAttention, slot }: BodyProps) {
+function SidebarBody({ section, onClose, onNavigate, slot }: BodyProps) {
   const { connection } = useAgentConsole();
   return <>
     <div className="app-sidebar-top">
@@ -56,11 +56,10 @@ function SidebarBody({ section, onClose, onNavigate, onAttention, slot }: BodyPr
         <button type="button" className="app-icon-button" aria-label="Close sidebar" onClick={onClose}>‹</button>
       </div>
       <SectionSwitcher current={section} onNavigate={onNavigate} />
-      {section?.scope === "app" && <p className="app-sidebar-scope">Settings here apply to every workspace.</p>}
+      {section?.scope === "app" && <p className="app-sidebar-scope">Fleet activity and settings cover every workspace.</p>}
     </div>
     {section?.id === "chat" ? <ChatCollection onNavigate={onNavigate} /> : <div ref={slot} className="app-sidebar-slot" />}
     <div className="app-sidebar-bottom">
-      <RunAttentionSummary onOpen={onAttention} />
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-fg-muted" role="status">{connection === "open" ? "Connected" : connection === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
         <ThemeToggle />
@@ -82,10 +81,9 @@ function trapFocus(event: KeyboardEvent<HTMLDialogElement>) {
  * The one application sidebar: a 272 px column on desktop with one collapse
  * preference, and a modal drawer below 1024 px. Its body is the same in both.
  */
-export function AppSidebar({ section, state, onAttention, asideSlot, drawerSlot }: {
+export function AppSidebar({ section, state, asideSlot, drawerSlot }: {
   section: AppSection | null;
   state: ReturnType<typeof useSidebarState>;
-  onAttention(): void;
   /** Ref callbacks for the collection slot in the desktop sidebar and in the mobile drawer. */
   asideSlot(node: HTMLDivElement | null): void;
   drawerSlot(node: HTMLDivElement | null): void;
@@ -102,11 +100,10 @@ export function AppSidebar({ section, state, onAttention, asideSlot, drawerSlot 
   }, [state.drawerOpen]);
 
   const close = () => { state.close(); requestAnimationFrame(() => trigger.current?.focus()); };
-  const attentionFromDrawer = () => { state.closeDrawer(); onAttention(); };
 
   return <>
     <aside className="app-sidebar" data-collapsed={state.collapsed} aria-label="Sidebar">
-      <SidebarBody section={section} onClose={close} onNavigate={() => {}} onAttention={onAttention} slot={asideSlot} />
+      <SidebarBody section={section} onClose={close} onNavigate={() => {}} slot={asideSlot} />
     </aside>
     <button ref={trigger} type="button" className="app-sidebar-toggle app-icon-button" data-collapsed={state.collapsed}
       aria-label={attention ? `Open sidebar (${attention})` : "Open sidebar"} aria-controls={drawerId} aria-expanded={state.mobile ? state.drawerOpen : !state.collapsed} onClick={state.open}>
@@ -115,7 +112,7 @@ export function AppSidebar({ section, state, onAttention, asideSlot, drawerSlot 
     <dialog ref={dialog} id={drawerId} className="app-sidebar-dialog" aria-label="Navigation"
       onCancel={state.closeDrawer} onClose={() => { state.closeDrawer(); trigger.current?.focus(); }}
       onClick={(event) => { if (event.target === event.currentTarget) state.closeDrawer(); }} onKeyDown={trapFocus}>
-      {state.drawerOpen && <div className="app-sidebar-drawer"><SidebarBody section={section} onClose={close} onNavigate={state.closeDrawer} onAttention={attentionFromDrawer} slot={drawerSlot} /></div>}
+      {state.drawerOpen && <div className="app-sidebar-drawer"><SidebarBody section={section} onClose={close} onNavigate={state.closeDrawer} slot={drawerSlot} /></div>}
     </dialog>
   </>;
 }

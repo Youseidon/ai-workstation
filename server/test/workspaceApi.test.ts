@@ -50,6 +50,41 @@ function fixture() {
   };
 }
 
+test("suite agent assignments are pipeline scoped, survive stage edits, and reset prompt agents in bulk", async () => {
+  const ctx = fixture();
+  const other = workspaces.createPipeline({ workspaceId: ctx.workspace.id, name: unique("other"), suiteIds: [ctx.suite.id] });
+  const foreign = fixture();
+  try {
+    assert.equal(ctx.pipeline.autoReassign, false);
+    const path = `/api/pipelines/${ctx.pipeline.id}/flowchart?suiteId=${ctx.suite.id}`;
+    workspaces.upsertNamedPipelineRule(ctx.pipeline.id, ctx.prompt.id, { onDone: "stop", onUnfinished: "wait" });
+    const assigned = await call("PATCH", path, { defaultProvider: "codex", defaultModel: "suite-model", defaultFallbackProviders: ["claude"], resetPromptAgents: true });
+    assert.equal(assigned.status, 200);
+    assert.equal((assigned.body.defaults as Record<string, unknown>).defaultProvider, "codex");
+    const rule = workspaces.pipelineRule(ctx.prompt.id, ctx.pipeline.id);
+    assert.equal(rule.provider, null);
+    assert.equal(rule.model, null);
+    assert.equal(rule.enabled, true);
+    assert.equal(rule.onDone, "stop");
+    assert.equal(rule.onUnfinished, "wait");
+    assert.equal(workspaces.namedPipelineFlowchart(other.id, ctx.suite.id).defaults.defaultProvider, null);
+    assert.equal(workspaces.suitePipelineDefaults(ctx.suite.id).defaultProvider, null);
+    workspaces.updatePipeline(ctx.pipeline.id, { suiteIds: [ctx.suite.id] });
+    assert.equal(workspaces.namedPipelineFlowchart(ctx.pipeline.id, ctx.suite.id).defaults.defaultModel, "suite-model");
+    assert.equal((await call("PATCH", path, { defaultProvider: "claude" })).status, 200);
+    assert.equal(workspaces.namedPipelineFlowchart(ctx.pipeline.id, ctx.suite.id).defaults.defaultModel, null);
+    const invalidPath = `/api/pipelines/${ctx.pipeline.id}/flowchart?suiteId=${foreign.suite.id}`;
+    assert.equal((await call("PATCH", invalidPath, { defaultProvider: "codex" })).status, 404);
+    assert.equal(workspaces.suitePipelineDefaults(foreign.suite.id).defaultProvider, null);
+    assert.equal((await call("PATCH", `/api/pipelines/${ctx.pipeline.id}`, { autoReassign: "yes" })).status, 422);
+    assert.equal((await call("PATCH", `/api/pipelines/${ctx.pipeline.id}`, { autoReassign: true })).status, 200);
+    assert.equal(workspaces.getPipeline(ctx.pipeline.id).autoReassign, true);
+    assert.equal(workspaces.getPipeline(other.id).autoReassign, false);
+    assert.equal((await call("PATCH", `/api/pipelines/${ctx.pipeline.id}`, { autoReassign: false })).status, 200);
+    assert.equal(workspaces.getPipeline(ctx.pipeline.id).autoReassign, false);
+  } finally { ctx.cleanup(); foreign.cleanup(); }
+});
+
 test("Chat library routes persist metadata, page history and enforce workspace ownership", async () => {
   const ctx=fixture(), other=fixture();
   const threadId=`review:${unique("thread")}`;
@@ -134,6 +169,11 @@ test("a sub-step is patched and reset over the same routes as a station", async 
       workspaces.enabledNamedPipelineSteps(ctx.pipeline.id, ctx.suite.id).map((step) => step.promptId),
       [ctx.prompt.id],
     );
+    workspaces.upsertNamedPipelineRule(ctx.pipeline.id, child, { provider: "codex" });
+    const all = await call("PATCH", `/api/pipelines/${ctx.pipeline.id}/flowchart?suiteId=${ctx.suite.id}`, { defaultProvider: "claude", resetPromptAgents: true });
+    assert.equal(all.status, 200);
+    assert.equal(workspaces.pipelineRule(ctx.prompt.id, ctx.pipeline.id).provider, null);
+    assert.equal(workspaces.namedPipelineSubStepRules(ctx.pipeline.id, ctx.suite.id).find((entry) => entry.promptId === child)?.inherited, true);
   } finally {
     ctx.cleanup();
   }

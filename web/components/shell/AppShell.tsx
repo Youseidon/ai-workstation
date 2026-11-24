@@ -6,7 +6,8 @@ import { ChatStage } from "@/components/chat/ChatStage";
 import { ChatProvider, useChat } from "@/lib/chatController";
 import { sectionFor } from "@/lib/navigation";
 import { AppSidebar, useSidebarState } from "./AppSidebar";
-import { RunAttentionDrawer } from "./RunAttention";
+import { LiveFleetRail } from "./LiveFleetRail";
+import { FleetProvider } from "@/lib/fleetContext";
 import { DetailLayerProvider } from "./DetailDrawer";
 import { SidebarSlotProvider } from "./SidebarCollection";
 
@@ -44,11 +45,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const section = sectionFor(pathname);
   const chat = section?.id === "chat";
   const sidebar = useSidebarState(pathname);
-  const [attentionOpen, setAttentionOpen] = useState(false);
   const [asideSlot, setAsideSlot] = useState<HTMLDivElement | null>(null);
   const [drawerSlot, setDrawerSlot] = useState<HTMLDivElement | null>(null);
   const [detailLayer, setDetailLayer] = useState<HTMLDivElement | null>(null);
-  const detailLayerValue = useMemo(() => ({ target: detailLayer, suspended: attentionOpen }), [detailLayer, attentionOpen]);
+  const detailLayerValue = useMemo(() => ({ target: detailLayer, suspended: false }), [detailLayer]);
   const slot = useMemo(() => ({
     target: sidebar.drawerOpen && drawerSlot !== null ? drawerSlot : asideSlot,
     onNavigate: sidebar.closeDrawer,
@@ -64,22 +64,26 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
+    <FleetProvider>
     <ChatProvider active={chat}>
       <Suspense fallback={null}><ChatLinkSync active={chat} /></Suspense>
       <SidebarSlotProvider value={slot}>
       <DetailLayerProvider value={detailLayerValue}>
       <div className="app-shell" data-collapsed={sidebar.collapsed}>
-        <AppSidebar section={section} state={sidebar} onAttention={() => setAttentionOpen(true)} asideSlot={setAsideSlot} drawerSlot={setDrawerSlot} />
+        <AppSidebar section={section} state={sidebar} asideSlot={setAsideSlot} drawerSlot={setDrawerSlot} />
         <main className="app-main">
+          <LiveFleetRail />
+          <div className="app-workspace">
           <ChatStageMount visible={chat} />
           <div className="app-route" hidden={chat}>{children}</div>
+          </div>
         </main>
         {/* The shared detail drawer docks here; routes portal their detail into it. */}
         <div ref={setDetailLayer} className="app-detail-layer" />
-        <RunAttentionDrawer open={attentionOpen} onClose={() => setAttentionOpen(false)} />
       </div>
       </DetailLayerProvider>
       </SidebarSlotProvider>
     </ChatProvider>
+    </FleetProvider>
   );
 }

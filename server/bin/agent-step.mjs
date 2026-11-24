@@ -30,6 +30,9 @@ const USAGE = `agent-step — record progress and status for this work item.
                                             (--full: uncapped remarks and clarifications)
   agent-step state                          Everything recorded against it so far
   agent-step remark --kind KIND --text "…"  Bank what you just verified
+  agent-step execution                     Read contract, plan and remaining envelope
+  agent-step check --criterion ID          Request a server-owned verification recipe
+  agent-step plan --file plan.json         Propose remaining work; additionalCriteria may quote original spans naming future verifiers
   agent-step checkpoint --message "…"       Commit this run's workspace changes
   agent-step ask --file questions.json       Pause and ask the operator 1–8 questions
   agent-step inbox                          Read messages the operator sent while you
@@ -43,7 +46,7 @@ const USAGE = `agent-step — record progress and status for this work item.
   agent-step blocked --reason "…" --action "…"
                                             Stop for a human: evidence, and the exact
                                             action only they can take
-  agent-step continue --remaining "…" [--verified "…"]
+  agent-step continue --remaining "…" [--verified "…"] [--file continuation.json]
                                             Hand over: what still has to happen, as
                                             instructions for the run that resumes this
                                             item on the same working tree
@@ -220,7 +223,7 @@ async function checkInbox({ quietWhenEmpty }) {
 async function post(path, body) {
   const response = await send(path, {
     method: "POST",
-    body: JSON.stringify({ requestId: randomUUID(), ...body }),
+    body: JSON.stringify({ requestId: typeof args["request-id"]==="string"?args["request-id"]:randomUUID(),expectedGeneration:process.env.AGENT_CONSOLE_EXECUTION_GENERATION===undefined?undefined:Number(process.env.AGENT_CONSOLE_EXECUTION_GENERATION),planRevision:process.env.AGENT_CONSOLE_PLAN_REVISION===undefined?undefined:Number(process.env.AGENT_CONSOLE_PLAN_REVISION), ...body }),
   });
   const text = await response.text();
   let parsed = null;
@@ -283,6 +286,17 @@ switch (command) {
     break;
   }
   case "state": await get("/state"); break;
+  case "execution": await get("/execution"); break;
+  case "check": {
+    const criterionId=Number(args.criterion);
+    if(!Number.isSafeInteger(criterionId)) fail("agent-step check needs --criterion <command criterion ID>");
+    await post("/check",{criterionId});break;
+  }
+  case "plan": {
+    if(typeof args.file!=="string") fail("agent-step plan needs --file plan.json");
+    const plan=JSON.parse(readFileSync(args.file,"utf8"));
+    await post("/plan",{plan});break;
+  }
   case "inbox": await checkInbox({ quietWhenEmpty: false }); break;
   case "reply": {
     const text = args.text ?? args.message ?? rest.filter((value) => !value.startsWith("--")).join(" ");
@@ -356,14 +370,15 @@ switch (command) {
     break;
   }
   case "continue": {
-    const remaining = args.remaining ?? args.reason;
+    const continuation=typeof args.file==="string"?JSON.parse(readFileSync(args.file,"utf8")):{};
+    const remaining = args.remaining ?? args.reason ?? continuation.nextAction;
     if (typeof remaining !== "string" || remaining.trim() === "") {
       fail("agent-step continue needs --remaining \"what still has to happen\".\n"
         + "  Write it as instructions for the run that picks this up on the same working\n"
         + "  tree: files, routes, commands, and what \"done\" looks like.");
     }
     await post("/status", {
-      expectedStatus: "IN_PROGRESS", status: "CONTINUE",
+      ...continuation, expectedStatus: "IN_PROGRESS", status: "CONTINUE",
       reason: remaining,
       verificationSummary: typeof args.verified === "string" ? args.verified : "",
     });
@@ -375,7 +390,7 @@ switch (command) {
     try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
     const children = Array.isArray(payload) ? payload : payload.children;
     if (!Array.isArray(children)) fail("The file must be a JSON array of {title, content}, or an object with a 'children' array.");
-    await post("/decompose", { children, resumeBrief: payload.resumeBrief ?? args.brief ?? "" });
+    await post("/decompose", { children, resumeBrief: payload.resumeBrief ?? args.brief ?? "", plan:payload.plan });
     break;
   }
   case "propose-program": {

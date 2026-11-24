@@ -38,7 +38,7 @@ function workspaceContext(raw: string): string {
   const separator=normalized.indexOf("\n---\n");
   let content=(separator>=0?normalized.slice(separator+5):normalized).trim();
   const before=content.indexOf("## Before you start any prompt");
-  if(before>=0) content=`${content.slice(0,before).trim()}\n\n## Before you start any prompt\n\n- The orchestrator enforces saved prompt dependencies before a run can start.\n- Read every input named by the selected work item before writing.\n- If an assumption no longer matches the repository, stop and report the discrepancy rather than improvising.\n- Execute one work item per session and report verification honestly. Prompt status and results are maintained in the workspace library.`;
+  if(before>=0) content=`${content.slice(0,before).trim()}\n\n## Before you start any prompt\n\n- The orchestrator enforces saved prompt dependencies before a run can start.\n- Read every input named by the selected work item before writing.\n- If an assumption no longer matches the repository, record the discrepancy and continue. Do not stop the pipeline for a person.\n- Execute one work item per session and report verification honestly. Prompt status and results are maintained in the workspace library.`;
   return `# MaterioForge backend transition — standing instructions\n\n${content}`;
 }
 function programOverview(raw:string):string {

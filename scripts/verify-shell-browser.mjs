@@ -149,6 +149,8 @@ await shellContract('/report');
 await collection('Report sections').getByRole('button',{name:'Sessions'}).click();
 assert(await page.getByRole('button',{name:'Sessions',pressed:true}).count()===1,'a report link selects its breakdown');
 await page.goto(`${base}/agents`);
+await collection('Agent fleet').getByRole('button',{name:'All agents'}).waitFor();
+await page.getByRole('link',{name:'Configuration',exact:true}).click();
 await collection('Agents settings').getByRole('button',{name:'Model access'}).waitFor();
 await shellContract('/agents');
 assert(await page.locator('.content-title').getByRole('button').count()===0,'Agents actions sit with the provider list, not in the title');
@@ -189,25 +191,22 @@ await live.routeWebSocket(/\/ws$/,ws=>{
  ws.send(JSON.stringify({kind:'hello',providers:[],activeRuns:[liveRun]}));
 });
 await live.goto(`${base}/pipeline/7?workspace=1`);
-const summary=live.getByRole('button',{name:'1 agent working · 1 needs you'});
-await summary.waitFor();
+const rail=live.getByRole('region',{name:'Live fleet across all workspaces'});
+await rail.getByRole('button',{name:'Answer request',exact:true}).waitFor();
 await live.locator('dialog.app-detail[open]').waitFor();
-await summary.click();
-const attention=live.getByRole('dialog',{name:'Running work'});
-await attention.waitFor();
-assert(!await live.locator('dialog.app-detail').evaluate(el=>el.open),'only one shared drawer shows at a time');
-await attention.getByText('Merge into main?').waitFor();
-await attention.getByRole('radio',{name:/Yes/}).click();
-await attention.getByRole('button',{name:/Send answers/}).click();
-await live.waitForFunction(()=>true);
-assert(sent.some(m=>m.kind==='input_response'&&m.runId==='run-live'&&m.answers?.q1==='yes'),'a decision answered in the drawer reaches the run');
-await attention.getByRole('button',{name:'Stop',exact:true}).click();
-assert(sent.some(m=>m.kind==='interrupt'&&m.runId==='run-live'),'Stop in the drawer interrupts that run');
-assert(await attention.getByRole('link',{name:'Open',exact:true}).getAttribute('href')==='/activity?workspace=1&run=run-live','Open goes to the run\'s owning record');
-await attention.getByRole('button',{name:'Close running work'}).click();
-await live.locator('dialog.app-detail[open]').waitFor();
+await rail.getByRole('button',{name:'Answer request',exact:true}).click();
+await rail.getByText('Merge into main?').waitFor();
+await rail.getByRole('radio',{name:/Yes/}).click();
+await rail.getByRole('button',{name:/Send answers/}).click();
+assert(sent.some(m=>m.kind==='input_response'&&m.runId==='run-live'&&m.answers?.q1==='yes'),'an inline fleet decision reaches the correct run');
+await rail.getByRole('button',{name:'Stop codex: Ship the shell',exact:true}).click();
+assert(sent.some(m=>m.kind==='interrupt'&&m.runId==='run-live'),'Stop in the rail interrupts that run');
+assert(await rail.getByRole('link',{name:/^Open session/}).getAttribute('href')==='/activity?workspace=1&run=run-live','Open goes to the owning record');
 await live.setViewportSize({width:375,height:760});
-assert(await live.getByRole('button',{name:'Open sidebar (1 agent working · 1 needs you)'}).isVisible(),'attention stays visible on the mobile trigger');
+const detail=live.locator('dialog.app-detail[open]');
+if(await detail.count()) await live.keyboard.press('Escape');
+assert(await live.getByRole('button',{name:'Open sidebar (1 active agent · 1 needs you)'}).isVisible(),'attention stays visible on the mobile trigger');
+assert(await rail.isVisible(),'the live fleet remains visible on mobile');
 await live.screenshot({path:join(output,'attention-mobile.png')});
 
 // Chat stays mounted across sections: its composer is the same element after a round trip.
@@ -227,6 +226,6 @@ assert(await prompt.evaluate(el=>el===window.__composer),'the conversation stays
 assert(await prompt.inputValue()==='Draft kept across sections','the draft survives section navigation');
 
 assert(errors.length===0,errors.join('\n'));
-console.log('PASS shared shell: Activity, Workspaces, Changes, Pipeline, Pipeline editor, Report and Agents in the one sidebar, 16px type scale, docked/modal detail drawer, unsaved-changes guard and recovery, live attention drawer (answer, Stop, owner link, one drawer at a time), Chat kept mounted across sections, 320px reflow in three themes, URL-owned selection, filters, workspace agreement, back navigation and mobile drawer');
+console.log('PASS shared shell: Activity, Workspaces, Changes, Pipeline, Pipeline editor, Report and Agents in the one sidebar, 16px type scale, docked/modal detail drawer, unsaved-changes guard and recovery, live fleet rail (inline answer, Stop, owner link), Chat kept mounted across sections, 320px reflow in three themes, URL-owned selection, filters, workspace agreement, back navigation and mobile drawer');
 console.log('Browser artifacts:',output);
 await browser.close();

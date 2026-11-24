@@ -81,7 +81,9 @@ const WAIT_REASONS: Array<string | null> = [
   "review_running",
   "continuations_exhausted",
   "no_provider_available",
+  "provider_unavailable",
   "worktree_dirty",
+  "execution:budget_exhausted",
   "start_refused:git_repository_busy",
 ];
 
@@ -431,6 +433,17 @@ test("stop reasons: known translated, unknown passed through, null omitted", () 
   assert.match(describeStopReason("start_refused:git_repository_busy")!, /still writing in this Git repository/);
   assert.equal(describeStopReason("start_refused:odd_code"), `${STOP_REASON.start_refused} (odd_code)`);
   assert.equal(describeStopReason(null), null);
+  assert.match(describeStopReason("execution:budget_exhausted")!,/Resume cannot renew it/);
+});
+
+test("an exhausted execution allowance offers no Resume or recovery reset",()=>{
+  for(const stationState of ["UNREPORTED","RECOVERY_NEEDED","NEEDS_REVIEW"] as const) {
+    const row=matchTransition(context({runState:"WAITING_HUMAN",waitReason:"execution:budget_exhausted",stationState}));
+    assert.equal(row.id,"waiting-execution-budget");
+    assert.equal(row.primary,null);
+    assert.deepEqual(row.secondary,["stop"]);
+    assert.match(row.hint(context()),/approve a new allocation/);
+  }
 });
 
 /*
@@ -477,11 +490,14 @@ test("every rule choice explains where it lands, naming real controls", () => {
     assert.ok(text.length > 0, `${onUnfinished} has no consequence`);
     assert.doesNotMatch(text, /\bnull\b|\bundefined\b/, `${onUnfinished} leaked a placeholder`);
   }
-  // The controls named must be ones the table can actually offer.
-  const parked = onUnfinishedConsequence({ onUnfinished: "wait" }, DEFAULT_PIPELINE_POLICY);
+  // A spent continuation allowance still parks, and names the controls that move it.
+  const parked = onUnfinishedConsequence({ onUnfinished: "continue" }, DEFAULT_PIPELINE_POLICY);
   for (const named of ["Resume", "Stop"]) {
-    assert.ok(labels.has(named) && parked.includes(named), `parking should name ${named}`);
+    assert.ok(labels.has(named) && parked.includes(named), `a spent allowance should name ${named}`);
   }
+  const waited = onUnfinishedConsequence({ onUnfinished: "wait" }, DEFAULT_PIPELINE_POLICY);
+  assert.match(waited, /does not stop the pipeline/i);
+  assert.doesNotMatch(waited, /\bResume\b|\bStop\b/);
 });
 
 test("the continue consequence counts the operator's own limit", () => {

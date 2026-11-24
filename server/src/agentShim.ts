@@ -35,7 +35,7 @@ function runDirectory(runId: string): string {
  * written. Null is not fatal: the raw HTTP contract is still in the prompt, so
  * a run whose shim could not be created is degraded, not broken.
  */
-export function createAgentShim(args: { runId: string; token: string; port: number }): string | null {
+export function createAgentShim(args: { runId: string; token: string; port: number; generation?:number; planRevision?:number }): string | null {
   try {
     const directory = runDirectory(args.runId);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -46,6 +46,8 @@ export function createAgentShim(args: { runId: string; token: string; port: numb
       "#!/bin/sh",
       `AGENT_CONSOLE_RUN_URL='http://127.0.0.1:${args.port}/api/agent/runs/${args.runId}' \\`,
       `AGENT_CONSOLE_RUN_TOKEN='${args.token}' \\`,
+      ...(args.generation===undefined?[]:[`AGENT_CONSOLE_EXECUTION_GENERATION='${args.generation}' \\`]),
+      ...(args.planRevision===undefined?[]:[`AGENT_CONSOLE_PLAN_REVISION='${args.planRevision}' \\`]),
       `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(SHIM)} "$@"`,
       "",
     ].join("\n");

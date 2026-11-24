@@ -119,6 +119,15 @@ describe("run budgets", () => {
     assert.equal(metrics.stopReason, "budget_no_progress:4");
   });
 
+  test("successful identical polls do not erase a thrash loop", async () => {
+    const events = Array.from({ length: 20 }, (_, index) => [
+      { type: "tool_use", payload: { toolUseId: `poll${index}`, name: "Bash", summary: "poll", input: { command: "read-status" } } } as AdapterEvent,
+      { type: "tool_result", payload: { toolUseId: `poll${index}`, name: "Bash", isError: false, summary: "running", output: "still running", exitCode: 0 } } as AdapterEvent,
+    ]).flat();
+    const { metrics } = await run(events, { ...unlimited, maxToolCalls: 20, noProgressToolCalls: 4 });
+    assert.equal(metrics.stopReason, "budget_no_progress:4");
+  });
+
   test("varied work is never mistaken for a thrash loop", async () => {
     const events = Array.from({ length: 12 }, (_, index) => toolCall(index)).flat();
     const { metrics } = await run(events, { ...unlimited, noProgressToolCalls: 4, maxToolCalls: 12 });

@@ -7,6 +7,8 @@ import {
   RUN_ROLES,
   estimateCost,
   formatTokens,
+  isProviderId,
+  modelLabel,
   formatUsd,
   mergeUsage,
   usageFromEvents,
@@ -356,7 +358,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     const summaries = (sessions ?? [])
       .filter((session) => selected.runIds.includes(session.id))
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
-    return summaries.reduce<LogItem[]>((items, summary) => {
+    const captured = summaries.reduce<LogItem[]>((items, summary) => {
       const liveItems = runs.some((run) => run.runId === summary.id) ? itemsFor(summary.id) : null;
       if (liveItems !== null) return [...items, ...liveItems];
       const detail = detailById[summary.id];
@@ -374,6 +376,10 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
           : items;
       return (detail?.events ?? []).reduce<LogItem[]>((next, event) => applyEvent(next, event), seeded);
     }, []);
+    // A socket run can arrive before the next session-list response. Show its
+    // stream immediately instead of waiting for the history poll to catch up.
+    const listed = new Set(summaries.map(session => session.id));
+    return [...captured, ...selected.runIds.filter(runId => !listed.has(runId)).flatMap(runId => itemsFor(runId))];
   }, [selected, sessions, runs, detailById, itemsFor]);
 
   const selectedUsage = useMemo(() => (selected === null ? null : usageForRow(selected)), [selected]);
@@ -444,8 +450,10 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
       </SidebarCollection>
 
       <div className="min-h-0 flex-1">
-        <section aria-label="Selected activity" className="h-full min-h-0 min-w-0 overflow-y-auto px-5 pb-6 max-sm:px-4">
+        <section aria-label="Selected activity" className="activity-selected h-full min-h-0 min-w-0 px-5 max-sm:px-4">
           {selected === null ? (
+            <>
+            <h1 className="py-3 text-base font-medium">Activity</h1>
             <p className="text-sm text-fg-muted" role="status">
               {loadError !== null
                 ? "Session history could not be loaded."
@@ -455,121 +463,80 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                     ? "No sessions match the current filters."
                     : "No conversations or runs in this workspace yet."}
             </p>
+            </>
           ) : (
-            <div className="flex h-full w-full flex-col gap-4">
-              <div className="flex flex-wrap items-start gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={stateTone(selected.state)} dot pulse={selected.live}>
-                      {normalizeState(selected.state).toLowerCase()}
-                    </Badge>
-                    <Badge tone="neutral">{selected.role}</Badge>
-                    {selected.turnCount > 1 && <Badge tone="info">{selected.turnCount} turns</Badge>}
+            <div className="activity-session" key={selected.id}>
+              <header className="activity-session-header">
+                <div className="activity-session-heading">
+                  <h1 title={`${selected.promptKey !== null ? `${selected.promptKey} — ` : ""}${selected.promptTitle}`}>
+                    {selected.promptKey !== null && `${selected.promptKey} — `}{selected.promptTitle}
+                  </h1>
+                  <Badge tone={stateTone(selected.state)} dot pulse={selected.live}>
+                    {selected.live ? "live" : normalizeState(selected.state).toLowerCase()}
+                  </Badge>
+                </div>
+                <div className="activity-session-toolbar">
+                  <div className="activity-session-identity">
+                    <span>{selected.providers.map(id => console_.providers.find(provider => provider.id === id)?.label ?? id).join(" + ")}</span>
+                    <span title={selected.model ?? "The provider did not report a model"}>{(isProviderId(selected.provider) ? modelLabel(selected.provider, selected.model) : selected.model) ?? "Model not reported"}</span>
+                    {sessionEndReason(selected.state, selected.events) !== null && <span className="text-warning">{sessionEndReason(selected.state, selected.events)}</span>}
+                  </div>
+                  <div className="activity-session-actions">
+                    {selected.changes !== null && selected.changes.filesChanged > 0 && <Link href={`/changes/${encodeURIComponent(selected.changes.runId)}`}>Review changes ↗</Link>}
+                    <Link href={`/?workspace=${selected.workspaceId}${selected.threadId !== null ? `&thread=${encodeURIComponent(selected.threadId)}` : selected.promptId !== null ? `&prompt=${selected.promptId}` : ""}`}>
+                      {selected.threadId === null ? "Open in Chat" : "Continue in Chat"} ↗
+                    </Link>
+                  </div>
+                </div>
+              </header>
+              <details className="activity-session-details">
+                <summary>Session details</summary>
+                <div className="activity-session-metadata">
+                  <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <Meta label={selected.providers.length > 1 ? "Agents" : "Agent"} value={selected.providers.join(", ")} />
+                    <Meta label="Model" value={selected.model ?? "Not reported"} />
+                    <Meta label="Role" value={selected.role} />
+                    <Meta label="Workspace" value={selected.workspaceName} />
+                    {selected.programName !== "" && <Meta label="Program / Suite" value={`${selected.programName} / ${selected.suiteName}`} />}
+                    {selected.turnCount > 1 && <Meta label="Turns" value={String(selected.turnCount)} />}
+                    {selected.changes?.state === "UNCHANGED" && <Meta label="Code changes" value="No code changes" />}
                     {sessionEndReason(selected.state, selected.events) !== null && (
-                      <Badge tone="neutral">{sessionEndReason(selected.state, selected.events)}</Badge>
+                      <Meta label="End reason" value={sessionEndReason(selected.state, selected.events)!} />
                     )}
-                    {selected.live && (
-                      <Badge tone="info" dot pulse>
-                        live
-                      </Badge>
-                    )}
-                    {selected.changes?.state === "UNCHANGED" && (
-                      <Badge tone="neutral">No code changes</Badge>
-                    )}
-                  </div>
-                  <h2 className="mt-1.5 text-xl text-fg">
-                    {selected.promptKey !== null && `${selected.promptKey} — `}
-                    {selected.promptTitle}
-                  </h2>
-                  <p className="mt-1 text-xs text-fg-dim">
-                    {selected.workspaceName}
-                    {selected.programName !== "" && ` · ${selected.programName}`}
-                    {selected.suiteName !== "" && ` / ${selected.suiteName}`}
-                  </p>
+                    <Meta label="Started" value={new Date(selected.startedAt).toLocaleString()} />
+                    <Meta
+                      label="Ended"
+                      value={
+                        selected.endedAt === null
+                          ? selected.live
+                            ? "in progress"
+                            : "—"
+                          : new Date(selected.endedAt).toLocaleString()
+                      }
+                    />
+                    <Meta
+                      label="Tokens"
+                      value={
+                        selectedUsage === null
+                          ? "—"
+                          : `${formatTokens(selectedUsage.totalTokens)} (${formatTokens(selectedUsage.inputTokens)} in · ${formatTokens(selectedUsage.outputTokens)} out)`
+                      }
+                    />
+                    <Meta
+                      label="Est. cost"
+                      value={selectedCost?.usd == null ? "—" : formatUsd(selectedCost.usd)}
+                      hint={selectedCost?.usd == null ? "Provider did not report usage" : "API list-rate estimate"}
+                    />
+                    {selected.threadId !== null && <Meta label="Thread id" value={selected.threadId} mono />}
+                    <Meta label={selected.runIds.length > 1 ? "Latest run id" : "Run id"} value={selected.id} mono />
+                    <Meta label="Working directory" value={selected.workDirectory} mono />
+                  </dl>
+                  {href !== null && <Link href={href} className="activity-work-item">Open work item ↗</Link>}
                 </div>
-                <div className="ml-auto flex flex-wrap items-center gap-2">
-                  {selected.changes !== null && selected.changes.filesChanged > 0 && (
-                    <Link
-                      href={`/changes/${encodeURIComponent(selected.changes.runId)}`}
-                      className="rounded-md bg-accent px-3 py-1.5 text-xs text-white transition-colors hover:opacity-90"
-                    >
-                      Review changes
-                    </Link>
-                  )}
-                  {href !== null && (
-                    <Link
-                      href={href}
-                      className="rounded-md px-3 py-1.5 text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
-                    >
-                      Open work item
-                    </Link>
-                  )}
-                  <Link
-                    href={`/?workspace=${selected.workspaceId}${selected.threadId !== null ? `&thread=${encodeURIComponent(selected.threadId)}` : selected.promptId !== null ? `&prompt=${selected.promptId}` : ""}`}
-                    className="rounded-md px-3 py-1.5 text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
-                  >
-                    {selected.threadId === null ? "Open in Chat" : "Continue in Chat"}
-                  </Link>
-                </div>
-              </div>
+              </details>
 
-              <dl className="grid gap-3 rounded-panel border border-line bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-3">
-                <Meta label={selected.providers.length > 1 ? "Agents" : "Agent"} value={selected.providers.join(", ")} />
-                <Meta label="Model" value={selected.model ?? "default"} />
-                {sessionEndReason(selected.state, selected.events) !== null && (
-                  <Meta label="End reason" value={sessionEndReason(selected.state, selected.events)!} />
-                )}
-                <Meta label="Started" value={new Date(selected.startedAt).toLocaleString()} />
-                <Meta
-                  label="Ended"
-                  value={
-                    selected.endedAt === null
-                      ? selected.live
-                        ? "in progress"
-                        : "—"
-                      : new Date(selected.endedAt).toLocaleString()
-                  }
-                />
-                <Meta
-                  label="Tokens"
-                  value={
-                    selectedUsage === null
-                      ? "—"
-                      : `${formatTokens(selectedUsage.totalTokens)} (${formatTokens(selectedUsage.inputTokens)} in · ${formatTokens(selectedUsage.outputTokens)} out)`
-                  }
-                />
-                <Meta
-                  label="Est. cost"
-                  value={selectedCost?.usd == null ? "—" : formatUsd(selectedCost.usd)}
-                  hint={selectedCost?.usd == null ? "Provider did not report usage" : "API list-rate estimate"}
-                />
-                {selected.threadId !== null && <Meta label="Thread id" value={selected.threadId} mono />}
-                <Meta label={selected.runIds.length > 1 ? "Latest run id" : "Run id"} value={selected.id} mono />
-                <Meta label="Working directory" value={selected.workDirectory} mono />
-              </dl>
-
-              <section className="flex min-h-0 flex-1 flex-col">
-                <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-                  <div className="text-xs uppercase tracking-wider text-fg-dim">
-                    {selected.threadId === null ? "Run" : "Conversation"} log · {selected.providers.join(" + ")} · {normalizeState(selected.state).toLowerCase()}
-                  </div>
-                  <div className="numeric text-xs text-fg-muted">
-                    {selectedUsage === null ? (
-                      <span className="text-fg-dim">no token data</span>
-                    ) : (
-                      <>
-                        <span className="text-fg">{formatTokens(selectedUsage.totalTokens)}</span>
-                        <span className="text-fg-dim"> tok</span>
-                        {selectedCost?.usd != null && (
-                          <>
-                            <span className="mx-1.5 text-fg-dim">·</span>
-                            <span className="text-accent">{formatUsd(selectedCost.usd)}</span>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+              <section className="activity-session-log" aria-label="Agent logs">
+                <h2 className="sr-only">{selected.threadId === null ? "Run" : "Conversation"} log</h2>
                 {detailError !== null && !selected.live ? (
                   <p role="alert" className="rounded-panel border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
                     Session log is unavailable: {detailError}
@@ -583,7 +550,7 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
                     No event stream was captured for this session yet.
                   </p>
                 ) : (
-                  <div className="flex min-h-[50vh] flex-1 flex-col overflow-hidden rounded-panel border border-line lg:min-h-0">
+                  <div className="activity-transcript">
                     <ConversationPanel key={selected.threadId ?? selected.id} items={logs} workdir={selected.workDirectory} workspaceId={selected.workspaceId} storageKey={selected.threadId ?? selected.id} />
                   </div>
                 )}

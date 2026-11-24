@@ -10,6 +10,8 @@ import { discoverModels } from "./modelDiscovery.ts";
 export type PermissionOverride = "inherit" | "consult" | "handoff";
 
 export interface RunOptions {
+  deadlineMs?:number;
+  onSpawn?: (identity: import("../executionStore.ts").ProcessIdentity) => void;
   /** Correlates every event of one run, and is the key for `interrupt()`. */
   runId: string;
   /** Working directory the agent operates in. Same for every provider. */
@@ -84,6 +86,7 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     : MODEL_CATALOG[adapter.id];
   return {
     id: adapter.id,
+    commandEnforcement: "cooperative",
     label: adapter.label,
     available: report.available,
     reason: report.reason,

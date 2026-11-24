@@ -315,7 +315,7 @@ const FIELDS: FieldDef[] = [
       + "Existing stations keep whatever they were given.",
     options: [
       option("continue", "Continue the station", "Re-run it; unfinished endings are capped, agent continues are not"),
-      option("wait", "Wait for a human", "The run parks immediately"),
+      option("wait", "Wait for a human", "Recorded on the station, but a pipeline does not stop for it"),
       option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
     ],
     isDangerous: (value) => value === "skip",
