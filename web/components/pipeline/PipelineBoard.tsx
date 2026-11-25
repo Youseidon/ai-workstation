@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
@@ -20,6 +20,7 @@ import {
   DEFAULT_TRIGGER_SENTENCES,
   defaultPromptPipelineRule,
   describeStopReason,
+  modelLabel,
   PROVIDER_IDS,
 } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -46,6 +47,9 @@ import { DetailDrawer, DetailReopen } from "@/components/shell/DetailDrawer";
 import { UnsavedChangesGuard } from "@/components/shell/UnsavedChangesGuard";
 import { SidebarBack, SidebarCollection, SidebarEmpty, SidebarGroup, SidebarRow } from "@/components/shell/SidebarCollection";
 import { PipelineArchive } from "./PipelineArchive";
+import { CommandPalette, type PaletteEntry } from "@/components/ui/CommandPalette";
+import { PipelineOverviewPanel } from "./PipelineOverviewPanel";
+import { PipelineStudio, STUDIO_ICONS, STUDIO_SECTIONS, type StudioSection } from "./PipelineStudio";
 import { PipelineConstellation, type ConstellationStage } from "./PipelineConstellation";
 import { PipelineStatusBar, type PipelinePosition } from "./PipelineStatusBar";
 import { NewPipelineGuide, type NewPipelineGuideStep } from "./NewPipelineGuide";
@@ -66,6 +70,8 @@ import { WorkList } from "./station/WorkList";
 import { SubPipeline, type SubStepRuleView, type SubTrailEntry } from "./SubPipeline";
 import { nextPipelineLeaf } from "./continuation";
 import {
+  CONTROL_LABEL,
+  LABEL,
   PIPELINE_LABEL,
   PIPELINE_TONE,
   pipelineStatus,
@@ -117,7 +123,8 @@ export function PipelineBoard({
   const [selectedId, setSelectedId] = useState<number | null>(() => positiveInt(params.get("prompt")));
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelMode, setPanelMode] = useState<"item" | "pipeline">(() => (positiveInt(params.get("prompt")) !== null ? "item" : "pipeline"));
-  const [pipelineTab, setPipelineTab] = useState<InspectorTab>("history");
+  const [studio, setStudio] = useState<StudioSection | null>(() => STUDIO_SECTIONS.find((entry) => entry.id === params.get("studio"))?.id ?? null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [itemTab, setItemTab] = useState<StationTab>(() => (params.get("tab") === "conversation" ? "conversation" : "overview"));
   const [allocationPromptId, setAllocationPromptId] = useState<number | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
@@ -726,16 +733,25 @@ export function PipelineBoard({
     selectItem(promptId, "conversation");
     setFocusSignal((value) => value + 1);
   };
+  /** Step settings: select the step, then open its section of the studio. */
+  const configureItem = (promptId: number) => {
+    selectItem(promptId);
+    setStudio("step");
+  };
+  /** A suite's pencil: point the board at it, then open its agents in the studio. */
+  const editSuite = (id: number) => {
+    setSuiteId(id);
+    setSubPath([]);
+    setStudio("agents");
+  };
+  /** Chips and links name a concern; the studio holds every concern. */
   const openPipelinePanel = (tab: InspectorTab) => {
-    // Step settings live with the step: open the item that the chip is about.
     if (tab === "station") {
       const target = resumeItem ?? stuckPrompt;
-      if (target !== null) selectItem(target.prompt.id, "config");
+      if (target !== null) configureItem(target.prompt.id);
       return;
     }
-    setPipelineTab(tab);
-    setPanelMode("pipeline");
-    setPanelOpen(true);
+    setStudio(tab);
   };
   const closePanel = () => {
     setPanelOpen(false);
@@ -758,6 +774,41 @@ export function PipelineBoard({
   const selectedItem = selectedId === null ? null : (promptsByIdDeep.get(selectedId) ?? null);
   const selectedParent =
     selectedItem?.prompt.parentPromptId == null ? null : (promptsByIdDeep.get(selectedItem.prompt.parentPromptId) ?? null);
+
+  // Agent assignments need the saved flowchart of the suite on screen.
+  const agentsReady = pipeline !== null && activeSuiteId !== null && viewSuiteId === activeSuiteId && view !== null
+    && pipeline.stages.some((stage) => stage.suiteId === activeSuiteId);
+  const overrideCount = view === null ? 0 : view.steps.filter((step) => step.provider !== null).length
+    + view.subSteps.filter((step) => !step.inherited && step.rule.provider !== null).length;
+  // Who runs the selected item, and where that choice comes from.
+  const selectedAgent = (() => {
+    if (configRule === null) return null;
+    const suiteProvider = view?.defaults.defaultProvider ?? null;
+    const suiteModel = view?.defaults.defaultModel ?? null;
+    if (configIsSubStep) {
+      if (!configInherited) return { provider: configRule.provider, model: configRule.model, source: "pinned to this sub-step" };
+      return configRule.provider !== null
+        ? { provider: configRule.provider, model: configRule.model, source: "follows its station" }
+        : { provider: suiteProvider, model: suiteModel, source: "follows the suite agent" };
+    }
+    if (configRule.provider !== null) return { provider: configRule.provider, model: configRule.model, source: "step override" };
+    return { provider: suiteProvider, model: suiteModel, source: "suite agent" };
+  })();
+  const saveFirst = "Save the pipeline first";
+  const studioUnavailable: Partial<Record<StudioSection, string>> = {
+    ...(pipelineId === null ? { agents: saveFirst, step: saveFirst, history: saveFirst }
+      : {
+          ...(!agentsReady ? { agents: activeSuiteId === null ? "Select a suite first" : "Loading this suite…" } : {}),
+          ...(selectedItem === null || configRule === null ? { step: "Select a step on the board first" } : {}),
+        }),
+    ...(suiteOps === null ? { verification: "Select a suite first" } : {}),
+    ...(activeSuiteId === null ? { definition: "Select a suite first" } : {}),
+  };
+  const studioBadges: Partial<Record<StudioSection, ReactNode>> = {
+    ...(view?.defaults.defaultProvider ? { agents: view.defaults.defaultProvider } : {}),
+    ...(selectedItem !== null && configRule !== null ? { step: selectedItem.prompt.externalKey ?? "selected" } : {}),
+    ...(runs.length > 0 ? { history: runs.length } : {}),
+  };
 
   const inboxEntries = useMemo(
     () => collectInbox(stages.flatMap((stage) => (stage.operations === null ? [] : [stage.operations]))),
@@ -831,9 +882,29 @@ export function PipelineBoard({
     if (selectedId !== null && panelMode === "item") next.set("prompt", String(selectedId));
     if (layout === "list") next.set("view", "list");
     if (layout === "list" && filter !== "all") next.set("filter", filter);
+    if (studio !== null) next.set("studio", studio);
     const query = next.toString();
     window.history.replaceState(window.history.state, "", `/pipeline/${pipelineId}${query === "" ? "" : `?${query}`}`);
-  }, [workbench, pipelineId, editing, activeSuiteId, selectedId, panelMode, layout, filter]);
+  }, [workbench, pipelineId, editing, activeSuiteId, selectedId, panelMode, layout, filter, studio]);
+
+  // ⌘K / Ctrl+K / "/" find anything; "," opens the studio. Typing is left alone.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((value) => !value);
+        return;
+      }
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target !== null && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"], [role="menu"]') !== null) return;
+      if (event.key === "/") { event.preventDefault(); setPaletteOpen(true); }
+      else if (event.key === ",") { event.preventDefault(); setStudio((current) => current ?? (selectedId !== null ? "step" : "agents")); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId]);
 
   useBoardKeys({
     order: navOrder,
@@ -881,8 +952,10 @@ export function PipelineBoard({
   const headerMenu: MenuItem[] = [
     // The layout switch is hidden on phones; it lives here there.
     { id: "layout", label: layout === "flow" ? "Show as list" : "Show as flow", onSelect: () => changeLayout(layout === "flow" ? "list" : "flow"), className: "sm:hidden" },
-    { id: "history", label: "Run history", onSelect: () => openPipelinePanel("history") },
-    { id: "configure", label: "Configure pipeline", onSelect: () => openPipelinePanel("policy") },
+    { id: "find", label: "Find anything…  ⌘K", onSelect: () => setPaletteOpen(true) },
+    { id: "agents", label: "Assign agents", onSelect: () => setStudio("agents") },
+    { id: "configure", label: "Run rules & budgets", onSelect: () => setStudio("policy") },
+    { id: "history", label: "Run history", onSelect: () => setStudio("history") },
     {
       id: "verify",
       label: "Verify suite with agent…",
@@ -890,7 +963,7 @@ export function PipelineBoard({
       onSelect: () => {
         if (suiteOps === null) return;
         void stationActions.verify(suiteOps, null).then((started) => {
-          if (started) openPipelinePanel("verification");
+          if (started) setStudio("verification");
         });
       },
       separated: true,
@@ -904,7 +977,7 @@ export function PipelineBoard({
         void stationActions.auditEvidence(suiteOps).then((id) => {
           if (id === null) return;
           setFocusRecordId(id);
-          openPipelinePanel("verification");
+          setStudio("verification");
         });
       },
     },
@@ -925,6 +998,70 @@ export function PipelineBoard({
       ? []
       : [{ id: "delete", label: "Delete pipeline…", onSelect: deletePipeline, disabled: anyBusy || resumable, title: resumable ? "Stop the pipeline before deleting it" : undefined, tone: "danger" as const, separated: true }]),
   ];
+
+  /* Everything the palette can find: actions, studio sections, suites, steps. */
+  const buildPaletteEntries = (): PaletteEntry[] => {
+    const entries: PaletteEntry[] = [];
+    const busyReason = anyBusy ? "Busy — wait for the current action" : undefined;
+    if (pipelineId !== null) {
+      for (const control of [status.primary, ...status.secondary]) {
+        if (control === null) continue;
+        entries.push({
+          id: `control-${control}`, group: "Actions", label: CONTROL_LABEL[control], keywords: "run play resume start pause stop transport",
+          hint: status.headline, trailing: control === status.primary ? <kbd>Space</kbd> : undefined,
+          disabled: busyReason ?? (control === status.primary && statusBlocked !== null ? statusBlocked : undefined),
+          run: () => runControl(control),
+        });
+      }
+    }
+    for (const entry of inboxEntries) {
+      entries.push({
+        id: `inbox-${entry.item.prompt.id}`, group: "Needs you", label: `${entry.item.prompt.externalKey ?? entry.item.prompt.title}`,
+        hint: entry.ask, keywords: "needs you waiting reply blocked inbox", icon: <span className="text-warning">◆</span>,
+        run: () => { if (entry.suite.id !== activeSuiteId) setSuiteId(entry.suite.id); setSubPath([]); openConversation(entry.item.prompt.id); },
+      });
+    }
+    entries.push(
+      { id: "verify", group: "Actions", label: "Verify suite with agent", hint: suiteOps?.name, keywords: "check verification", icon: STUDIO_ICONS.verification,
+        disabled: suiteOps === null ? "Select a suite first" : busyReason,
+        run: () => { if (suiteOps !== null) void stationActions.verify(suiteOps, null).then((started) => { if (started) setStudio("verification"); }); } },
+      { id: "audit", group: "Actions", label: "Audit recorded evidence", hint: suiteOps?.name, keywords: "evidence check", icon: STUDIO_ICONS.verification,
+        disabled: suiteOps === null ? "Select a suite first" : busyReason,
+        run: () => { if (suiteOps !== null) void stationActions.auditEvidence(suiteOps).then((id) => { if (id !== null) { setFocusRecordId(id); setStudio("verification"); } }); } },
+      { id: "edit", group: "Actions", label: showEditor ? "Finish editing" : "Edit pipeline", keywords: "compose add remove reorder suites steps", run: () => setEditing(!showEditor), disabled: pipelineId === null ? saveFirst : undefined },
+      { id: "save", group: "Actions", label: pipelineId === null ? "Save pipeline" : "Save changes", disabled: !dirty ? "No unsaved changes" : busyReason, run: savePipeline },
+      { id: "layout", group: "Actions", label: layout === "flow" ? "Show as list" : "Show as flow", keywords: "layout view board", run: () => changeLayout(layout === "flow" ? "list" : "flow") },
+      ...(layout === "flow" && pipelineId !== null ? [{ id: "completed", group: "Actions", label: hideCompleted ? "Show completed steps" : "Hide completed steps", keywords: "filter done", run: () => setHideCompleted((value) => !value) }] : []),
+      { id: "details", group: "Actions", label: "Show pipeline details", hint: "Right now, recent runs and the studio launcher", keywords: "panel drawer overview", run: () => { setPanelMode("pipeline"); setPanelOpen(true); } },
+      { id: "chat", group: "Actions", label: "Open workspace in Chat", disabled: workspaceId === null ? "Choose a workspace first" : undefined, run: () => router.push(`/?workspace=${workspaceId}`) },
+      ...(pipelineId === null ? [] : [{ id: "delete", group: "Actions", label: "Delete pipeline…", keywords: "remove", disabled: resumable ? "Stop the pipeline before deleting it" : busyReason, run: deletePipeline }]),
+    );
+    for (const section of STUDIO_SECTIONS) {
+      entries.push({ id: `studio-${section.id}`, group: "Studio", label: section.label, hint: section.blurb, keywords: `settings configure ${section.keywords}`,
+        icon: STUDIO_ICONS[section.id], disabled: studioUnavailable[section.id], run: () => setStudio(section.id) });
+    }
+    for (const stage of stages) {
+      entries.push({ id: `suite-${stage.suiteId}`, group: "Suites", label: `${stage.suiteKey !== null ? `${stage.suiteKey} · ` : ""}${stage.suiteName}`,
+        hint: `${stage.programName} · ${stage.stepCount} steps`, keywords: "suite stage",
+        trailing: stage.suiteId === live?.currentSuiteId ? <span className="text-info">running</span> : undefined,
+        run: () => { setSuiteId(stage.suiteId); setSubPath([]); } });
+    }
+    const walk = (suiteId: number, suiteName: string, list: OperationsPrompt[]) => {
+      for (const item of list) {
+        entries.push({ id: `step-${item.prompt.id}`, group: "Steps", label: `${item.prompt.externalKey !== null ? `${item.prompt.externalKey} · ` : ""}${item.prompt.title}`,
+          hint: `${suiteName}${item.prompt.parentPromptId !== null ? " · sub-step" : ""}`, keywords: "step prompt station item",
+          trailing: <span className="text-fg-dim">{LABEL[item.operationalState]}</span>,
+          run: () => { if (suiteId !== activeSuiteId) setSuiteId(suiteId); setSubPath([]); selectItem(item.prompt.id, "overview"); } });
+        walk(suiteId, suiteName, item.children);
+      }
+    };
+    for (const stage of stages) if (stage.operations !== null) walk(stage.suiteId, stage.suiteKey ?? stage.suiteName, stage.operations.prompts);
+    for (const other of pipelines) {
+      if (other.id === pipelineId) continue;
+      entries.push({ id: `pipeline-${other.id}`, group: "Pipelines", label: other.name, keywords: "pipeline open switch", run: () => router.push(`/pipeline/${other.id}`) });
+    }
+    return entries;
+  };
 
   const editButton =
     pipelineId === null ? (
@@ -980,9 +1117,17 @@ export function PipelineBoard({
           </>
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button type="button" className="board-find" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K /">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" /><path d="m16 16 4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+              <span>Find anything</span>
+              <kbd aria-hidden>⌘K</kbd>
+            </button>
             <CrewStrip crew={crew} />
             <LayoutToggle value={layout} onChange={changeLayout} />
+            <Button size="sm" variant="secondary" onClick={() => setStudio(selectedItem !== null && panelMode === "item" ? "step" : "agents")} title="Agents, rules, budgets, verification and history (,)">
+              <span className="inline-flex items-center gap-1.5">{STUDIO_ICONS.step}Studio</span>
+            </Button>
             {editButton}
             <Menu items={headerMenu} label="Pipeline actions" />
           </div>
@@ -1197,12 +1342,10 @@ export function PipelineBoard({
                 step={guideStep}
                 onStepChange={(next) => {
                   setGuideStep(next);
-                  if (next === "policy") openPipelinePanel("policy");
+                  if (next === "policy") setStudio("policy");
                 }}
-                onOpenPolicy={() => openPipelinePanel("policy")}
-                onFocusStations={() => {
-                  document.getElementById("agent-assignments")?.scrollIntoView({ behavior: "smooth", block: "start" });
-                }}
+                onOpenPolicy={() => setStudio("policy")}
+                onFocusStations={() => setStudio("agents")}
                 onDismiss={() => setGuideDismissed(true)}
               />
             )}
@@ -1218,7 +1361,7 @@ export function PipelineBoard({
                   recoveryActions={statusBlocked !== null ? recoveryActions : null}
                   busy={anyBusy}
                   onControl={runControl}
-                  onExplain={() => openPipelinePanel("policy")}
+                  onExplain={() => setStudio("policy")}
                   onReviewAllocation={live?.waitReason === "execution:budget_exhausted" && resumeItem ? () => setAllocationPromptId(resumeItem.prompt.id) : undefined}
                   inbox={
                     <NeedsYouInbox
@@ -1299,34 +1442,18 @@ export function PipelineBoard({
                 setSuiteId(id);
                 setSubPath([]);
               }}
+              onEdit={pipelineId === null ? undefined : editSuite}
             />
 
-            {pipeline !== null && activeSuiteId !== null && viewSuiteId === activeSuiteId && view !== null && pipeline.stages.some((stage) => stage.suiteId === activeSuiteId) && (
-              <AgentAssignments
-                pipeline={pipeline}
-                suiteName={suiteOps?.name ?? "this suite"}
-                view={view}
-                providers={console_.providers}
-                policy={policy}
-                busy={anyBusy}
-                promptLabel={(id) => {
-                  const prompt = promptsByIdDeep.get(id)?.prompt;
-                  return prompt?.externalKey ?? prompt?.title ?? `Prompt ${id}`;
-                }}
-                onDefaults={(patch) => void act(async () => {
-                  await workspaceApi.updatePipelineDefaults(SERVER_URL, pipeline.id, activeSuiteId, patch);
-                  await refreshFlowchart(activeSuiteId);
-                }, "Suite agent assignments saved")}
-                onAutoReassign={(autoReassign) => void act(async () => {
-                  const updated = await workspaceApi.updatePipeline(SERVER_URL, pipeline.id, { autoReassign });
-                  setPipelines((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
-                }, autoReassign ? "Automatic reassignment enabled" : "Automatic reassignment disabled")}
-                onPrompt={(id, choice, inheritFromParent) => void act(async () => {
-                  if (inheritFromParent) await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipeline.id, activeSuiteId, id, showEditor);
-                  else await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipeline.id, id, choice);
-                  await refreshFlowchart(activeSuiteId);
-                }, "Prompt agent saved")}
-                onConfigure={(id) => selectItem(id, "config")}
+            {agentsReady && view !== null && pipeline !== null && (
+              <AgentsSummary
+                suiteName={suiteOps?.key ?? suiteOps?.name ?? "this suite"}
+                provider={view.defaults.defaultProvider}
+                model={view.defaults.defaultModel}
+                overrides={overrideCount}
+                fallbacks={view.defaults.defaultFallbackProviders}
+                autoReassign={pipeline.autoReassign}
+                onOpen={() => setStudio("agents")}
               />
             )}
 
@@ -1354,6 +1481,7 @@ export function PipelineBoard({
                 onNavigate={(index) => setSubPath((current) => (index === null ? [] : current.slice(0, index + 1)))}
                 onOpen={(promptId) => setSubPath((current) => [...current, promptId])}
                 onSelect={(promptId) => selectItem(promptId)}
+                onConfigure={pipelineId === null ? undefined : configureItem}
                 renderGate={(item) =>
                   item.humanIntervention === null ? null : (
                     <HumanGate
@@ -1430,6 +1558,7 @@ export function PipelineBoard({
                         currentId={view?.active?.currentPromptId ?? null}
                         onFilterChange={setFilter}
                         onSelect={(promptId) => selectItem(promptId)}
+                        onConfigure={pipelineId === null ? undefined : configureItem}
                       />
                     ) : displayedSteps.length === 0 ? (
                       <div className="rounded-panel border border-dashed border-line bg-surface-1 px-6 py-12 text-center text-sm text-fg-dim">
@@ -1501,7 +1630,7 @@ export function PipelineBoard({
                               readOnly={!showEditor}
                               subSteps={item.children.length > 0 ? { done: doneChildren, total: item.children.length } : undefined}
                               onSelect={() => selectItem(step.promptId)}
-                              onConfigure={() => selectItem(step.promptId, "config")}
+                              onConfigure={() => configureItem(step.promptId)}
                               onOpenSubPipeline={item.children.length > 0 ? () => setSubPath([step.promptId]) : undefined}
                               onRemove={
                                 showEditor
@@ -1525,7 +1654,7 @@ export function PipelineBoard({
             )}
 
             <p className="hidden pt-2 text-xs text-fg-dim xl:block">
-              <Kbd>j</Kbd>/<Kbd>k</Kbd> move · <Kbd>r</Kbd> reply · <Kbd>Space</Kbd> play/pause · <Kbd>Esc</Kbd> close panel
+              <Kbd>⌘K</Kbd> or <Kbd>/</Kbd> find anything · <Kbd>,</Kbd> studio · <Kbd>j</Kbd>/<Kbd>k</Kbd> move · <Kbd>r</Kbd> reply · <Kbd>Space</Kbd> play/pause · <Kbd>Esc</Kbd> close panel
             </p>
           </div>
         </section>
@@ -1570,86 +1699,23 @@ export function PipelineBoard({
                         ? () => setSubPath(ancestorIdsForPrompt(suiteOps?.prompts ?? [], selectedItem.prompt.id).concat(selectedItem.prompt.id))
                         : undefined
                     }
-                    configContent={
-                      pipelineId !== null && configRule !== null ? (
-                        <StepConfigForm
-                          rule={configRule}
-                          item={selectedItem}
-                          subStep={configIsSubStep}
-                          inherited={configInherited}
-                          providers={console_.providers}
-                          models={models}
-                          policy={policy}
-                          suiteProvider={view?.defaults.defaultProvider ?? null}
-                          onExecutionChanged={() => {void refreshCatalog();if(activeSuiteId !== null) void refreshFlowchart(activeSuiteId);}}
-                          onUseSuiteSettings={!configIsSubStep ? () => void act(async () => {
-                            await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, { provider: null, model: null });
-                            if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
-                          }) : undefined}
-                          onUseStationSettings={
-                            configIsSubStep && !configInherited
-                              ? () =>
-                                  void act(async () => {
-                                    if (activeSuiteId === null) return;
-                                    await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, activeSuiteId, selectedItem.prompt.id, showEditor);
-                                    await refreshFlowchart(activeSuiteId);
-                                  }, "Sub-step follows its station again")
-                              : undefined
-                          }
-                          onChange={(patch) =>
-                            void act(async () => {
-                              await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, patch);
-                              if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
-                            })
-                          }
-                        />
-                      ) : undefined
-                    }
+                    agent={selectedAgent}
+                    onConfigure={pipelineId !== null && configRule !== null ? () => setStudio("step") : undefined}
                   />
                 ) : (
-                  <PipelineInspector
-                    open
-                    tab={pipelineTab === "station" ? "history" : pipelineTab}
-                    onTabChange={setPipelineTab}
+                  <PipelineOverviewPanel
+                    saved={pipelineId !== null}
                     status={status}
                     policy={policy}
                     stationLabel={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
-                    suiteId={activeSuiteId}
-                    pipelineId={pipelineId}
-                    suiteFallbackProviders={
-                      activeSuiteId === null
-                        ? []
-                        : (view?.defaults.defaultFallbackProviders
-                          ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
-                          ?? [])
-                    }
-                    onSuiteFallbacksChanged={() => {
-                      if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId);
-                      void refreshCatalog();
-                    }}
-                    onStatusesChanged={() => void refreshCatalog()}
-                    onSettingsSaved={() => void refreshCatalog()}
-                    onEditStationFromSummary={resumeItem === null ? undefined : () => selectItem(resumeItem.prompt.id, "config")}
-                    history={
-                      pipelineId === null ? (
-                        <p className="text-xs leading-relaxed text-fg-dim">Save a pipeline to keep a history of every run.</p>
-                      ) : (
-                        <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
-                      )
-                    }
-                    verification={
-                      suiteOps === null ? undefined : (
-                        <VerificationPanel
-                          key={suiteOps.id}
-                          suite={suiteOps}
-                          provider={preferredProvider}
-                          model={models.resolve(preferredProvider)}
-                          workspaceBusy={occupancy !== null}
-                          focusRecordId={focusRecordId}
-                          onFocusHandled={() => setFocusRecordId(null)}
-                        />
-                      )
-                    }
+                    runs={runs}
+                    selectedRunId={selectedRunId}
+                    onSelectRun={setSelectedRunId}
+                    onOpenStudio={setStudio}
+                    onFind={() => setPaletteOpen(true)}
+                    onEditStation={resumeItem === null ? undefined : () => configureItem(resumeItem.prompt.id)}
+                    unavailable={studioUnavailable}
+                    badges={studioBadges}
                   />
                 )}
               </div>
@@ -1664,6 +1730,109 @@ export function PipelineBoard({
           {inboxEntries.length > 0 ? `${inboxEntries.length} need you · details` : "Show details"}
         </DetailReopen>
       )}
+
+      <PipelineStudio
+        open={studio !== null}
+        section={studio ?? "agents"}
+        onSectionChange={setStudio}
+        onClose={() => setStudio(null)}
+        context={[draftName, suiteOps === null ? null : `${suiteOps.key !== null ? `${suiteOps.key} · ` : ""}${suiteOps.name}`, selectedItem?.prompt.externalKey ?? null].filter(Boolean).join("  ›  ")}
+        unavailable={studioUnavailable}
+        badges={studioBadges}
+      >
+        {studio === "agents" && agentsReady && view !== null && pipeline !== null && activeSuiteId !== null && (
+          <AgentAssignments
+            pipeline={pipeline}
+            suiteName={suiteOps?.name ?? "this suite"}
+            view={view}
+            providers={console_.providers}
+            models={models}
+            policy={policy}
+            busy={anyBusy}
+            promptLabel={(id) => {
+              const prompt = promptsByIdDeep.get(id)?.prompt;
+              return prompt?.externalKey ?? prompt?.title ?? `Prompt ${id}`;
+            }}
+            onDefaults={(patch) => void act(async () => {
+              await workspaceApi.updatePipelineDefaults(SERVER_URL, pipeline.id, activeSuiteId, patch);
+              await refreshFlowchart(activeSuiteId);
+            }, "Suite agent assignments saved")}
+            onAutoReassign={(autoReassign) => void act(async () => {
+              const updated = await workspaceApi.updatePipeline(SERVER_URL, pipeline.id, { autoReassign });
+              setPipelines((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
+            }, autoReassign ? "Automatic reassignment enabled" : "Automatic reassignment disabled")}
+            onPrompt={(id, choice, inheritFromParent) => void act(async () => {
+              if (inheritFromParent) await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipeline.id, activeSuiteId, id, showEditor);
+              else await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipeline.id, id, choice);
+              await refreshFlowchart(activeSuiteId);
+            }, "Prompt agent saved")}
+            onConfigure={configureItem}
+          />
+        )}
+        {studio === "step" && pipelineId !== null && selectedItem !== null && configRule !== null && (
+          <StepConfigForm
+            key={selectedItem.prompt.id}
+            rule={configRule}
+            item={selectedItem}
+            subStep={configIsSubStep}
+            inherited={configInherited}
+            providers={console_.providers}
+            models={models}
+            policy={policy}
+            suiteProvider={view?.defaults.defaultProvider ?? null}
+            onExecutionChanged={() => {void refreshCatalog();if(activeSuiteId !== null) void refreshFlowchart(activeSuiteId);}}
+            onUseSuiteSettings={!configIsSubStep ? () => void act(async () => {
+              await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, { provider: null, model: null });
+              if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+            }, "Step follows the suite agent again") : undefined}
+            onUseStationSettings={
+              configIsSubStep && !configInherited
+                ? () =>
+                    void act(async () => {
+                      if (activeSuiteId === null) return;
+                      await workspaceApi.removePipelineFlowchartStep(SERVER_URL, pipelineId, activeSuiteId, selectedItem.prompt.id, showEditor);
+                      await refreshFlowchart(activeSuiteId);
+                    }, "Sub-step follows its station again")
+                : undefined
+            }
+            onChange={(patch) =>
+              void act(async () => {
+                await workspaceApi.patchPipelineFlowchartRule(SERVER_URL, pipelineId, selectedItem.prompt.id, patch);
+                if (activeSuiteId !== null) await refreshFlowchart(activeSuiteId);
+              })
+            }
+          />
+        )}
+        {(studio === "policy" || studio === "budgets" || studio === "statuses" || studio === "definition") && (
+          <PipelineInspector
+            section={studio}
+            status={status}
+            policy={policy}
+            stationLabel={runPosition?.subStepLabel ?? runPosition?.stationLabel ?? null}
+            suiteId={activeSuiteId}
+            onStatusesChanged={() => void refreshCatalog()}
+            onSettingsSaved={() => void refreshCatalog()}
+            onEditStationFromSummary={resumeItem === null ? undefined : () => configureItem(resumeItem.prompt.id)}
+            onEditAgents={() => setStudio("agents")}
+          />
+        )}
+        {studio === "verification" && suiteOps !== null && (
+          <VerificationPanel
+            key={suiteOps.id}
+            suite={suiteOps}
+            provider={preferredProvider}
+            model={models.resolve(preferredProvider)}
+            workspaceBusy={occupancy !== null}
+            focusRecordId={focusRecordId}
+            onFocusHandled={() => setFocusRecordId(null)}
+          />
+        )}
+        {studio === "history" && (
+          <PipelineArchive runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
+        )}
+      </PipelineStudio>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} entries={buildPaletteEntries} />
 
       <UnsavedChangesGuard
         dirty={showEditor && dirty}
@@ -1775,5 +1944,37 @@ function CrewStrip({
         </span>
       ))}
     </div>
+  );
+}
+
+/** The board's one-line answer to "who is doing this suite?", with the door to change it. */
+function AgentsSummary({ suiteName, provider, model, overrides, fallbacks, autoReassign, onOpen }: {
+  suiteName: string;
+  provider: ProviderId | null;
+  model: string | null;
+  overrides: number;
+  fallbacks: ProviderId[];
+  autoReassign: boolean;
+  onOpen(): void;
+}) {
+  return (
+    <section aria-label="Agent assignments" className="agents-summary">
+      <span className="agents-summary-lead">
+        {provider !== null ? <AgentAvatar provider={provider} size={26} activity="idle" /> : <span className="station-agent-empty" aria-hidden>?</span>}
+        <span className="min-w-0">
+          <span className="block text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-fg-dim">{suiteName} agent</span>
+          <span className="block truncate text-sm text-fg">
+            {provider ?? <span className="text-caution">Not chosen</span>}
+            {provider !== null && model !== null && <span className="text-fg-muted"> · {modelLabel(provider, model)}</span>}
+          </span>
+        </span>
+      </span>
+      <span className="agents-summary-facts">
+        <span>{overrides} {overrides === 1 ? "override" : "overrides"}</span>
+        <span>Fallback {fallbacks.length > 0 ? fallbacks.join(" → ") : "house order"}</span>
+        <span className={autoReassign ? "text-success" : undefined}>Auto-reassign {autoReassign ? "on" : "off"}</span>
+      </span>
+      <Button size="sm" variant={provider === null ? "primary" : "secondary"} onClick={onOpen}>Assign agents</Button>
+    </section>
   );
 }

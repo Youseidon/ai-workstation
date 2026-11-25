@@ -8,8 +8,12 @@ import type {
   OperationsPrompt,
   OperationsSuite,
   PromptActivity,
+  ProviderId,
   StatusDefinition,
 } from "@agent-console/shared";
+import { isProviderId, modelLabel } from "@agent-console/shared";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { Modal } from "@/components/ui/Modal";
 import { LogPanel } from "@/components/LogPanel";
 import { DefinitionOfDonePanel } from "@/components/pipeline/DefinitionOfDonePanel";
 import { LABEL, TONE } from "@/components/pipeline/status";
@@ -26,7 +30,7 @@ import { isTerminal } from "./tree";
 import type { StationActions } from "./useStationActions";
 import { WhyThisStatus } from "./WhyThisStatus";
 
-export type StationTab = "overview" | "conversation" | "sessions" | "activity" | "config";
+export type StationTab = "overview" | "conversation" | "activity" | "sessions";
 
 /**
  * The right-hand panel for one work item. Header says what it is, tabs say
@@ -47,7 +51,8 @@ export function StationPanel({
   onFocusComposer,
   running,
   verifying,
-  configContent,
+  agent,
+  onConfigure,
   onSelect,
   onOpenSubSteps,
 }: {
@@ -66,8 +71,10 @@ export function StationPanel({
   /** This item's run is the one working right now. */
   running: boolean;
   verifying: boolean;
-  /** Step configuration form; the Config tab is hidden without it. */
-  configContent?: ReactNode;
+  /** Who runs this item, shown under the title. */
+  agent?: { provider: ProviderId | null; model: string | null; source: string } | null;
+  /** Opens this step's settings in the Pipeline studio; hidden without it. */
+  onConfigure?(): void;
   onSelect(promptId: number): void;
   onOpenSubSteps?(): void;
 }) {
@@ -79,11 +86,11 @@ export function StationPanel({
   const tabs: Array<[StationTab, string, ReactNode?]> = [
     ["overview", "Overview"],
     ["conversation", "Conversation", waiting ? <GateGlyph pending className="animate-pulse" /> : thread.length > 0 ? thread.length : null],
-    ["sessions", "Sessions"],
     ["activity", "Activity"],
-    ...(configContent === undefined ? [] : [["config", "Config"] as [StationTab, string]]),
+    ["sessions", "Sessions", sessions.length > 0 ? sessions.length : null],
   ];
-  const activeTab = tab === "config" && configContent === undefined ? "overview" : tab;
+  const activeTab = tab;
+  const [logFor, setLogFor] = useState<string | null>(null);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -115,6 +122,22 @@ export function StationPanel({
             </p>
           </div>
         </div>
+        {(agent != null || onConfigure !== undefined) && (
+          <div className="station-agent-strip mt-2.5">
+            {agent?.provider != null ? <AgentAvatar provider={agent.provider} size={20} activity={running ? "thinking" : "idle"} /> : <span className="station-agent-empty" aria-hidden>?</span>}
+            <span className="min-w-0 flex-1 truncate text-xs" title={agent == null ? undefined : [agent.provider ?? "No agent chosen", agent.provider != null && agent.model !== null ? modelLabel(agent.provider, agent.model) : null, agent.source].filter(Boolean).join(" · ")}>
+              <span className="text-fg">{agent?.provider ?? "No agent chosen"}</span>
+              {agent?.provider != null && agent.model !== null && <span className="text-fg-muted"> · {modelLabel(agent.provider, agent.model)}</span>}
+              {agent != null && <span className="text-fg-dim"> · {agent.source}</span>}
+            </span>
+            {onConfigure !== undefined && (
+              <button type="button" className="station-configure" onClick={onConfigure} title="Agent, outcomes, fallbacks and execution allowance for this step">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><circle cx="16" cy="7" r="2.2" stroke="currentColor" strokeWidth="2" /><circle cx="10" cy="17" r="2.2" stroke="currentColor" strokeWidth="2" /></svg>
+                Configure step
+              </button>
+            )}
+          </div>
+        )}
 
         <nav className="-mb-px mt-3 flex gap-3.5 overflow-x-auto" role="tablist" aria-label="Item details">
           {tabs.map(([id, label, badge]) => (
@@ -214,13 +237,18 @@ export function StationPanel({
           />
         )}
 
-        {activeTab === "sessions" && <Sessions item={item} sessions={sessions} />}
-
+        {activeTab === "sessions" && <SessionCards sessions={sessions} onOpen={setLogFor} />}
 
         {activeTab === "activity" && <Timeline activity={activity} />}
-
-        {activeTab === "config" && <div className="h-full overflow-y-auto p-4">{configContent}</div>}
       </div>
+
+      {logFor !== null && (
+        <Modal open onClose={() => setLogFor(null)} size="2xl" bodyClassName="session-log-body"
+          title={`Sessions · ${item.prompt.externalKey ?? item.prompt.title}`}
+          description="Every agent session on this item, with its full event stream.">
+          <SessionBrowser item={item} sessions={sessions} initial={logFor} />
+        </Modal>
+      )}
 
       <ActionBar
         suite={suite}
@@ -229,9 +257,9 @@ export function StationPanel({
         running={running}
         verifying={verifying}
         waiting={waiting}
-        hasConfig={configContent !== undefined}
+        hasConfig={onConfigure !== undefined}
         onReply={onFocusComposer}
-        onConfig={() => onTabChange("config")}
+        onConfig={() => onConfigure?.()}
       />
     </div>
   );
@@ -353,72 +381,86 @@ function usePromptActivity(promptId: number, revision: string | number): PromptA
   return state !== null && state.id === promptId && state.value.item.prompt.id === promptId ? state.value : null;
 }
 
-function Sessions({ item, sessions }: { item: OperationsPrompt; sessions: PromptActivity["sessions"] }) {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+function RunAvatar({ provider, size, live }: { provider: string; size: number; live: boolean }) {
+  return isProviderId(provider) ? <AgentAvatar provider={provider} size={size} activity={live ? "thinking" : "offline"} /> : null;
+}
+
+function sessionModel(provider: string, model: string): string {
+  return isProviderId(provider) ? (modelLabel(provider, model) ?? model) : model;
+}
+
+/** The drawer's session list: one wrapping card per session; the log opens wide. */
+function SessionCards({ sessions, onOpen }: { sessions: PromptActivity["sessions"]; onOpen(id: string): void }) {
+  if (sessions.length === 0) return <p className="p-4 text-sm text-fg-dim">No sessions yet.</p>;
+  return (
+    <ul className="h-full space-y-2 overflow-y-auto p-3">
+      {sessions.map((run) => {
+        const ended = sessionEndReason(run.state, run.events);
+        return (
+          <li key={run.id}>
+            <button type="button" onClick={() => onOpen(run.id)} className="session-card">
+              <span className="flex min-w-0 items-center gap-2">
+                <RunAvatar provider={run.provider} size={18} live={run.state === "RUNNING"} />
+                <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                  {run.provider}
+                  {run.model !== null && <span className="text-fg-dim"> · {sessionModel(run.provider, run.model)}</span>}
+                </span>
+                <span className="session-card-open" aria-hidden>Open log ↗</span>
+              </span>
+              <span className="flex flex-wrap items-center gap-1">
+                <Badge tone={run.state === "DONE" ? "success" : run.state === "RUNNING" ? "info" : "warning"}>{run.state.toLowerCase()}</Badge>
+                <Badge tone="neutral">{run.role}</Badge>
+                {ended !== null && <Badge tone="neutral">{ended}</Badge>}
+                {run.changes !== null && run.changes.filesChanged > 0 && <Badge tone="info">{run.changes.filesChanged} files changed</Badge>}
+              </span>
+              <span className="text-xs text-fg-dim">{new Date(run.startedAt).toLocaleString()} · {run.events.length} events</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** The wide session reader: sessions on the left, the chosen session's full log on the right. */
+function SessionBrowser({ item, sessions, initial }: { item: OperationsPrompt; sessions: PromptActivity["sessions"]; initial: string }) {
+  const [sessionId, setSessionId] = useState<string>(initial);
   const active = sessions.find((entry) => entry.id === sessionId) ?? sessions[0] ?? null;
   const logs = useMemo<LogItem[]>(
     () => active?.events.reduce<LogItem[]>((items, event) => applyEvent(items, event), []) ?? [],
     [active],
   );
 
-  if (sessions.length === 0) {
-    return <p className="p-4 text-sm text-fg-dim">No sessions yet.</p>;
-  }
-
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ul className="max-h-[40%] shrink-0 space-y-1 overflow-y-auto border-b border-line p-3">
-        {sessions.map((run) => {
-          const ended = sessionEndReason(run.state, run.events);
-          return (
-            <li key={run.id}>
-              <button
-                type="button"
-                onClick={() => setSessionId(run.id)}
-                aria-current={active?.id === run.id ? "true" : undefined}
-                className={cn(
-                  "w-full rounded-md border px-3 py-2 text-left transition-colors",
-                  active?.id === run.id ? "border-line-strong bg-surface-3" : "border-transparent hover:bg-surface-2",
-                )}
-              >
-                <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="min-w-0 flex-1 truncate">
-                    {run.provider}
-                    {run.model !== null && <span className="text-fg-dim"> · {run.model}</span>}
-                  </span>
-                  <Badge tone={run.state === "DONE" ? "success" : run.state === "RUNNING" ? "info" : "warning"}>
-                    {run.state.toLowerCase()}
-                  </Badge>
-                  <Badge tone="neutral">{run.role}</Badge>
-                  {ended !== null && <Badge tone="neutral">{ended}</Badge>}
-                </div>
-                <div className="mt-0.5 text-xs text-fg-dim">
-                  {new Date(run.startedAt).toLocaleString()} · {run.events.length} events
-                </div>
-              </button>
-            </li>
-          );
-        })}
+    <div className="session-browser">
+      <ul className="session-browser-list" aria-label="Sessions">
+        {sessions.map((run) => (
+          <li key={run.id}>
+            <button type="button" onClick={() => setSessionId(run.id)} aria-current={active?.id === run.id ? "true" : undefined} className="session-card">
+              <span className="flex min-w-0 items-center gap-2">
+                <RunAvatar provider={run.provider} size={16} live={false} />
+                <span className="min-w-0 flex-1 truncate text-xs text-fg">{run.provider}{run.model !== null && <span className="text-fg-dim"> · {sessionModel(run.provider, run.model)}</span>}</span>
+              </span>
+              <span className="flex flex-wrap gap-1"><Badge tone={run.state === "DONE" ? "success" : run.state === "RUNNING" ? "info" : "warning"}>{run.state.toLowerCase()}</Badge><Badge tone="neutral">{run.role}</Badge></span>
+              <span className="text-xs text-fg-dim">{new Date(run.startedAt).toLocaleString()} · {run.events.length} events</span>
+            </button>
+          </li>
+        ))}
       </ul>
-      {active !== null && (
-        <div className="flex min-h-0 flex-1 flex-col">
-          {active.changes !== null && active.changes.filesChanged > 0 && (
-            <Link
-              href={`/changes/${encodeURIComponent(active.id)}`}
-              className="shrink-0 border-b border-line px-4 py-2 text-xs text-accent hover:underline"
-            >
-              Review {active.changes.filesChanged} changed {active.changes.filesChanged === 1 ? "file" : "files"} ›
-            </Link>
-          )}
-          {logs.length === 0 ? (
-            <p className="p-4 text-sm text-fg-dim">No event stream was captured for this session.</p>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <LogPanel items={logs} workdir={item.workspace.workDirectory} />
-            </div>
-          )}
-        </div>
-      )}
+      <div className="session-browser-log">
+        {active !== null && active.changes !== null && active.changes.filesChanged > 0 && (
+          <Link href={`/changes/${encodeURIComponent(active.id)}`} className="shrink-0 border-b border-line px-4 py-2 text-xs text-accent hover:underline">
+            Review {active.changes.filesChanged} changed {active.changes.filesChanged === 1 ? "file" : "files"} ›
+          </Link>
+        )}
+        {logs.length === 0 ? (
+          <p className="p-4 text-sm text-fg-dim">No event stream was captured for this session.</p>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <LogPanel items={logs} workdir={item.workspace.workDirectory} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -451,11 +493,12 @@ function Timeline({ activity }: { activity: PromptActivity | null }) {
 
   if (entries.length === 0) return <p className="p-4 text-sm text-fg-dim">Nothing recorded yet.</p>;
   return (
-    <ol className="h-full space-y-4 overflow-y-auto p-4">
+    <ol className="h-full min-w-0 space-y-4 overflow-y-auto overflow-x-hidden p-4">
       {entries.map((entry) => (
-        <li key={entry.id} className={cn("border-l-2 pl-3", entry.tone)}>
-          <div className="text-xs uppercase tracking-wider text-fg-dim">
-            {entry.label} · {new Date(entry.at).toLocaleString()}
+        <li key={entry.id} className={cn("min-w-0 border-l-2 pl-3", entry.tone)}>
+          <div className="flex flex-wrap gap-x-2 text-xs text-fg-dim">
+            <span className="break-words font-medium uppercase tracking-wider">{entry.label}</span>
+            <span>{new Date(entry.at).toLocaleString()}</span>
           </div>
           {entry.text !== "" && (
             <ClampedText text={entry.text} className="mt-1 text-xs leading-5 text-fg-muted" />
@@ -471,7 +514,7 @@ function ClampedText({ text, className }: { text: string; className?: string }) 
   const long = text.length > 320 || text.split("\n").length > 5;
   return (
     <div className={className}>
-      <p className={cn("whitespace-pre-wrap break-words", long && !open && "line-clamp-5")}>{text}</p>
+      <p className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", long && !open && "line-clamp-5")}>{text}</p>
       {long && (
         <button type="button" onClick={() => setOpen((value) => !value)} className="mt-0.5 text-xs text-accent hover:underline">
           {open ? "Show less" : "Show more"}

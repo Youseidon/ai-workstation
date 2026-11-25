@@ -6,6 +6,20 @@ export interface RunOrigin {
   title: string;
   context: string;
   href?: string;
+  /** Where in a pipeline the run is working, when a pipeline owns it. */
+  pipeline?: PipelinePlace;
+}
+
+/** Pipeline › suite › (station ›) step, each with its short key when it has one. */
+export interface PipelinePlace {
+  /** The named pipeline, or null when the suite runs on its own. */
+  name: string | null;
+  suiteKey: string | null;
+  suiteName: string;
+  /** The parent station when the running prompt is a sub-step. */
+  stationKey: string | null;
+  stepKey: string | null;
+  stepTitle: string;
 }
 
 /** Source labels work even before optional pipeline metadata arrives. */
@@ -55,7 +69,21 @@ export function fleetMetadata(operations: OperationsSnapshot | null, pipelines: 
     const href = named ? `/pipeline/${named.id}?workspace=${suite.workspaceId}&suite=${suite.id}` : `/pipeline/suite/${suite.id}?workspace=${suite.workspaceId}`;
     if (active.currentRunId !== null) {
       const run = runs.find(run => run.runId === active.currentRunId);
-      if (run) origins[run.runId] = { ...runOrigin(run), kind: "Pipeline", context, href };
+      if (run) {
+        const promptId = "promptId" in run.source && typeof run.source.promptId === "number" ? run.source.promptId : active.currentPromptId;
+        const prompt = promptId === null ? undefined : findPrompt(suite.prompts, promptId);
+        const parentId = prompt?.prompt.parentPromptId ?? null;
+        const station = parentId === null ? undefined : findPrompt(suite.prompts, parentId);
+        const origin = runOrigin(run);
+        origins[run.runId] = { ...origin, kind: "Pipeline", context, href, pipeline: {
+          name: named?.name ?? null,
+          suiteKey: suite.key,
+          suiteName: suite.name,
+          stationKey: station === undefined ? null : station.prompt.externalKey ?? station.prompt.title,
+          stepKey: prompt?.prompt.externalKey ?? (run.source.type === "saved" ? run.source.promptKey : null),
+          stepTitle: prompt?.prompt.title ?? origin.title,
+        } };
+      }
     } else if (active.state === "PLAYING" && active.currentPromptId !== null) {
       const promptId = active.currentPromptId;
       // Socket announcements can beat the operations refresh. Do not show

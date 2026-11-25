@@ -3,7 +3,7 @@ import { useState } from "react";
 import { DEFAULT_PIPELINE_POLICY, defaultPromptPipelineRule, type PipelineFlowchartView, type PipelineRecord, type ProviderInfo } from "@agent-console/shared";
 import { AgentAssignments } from "../../components/pipeline/AgentAssignments";
 
-const providers = ["claude", "codex", "cursor"].map(id => ({ id, available: id !== "cursor", model: null, modelSelectionMode: "manual", models: [{ id: `${id}-model`, label: `${id} model` }] })) as ProviderInfo[];
+const providers = ["claude", "codex", "cursor"].map(id => ({ id, available: id !== "cursor", model: null, modelSelectionMode: "manual", modelAccessTier: "all", tierDefaultModel: null, totalModels: 1, models: [{ id: `${id}-model`, label: `${id} model`, hint: "" }] })) as ProviderInfo[];
 const initial = { pipelineId: 1, suiteId: 10, defaults: { suiteId: 10, defaultProvider: null, defaultModel: null, defaultFallbackProviders: [] },
   steps: [1, 2].map(id => ({ ...defaultPromptPipelineRule(id), enabled: true })),
   subSteps: [{ promptId: 3, parentPromptId: 1, depth: 1, inherited: true, rule: defaultPromptPipelineRule(3) }], available: [], rules: [], active: null, latest: null } as PipelineFlowchartView;

@@ -40,6 +40,7 @@ export function SubPipeline({
   onNavigate,
   onOpen,
   onSelect,
+  onConfigure,
   renderGate,
 }: {
   /** Station first, deepest open node last. Clicking an entry navigates up. */
@@ -57,6 +58,8 @@ export function SubPipeline({
   onOpen(promptId: number): void;
   /** Show a sub-step in the item panel. */
   onSelect(promptId: number): void;
+  /** Opens a sub-step's settings in the studio. */
+  onConfigure?(promptId: number): void;
   renderGate?(item: OperationsPrompt): ReactNode;
 }) {
   const parent = trail[trail.length - 1];
@@ -148,6 +151,7 @@ export function SubPipeline({
                 selected={selectedId === item.prompt.id}
                 subSteps={item.children.length > 0 ? { done: childDone, total: item.children.length } : undefined}
                 onSelect={() => onSelect(item.prompt.id)}
+                onConfigure={onConfigure === undefined ? undefined : () => onConfigure(item.prompt.id)}
                 onOpenSubPipeline={item.children.length > 0 ? () => onOpen(item.prompt.id) : undefined}
               />
             );

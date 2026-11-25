@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
+import { overlayHost } from "@/lib/overlayHost";
 import { useIsClient } from "@/lib/useIsClient";
 
 const FOCUSABLE = [
@@ -94,6 +95,8 @@ export function Modal({
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Escape" && dismissible) {
+        // Also stops a modal <dialog> underneath from cancelling with us.
+        event.preventDefault();
         event.stopPropagation();
         onClose();
         return;
@@ -187,6 +190,6 @@ export function Modal({
         )}
       </div>
     </div>,
-    document.body,
+    overlayHost(),
   );
 }

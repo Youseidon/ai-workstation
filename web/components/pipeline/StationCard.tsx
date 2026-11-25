@@ -3,6 +3,7 @@
 import type { OperationsPrompt, PromptPipelineRule } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
+import { EditIconButton } from "@/components/ui/EditIconButton";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/lib/providerTheme";
 import { LABEL, onUnfinishedChip, onDoneChip, overrideChip, TONE, type stationOccupancy } from "./status";
@@ -169,9 +170,7 @@ export function StationCard({
         </div>
       </div>
 
-      {onConfigure !== undefined && <button type="button" onClick={onConfigure}
-        aria-label={`Configure agent for ${label}`}
-        className="absolute right-2 bottom-2 z-10 rounded-md bg-surface-2 px-2 py-1 text-xs text-accent ring-1 ring-inset ring-line hover:bg-surface-3">Agent</button>}
+      {onConfigure !== undefined && <EditIconButton label={`Edit ${label} in Studio`} onClick={onConfigure} className="absolute right-2 bottom-2 z-10" />}
 
       {(onOpenSubPipeline !== undefined || canRemove) && (
         <div className="absolute top-1.5 right-1.5 z-10 hidden gap-1 group-focus-within:flex group-hover:flex">

@@ -2,6 +2,7 @@
 
 import type { OperationsSuite, PipelineState, ProviderId } from "@agent-console/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { EditIconButton } from "@/components/ui/EditIconButton";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import type { AgentActivity } from "@/lib/agentState";
@@ -28,6 +29,7 @@ export function PipelineConstellation({
   pipelineState,
   liveProviders,
   onSelect,
+  onEdit,
 }: {
   stages: ConstellationStage[];
   selectedSuiteId: number | null;
@@ -35,6 +37,8 @@ export function PipelineConstellation({
   pipelineState: PipelineState | null;
   liveProviders: Partial<Record<ProviderId, AgentActivity>>;
   onSelect(suiteId: number): void;
+  /** Opens the suite's settings in the studio; no pencil without it. */
+  onEdit?(suiteId: number): void;
 }) {
   if (stages.length === 0) {
     return (
@@ -64,6 +68,7 @@ export function PipelineConstellation({
         const done = ops?.counts.DONE ?? 0;
         const total = ops?.prompts.length ?? stage.promptCount;
         return (
+          <div className="group relative h-full min-w-0">
           <button
             type="button"
             onClick={() => onSelect(stage.suiteId)}
@@ -116,6 +121,10 @@ export function PipelineConstellation({
               <div className="mt-2 text-xs text-warning">{ops.attentionCount} need you</div>
             )}
           </button>
+          {onEdit !== undefined && (
+            <EditIconButton label={`Edit ${stage.suiteKey ?? stage.suiteName} in Studio`} onClick={() => onEdit(stage.suiteId)} className="absolute right-3 bottom-3 z-10" />
+          )}
+          </div>
         );
       }}
     />

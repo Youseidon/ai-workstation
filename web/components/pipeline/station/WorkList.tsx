@@ -4,6 +4,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { OperationsPrompt } from "@agent-console/shared";
 import { LABEL, TONE } from "@/components/pipeline/status";
 import { Badge } from "@/components/ui/Badge";
+import { EditIconButton } from "@/components/ui/EditIconButton";
 import { cn } from "@/lib/cn";
 import { GateGlyph } from "./Conversation";
 import { ancestorIdsForPrompt, filterPromptTree, isTerminal, needsYou, type WorkFilter } from "./tree";
@@ -57,6 +58,7 @@ export function WorkList({
   currentId,
   onFilterChange,
   onSelect,
+  onConfigure,
 }: {
   items: OperationsPrompt[];
   filter: WorkFilter;
@@ -65,6 +67,8 @@ export function WorkList({
   currentId: number | null;
   onFilterChange(filter: WorkFilter): void;
   onSelect(promptId: number): void;
+  /** Opens an item's settings in the studio; no pencil without it. */
+  onConfigure?(promptId: number): void;
 }) {
   const raw = useSyncExternalStore(subscribeExpanded, readExpandedRaw, () => "[]");
   const expanded = useMemo(() => new Set(parseExpanded(raw)), [raw]);
@@ -116,6 +120,7 @@ export function WorkList({
               currentId={currentId}
               onToggle={toggle}
               onSelect={onSelect}
+              onConfigure={onConfigure}
             />
           ))}
         </ul>
@@ -132,6 +137,7 @@ function Row({
   currentId,
   onToggle,
   onSelect,
+  onConfigure,
 }: {
   entry: OperationsPrompt;
   depth: number;
@@ -140,6 +146,7 @@ function Row({
   currentId: number | null;
   onToggle(id: number): void;
   onSelect(id: number): void;
+  onConfigure?(id: number): void;
 }) {
   const hasChildren = entry.children.length > 0;
   const open = hasChildren && expanded.has(entry.prompt.id);
@@ -153,7 +160,7 @@ function Row({
         aria-selected={selected}
         aria-expanded={hasChildren ? open : undefined}
         className={cn(
-          "flex items-center gap-1 border-b border-line/70 pr-3 last:border-b-0",
+          "group flex items-center gap-1 border-b border-line/70 pr-3 last:border-b-0",
           selected ? "bg-accent/10" : "hover:bg-surface-2",
         )}
         style={{ paddingLeft: 8 + depth * 18 }}
@@ -196,6 +203,9 @@ function Row({
             {LABEL[entry.operationalState]}
           </Badge>
         </button>
+        {onConfigure !== undefined && (
+          <EditIconButton label={`Edit ${entry.prompt.externalKey ?? entry.prompt.title} in Studio`} onClick={() => onConfigure(entry.prompt.id)} className="shrink-0" />
+        )}
       </li>
       {open &&
         entry.children.map((child) => (
@@ -208,6 +218,7 @@ function Row({
             currentId={currentId}
             onToggle={onToggle}
             onSelect={onSelect}
+            onConfigure={onConfigure}
           />
         ))}
     </>

@@ -63,10 +63,24 @@ export function AgentCommandCenter() {
   for (const run of runs) workspaceOptions.set(String(run.workspace.id), run.workspace.name);
 
   return <div className="agent-command-center">
-    <div className="fleet-page-tabs" aria-label="Agents views">
-      <Link href="/agents" aria-current={!configuration ? "page" : undefined} onClick={event => { event.preventDefault(); changeTab("fleet"); }}>Live fleet</Link>
-      <Link href="/agents?view=configuration" aria-current={configuration ? "page" : undefined} onClick={event => { event.preventDefault(); changeTab("configuration"); }}>Configuration</Link>
-    </div>
+    <nav className="fleet-page-tabs" aria-label="Agents views">
+      <div className="fleet-page-switch" data-active={configuration ? "configuration" : "fleet"}>
+        <span className="fleet-page-switch-thumb" aria-hidden />
+        <Link href="/agents" aria-current={!configuration ? "page" : undefined} onClick={event => { event.preventDefault(); changeTab("fleet"); }}>
+          <span className="fleet-page-tab-icon" aria-hidden><span className="fleet-signal" data-active={runs.length > 0 && !stale} /></span>
+          Live fleet
+          <span className="fleet-page-tab-count" aria-hidden>{runs.length} live</span>
+        </Link>
+        <Link href="/agents?view=configuration" aria-current={configuration ? "page" : undefined} onClick={event => { event.preventDefault(); changeTab("configuration"); }}>
+          <span className="fleet-page-tab-icon" aria-hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /><circle cx="16" cy="7" r="2.2" stroke="currentColor" strokeWidth="1.8" /><circle cx="10" cy="17" r="2.2" stroke="currentColor" strokeWidth="1.8" /></svg>
+          </span>
+          Configuration
+          {providers.length > 0 && <span className="fleet-page-tab-count" aria-hidden data-warn={unavailable.length > 0}>{providers.length} providers</span>}
+        </Link>
+      </div>
+      <span className="fleet-page-switch-hint" aria-hidden>{configuration ? "← Watch running agents in Live fleet" : "Set up providers, models & limits in Configuration →"}</span>
+    </nav>
     {configuration ? <AgentsView /> : <>
       <SidebarCollection label="Agent fleet">
         <SidebarRow title="All agents" selected={providerFilter === "all"} onSelect={() => setProviderFilter("all")} />

@@ -17,6 +17,16 @@ test("pipeline ownership follows the exact recorded run, even when suites are re
   assert.deepEqual(fleetMetadata(operations, pipelines, [{ ...run, runId: "unrelated" }]).origins, {});
 });
 
+test("a pipeline-owned run names its pipeline, suite and step, with the station for a sub-step", () => {
+  const ops = structuredClone(operations) as unknown as { suites: Array<Record<string, unknown> & { prompts: unknown[] }> };
+  ops.suites[0].key = "S2";
+  ops.suites[0].prompts = [{ prompt: { id: 4, externalKey: "S2-01", title: "Station", parentPromptId: null },
+    children: [{ prompt: { id: 5, externalKey: "S2-01.3", title: "Build API", parentPromptId: 4 }, children: [] }] }];
+  const place = fleetMetadata(ops as unknown as OperationsSnapshot, pipelines, [run]).origins[run.runId].pipeline;
+  assert.deepEqual(place, { name: "Release", suiteKey: "S2", suiteName: "Implementation", stationKey: "S2-01", stepKey: "S2-01.3", stepTitle: "Build API" });
+  assert.equal(runOrigin(run).pipeline, undefined, "runs outside a pipeline carry no pipeline place");
+});
+
 test("queued tasks retain provider/model ownership and disappear when a live announcement wins the race", () => {
   const queued = structuredClone(operations);
   queued.suites[0].pipeline!.active!.currentRunId = null;

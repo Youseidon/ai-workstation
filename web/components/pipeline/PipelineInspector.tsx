@@ -1,232 +1,101 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import type {
-  OperationsPrompt,
-  PipelinePolicy,
-  PromptPipelineRule,
-  ProviderId,
-  RulePolicy,
-  TransitionRow,
-} from "@agent-console/shared";
+import type { PipelinePolicy, RulePolicy, TransitionRow } from "@agent-console/shared";
 import { COOLING_MINUTES, TRANSIENT_PATTERNS } from "@agent-console/shared";
 import { SettingsGroupPanel } from "@/components/SettingsGroupPanel";
 import { StatusDot } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import { PIPELINE_POLICY_GROUP, RUN_BUDGETS_GROUP } from "@/lib/settingsGroups";
-import { useModelSelection } from "@/lib/useModelSelection";
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { StatusCatalogPanel } from "./StatusCatalogPanel";
-import { StepConfigForm } from "./StepConfigForm";
-import { SuiteFallbackEditor } from "./SuiteFallbackEditor";
 import { CONTROL_LABEL, TRANSITIONS, type PipelineStatusView } from "./status";
 
 /**
- * "station" is kept as a request value (a chip can ask for the station's
- * settings) but has no tab here: step settings live in the item panel.
+ * Where a chip or link wants to take the operator. "station" means the
+ * selected step's own settings; the rest are pipeline-wide studio sections.
  */
 export type InspectorTab = "station" | "history" | "verification" | "policy" | "budgets" | "statuses" | "definition";
 
-const TABS: Array<{ id: Exclude<InspectorTab, "station">; label: string }> = [
-  { id: "history", label: "History" },
-  { id: "verification", label: "Verify" },
-  { id: "policy", label: "Policy" },
-  { id: "budgets", label: "Budgets" },
-  { id: "statuses", label: "Statuses" },
-  { id: "definition", label: "Done criteria" },
-];
+/** The pipeline-wide rule sections of the Pipeline studio. */
+export type RulesSection = "policy" | "budgets" | "statuses" | "definition";
 
 /**
- * Right-hand config drawer for the pipeline board. One tab per concern so
- * operators are not dropped into a single mega-form.
+ * The rules half of the Pipeline studio: house policy, budgets, the status
+ * catalog and the suite's definition of done. One section at a time, each
+ * with room to breathe instead of a tab strip squeezed into the side panel.
  */
 export function PipelineInspector({
-  open,
-  tab,
-  onTabChange,
+  section,
   status,
   policy,
   stationLabel,
   suiteId,
-  pipelineId,
-  suiteFallbackProviders = [],
-  onSuiteFallbacksChanged,
   onStatusesChanged,
   onSettingsSaved,
   onEditStationFromSummary,
-  station,
-  history,
-  verification,
+  onEditAgents,
 }: {
-  open: boolean;
-  tab: InspectorTab;
-  onTabChange(tab: InspectorTab): void;
+  section: RulesSection;
   status: PipelineStatusView;
   policy: PipelinePolicy;
   stationLabel: string | null;
   suiteId?: number | null;
-  pipelineId?: number | null;
-  suiteFallbackProviders?: ProviderId[];
-  onSuiteFallbacksChanged?(): void;
   onStatusesChanged?(): void;
   onSettingsSaved?(): void;
   /** Jump from the transitions table into the station editor. */
   onEditStationFromSummary?(): void;
-  /** Run history of this pipeline. */
-  history?: ReactNode;
-  /** Suite verification reports and actions. */
-  verification?: ReactNode;
-  station?: null | {
-    rule: PromptPipelineRule;
-    item: OperationsPrompt;
-    subStep: boolean;
-    inherited: boolean;
-    providers: Parameters<typeof useModelSelection>[0];
-    models: ReturnType<typeof useModelSelection>;
-    onUseStationSettings?(): void;
-    onChange(patch: Partial<Omit<PromptPipelineRule, "promptId">>): void;
-  };
+  /** Suite fallbacks live with the suite's agents. */
+  onEditAgents?(): void;
 }) {
   const [showTransitions, setShowTransitions] = useState(false);
 
-  if (!open) return null;
-
-  return (
-    <div className="flex h-full min-h-0 w-full flex-col" aria-label="Pipeline panel">
-      <div className="flex gap-0.5 overflow-x-auto border-b border-line px-2 py-1.5" role="tablist">
-        {TABS.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === entry.id}
-            onClick={() => onTabChange(entry.id)}
-            className={cn(
-              "shrink-0 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
-              tab === entry.id ? "bg-surface-3 text-fg" : "text-fg-dim hover:bg-surface-2 hover:text-fg",
-            )}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {tab === "history" && history}
-        {tab === "verification" && (verification ?? (
-          <EmptyTab title="No suite selected" body="Select a suite to verify its work items." />
-        ))}
-        {tab === "station" && station !== undefined && (
-          station === null ? (
-            <EmptyTab
-              title="No station selected"
-              body="Click Configure on a station card to edit its agent, outcomes, and fallbacks here."
-            />
-          ) : (
-            <StepConfigForm
-              rule={station.rule}
-              item={station.item}
-              subStep={station.subStep}
-              inherited={station.inherited}
-              providers={station.providers}
-              models={station.models}
-              policy={policy}
-              onUseStationSettings={station.onUseStationSettings}
-              onChange={station.onChange}
-            />
-          )
-        )}
-
-        {tab === "policy" && (
-          <div className="space-y-6">
-            <RightNowSummary
-              status={status}
-              station={stationLabel}
-              policy={policy}
-              onEditStation={onEditStationFromSummary}
-              onEditPolicy={() => onTabChange("policy")}
-            />
-
-            <section className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
-                House pipeline policy
-              </h3>
-              <SettingsGroupPanel group={PIPELINE_POLICY_GROUP} onSaved={onSettingsSaved} compact />
-            </section>
-
-            {suiteId != null && pipelineId != null && (
-              <section className="space-y-2 border-t border-line pt-4">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
-                  Suite provider fallbacks
-                </h3>
-                <p className="text-xs leading-5 text-fg-dim">
-                  Used when a station leaves its own list empty. Empty here means the house default (
-                  {policy.fallbackProviders.join(" → ") || "none"}).
-                </p>
-                <SuiteFallbackEditor
-                  pipelineId={pipelineId}
-                  suiteId={suiteId}
-                  value={suiteFallbackProviders}
-                  onChanged={onSuiteFallbacksChanged}
-                />
-              </section>
-            )}
-
-            <section className="space-y-2 border-t border-line pt-4">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-dim">
-                  Every state
-                </h3>
-                <button
-                  type="button"
-                  className="text-xs text-accent hover:underline"
-                  onClick={() => setShowTransitions((value) => !value)}
-                >
-                  {showTransitions ? "Hide table" : "Show table"}
-                </button>
-              </div>
-              {showTransitions && (
-                <TransitionsTable
-                  status={status}
-                  onEditStationRule={onEditStationFromSummary}
-                  onEditPolicy={() => onTabChange("policy")}
-                />
-              )}
-              <FallbacksReference />
-            </section>
+  if (section === "policy") {
+    return (
+      <div className="space-y-6">
+        <RightNowSummary status={status} station={stationLabel} policy={policy} onEditStation={onEditStationFromSummary} />
+        <section className="studio-card space-y-2">
+          <h3 className="text-sm font-semibold text-fg">House pipeline policy</h3>
+          <SettingsGroupPanel group={PIPELINE_POLICY_GROUP} onSaved={onSettingsSaved} compact />
+        </section>
+        <section className="studio-card space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-fg">Every state</h3>
+            <button type="button" className="text-xs text-accent hover:underline" onClick={() => setShowTransitions((value) => !value)}>
+              {showTransitions ? "Hide table" : "Show table"}
+            </button>
           </div>
-        )}
-
-        {tab === "budgets" && (
-          <SettingsGroupPanel group={RUN_BUDGETS_GROUP} onSaved={onSettingsSaved} compact />
-        )}
-
-        {tab === "statuses" && (
-          <div className="space-y-2">
-            <p className="text-xs leading-5 text-fg-dim">
-              Labels, tones, and enter behaviour for every status the board can show.
-            </p>
-            <StatusCatalogPanel onChanged={onStatusesChanged} />
-          </div>
-        )}
-
-        {tab === "definition" && (
-          suiteId == null ? (
-            <EmptyTab
-              title="No suite selected"
-              body="Select a suite on the constellation to edit its definition of done."
-            />
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs leading-5 text-fg-dim">
-                Inherited by every work item in the suite that has not written its own.
-              </p>
-              <DefinitionOfDonePanel scope="suite" scopeId={suiteId} />
-            </div>
-          )
-        )}
+          {showTransitions && <TransitionsTable status={status} onEditStationRule={onEditStationFromSummary} />}
+          <FallbacksReference onEditAgents={onEditAgents} />
+        </section>
       </div>
-    </div>
+    );
+  }
+
+  if (section === "budgets") {
+    return (
+      <section className="studio-card">
+        <SettingsGroupPanel group={RUN_BUDGETS_GROUP} onSaved={onSettingsSaved} compact />
+      </section>
+    );
+  }
+
+  if (section === "statuses") {
+    return (
+      <section className="studio-card space-y-2">
+        <p className="text-xs leading-5 text-fg-dim">Labels, tones, and enter behaviour for every status the board can show.</p>
+        <StatusCatalogPanel onChanged={onStatusesChanged} />
+      </section>
+    );
+  }
+
+  return suiteId == null ? (
+    <EmptyTab title="No suite selected" body="Select a suite on the board to edit its definition of done." />
+  ) : (
+    <section className="studio-card space-y-2">
+      <p className="text-xs leading-5 text-fg-dim">Inherited by every work item in the suite that has not written its own.</p>
+      <DefinitionOfDonePanel scope="suite" scopeId={suiteId} />
+    </section>
   );
 }
 
@@ -239,7 +108,7 @@ function EmptyTab({ title, body }: { title: string; body: string }) {
   );
 }
 
-function RightNowSummary({
+export function RightNowSummary({
   status,
   station,
   policy,
@@ -339,13 +208,14 @@ function TransitionsTable({
   );
 }
 
-function FallbacksReference() {
+function FallbacksReference({ onEditAgents }: { onEditAgents?(): void }) {
   return (
     <div className="space-y-2 pt-2">
       <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-fg-dim">
         Transient failure cooling
       </h4>
-      <p className="text-xs leading-5 text-fg-dim">Reported account reset times take precedence. Quota errors naming a five-hour or weekly cap use that window when no reset time is available. Automatic reassignment is controlled per pipeline in Agent assignments.</p>
+      <p className="text-xs leading-5 text-fg-dim">Reported account reset times take precedence. Quota errors naming a five-hour or weekly cap use that window when no reset time is available. Automatic reassignment and the suite fallback order are set per pipeline in{" "}
+        {onEditAgents === undefined ? "Suite agents" : <button type="button" className="text-accent hover:underline" onClick={onEditAgents}>Suite agents</button>}.</p>
       <div className="overflow-x-auto rounded-md border border-line">
         <table className="w-full min-w-[16rem] border-collapse text-left text-xs">
           <thead>

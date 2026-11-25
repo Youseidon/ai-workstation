@@ -23,11 +23,15 @@ const DOD_PANEL = read("DefinitionOfDonePanel.tsx");
 const INSPECTOR = read("PipelineInspector.tsx");
 const STEP_FORM = read("StepConfigForm.tsx");
 const BOARD = read("PipelineBoard.tsx");
+const ASSIGNMENTS = read("AgentAssignments.tsx");
+const STUDIO = read("PipelineStudio.tsx");
 
 test("the definition of done is mounted where an operator can open it", () => {
   assert.match(INSPECTOR, /<DefinitionOfDonePanel\b/, "nothing renders the definition of done");
   assert.doesNotMatch(INSPECTOR, /ReviewerMatrixPanel/, "the deleted reviewer matrix must stay gone");
-  assert.match(BOARD, /PipelineInspector/, "board lost the config inspector");
+  assert.match(BOARD, /<PipelineInspector\b/, "board lost the config inspector");
+  assert.match(BOARD, /<PipelineStudio\b/, "board lost the studio that hosts it");
+  assert.match(STUDIO, /id: "definition"/, "the studio has no done-criteria section");
 });
 
 test("the inspector renders the shared TRANSITIONS table", () => {
@@ -53,7 +57,15 @@ test("station rule editor offers onUnfinished, not onBlocked / retry / recover",
 test("station and suite editors expose ordered provider fallbacks", () => {
   assert.match(STEP_FORM, /fallbackProviders/, "station editor lost the fallback list");
   assert.match(INSPECTOR, /TRANSIENT_PATTERNS/, "inspector lost the transient-failure table");
-  assert.match(INSPECTOR, /SuiteFallbackEditor/, "suite fallbacks are not editable");
+  assert.match(ASSIGNMENTS, /defaultFallbackProviders/, "suite fallbacks are not editable");
+});
+
+test("suite and step pick agents with the same component", () => {
+  assert.match(ASSIGNMENTS, /<AgentModelPicker\b/, "suite level lost the shared picker");
+  assert.match(STEP_FORM, /<AgentModelPicker\b/, "step level lost the shared picker");
+  assert.match(ASSIGNMENTS, /<FallbackOrderPicker\b/);
+  assert.match(STEP_FORM, /<FallbackOrderPicker\b/);
+  assert.doesNotMatch(ASSIGNMENTS, /<select\b/, "the suite picker drifted back to native selects");
 });
 
 test("budgets are reachable from the pipeline inspector", () => {
