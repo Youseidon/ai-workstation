@@ -22,15 +22,32 @@ interface ResponseBody {
 
 async function getSnapshot(serverUrl: string): Promise<Outcome> {
   try {
-    const response = await apiFetch(new URL("/api/settings", serverUrl), { cache: "no-store" });
-    if (!response.ok) throw new Error(`settings request failed (${response.status})`);
-    return { ok: true, errors: [], changed: [], snapshot: (await response.json()) as SettingsSnapshot };
+    const response = await apiFetch(new URL("/api/settings", serverUrl), {
+      cache: "no-store",
+    });
+    if (!response.ok)
+      throw new Error(`settings request failed (${response.status})`);
+    return {
+      ok: true,
+      errors: [],
+      changed: [],
+      snapshot: (await response.json()) as SettingsSnapshot,
+    };
   } catch (error) {
-    return { ok: false, errors: [describe(error)], changed: [], snapshot: null };
+    return {
+      ok: false,
+      errors: [describe(error)],
+      changed: [],
+      snapshot: null,
+    };
   }
 }
 
-async function postJson(url: URL, method: string, body: unknown): Promise<Outcome> {
+async function postJson(
+  url: URL,
+  method: string,
+  body: unknown,
+): Promise<Outcome> {
   try {
     const response = await apiFetch(url, {
       method,
@@ -53,7 +70,12 @@ async function postJson(url: URL, method: string, body: unknown): Promise<Outcom
       snapshot: parsed.snapshot ?? null,
     };
   } catch (error) {
-    return { ok: false, errors: [describe(error)], changed: [], snapshot: null };
+    return {
+      ok: false,
+      errors: [describe(error)],
+      changed: [],
+      snapshot: null,
+    };
   }
 }
 
@@ -78,11 +100,23 @@ export function useSettings(serverUrl: string) {
 
   useEffect(() => {
     let cancelled = false;
-    void getSnapshot(serverUrl).then((outcome) => {
-      if (!cancelled) apply(outcome);
-    });
+    const refresh = () => {
+      void getSnapshot(serverUrl).then((outcome) => {
+        if (!cancelled) apply(outcome);
+      });
+    };
+    const synchronize = (event: Event) => {
+      const next = (event as CustomEvent<SettingsSnapshot | undefined>).detail;
+      if (next !== undefined) setSnapshot(next);
+      else refresh();
+    };
+    refresh();
+    window.addEventListener("hydra.settings-updated", synchronize);
+    window.addEventListener("focus", refresh);
     return () => {
       cancelled = true;
+      window.removeEventListener("hydra.settings-updated", synchronize);
+      window.removeEventListener("focus", refresh);
     };
   }, [serverUrl, apply]);
 
@@ -93,8 +127,18 @@ export function useSettings(serverUrl: string) {
   const save = useCallback(
     async (patch: Record<string, SettingValue>): Promise<Outcome> => {
       setSaving(true);
-      const outcome = await postJson(new URL("/api/settings", serverUrl), "PUT", patch);
+      const outcome = await postJson(
+        new URL("/api/settings", serverUrl),
+        "PUT",
+        patch,
+      );
       apply(outcome);
+      if (outcome.ok && outcome.snapshot !== null)
+        window.dispatchEvent(
+          new CustomEvent("hydra.settings-updated", {
+            detail: outcome.snapshot,
+          }),
+        );
       setSaving(false);
       return outcome;
     },
@@ -110,6 +154,12 @@ export function useSettings(serverUrl: string) {
         keys === undefined ? {} : { keys },
       );
       apply(outcome);
+      if (outcome.ok && outcome.snapshot !== null)
+        window.dispatchEvent(
+          new CustomEvent("hydra.settings-updated", {
+            detail: outcome.snapshot,
+          }),
+        );
       setSaving(false);
       return outcome;
     },

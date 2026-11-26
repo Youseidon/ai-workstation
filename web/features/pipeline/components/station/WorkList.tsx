@@ -192,7 +192,7 @@ function Row({
           {gatePending && <GateGlyph pending className="shrink-0" />}
           {hasChildren && (
             <span className="hidden shrink-0 text-xs numeric text-fg-dim sm:inline">
-              {entry.children.filter(isTerminal).length}/{entry.children.length}
+              {entry.children.filter((item) => isTerminal(item)).length}/{entry.children.length}
             </span>
           )}
           {entry.childAttention !== null && (

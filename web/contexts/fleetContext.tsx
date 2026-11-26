@@ -1,13 +1,14 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { OperationsSnapshot, PipelineFlowchartView, PipelineRecord } from "@hydra/shared";
 import { fleetMetadata } from "../features/agents/lib/fleet";
+import { stopTargets, type StopTargets } from "../features/stop/lib/stopTargets";
 import { useHydra } from "../hooks/useHydra";
 import { workspaceApi } from "../api/workspacesApi";
 import { SERVER_URL } from "../api/serverUrl";
 
-const FleetContext = createContext<ReturnType<typeof fleetMetadata> & { loading: boolean; error: string | null; refresh(): void }>({ origins: {}, queued: [], loading: true, error: null, refresh() {} });
+const FleetContext = createContext<ReturnType<typeof fleetMetadata> & { targets: StopTargets; loading: boolean; error: string | null; refresh(): void }>({ origins: {}, queued: [], targets: { pipelines: [], agents: [] }, loading: true, error: null, refresh() {} });
 
 /** One metadata subscription shared by the rail and command center. No histories are loaded. */
 export function FleetProvider({ children }: { children: ReactNode }) {
@@ -35,7 +36,9 @@ export function FleetProvider({ children }: { children: ReactNode }) {
     return () => { disposed = true; clearTimeout(timer); };
   }, [operationsRevision, connection, revision]);
   const metadata = useMemo(() => fleetMetadata(data.operations, data.pipelines, runs, data.flowcharts), [data.operations, data.pipelines, data.flowcharts, runs]);
-  return <FleetContext.Provider value={{ ...metadata, loading: data.loading, error: data.error, refresh: () => setRevision(value => value + 1) }}>{children}</FleetContext.Provider>;
+  const targets = useMemo(() => stopTargets(data.operations, data.pipelines, runs), [data.operations, data.pipelines, runs]);
+  const refresh = useCallback(() => setRevision(value => value + 1), []);
+  return <FleetContext.Provider value={{ ...metadata, targets, loading: data.loading, error: data.error, refresh }}>{children}</FleetContext.Provider>;
 }
 
 export function useFleetMetadata() { return useContext(FleetContext); }

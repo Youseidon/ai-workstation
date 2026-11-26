@@ -1,9 +1,13 @@
 "use client";
 
+import type { SettingsDraftState } from "@/features/settings/lib/drafts";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsGroupPanel } from "@/features/settings/components/SettingsGroupPanel";
-import { GROUP_BLURB, GROUP_TITLE } from "@/features/settings/lib/settingsGroups";
+import {
+  GROUP_BLURB,
+  GROUP_TITLE,
+} from "@/features/settings/lib/settingsGroups";
 
 /**
  * One settings group as a dialog, so the same form can be reached from wherever
@@ -18,8 +22,12 @@ export function SettingsGroupDialog({
   group,
   onClose,
   onSaved,
+  draftState,
+  disabled,
 }: {
   group: string;
+  draftState?: SettingsDraftState;
+  disabled?: boolean;
   onClose(): void;
   /** Fired after a successful save, for callers holding derived server state. */
   onSaved?(): void;
@@ -40,7 +48,15 @@ export function SettingsGroupDialog({
         </Button>
       }
     >
-      <SettingsGroupPanel group={group} onSaved={onSaved} header={false} />
+      <SettingsGroupPanel
+        key={group}
+        group={group}
+        onSaved={onSaved}
+        header={false}
+        compact
+        draftState={draftState}
+        disabled={disabled}
+      />
     </Modal>
   );
 }

@@ -7,10 +7,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GROUP_BLURB, GROUP_TITLE } from "../../../features/settings/lib/settingsGroups";
+import { sharedSettingsGroups as sharedGroups } from "../../../features/agents/lib/configuration";
+import {
+  GROUP_BLURB,
+  GROUP_TITLE,
+} from "../../../features/settings/lib/settingsGroups";
 
 /** Mirrors AgentsView: provider groups render inside their agent's card. */
-const PROVIDER_GROUPS = ["Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"];
+const PROVIDER_GROUPS = [
+  "Claude Code",
+  "Codex CLI",
+  "Cursor CLI",
+  "Grok CLI",
+  "GitHub Copilot",
+  "Kilo Code",
+];
 
 /** Mirrors the server's exported GROUPS order. */
 const SERVER_GROUPS = [
@@ -25,13 +36,12 @@ const SERVER_GROUPS = [
   "Kilo Code",
 ];
 
-function sharedGroups(groups: string[]): string[] {
-  const provider = new Set(PROVIDER_GROUPS);
-  return groups.filter((group) => !provider.has(group));
-}
-
 test("every non-provider group gets a section", () => {
-  assert.deepEqual(sharedGroups(SERVER_GROUPS), ["General", "Run budgets", "Pipeline policy"]);
+  assert.deepEqual(sharedGroups(SERVER_GROUPS), [
+    "General",
+    "Run budgets",
+    "Pipeline policy",
+  ]);
 });
 
 test("a group added to the server renders without touching the page", () => {
@@ -41,7 +51,10 @@ test("a group added to the server renders without touching the page", () => {
 
 test("provider groups stay out of the shared sections", () => {
   for (const group of PROVIDER_GROUPS) {
-    assert.ok(!sharedGroups(SERVER_GROUPS).includes(group), `${group} should render in its agent card`);
+    assert.ok(
+      !sharedGroups(SERVER_GROUPS).includes(group),
+      `${group} should render in its agent card`,
+    );
   }
 });
 

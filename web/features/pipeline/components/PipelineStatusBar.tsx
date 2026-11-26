@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import type { ProviderId } from "@hydra/shared";
-import { AgentAvatar } from "@/features/providers/components/AgentAvatar";
+import { Menu } from "@/components/ui/Menu";
 import { Button } from "@/components/ui/Button";
 import { StatusDot } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
@@ -98,114 +98,29 @@ export function PipelineStatusBar({
       aria-label="Pipeline status"
       className={cn("rounded-panel border shadow-sm", RING[status.tone])}
     >
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 py-3">
-        <div className="flex min-w-[min(100%,18rem)] flex-1 flex-wrap items-start gap-3">
-          <button
-            type="button"
-            onClick={onExplain}
-            title="What decides these buttons?"
-            className="mt-[3px] flex shrink-0 items-center gap-2 rounded-sm underline decoration-transparent underline-offset-4 transition-colors hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            <StatusDot tone={status.tone} pulse={status.pulse} size={8} />
-            <span className={cn("text-xs font-medium uppercase tracking-[0.16em]", PILL[status.tone])}>
-              {status.label}
-            </span>
-          </button>
-          {/* Three lines, in the order the questions get asked: what the run is
-              doing, what put it there, and what the button will do about it. */}
-          <div className="min-w-0 flex-1 basis-56">
-            <p className="text-sm leading-5 text-fg">{status.headline}</p>
-            <p className="mt-0.5 text-xs leading-5 text-fg-muted">{status.because}</p>
-            {status.hint !== null && (
-              <p className="mt-0.5 text-xs leading-5 text-fg-dim">{status.hint}</p>
-            )}
-          </div>
-        </div>
-
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
+        <button type="button" onClick={onExplain} title="Open execution rules" className="flex shrink-0 items-center gap-2 rounded text-xs">
+          <StatusDot tone={status.tone} pulse={status.pulse} size={8} />
+          <span className={cn("font-medium", PILL[status.tone])}>{status.label}</span>
+        </button>
+        <p className="min-w-0 flex-1 basis-40 truncate text-xs text-fg-muted" title={status.headline}>{status.headline}</p>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {onReviewAllocation && <Button size="sm" variant="primary" disabled={busy} onClick={onReviewAllocation}>Review new allocation</Button>}
           {inbox}
-          {inbox !== undefined && <span aria-hidden className="mx-1 h-5 w-px bg-line" />}
-          {status.secondary.map((control) => (
-            <Button
-              key={control}
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              className={control === "stop" ? "text-danger/80 hover:bg-danger/10 hover:text-danger" : undefined}
-              onClick={() => onControl(control)}
-            >
-              {CONTROL_LABEL[control]}
-            </Button>
-          ))}
-          {status.primary !== null && (
-            <Button
-              size="md"
-              variant={variantFor(status.primary)}
-              disabled={primaryDisabled}
-              title={blockedReason ?? undefined}
-              onClick={() => onControl(status.primary!)}
-            >
-              {CONTROL_LABEL[status.primary]}
-            </Button>
-          )}
+          {onReviewAllocation && <Button size="sm" variant="primary" disabled={busy} onClick={onReviewAllocation}>Review allocation</Button>}
+          <button type="button" aria-expanded={rulesOpen} onClick={() => setRulesOpen((value) => !value)} className="text-xs text-fg-muted hover:text-fg">Details {rulesOpen ? "▴" : "▾"}</button>
+          {status.secondary.length > 0 && <Menu label="More execution controls" portal items={status.secondary.map((control) => ({
+            id: control, label: CONTROL_LABEL[control], disabled: busy, tone: control === "stop" ? "danger" as const : "default" as const, onSelect: () => onControl(control),
+          }))} />}
+          {status.primary !== null && <Button size="sm" variant={variantFor(status.primary)} disabled={primaryDisabled} title={blockedReason ?? status.hint ?? undefined} onClick={() => { if (status.primary !== null) onControl(status.primary); }}>{CONTROL_LABEL[status.primary]}</Button>}
         </div>
       </div>
-
-      {(position !== null || blockedReason !== null || rules !== undefined) && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/70 px-4 py-2 text-xs text-fg-dim">
-          {position !== null && (
-            <>
-              {position.stageCount > 0 && (
-                <span className="numeric">
-                  Stage {Math.max(position.stageIndex, 1)}/{position.stageCount}
-                </span>
-              )}
-              {position.stageName !== null && (
-                <>
-                  <Chevron />
-                  <span className="text-fg-muted">{position.stageName}</span>
-                </>
-              )}
-              {position.stationLabel !== null && (
-                <>
-                  <Chevron />
-                  <span className="text-fg-muted">{position.stationLabel}</span>
-                </>
-              )}
-              {position.subStepLabel !== null && (
-                <>
-                  <Chevron />
-                  <span className="text-fg-muted">{position.subStepLabel}</span>
-                </>
-              )}
-              {position.provider !== null && (
-                <span className="ml-1 inline-flex items-center gap-1.5">
-                  <AgentAvatar provider={position.provider} size={14} activity="tooling" />
-                  <span>{position.provider}</span>
-                </span>
-              )}
-            </>
-          )}
-          {blockedReason !== null && status.primary !== null && (
-            <span className={cn("text-caution", position !== null && "ml-auto")}>
-              {CONTROL_LABEL[status.primary]} is unavailable — {blockedReason}.
-            </span>
-          )}
-          {rules !== undefined && (
-            <button
-              type="button"
-              onClick={() => setRulesOpen((value) => !value)}
-              aria-expanded={rulesOpen}
-              className={cn("text-fg-dim hover:text-fg", blockedReason === null || status.primary === null ? "ml-auto" : "ml-3")}
-            >
-              Run rules {rulesOpen ? "▴" : "▾"}
-            </button>
-          )}
-        </div>
-      )}
-
-      {rules !== undefined && rulesOpen && <div className="border-t border-line/70 px-3 py-2">{rules}</div>}
+      {blockedReason !== null && status.primary !== null && <p className="border-t border-line/70 px-3 py-1.5 text-xs text-caution">{CONTROL_LABEL[status.primary]} unavailable: {blockedReason}.</p>}
+      {rulesOpen && <div className="space-y-2 border-t border-line/70 px-3 py-2 text-xs text-fg-muted">
+        <p>{status.because}</p>
+        {status.hint !== null && <p className="text-fg-dim">{status.hint}</p>}
+        {position !== null && <p>Suite {Math.max(position.stageIndex, 1)}/{position.stageCount} · {[position.stageName, position.stationLabel, position.subStepLabel, position.provider].filter(Boolean).join(" › ")}</p>}
+        {rules}
+      </div>}
 
       {recoveryActions !== null && (
         <div className="flex flex-wrap items-center gap-2 border-t border-line/70 px-4 py-2">
@@ -229,13 +144,5 @@ export function PipelineStatusBar({
         </div>
       )}
     </section>
-  );
-}
-
-function Chevron() {
-  return (
-    <span aria-hidden className="text-fg-dim/60">
-      ›
-    </span>
   );
 }

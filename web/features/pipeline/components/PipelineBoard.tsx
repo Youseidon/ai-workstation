@@ -13,7 +13,6 @@ import type {
   PipelineRunDetail,
   PipelineSubStepRule,
   ProgramRecord,
-  ProviderId,
   WorkspaceTree,
 } from "@hydra/shared";
 import {
@@ -22,10 +21,7 @@ import {
   DEFAULT_TRIGGER_SENTENCES,
   defaultPromptPipelineRule,
   describeStopReason,
-  modelLabel,
-  PROVIDER_IDS,
 } from "@hydra/shared";
-import { AgentAvatar } from "@/features/providers/components/AgentAvatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Menu, type MenuItem } from "@/components/ui/Menu";
@@ -35,15 +31,18 @@ import { TextInput } from "@/components/ui/Field";
 import { useDialogs } from "@/components/ui/Dialogs";
 import { BtwBar } from "@/features/chat/components/BtwBar";
 import { useToast } from "@/components/ui/Toast";
+import { useStopCenter } from "@/features/stop/components/StopCenter";
 import { cn } from "@/lib/cn";
 import { SERVER_URL } from "@/api/serverUrl";
 import { useHydra } from "@/contexts/hydra";
-import { agentState, type AgentActivity } from "@/features/runs/lib/agentState";
 import { useModelSelection } from "@/features/providers/hooks/useModelSelection";
 import { usePreferredProvider } from "@/features/providers/hooks/usePreferredProvider";
-import { providerTheme } from "@/features/providers/lib/providerTheme";
 import { workspaceApi } from "@/api/workspacesApi";
 import { useWorkspace } from "@/contexts/workspaceContext";
+import styles from "./workspace.module.css";
+import { enabledPipelineItems, projectSuiteProgress, progressLabel } from "../lib/progress";
+import { usePipelineProgress } from "../hooks/usePipelineProgress";
+import { SuiteProgressMark } from "./SuiteProgressMark";
 import { ContentTitle } from "@/components/layout/PageCanvas";
 import { DetailDrawer, DetailReopen } from "@/components/layout/DetailDrawer";
 import { UnsavedChangesGuard } from "@/components/layout/UnsavedChangesGuard";
@@ -103,6 +102,7 @@ export function PipelineBoard({
   }, [workbenchPipelineId]);
   const console_ = useHydra();
   const toast = useToast();
+  const stopCenter = useStopCenter();
   const dialogs = useDialogs();
   const params = useSearchParams();
   const models = useModelSelection(console_.providers);
@@ -113,8 +113,9 @@ export function PipelineBoard({
   const [snapshot, setSnapshot] = useState<OperationsSnapshot | null>(null);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [runs, setRuns] = useState<PipelineRunDetail[]>([]);
-  const [view, setView] = useState<PipelineFlowchartView | null>(null);
+  const [storedView, setView] = useState<PipelineFlowchartView | null>(null);
   const [viewSuiteId, setViewSuiteId] = useState<number | null>(null);
+  const [flowError, setFlowError] = useState<{ pipelineId: number; suiteId: number } | null>(null);
   const [hideCompleted, setHideCompleted] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -123,7 +124,7 @@ export function PipelineBoard({
   const [saveOpen, setSaveOpen] = useState(false);
   /** The item shown in the side panel. Deep links seed it with ?prompt=. */
   const [selectedId, setSelectedId] = useState<number | null>(() => positiveInt(params.get("prompt")));
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(() => positiveInt(params.get("prompt")) !== null);
   const [panelMode, setPanelMode] = useState<"item" | "pipeline">(() => (positiveInt(params.get("prompt")) !== null ? "item" : "pipeline"));
   const [studio, setStudio] = useState<StudioSection | null>(() => STUDIO_SECTIONS.find((entry) => entry.id === params.get("studio"))?.id ?? null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -165,9 +166,14 @@ export function PipelineBoard({
   const lastWorkspaceId = useRef<number | null>(workspaceId);
   const currentWorkspaceId = useRef<number | null>(workspaceId);
   currentWorkspaceId.current = workspaceId;
+  const currentPipelineId = useRef<number | null>(pipelineId);
+  useEffect(() => { currentPipelineId.current = pipelineId; }, [pipelineId]);
+  const catalogRequestId = useRef(0);
   const [catalogWorkspaceId, setCatalogWorkspaceId] = useState<number | null>(null);
+  const view = storedView?.pipelineId === pipelineId && catalogWorkspaceId === workspaceId ? storedView : null;
 
   const refreshCatalog = useCallback(async () => {
+    const requestId = ++catalogRequestId.current;
     const target = workspaceId;
     if (target === null) {
       setTree(null);
@@ -180,7 +186,8 @@ export function PipelineBoard({
       workspaceApi.operations(SERVER_URL, target),
       workspaceApi.listPipelines(SERVER_URL, target),
     ]);
-    if (currentWorkspaceId.current !== target) return target;
+    // A slower refresh must not restore another pipeline's draft or older outcomes.
+    if (currentWorkspaceId.current !== target || currentPipelineId.current !== pipelineId || requestId !== catalogRequestId.current) return target;
     setTree(nextTree);
     setSnapshot(operations);
     setPipelines(named);
@@ -200,9 +207,10 @@ export function PipelineBoard({
         appliedPipelineId.current = pipelineId;
       }
       try {
-        setRuns(await workspaceApi.pipelineRuns(SERVER_URL, pipelineId));
+        const nextRuns = await workspaceApi.pipelineRuns(SERVER_URL, pipelineId);
+        if (currentWorkspaceId.current === target && currentPipelineId.current === pipelineId && requestId === catalogRequestId.current) setRuns(nextRuns);
       } catch {
-        setRuns([]);
+        if (currentWorkspaceId.current === target && currentPipelineId.current === pipelineId && requestId === catalogRequestId.current) setRuns([]);
       }
     }
     if (!suiteBootstrapped.current && suiteId !== null && pipelineId === null) {
@@ -236,7 +244,7 @@ export function PipelineBoard({
         draftSuiteIds.some((id, index) => pipeline.stages[index]?.suiteId !== id);
 
 
-  const programs = useMemo(() => tree?.programs ?? [], [tree]);
+  const programs = useMemo(() => catalogWorkspaceId === workspaceId ? tree?.programs ?? [] : [], [tree, catalogWorkspaceId, workspaceId]);
   const suitesById = useMemo(() => {
     const map = new Map<number, { program: ProgramRecord; suite: ProgramRecord["suites"][number] }>();
     for (const program of programs) {
@@ -246,27 +254,24 @@ export function PipelineBoard({
   }, [programs]);
 
   const operationsById = useMemo(() => {
-    const map = new Map((snapshot?.suites ?? []).map((suite) => [suite.id, suite]));
+    const map = new Map((catalogWorkspaceId === workspaceId ? snapshot?.suites ?? [] : []).map((suite) => [suite.id, suite]));
     return map;
-  }, [snapshot]);
+  }, [snapshot, catalogWorkspaceId, workspaceId]);
 
+  const stageFlows = usePipelineProgress({ workspaceId, pipelineId, suiteIds: draftSuiteIds, snapshot: catalogWorkspaceId === workspaceId ? snapshot : null });
   const stages: ConstellationStage[] = draftSuiteIds.flatMap((id) => {
     const home = suitesById.get(id);
     const ops = operationsById.get(id) ?? null;
     if (home === undefined && ops === null) return [];
     const saved = pipeline?.stages.find((stage) => stage.suiteId === id);
-    const providers = saved?.agentProviders ?? [];
     return [
       {
         suiteId: id,
         programName: home?.program.name ?? ops?.programName ?? saved?.programName ?? "Program",
-        programKey: home?.program.externalKey ?? ops?.programKey ?? saved?.programKey ?? null,
         suiteName: home?.suite.name ?? ops?.name ?? saved?.suiteName ?? "Suite",
         suiteKey: home?.suite.externalKey ?? ops?.key ?? saved?.suiteKey ?? null,
-        promptCount: home?.suite.prompts.length ?? ops?.prompts.length ?? saved?.promptCount ?? 0,
-        stepCount: saved?.stepCount ?? 0,
         operations: ops,
-        providers,
+        progress: projectSuiteProgress(loadError === null ? ops : null, view?.suiteId === id ? view : stageFlows?.get(id) ?? null, snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG, saved?.stepCount ?? 0),
       },
     ];
   });
@@ -335,12 +340,14 @@ export function PipelineBoard({
         if (!disposed && requestedSuite === activeSuiteId && requestedPipeline === pipelineId) {
           setView(next);
           setViewSuiteId(requestedSuite);
+          setFlowError(null);
         }
       })
       .catch(() => {
         if (!disposed) {
           setView(null);
           setViewSuiteId(null);
+          setFlowError({ pipelineId: requestedPipeline, suiteId: requestedSuite });
         }
       });
     return () => {
@@ -351,11 +358,14 @@ export function PipelineBoard({
   const refreshFlowchart = useCallback(
     async (targetSuiteId: number) => {
       if (pipelineId === null) return;
+      const targetWorkspace = workspaceId;
       const next = await workspaceApi.pipelineFlowchart(SERVER_URL, pipelineId, targetSuiteId, showEditor);
+      if (currentWorkspaceId.current !== targetWorkspace || currentPipelineId.current !== pipelineId) return;
       setView(next);
       setViewSuiteId(targetSuiteId);
+      setFlowError(null);
     },
-    [pipelineId, showEditor],
+    [pipelineId, showEditor, workspaceId],
   );
 
   useEffect(() => {
@@ -391,10 +401,10 @@ export function PipelineBoard({
   const steps = useMemo(() => (viewSuiteId === activeSuiteId ? (view?.steps ?? []) : []), [view, viewSuiteId, activeSuiteId]);
   const byId = new Map((suiteOps?.prompts ?? []).map((item) => [item.prompt.id, item]));
   const flowSteps = steps.filter((step) => {
-    if (!byId.has(step.promptId)) return false;
+    if (!step.enabled || !byId.has(step.promptId)) return false;
     if (!hideCompleted) return true;
     const item = byId.get(step.promptId);
-    return item?.operationalState !== "DONE" && item?.operationalState !== "SKIPPED";
+    return item === undefined || !isTerminal(item, snapshot?.statusCatalog);
   });
   const displayedSteps = flowSteps;
 
@@ -445,17 +455,6 @@ export function PipelineBoard({
           return node === undefined ? [] : [{ promptId, label: node.prompt.externalKey ?? node.prompt.title }];
         });
 
-  const crew = useMemo(() => {
-    return PROVIDER_IDS.map((id) => {
-      const info = console_.providers.find((item) => item.id === id);
-      const assigned = stages.some((stage) => stage.providers.includes(id));
-      const state = info === undefined ? null : agentState(info, console_.runs, console_.items, console_.lastRun);
-      const activity: AgentActivity = !assigned
-        ? "offline"
-        : (state?.activity ?? (info?.available === true ? "idle" : "offline"));
-      return { id, assigned, activity, caption: state?.caption ?? (assigned ? "on this rail" : "not assigned") };
-    });
-  }, [console_.items, console_.lastRun, console_.providers, console_.runs, stages]);
 
   // Mirror the scheduler's depth-first walk. The suite run may still point at
   // a parent that ran earlier even though its next unstarted child is the item
@@ -464,8 +463,10 @@ export function PipelineBoard({
   const pendingPrompt = useMemo(() => {
     const suite = resumeSuiteOps ?? suiteOps;
     if (suite === null) return null;
-    return nextPipelineLeaf(suite.prompts);
-  }, [resumeSuiteOps, suiteOps]);
+    const flow = view?.suiteId === suite.id ? view : stageFlows?.get(suite.id);
+    if (flow === undefined || flow === null) return null;
+    return nextPipelineLeaf(enabledPipelineItems(suite, flow));
+  }, [resumeSuiteOps, suiteOps, view, stageFlows]);
   // `recoverable` is broader than the RECOVERY_NEEDED label — it also covers a
   // run that ended UNREPORTED or FAILED, which display under their own status
   // but hold up the pipeline (and the scheduler's own play-blocked check) the
@@ -479,7 +480,7 @@ export function PipelineBoard({
     if (pipelineId === null) return "this pipeline is not saved yet";
     if (draftSuiteIds.length === 0) return "it has no suites";
     if (dirty) return "there are unsaved changes";
-    if (stages.some((stage) => stage.stepCount === 0)) return "every suite needs at least one step";
+    if (stages.some((stage) => stage.progress.total === 0)) return "every suite needs at least one step";
     if (resumeItem?.humanIntervention?.status === "PENDING") return "an approval point is waiting on you";
     if (occupancy !== null && live?.state === "PLAYING" && live.currentSuiteRunId !== occupancy.runId) {
       return `${occupancy.provider} is already writing this workspace`;
@@ -618,23 +619,11 @@ export function PipelineBoard({
    */
   const runControl = (control: PipelineControl) => {
     if (pipelineId === null) return;
-    if (control === "pause") {
-      void act(async () => {
-        await workspaceApi.pausePipeline(SERVER_URL, pipelineId);
-      }, "Pausing — the current agent will finish, then the rail holds.");
-      return;
-    }
-    if (control === "stop") {
-      void act(async () => {
-        const confirmed = await dialogs.confirm({
-          title: "Stop this pipeline?",
-          description: "Auto-advance ends and the run closes. The agent working right now, if any, is interrupted. Finished work is kept — a new run picks up from the first unfinished station.",
-          confirmLabel: "Stop pipeline",
-          tone: "danger",
-        });
-        if (!confirmed) return;
-        await workspaceApi.stopPipeline(SERVER_URL, pipelineId);
-      }, "Pipeline stopped");
+    // Pause and Stop go through the app's one stop center, so the pipeline
+    // page, the fleet rail and the agents page offer the same choices with
+    // the same words and the same "stopping…" feedback.
+    if (control === "pause" || control === "stop") {
+      stopCenter.open({ pipelineId });
       return;
     }
     // Resume resumes: the continuation loop carries prior-run notes itself, so
@@ -780,8 +769,6 @@ export function PipelineBoard({
   // Agent assignments need the saved flowchart of the suite on screen.
   const agentsReady = pipeline !== null && activeSuiteId !== null && viewSuiteId === activeSuiteId && view !== null
     && pipeline.stages.some((stage) => stage.suiteId === activeSuiteId);
-  const overrideCount = view === null ? 0 : view.steps.filter((step) => step.provider !== null).length
-    + view.subSteps.filter((step) => !step.inherited && step.rule.provider !== null).length;
   // Who runs the selected item, and where that choice comes from.
   const selectedAgent = (() => {
     if (configRule === null) return null;
@@ -813,20 +800,25 @@ export function PipelineBoard({
   };
 
   const inboxEntries = useMemo(
-    () => collectInbox(stages.flatMap((stage) => (stage.operations === null ? [] : [stage.operations]))),
-    [stages],
+    () => collectInbox(stages.flatMap((stage) => {
+      if (stage.operations === null) return [];
+      const flow = view?.suiteId === stage.suiteId ? view : stageFlows?.get(stage.suiteId);
+      return [{ ...stage.operations, prompts: enabledPipelineItems(stage.operations, flow ?? null) }];
+    })),
+    [stages, stageFlows, view],
   );
 
   // Items the list view shows: the flowchart's stations (with their sub-steps)
   // on a saved pipeline; the whole suite while composing a draft.
   const listItems = useMemo(() => {
     const prompts = suiteOps?.prompts ?? [];
-    if (pipelineId === null || viewSuiteId !== activeSuiteId) return prompts;
-    const order = new Map(steps.map((step, index) => [step.promptId, index]));
+    if (pipelineId === null) return prompts;
+    if (viewSuiteId !== activeSuiteId || view === null) return [];
+    const order = new Map(steps.filter((step) => step.enabled).map((step, index) => [step.promptId, index]));
     return prompts
       .filter((item) => order.has(item.prompt.id))
       .sort((a, b) => (order.get(a.prompt.id) ?? 0) - (order.get(b.prompt.id) ?? 0));
-  }, [suiteOps, pipelineId, viewSuiteId, activeSuiteId, steps]);
+  }, [suiteOps, pipelineId, viewSuiteId, activeSuiteId, steps, view]);
 
   // j / k walk the items in the order they are drawn.
   const navOrder = useMemo(() => {
@@ -1044,7 +1036,7 @@ export function PipelineBoard({
     }
     for (const stage of stages) {
       entries.push({ id: `suite-${stage.suiteId}`, group: "Suites", label: `${stage.suiteKey !== null ? `${stage.suiteKey} · ` : ""}${stage.suiteName}`,
-        hint: `${stage.programName} · ${stage.stepCount} steps`, keywords: "suite stage",
+        hint: `${stage.programName} · ${stage.progress.total} steps`, keywords: "suite stage",
         trailing: stage.suiteId === live?.currentSuiteId ? <span className="text-info">running</span> : undefined,
         run: () => { setSuiteId(stage.suiteId); setSubPath([]); } });
     }
@@ -1094,11 +1086,15 @@ export function PipelineBoard({
       </Button>
     );
 
-  const stationCount = stages.reduce((sum, stage) => sum + stage.stepCount, 0);
+  const stationCount = stages.reduce((sum, stage) => sum + stage.progress.total, 0);
+  const settledCount = stages.reduce((sum, stage) => sum + stage.progress.done, 0);
+  const progressKnown = stages.length > 0 && stages.every((stage) => stage.progress.known);
+  const selectedProgress = stages.find((stage) => stage.suiteId === activeSuiteId)?.progress;
 
   return (
     <div className="flex h-full min-h-0 flex-col text-fg">
       <ContentTitle
+        className={styles.workspaceTitle}
         title={draftName}
         titleEditor={
           showEditor ? (
@@ -1114,19 +1110,17 @@ export function PipelineBoard({
         }
         meta={
           <>
-            Pipeline · {tree?.name ?? "Choose a workspace"} · {stages.length} suite{stages.length === 1 ? "" : "s"} · {stationCount} step{stationCount === 1 ? "" : "s"}
-            {dirty ? <span className="text-caution"> · unsaved changes</span> : ""}
+            {stages.length} suite{stages.length === 1 ? "" : "s"} · {progressKnown ? `${settledCount}/${stationCount} settled` : `${stationCount} steps`}
           </>
         }
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <button type="button" className="board-find" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K /">
+            {dirty && <span className="text-xs text-caution">Unsaved</span>}
+            <button type="button" className="board-find" onClick={() => setPaletteOpen(true)} aria-label="Find anything" aria-keyshortcuts="Control+K Meta+K /">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" /><path d="m16 16 4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-              <span>Find anything</span>
+              <span className="hidden lg:inline">Find</span>
               <kbd aria-hidden>⌘K</kbd>
             </button>
-            <CrewStrip crew={crew} />
-            <LayoutToggle value={layout} onChange={changeLayout} />
             <Button size="sm" variant="secondary" onClick={() => setStudio(selectedItem !== null && panelMode === "item" ? "step" : "agents")} title="Agents, rules, budgets, verification and history (,)">
               <span className="inline-flex items-center gap-1.5">{STUDIO_ICONS.step}Studio</span>
             </Button>
@@ -1136,9 +1130,65 @@ export function PipelineBoard({
         }
       />
 
+      {/* Transport stays visible while the execution workspace scrolls. */}
+      {pipelineId !== null && (
+        <div className="shrink-0 px-3 pb-2 sm:px-5">
+          <PipelineStatusBar
+            status={status}
+            position={runPosition}
+            blockedReason={statusBlocked}
+            recoveryActions={statusBlocked !== null ? recoveryActions : null}
+            busy={anyBusy}
+            onControl={runControl}
+            onExplain={() => setStudio("policy")}
+            onReviewAllocation={live?.waitReason === "execution:budget_exhausted" && resumeItem ? () => setAllocationPromptId(resumeItem.prompt.id) : undefined}
+            inbox={
+              <NeedsYouInbox
+                entries={inboxEntries}
+                onOpen={(entry) => {
+                  if (entry.suite.id !== activeSuiteId) setSuiteId(entry.suite.id);
+                  setSubPath([]);
+                  openConversation(entry.item.prompt.id);
+                }}
+              />
+            }
+            rules={
+              <RunConfidenceStrip
+                execution={resumeItem?.execution}
+                bare
+                autoReassign={pipeline?.autoReassign ?? false}
+                policy={policy}
+                suiteFallbacks={
+                  activeSuiteId === null
+                    ? []
+                    : (view?.defaults.defaultFallbackProviders
+                      ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
+                      ?? [])
+                }
+                stationFallbacks={
+                  resumeItem === null
+                    ? null
+                    : (view?.steps.find((step) => step.promptId === resumeItem.prompt.id)?.fallbackProviders
+                      ?? resumeItem.pipelineRule?.fallbackProviders
+                      ?? null)
+                }
+                continuation={resumeItem?.continuation ?? null}
+                waitReason={live?.waitReason ?? null}
+                occupancyWrapUp={
+                  resumeItem !== null &&
+                  stationOccupancy(resumeItem, console_.runs, view?.active)?.source.type === "wrapup"
+                }
+                latestAudit={resumeItem?.latestAudit ?? null}
+                onOpenTab={openPipelinePanel}
+              />
+            }
+          />
+        </div>
+      )}
+
       {loadError !== null && (
         <div role="alert" className="border-b border-danger/40 bg-danger/10 px-4 py-2 text-xs text-danger">
-          {loadError}
+          {catalogWorkspaceId === workspaceId && tree !== null ? `Showing the last loaded work. ${loadError}` : loadError}
         </div>
       )}
       {loadError === null && workspaceStatus === "empty" && (
@@ -1231,18 +1281,19 @@ export function PipelineBoard({
               {stages.length === 0 ? (
                 <SidebarEmpty>No suites yet. Choose Edit to add some.</SidebarEmpty>
               ) : (
-                stages.map((stage) => (
-                  <SidebarRow
-                    key={stage.suiteId}
-                    onSelect={() => {
-                      setSuiteId(stage.suiteId);
-                      setSubPath([]);
-                    }}
-                    selected={stage.suiteId === activeSuiteId}
-                    title={`${stage.suiteKey !== null ? `${stage.suiteKey} · ` : ""}${stage.suiteName}`}
-                    detail={stage.programName}
-                    status={stage.suiteId === live?.currentSuiteId ? "Running" : undefined}
-                  />
+                stages.map((stage, index) => (
+                  <div key={stage.suiteId} className={styles.sidebarSuite}>
+                    {(index === 0 || stages[index - 1]?.programName !== stage.programName) && <p className="app-sidebar-group">{stage.programName}</p>}
+                    <SidebarRow
+                      onSelect={() => { setSuiteId(stage.suiteId); setSubPath([]); }}
+                      selected={stage.suiteId === activeSuiteId}
+                      title={<span className={styles.sidebarIdentity}>
+                        <SuiteProgressMark progress={stage.progress} running={stage.suiteId === live?.currentSuiteId && live.state === "PLAYING"} index={index} />
+                        <span title={stage.suiteName}>{stage.suiteKey !== null ? `${stage.suiteKey} · ${stage.suiteName}` : stage.suiteName}</span>
+                        <span className={styles.sidebarCount} title={progressLabel(stage.progress)}>{stage.progress.known ? `${stage.progress.done}/${stage.progress.total}` : "—"}</span>
+                      </span>}
+                    />
+                  </div>
                 ))
               )}
             </SidebarGroup>
@@ -1295,6 +1346,7 @@ export function PipelineBoard({
                                 type="button"
                                 onClick={() => toggleSuite(suite.id)}
                                 aria-pressed={on}
+                                aria-label={`${on ? "Remove" : "Add"} ${suite.externalKey ?? suite.name} ${on ? "from" : "to"} pipeline`}
                                 className="app-sidebar-toggle-row text-fg-muted"
                               >
                                 <span aria-hidden className="app-sidebar-check">{on ? "✓" : ""}</span>
@@ -1302,10 +1354,14 @@ export function PipelineBoard({
                                   {suite.externalKey !== null && <span className="text-fg-muted">{suite.externalKey} · </span>}
                                   {suite.name}
                                 </span>
-                                {ops?.pipeline?.active != null && (
+                                {ops?.pipeline?.active?.state === "PLAYING" && (
                                   <span className="ml-auto size-1.5 shrink-0 rounded-full bg-info animate-breathe" aria-label="Running in a pipeline" />
                                 )}
                               </button>
+                              {(() => {
+                                const stage = stages.find((entry) => entry.suiteId === suite.id);
+                                return stage?.progress.complete ? <span className="pr-2"><SuiteProgressMark progress={stage.progress} running={false} index={0} /></span> : null;
+                              })()}
                             </li>
                           );
                         })}
@@ -1318,7 +1374,7 @@ export function PipelineBoard({
           )}
         </SidebarCollection>
         <section className="pipeline-desk min-h-0 overflow-auto">
-          <div className="w-full space-y-5 px-5 pt-1 pb-10">
+          <div className="w-full space-y-3 px-3 pt-1 pb-6 sm:px-5">
             {recovered !== null && (
               <div role="status" className="flex flex-wrap items-center gap-3 rounded-panel border border-caution/40 px-4 py-3 text-sm text-fg">
                 <span className="min-w-0 flex-1">You left unsaved changes to this pipeline. Restore them to keep editing.</span>
@@ -1352,62 +1408,7 @@ export function PipelineBoard({
               />
             )}
 
-            {/* Run bar: what the pipeline is doing and the one control for it.
-                Sticky, so the controls are always in the same place. */}
-            {pipelineId !== null && (
-              <div className="sticky top-0 z-20 -mx-5 bg-surface-0 px-5 pt-2 pb-2">
-                <PipelineStatusBar
-                  status={status}
-                  position={runPosition}
-                  blockedReason={statusBlocked}
-                  recoveryActions={statusBlocked !== null ? recoveryActions : null}
-                  busy={anyBusy}
-                  onControl={runControl}
-                  onExplain={() => setStudio("policy")}
-                  onReviewAllocation={live?.waitReason === "execution:budget_exhausted" && resumeItem ? () => setAllocationPromptId(resumeItem.prompt.id) : undefined}
-                  inbox={
-                    <NeedsYouInbox
-                      entries={inboxEntries}
-                      onOpen={(entry) => {
-                        if (entry.suite.id !== activeSuiteId) setSuiteId(entry.suite.id);
-                        setSubPath([]);
-                        openConversation(entry.item.prompt.id);
-                      }}
-                    />
-                  }
-                  rules={
-                    <RunConfidenceStrip
-                      execution={resumeItem?.execution}
-                      bare
-                      autoReassign={pipeline?.autoReassign ?? false}
-                      policy={policy}
-                      suiteFallbacks={
-                        activeSuiteId === null
-                          ? []
-                          : (view?.defaults.defaultFallbackProviders
-                            ?? suiteOps?.pipeline?.defaults.defaultFallbackProviders
-                            ?? [])
-                      }
-                      stationFallbacks={
-                        resumeItem === null
-                          ? null
-                          : (view?.steps.find((step) => step.promptId === resumeItem.prompt.id)?.fallbackProviders
-                            ?? resumeItem.pipelineRule?.fallbackProviders
-                            ?? null)
-                      }
-                      continuation={resumeItem?.continuation ?? null}
-                      waitReason={live?.waitReason ?? null}
-                      occupancyWrapUp={
-                        resumeItem !== null &&
-                        stationOccupancy(resumeItem, console_.runs, view?.active)?.source.type === "wrapup"
-                      }
-                      latestAudit={resumeItem?.latestAudit ?? null}
-                      onOpenTab={openPipelinePanel}
-                    />
-                  }
-                />
-              </div>
-            )}
+
 
             {(() => {
               // `/btw` to the station that is working right now. The
@@ -1439,7 +1440,6 @@ export function PipelineBoard({
               selectedSuiteId={activeSuiteId}
               currentSuiteId={live?.currentSuiteId ?? null}
               pipelineState={live?.state ?? null}
-              liveProviders={Object.fromEntries(crew.map((agent) => [agent.id, agent.activity])) as Partial<Record<ProviderId, AgentActivity>>}
               onSelect={(id) => {
                 setSuiteId(id);
                 setSubPath([]);
@@ -1447,17 +1447,7 @@ export function PipelineBoard({
               onEdit={pipelineId === null ? undefined : editSuite}
             />
 
-            {agentsReady && view !== null && pipeline !== null && (
-              <AgentsSummary
-                suiteName={suiteOps?.key ?? suiteOps?.name ?? "this suite"}
-                provider={view.defaults.defaultProvider}
-                model={view.defaults.defaultModel}
-                overrides={overrideCount}
-                fallbacks={view.defaults.defaultFallbackProviders}
-                autoReassign={pipeline.autoReassign}
-                onOpen={() => setStudio("agents")}
-              />
-            )}
+
 
             {suiteOps === null ? (
               <p className="text-sm text-fg-dim">
@@ -1496,25 +1486,16 @@ export function PipelineBoard({
               />
             ) : (
               <div className="space-y-4" key={activeSuiteId ?? "none"}>
-                <div className="flex flex-wrap items-end justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs uppercase tracking-[0.18em] text-fg-dim">
-                      {suiteOps.programName} · {showEditor ? "compose" : layout === "list" ? "list" : "flow"}
-                    </div>
-                    <h3 className="mt-1 truncate text-lg text-fg">
-                      {suiteOps.key !== null && <span className="text-fg-muted">{suiteOps.key} — </span>}
-                      {suiteOps.name}
-                    </h3>
-                  </div>
-                  {layout === "flow" && pipelineId !== null && (
-                    <button
-                      type="button"
-                      onClick={() => setHideCompleted((current) => !current)}
-                      className="text-xs text-accent hover:underline"
-                    >
-                      {hideCompleted ? "Show completed" : "Hide completed"}
-                    </button>
-                  )}
+                <div className="flex flex-wrap items-center gap-2 border-b border-line pb-2">
+                  <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-fg" title={`${suiteOps.programName} · ${suiteOps.name}`}>
+                    {suiteOps.key !== null && <span className="mr-1.5 text-fg-muted">{suiteOps.key}</span>}{suiteOps.name}
+                  </h2>
+                  <span className="text-xs numeric text-fg-muted" title={selectedProgress ? progressLabel(selectedProgress) : undefined}>
+                    {selectedProgress?.known ? `${selectedProgress.done}/${selectedProgress.total} settled` : "Progress unavailable"}
+                  </span>
+                  {agentsReady && <Button size="sm" variant="ghost" onClick={() => setStudio("agents")}>{view?.defaults.defaultProvider ?? "Assign agent"}</Button>}
+                  <LayoutToggle value={layout} onChange={changeLayout} />
+                  {layout === "flow" && pipelineId !== null && <button type="button" aria-pressed={hideCompleted} onClick={() => setHideCompleted((current) => !current)} className="text-xs text-accent hover:underline">{hideCompleted ? "Show completed" : "Hide completed"}</button>}
                 </div>
 
                 {pipelineId === null ? (
@@ -1552,7 +1533,13 @@ export function PipelineBoard({
                       </div>
                     ) : null}
 
-                    {layout === "list" && !showEditor ? (
+                    {view === null || viewSuiteId !== activeSuiteId ? (
+                      <div role="status" className="rounded-panel border border-dashed border-line px-4 py-6 text-sm text-fg-muted">
+                        {flowError?.pipelineId === pipelineId && flowError.suiteId === activeSuiteId ? <>
+                          Enabled steps are unavailable. <button type="button" className="text-accent hover:underline" onClick={() => { if (activeSuiteId !== null) void refreshFlowchart(activeSuiteId).catch(() => {}); }}>Retry</button>
+                        </> : "Loading enabled steps…"}
+                      </div>
+                    ) : layout === "list" && !showEditor ? (
                       <WorkList
                         items={listItems}
                         filter={filter}
@@ -1614,13 +1601,13 @@ export function PipelineBoard({
                               )
                             : undefined
                         }
-                        renderCard={(step, index) => {
+                        renderCard={(step) => {
                           const item = byId.get(step.promptId);
                           if (item === undefined) return null;
-                          const doneChildren = item.children.filter(isTerminal).length;
+                          const doneChildren = item.children.filter((item) => isTerminal(item)).length;
                           return (
                             <StationCard
-                              index={index}
+                              index={steps.findIndex((entry) => entry.promptId === step.promptId)}
                               item={item}
                               rule={step.provider === null && view?.defaults.defaultProvider != null
                                 ? { ...step, provider: view.defaults.defaultProvider, model: view.defaults.defaultModel }
@@ -1931,52 +1918,4 @@ function LayoutToggle({ value, onChange }: { value: BoardLayout; onChange(next: 
 
 function Kbd({ children }: { children: React.ReactNode }) {
   return <kbd className="rounded border border-line bg-surface-2 px-1 font-mono text-xs text-fg-muted">{children}</kbd>;
-}
-
-function CrewStrip({
-  crew,
-}: {
-  crew: Array<{ id: ProviderId; assigned: boolean; activity: AgentActivity; caption: string }>;
-}) {
-  return (
-    <div className="hidden items-center gap-1 sm:flex" aria-label="Assigned agents">
-      {crew.map((agent) => (
-        <span key={agent.id} title={`${agent.id}: ${agent.caption}`} className={providerTheme[agent.id].text}>
-          <AgentAvatar provider={agent.id} size={26} activity={agent.activity} />
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** The board's one-line answer to "who is doing this suite?", with the door to change it. */
-function AgentsSummary({ suiteName, provider, model, overrides, fallbacks, autoReassign, onOpen }: {
-  suiteName: string;
-  provider: ProviderId | null;
-  model: string | null;
-  overrides: number;
-  fallbacks: ProviderId[];
-  autoReassign: boolean;
-  onOpen(): void;
-}) {
-  return (
-    <section aria-label="Agent assignments" className="agents-summary">
-      <span className="agents-summary-lead">
-        {provider !== null ? <AgentAvatar provider={provider} size={26} activity="idle" /> : <span className="station-agent-empty" aria-hidden>?</span>}
-        <span className="min-w-0">
-          <span className="block text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-fg-dim">{suiteName} agent</span>
-          <span className="block truncate text-sm text-fg">
-            {provider ?? <span className="text-caution">Not chosen</span>}
-            {provider !== null && model !== null && <span className="text-fg-muted"> · {modelLabel(provider, model)}</span>}
-          </span>
-        </span>
-      </span>
-      <span className="agents-summary-facts">
-        <span>{overrides} {overrides === 1 ? "override" : "overrides"}</span>
-        <span>Fallback {fallbacks.length > 0 ? fallbacks.join(" → ") : "house order"}</span>
-        <span className={autoReassign ? "text-success" : undefined}>Auto-reassign {autoReassign ? "on" : "off"}</span>
-      </span>
-      <Button size="sm" variant={provider === null ? "primary" : "secondary"} onClick={onOpen}>Assign agents</Button>
-    </section>
-  );
 }

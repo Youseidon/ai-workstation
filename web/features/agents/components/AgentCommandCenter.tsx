@@ -14,15 +14,20 @@ import { runOrigin } from "@/features/agents/lib/fleet";
 import { useFleetConsole, useFleetMetadata } from "@/contexts/fleetContext";
 import { providerTheme } from "@/features/providers/lib/providerTheme";
 import { useWorkspace } from "@/contexts/workspaceContext";
+import type { SettingDrafts } from "@/features/settings/lib/drafts";
 import { AgentsView } from "./AgentsView";
+import styles from "./configuration.module.css";
 import { FleetRunCard } from "./FleetRunCard";
+import { useStopCenter } from "@/features/stop/components/StopCenter";
 
 export function AgentCommandCenter() {
-  const { providers, runs, inputRequests, pendingLaunches, runTabIds, interrupt, answerInput, refreshProviders, stale } = useFleetConsole();
+  const { providers, runs, inputRequests, pendingLaunches, runTabIds, answerInput, refreshProviders, stale } = useFleetConsole();
+  const stopCenter = useStopCenter();
   const { origins, queued, loading, error, refresh } = useFleetMetadata();
   const { workspaces } = useWorkspace();
   const search = useSearchParams();
   const router = useRouter();
+  const [configurationDrafts, setConfigurationDrafts] = useState<SettingDrafts>({});
   const configuration = search.get("view") === "configuration";
   const [view, setView] = useState<"graph" | "list">("graph");
   const [workspaceFilter, setWorkspaceFilter] = useState("all");
@@ -63,7 +68,7 @@ export function AgentCommandCenter() {
   for (const run of runs) workspaceOptions.set(String(run.workspace.id), run.workspace.name);
 
   return <div className="agent-command-center">
-    <nav className="fleet-page-tabs" aria-label="Agents views">
+    <nav className={configuration ? `fleet-page-tabs ${styles.configurationTabs}` : "fleet-page-tabs"} aria-label="Agents views">
       <div className="fleet-page-switch" data-active={configuration ? "configuration" : "fleet"}>
         <span className="fleet-page-switch-thumb" aria-hidden />
         <Link href="/agents" aria-current={!configuration ? "page" : undefined} onClick={event => { event.preventDefault(); changeTab("fleet"); }}>
@@ -79,9 +84,8 @@ export function AgentCommandCenter() {
           {providers.length > 0 && <span className="fleet-page-tab-count" aria-hidden data-warn={unavailable.length > 0}>{providers.length} providers</span>}
         </Link>
       </div>
-      <span className="fleet-page-switch-hint" aria-hidden>{configuration ? "← Watch running agents in Live fleet" : "Set up providers, models & limits in Configuration →"}</span>
     </nav>
-    {configuration ? <AgentsView /> : <>
+    {configuration ? <AgentsView draftState={{ drafts: configurationDrafts, setDrafts: setConfigurationDrafts }} /> : <>
       <SidebarCollection label="Agent fleet">
         <SidebarRow title="All agents" selected={providerFilter === "all"} onSelect={() => setProviderFilter("all")} />
         <SidebarGroup title="Providers">{providers.map(provider => <SidebarRow key={provider.id} title={provider.label}
@@ -123,10 +127,10 @@ export function AgentCommandCenter() {
           <div className="fleet-section-heading"><div><span className="fleet-eyebrow">Selected run · {selected.workspace.name}</span><h2>{providers.find(provider => provider.id === selected.provider)?.label ?? selected.provider} / {selectedOrigin.title}</h2></div><div className="fleet-inspector-actions">
             {selectedOrigin.href && <Link href={selectedOrigin.href} className="fleet-action-link">Open pipeline ↗</Link>}
             <Link className="fleet-action-link" href={runOwnerHref(selected, runTabIds)}>Open session ↗</Link>
-            <Button size="sm" variant="danger" disabled={stale} onClick={() => interrupt(selected.runId)}>Stop selected run</Button>
+            <Button size="sm" variant="danger" disabled={stale} onClick={() => stopCenter.open({ runId: selected.runId })}>Stop selected run…</Button>
           </div></div>
           <div className="fleet-inspector-meta"><span>Model: {modelLabel(selected.provider, selected.model) ?? "Not reported"}</span><span>Role: {{ consult: "Read-only consult", execute: "Execute", author: "Authoring", handoff: "Handoff" }[selected.role]}</span><span>Started: {new Date(selected.startedAt).toLocaleTimeString()}</span>{selected.usage && <span>{formatTokens(selected.usage.totalTokens)} tokens</span>}</div>
-          {selectedRequest && (stale ? <p className="fleet-notice">Reconnect to answer this request.</p> : <DecisionDeck key={selectedRequest.requestId} request={selectedRequest} provider={selected.provider} onSubmit={answers => answerInput(selected.runId, selectedRequest.requestId, answers)} onCancel={() => interrupt(selected.runId)} />)}
+          {selectedRequest && (stale ? <p className="fleet-notice">Reconnect to answer this request.</p> : <DecisionDeck key={selectedRequest.requestId} request={selectedRequest} provider={selected.provider} onSubmit={answers => answerInput(selected.runId, selectedRequest.requestId, answers)} onCancel={() => stopCenter.open({ runId: selected.runId })} />)}
         </section>}
         {showQueue && <section className="fleet-bay" aria-label="Queued work"><div className="fleet-section-heading"><h2>Launch queue</h2><span>{loading ? "Loading pipeline queue…" : `${queuedTasks.length} waiting`}</span></div>
           {queuedTasks.length ? <div className="fleet-queue-grid">{queuedTasks.map(task => <Link className="fleet-queued-task" key={task.id} href={task.href}><span className="fleet-eyebrow">Queued · {task.workspaceName}</span><strong>{task.title}</strong><span>{task.context}</span><small>{task.provider ? providers.find(provider => provider.id === task.provider)?.label ?? task.provider : "Agent assigned at launch"} · {task.provider && task.model ? modelLabel(task.provider, task.model) : "Model resolved at launch"}</small></Link>)}</div> : <p className="fleet-bay-note">{error ? "Queue information is unavailable until metadata refreshes." : "No tasks are currently waiting to launch."}</p>}

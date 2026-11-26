@@ -1,0 +1,608 @@
+.configurationTabs {
+  padding-block: 8px;
+}
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 8px 20px;
+  padding: 10px var(--app-gutter);
+}
+.header > div {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.header h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.header span {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+.header .pending {
+  color: var(--warning);
+}
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 2px var(--app-gutter) 32px;
+}
+.maintenance {
+  position: relative;
+  font-size: 0.75rem;
+}
+.maintenance > summary {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+.maintenance[open] > summary {
+  color: var(--fg);
+}
+.maintenance > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 230px;
+  padding: 8px;
+  z-index: 20;
+  display: grid;
+  gap: 3px;
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 24px #0002;
+}
+.maintenance small {
+  padding: 8px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+.policy {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px 0;
+  background: var(--surface-1);
+  scroll-margin-top: 12px;
+}
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
+  margin-bottom: 9px;
+}
+.sectionHeading h2,
+.sectionHeading h3 {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.sectionHeading span {
+  font-size: 0.6875rem;
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+.sectionHeading h2 span {
+  margin-left: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.policyControls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(190px, 1fr) minmax(
+      190px,
+      1fr
+    );
+  gap: 20px;
+  padding: 2px 0 12px;
+}
+.label {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.6875rem;
+}
+.tierControl select,
+.providerSwitch select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--fg);
+  background: var(--surface-0);
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  margin-top: 8px;
+}
+.policyFoot {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  border-top: 1px solid var(--line);
+  padding: 9px 0;
+  font-size: 0.6875rem;
+  color: var(--fg-muted);
+}
+.policyFoot > p {
+  flex: 1;
+}
+.policyFoot > details {
+  min-width: 140px;
+}
+.policyFoot summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.policyFoot details[open] {
+  flex-basis: 100%;
+}
+.policyGuide {
+  padding: 12px 0 5px;
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+.policyGuide p {
+  margin-bottom: 10px;
+  max-width: 85ch;
+}
+.policyGuide dl {
+  display: grid;
+  margin: 12px 0;
+}
+.policyGuide dl > div {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding: 9px 8px;
+}
+.policyGuide dl > div[data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.policyGuide dt {
+  color: var(--fg);
+  font-weight: 500;
+}
+.policyGuide small {
+  display: block;
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+.mainGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 24px;
+  margin-top: 20px;
+}
+.providerList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.providerRow {
+  display: grid;
+  grid-template-columns:
+    minmax(145px, 1fr) minmax(130px, 1.1fr) minmax(120px, 0.85fr)
+    108px;
+  align-items: center;
+  gap: 12px;
+  min-height: 86px;
+  padding: 12px 14px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  scroll-margin-top: 12px;
+}
+.providerRow:last-child {
+  border-bottom: 0;
+}
+.providerRow:target {
+  box-shadow: inset 3px 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface-1));
+}
+.providerRow[data-enabled="false"] .providerIdentity {
+  opacity: 0.65;
+}
+.providerIdentity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.providerIdentity > span {
+  min-width: 0;
+}
+.providerIdentity strong {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.availability {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.6875rem;
+  margin-top: 5px;
+}
+.availability[data-warning="true"] {
+  color: var(--warning);
+}
+.providerModel {
+  min-width: 0;
+}
+.providerModel strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin: 3px 0;
+}
+.providerModel > span:last-child {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--fg-dim);
+}
+.providerStatus {
+  display: grid;
+  gap: 7px;
+  font-size: 0.6875rem;
+  color: var(--fg-dim);
+}
+.providerStatus button {
+  text-align: left;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.providerStatus button:hover {
+  color: var(--accent);
+}
+.providerStatus button[data-warning="true"] {
+  color: var(--warning);
+}
+.running {
+  color: var(--accent);
+}
+.providerActions {
+  display: grid;
+  gap: 7px;
+}
+.providerActions label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.6875rem;
+  color: var(--fg-muted);
+}
+.configureButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  padding: 4px 7px;
+  border-radius: 5px;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+.configureButton:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+.providerReason {
+  grid-column: 1 / -1;
+  color: var(--warning);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+  padding-left: 42px;
+}
+.shared > p {
+  font-size: 0.6875rem;
+  color: var(--fg-dim);
+  margin-top: -5px;
+  margin-bottom: 10px;
+}
+.settingsDirectory {
+  display: grid;
+}
+.settingsDirectory > button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.settingsDirectory > button:hover strong {
+  color: var(--accent);
+}
+.settingsDirectory strong {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.settingsDirectory small {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--fg-dim);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.settingsDirectory > button > span:last-child {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+}
+.scopeNote {
+  padding-top: 20px;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  color: var(--fg-dim);
+}
+.scopeNote strong {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.scopeNote p {
+  margin-top: 6px;
+}
+.error,
+.warning,
+.feedback {
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.error button {
+  text-decoration: underline;
+}
+.warning {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+.feedback {
+  color: var(--fg-muted);
+  background: var(--surface-2);
+}
+.empty {
+  padding: 24px 14px;
+  font-size: 0.8125rem;
+  color: var(--fg-muted);
+}
+.providerSwitch {
+  max-width: 165px;
+}
+.providerSwitch select {
+  margin: 0;
+}
+.detailTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.detailTabs button {
+  font-size: 0.75rem;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+}
+.detailTabs button[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+.modelSummary {
+  margin-bottom: 15px;
+  border-bottom: 1px solid var(--line);
+}
+.modelSummary dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 20px;
+  padding-bottom: 14px;
+}
+.modelSummary dl > div:first-child {
+  grid-column: 1 / -1;
+}
+.modelSummary dt {
+  font-size: 0.6875rem;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+.modelSummary dd {
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.modelSummary small {
+  display: block;
+  font-size: 0.6875rem;
+  margin-top: 3px;
+  color: var(--fg-muted);
+}
+.modelSummary summary {
+  padding-bottom: 12px;
+  font-size: 0.75rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+.modelSummary summary span {
+  color: var(--fg-dim);
+  font-size: 0.6875rem;
+  margin-left: 8px;
+}
+.detailBody {
+  display: grid;
+  gap: 24px;
+  padding: 4px 0 15px;
+}
+.metadata {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.metadata > div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 12px;
+  font-size: 0.75rem;
+}
+.metadata dt {
+  color: var(--fg-dim);
+}
+.metadata dd {
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+}
+.textLink {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+.workspace :is(button, summary, select, a):focus-visible,
+.detailTabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (max-width: 1250px) {
+  .mainGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .shared {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+  }
+  .settingsDirectory {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 20px;
+  }
+  .scopeNote {
+    max-width: 85ch;
+  }
+}
+@media (max-width: 760px) {
+  .policyControls {
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .policyControls > div:first-child {
+    grid-column: 1 / -1;
+  }
+  .header > div:first-child {
+    display: block;
+  }
+  .header h1 {
+    margin-bottom: 2px;
+  }
+  .providerRow {
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr) 108px;
+  }
+  .providerStatus {
+    grid-column: 1 / 3;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .providerActions {
+    grid-row: 1 / 3;
+    grid-column: 3;
+  }
+  .providerReason {
+    padding-left: 0;
+  }
+  .settingsDirectory {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 480px) {
+  .configurationTabs :global(.fleet-page-switch) {
+    width: 100%;
+    min-width: 0;
+  }
+  .configurationTabs :global(.fleet-page-switch) a {
+    padding-inline: 10px;
+  }
+  .configurationTabs :global(.fleet-page-tab-count) {
+    display: none;
+  }
+  .header {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .header > div {
+    gap: 8px;
+  }
+  .policy {
+    padding: 12px 12px 0;
+  }
+  .policyControls {
+    grid-template-columns: 1fr;
+  }
+  .policyControls > div:first-child {
+    grid-column: auto;
+  }
+  .policyGuide dl > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .providerRow {
+    grid-template-columns: minmax(0, 1fr) 98px;
+    gap: 10px;
+    padding: 12px;
+  }
+  .providerModel {
+    grid-row: 2;
+  }
+  .providerStatus {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .providerActions {
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+  .modelSummary dl {
+    grid-template-columns: 1fr;
+  }
+  .settingsDirectory {
+    grid-template-columns: 1fr;
+  }
+  .providerSwitch {
+    max-width: 120px;
+  }
+}
+@media (pointer: coarse) {
+  .workspace :is(button, select, summary, a),
+  .detailTabs button {
+    min-height: 44px;
+  }
+}

@@ -5,9 +5,11 @@ import { useEffect, useId, useRef, useState } from "react";
 import { DecisionDeck } from "@/features/chat/components/DecisionDeck";
 import { FleetRunCard } from "@/features/agents/components/FleetRunCard";
 import { useFleetConsole, useFleetMetadata } from "@/contexts/fleetContext";
+import { StopCenterButton, StopNotices, useStopCenter } from "@/features/stop/components/StopCenter";
 
 export function LiveFleetRail() {
-  const { runs, providers, connection, inputRequests, pendingLaunches, interrupt, answerInput, stale } = useFleetConsole();
+  const { runs, providers, connection, inputRequests, pendingLaunches, answerInput, stale } = useFleetConsole();
+  const stopCenter = useStopCenter();
   const { origins, queued } = useFleetMetadata();
   const [expanded, setExpanded] = useState(false);
   const [answering, setAnswering] = useState<string | null>(null);
@@ -34,8 +36,12 @@ export function LiveFleetRail() {
           <span>{standby} standby</span>
         </>}
       </div>
-      <Link href="/agents" className="live-fleet-open">Command center ↗</Link>
+      <div className="live-fleet-actions">
+        <StopCenterButton />
+        <Link href="/agents" className="live-fleet-open">Command center ↗</Link>
+      </div>
     </header>
+    <StopNotices />
     {(runs.length > 0 || queueCount > 0) && <div className="live-fleet-content" id={id}>
       <div className="live-fleet-rows">{visible.map(run => <FleetRunCard key={run.runId} run={run} origin={origins[run.runId]} compact selected={answering === run.runId}
         onSelect={inputRequests[run.runId] ? () => setAnswering(current => current === run.runId ? null : run.runId) : undefined} />)}</div>
@@ -43,7 +49,7 @@ export function LiveFleetRail() {
       {queueCount > 0 && <p className="fleet-queue-note">{queueCount} task{queueCount === 1 ? "" : "s"} queued · <Link href="/agents">View waiting work →</Link></p>}
       {selected && request && <div ref={decision} className="fleet-inline-decision" aria-label="Answer agent request">
         <div className="fleet-decision-heading"><span>{selected.workspace.name} · {providers.find(provider => provider.id === selected.provider)?.label ?? selected.provider}</span><button type="button" onClick={() => setAnswering(null)} aria-label="Close answer form">✕</button></div>
-        {stale ? <p role="status">Reconnect to answer this request.</p> : <DecisionDeck key={request.requestId} request={request} provider={selected.provider} onSubmit={answers => answerInput(selected.runId, request.requestId, answers)} onCancel={() => interrupt(selected.runId)} />}
+        {stale ? <p role="status">Reconnect to answer this request.</p> : <DecisionDeck key={request.requestId} request={request} provider={selected.provider} onSubmit={answers => answerInput(selected.runId, request.requestId, answers)} onCancel={() => stopCenter.open({ runId: selected.runId })} />}
       </div>}
     </div>}
   </section>;

@@ -6,15 +6,15 @@ import { Badge } from "@/components/ui/Badge";
 import { EditIconButton } from "@/components/ui/EditIconButton";
 import { cn } from "@/lib/cn";
 import { providerTheme } from "@/features/providers/lib/providerTheme";
-import { LABEL, onUnfinishedChip, onDoneChip, overrideChip, TONE, type stationOccupancy } from "../lib/status";
+import { LABEL, overrideChip, TONE, type stationOccupancy } from "../lib/status";
 
 export interface SubStepSummary {
   done: number;
   total: number;
 }
 
-/** Fixed so a row of cards never grows with its content. */
-export const STATION_CARD_HEIGHT = 148;
+/** Two readable lines; details and execution rules belong to the item panel. */
+export const STATION_CARD_HEIGHT = 80;
 
 const EDGE: Record<string, string> = {
   success: "before:bg-success",
@@ -78,7 +78,7 @@ export function StationCard({
     <div
       style={{ height: STATION_CARD_HEIGHT }}
       className={cn(
-        "group relative flex min-w-0 flex-col overflow-hidden rounded-panel border bg-surface-2 transition-[border-color,box-shadow,background-color]",
+        "group relative flex min-w-0 flex-row overflow-visible rounded-panel border bg-surface-2 transition-[border-color,box-shadow,background-color]",
         // Status edge: the one colour cue that reads at a glance across a row.
         "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-['']",
         EDGE[tone] ?? EDGE.neutral,
@@ -98,90 +98,27 @@ export function StationCard({
         className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       />
 
-      <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col py-2.5 pr-3 pl-3.5">
-        <div className="flex items-start gap-2">
-          {rule.provider !== null ? (
-            <AgentAvatar
-              provider={rule.provider}
-              size={26}
-              activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"}
-            />
-          ) : (
-            <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs numeric text-fg-muted">
-              {index + 1}
-            </span>
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm leading-5 text-fg" title={label}>{label}</div>
-            <div className="truncate text-xs leading-4 text-fg-dim" title={item.prompt.title}>
-              {item.prompt.externalKey !== null ? item.prompt.title : " "}
-            </div>
+      <div className="pointer-events-none relative flex min-h-0 min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
+        <span className="w-5 shrink-0 text-center text-xs numeric text-fg-dim">{index + 1}</span>
+        {rule.provider !== null && <AgentAvatar provider={rule.provider} size={24} activity={occupancy !== null ? "tooling" : item.operationalState === "DONE" ? "done" : "idle"} />}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs text-fg-muted">{item.prompt.externalKey ?? `Step ${index + 1}`}</span>
+            <Badge tone={tone} pulse={item.operationalState === "WORKING"}>{LABEL[item.operationalState]}</Badge>
           </div>
-          <Badge tone={tone} pulse={item.operationalState === "WORKING"}>{LABEL[item.operationalState]}</Badge>
-        </div>
-
-        <div className={cn("mt-2 flex min-w-0 items-center gap-1.5 text-xs", theme?.text ?? "text-fg-muted")}>
-          <span className="truncate">{who ?? "No agent — configure"}</span>
-          {inherited && (
-            <span
-              className="shrink-0 rounded-full px-1.5 py-px text-xs uppercase tracking-wider text-fg-dim ring-1 ring-inset ring-line"
-              title="Uses inherited agent settings. Choose an agent to override them for this prompt."
-            >
-              inherited
-            </span>
-          )}
-        </div>
-        <div
-          className="mt-0.5 truncate text-xs text-fg-dim"
-          title={`${onDoneChip(rule.onDone)} · ${onUnfinishedChip(rule)}`}
-        >
-          {onDoneChip(rule.onDone)} · {onUnfinishedChip(rule)}
-          {item.continuation !== null && <> · cont. {item.continuation.attempt}/{item.continuation.of}</>}
-          {rule.fallbackProviders.length > 0 && <> · ↪ {rule.fallbackProviders.join("→")}</>}
-        </div>
-
-        {item.execution && <p className="mt-1 truncate text-xs text-fg-dim">{item.execution.engine === "shadow" ? "Shadow" : item.execution.phase === "delivered" ? "Verified delivery" : item.execution.phase === "verification" ? "Verification pending" : "Implementation"} · {item.execution.acceptedUnits.length} accepted · {item.execution.attempts}/{item.execution.policy.maxAttempts} attempts</p>}
-
-        {/* Footer line: exactly one of these, so the card height never moves. */}
-        <div className="mt-auto pt-1.5">
-          {occupancy !== null ? (
-            <div className="flex items-center gap-1.5 text-xs text-info">
-              <AgentAvatar provider={occupancy.provider} size={14} activity="tooling" />
-              {occupancy.source.type === "wrapup" ? "wrapping up" : "running now"}
-            </div>
-          ) : stuck !== null ? (
-            <p className="truncate text-xs text-caution" title={stuck.long}>
-              ⚠ {stuck.short}
-            </p>
-          ) : subSteps !== undefined && subSteps.total > 0 ? (
-            <div className="flex items-center gap-2 text-xs text-fg-muted">
-              <SubStepMeter done={subSteps.done} total={subSteps.total} />
-              <span className="min-w-0 flex-1 truncate">{subSteps.done}/{subSteps.total} sub-steps</span>
-              {item.childAttention !== null && (
-                <span className={cn("shrink-0", item.childAttention === "BLOCKED" ? "text-warning" : "text-caution")}>
-                  {item.childAttentionCount > 1 && `${item.childAttentionCount} `}
-                  {LABEL[item.childAttention].toLowerCase()}
-                </span>
-              )}
-            </div>
-          ) : item.latestAudit?.report != null ? (
-            <p className="truncate text-xs text-fg-dim">audit · {item.latestAudit.report.confidence.toLowerCase()} confidence</p>
-          ) : null}
+          <div className="truncate text-sm leading-5 text-fg" title={item.prompt.title}>{item.prompt.title}</div>
+          <div className="flex min-w-0 items-center gap-2 text-[0.6875rem] leading-4 text-fg-dim">
+            <span className={cn("min-w-0 truncate", theme?.text)} title={who ?? "No agent — configure in Studio"}>{occupancy?.source.type === "wrapup" ? "Wrapping up" : who ?? "Choose agent"}{inherited ? " · inherited" : ""}</span>
+            {stuck !== null && <span className="min-w-0 truncate text-caution" title={stuck.long}>⚠ {stuck.short}</span>}
+            {subSteps !== undefined && subSteps.total > 0 && <span className="ml-auto shrink-0 numeric" title={item.childAttention !== null ? `${item.childAttentionCount} sub-steps need attention` : undefined}>{subSteps.done}/{subSteps.total} sub-steps{item.childAttention !== null ? " ⚠" : ""}</span>}
+          </div>
         </div>
       </div>
-
-      {onConfigure !== undefined && <EditIconButton label={`Edit ${label} in Studio`} onClick={onConfigure} className="absolute right-2 bottom-2 z-10" />}
-
-      {(onOpenSubPipeline !== undefined || canRemove) && (
-        <div className="absolute top-1.5 right-1.5 z-10 hidden gap-1 group-focus-within:flex group-hover:flex">
-          {onOpenSubPipeline !== undefined && subSteps !== undefined && subSteps.total > 0 && (
-            <CardChip onClick={onOpenSubPipeline} title="Open the sub-step flow">Sub-flow ›</CardChip>
-          )}
-          {canRemove && (
-            <CardChip onClick={onRemove} title={removeLabel} danger>
-              {removeLabel}
-            </CardChip>
-          )}
+      {(onConfigure !== undefined || onOpenSubPipeline !== undefined || canRemove) && (
+        <div className="relative z-10 flex shrink-0 flex-col justify-center gap-1 pr-2">
+          {onOpenSubPipeline !== undefined && subSteps !== undefined && subSteps.total > 0 && <CardChip onClick={onOpenSubPipeline} title="Open the sub-step flow">Sub-steps ›</CardChip>}
+          {onConfigure !== undefined && <EditIconButton label={`Edit ${label} in Studio`} onClick={onConfigure} />}
+          {canRemove && <CardChip onClick={onRemove} title={removeLabel} danger>{removeLabel}</CardChip>}
         </div>
       )}
     </div>
@@ -239,16 +176,4 @@ function stuckNote(item: OperationsPrompt): { short: string; long: string } | nu
     };
   }
   return null;
-}
-
-function SubStepMeter({ done, total }: { done: number; total: number }) {
-  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
-  return (
-    <span aria-hidden className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-surface-3">
-      <span
-        className={cn("block h-full rounded-full", pct === 100 ? "bg-success" : "bg-accent")}
-        style={{ width: `${pct}%` }}
-      />
-    </span>
-  );
 }

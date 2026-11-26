@@ -23,7 +23,9 @@ export function UsageBlock({
   if (loading) {
     return (
       <div className="mt-3 border-t border-line pt-3">
-        <div className="text-xs uppercase tracking-wider text-fg-dim">plan usage</div>
+        <div className="text-xs uppercase tracking-wider text-fg-dim">
+          plan usage
+        </div>
         <div className="mt-2 flex flex-col gap-2">
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
@@ -31,19 +33,28 @@ export function UsageBlock({
       </div>
     );
   }
-  if (usage === null || !usage.available || (usage.windows.length === 0 && usage.credits === null)) {
+  if (
+    usage === null ||
+    !usage.available ||
+    (usage.windows.length === 0 && usage.credits === null)
+  ) {
     return null;
   }
 
   const windows = [...usage.windows].sort(
-    (left, right) => WINDOW_ORDER.indexOf(left.kind) - WINDOW_ORDER.indexOf(right.kind),
+    (left, right) =>
+      WINDOW_ORDER.indexOf(left.kind) - WINDOW_ORDER.indexOf(right.kind),
   );
 
   return (
     <div className="mt-3 border-t border-line pt-3">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="text-xs uppercase tracking-wider text-fg-dim">plan usage</div>
-        {usage.plan !== null && <div className="truncate text-xs text-fg-dim">{usage.plan}</div>}
+        <div className="text-xs uppercase tracking-wider text-fg-dim">
+          plan usage
+        </div>
+        {usage.plan !== null && (
+          <div className="truncate text-xs text-fg-dim">{usage.plan}</div>
+        )}
       </div>
       <dl className="mt-2 flex flex-col gap-2">
         {windows.map((window) => (
@@ -57,13 +68,22 @@ export function UsageBlock({
 
 export function UsageMeter({ window }: { window: ProviderUsageWindow }) {
   const percent = window.usedPercent;
-  const tone = percent === null ? "neutral" : percent >= 90 ? "danger" : percent >= 70 ? "warning" : "success";
+  const tone =
+    percent === null
+      ? "neutral"
+      : percent >= 90
+        ? "danger"
+        : percent >= 70
+          ? "warning"
+          : "success";
   const reset = formatResetIn(window.resetsAt);
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2 text-xs">
         <dt className="text-fg-dim">{windowLabel(window)}</dt>
-        <dd className="numeric text-fg">{percent === null ? "—" : `${Math.round(percent)}%`}</dd>
+        <dd className="numeric text-fg">
+          {percent === null ? "—" : `${Math.round(percent)}%`}
+        </dd>
       </div>
       <div className="mt-1 h-1 overflow-hidden rounded-full bg-surface-3">
         <div
@@ -77,19 +97,29 @@ export function UsageMeter({ window }: { window: ProviderUsageWindow }) {
           style={{ width: `${percent === null ? 0 : Math.min(100, percent)}%` }}
         />
       </div>
-      {reset !== null && <div className="mt-0.5 text-xs text-fg-dim">resets {reset}</div>}
+      {reset !== null && (
+        <div className="mt-0.5 text-xs text-fg-dim">resets {reset}</div>
+      )}
     </div>
   );
 }
 
-export function CreditsLine({ credits }: { credits: NonNullable<ProviderUsage["credits"]> }) {
+export function CreditsLine({
+  credits,
+}: {
+  credits: NonNullable<ProviderUsage["credits"]>;
+}) {
   const useful =
     credits.enabled === true ||
-    (credits.balance !== null && credits.balance > 0) ||
-    (credits.limit !== null && credits.limit > 0);
+    credits.balance !== null ||
+    credits.used !== null ||
+    credits.limit !== null;
   if (!useful) return null;
   const money = (value: number) => {
-    const symbol = credits.currency === "USD" || credits.currency === null ? "$" : `${credits.currency} `;
+    const symbol =
+      credits.currency === "USD" || credits.currency === null
+        ? "$"
+        : `${credits.currency} `;
     return `${symbol}${value.toFixed(2)}`;
   };
   const parts: string[] = [];
@@ -102,13 +132,18 @@ export function CreditsLine({ credits }: { credits: NonNullable<ProviderUsage["c
     parts.push(`${money(credits.limit)} cap`);
   }
   if (parts.length === 0) return null;
-  return <div className="mt-2 text-xs text-fg-dim">credits · {parts.join(" · ")}</div>;
+  return (
+    <div className="mt-2 text-xs text-fg-dim">
+      credits · {parts.join(" · ")}
+    </div>
+  );
 }
 
 function windowLabel(window: ProviderUsageWindow): string {
   if (window.kind === "session" && window.durationMinutes !== null) {
     const hours = window.durationMinutes / 60;
-    if (hours >= 1 && Math.abs(hours - Math.round(hours)) < 0.05) return `${Math.round(hours)}h`;
+    if (hours >= 1 && Math.abs(hours - Math.round(hours)) < 0.05)
+      return `${Math.round(hours)}h`;
   }
   return window.kind;
 }

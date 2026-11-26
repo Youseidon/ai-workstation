@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { OperationsPrompt, PromptPipelineRule, SuitePipelineRun } from "@hydra/shared";
+import { isTerminal } from "../lib/station/tree";
 import { Badge } from "@/components/ui/Badge";
 import type { RunStatus } from "@/models/runs";
 import { SnakeFlow } from "./SnakeFlow";
@@ -16,10 +17,6 @@ export interface SubStepRuleView {
 export interface SubTrailEntry {
   promptId: number;
   label: string;
-}
-
-function isDone(item: OperationsPrompt): boolean {
-  return item.operationalState === "DONE" || item.operationalState === "SKIPPED";
 }
 
 /**
@@ -63,7 +60,7 @@ export function SubPipeline({
   renderGate?(item: OperationsPrompt): ReactNode;
 }) {
   const parent = trail[trail.length - 1];
-  const done = items.filter(isDone).length;
+  const done = items.filter((item) => isTerminal(item)).length;
   const pinned = items.filter((item) => !ruleFor(item.prompt.id).inherited).length;
   // The first slice the scheduler will refuse to walk past.
   const blocking = items.find(
@@ -71,7 +68,7 @@ export function SubPipeline({
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <nav aria-label="Sub-pipeline trail" className="flex flex-wrap items-center gap-1.5 text-xs">
         <button type="button" onClick={() => onNavigate(null)} className="text-accent hover:underline">
           ← Flowchart
@@ -92,36 +89,11 @@ export function SubPipeline({
         ))}
       </nav>
 
-      <div className="rounded-panel border border-line bg-surface-1 px-4 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs uppercase tracking-[0.18em] text-fg-dim">Sub-pipeline</div>
-            <h3 className="mt-1 truncate text-lg text-fg">{parent?.label ?? "Sub-steps"}</h3>
-            <p className="mt-1 text-xs leading-5 text-fg-dim">
-              The agent split this step into {items.length} slice{items.length === 1 ? "" : "s"} and runs them in
-              order before finishing the step itself. Order comes from the agent; the agent and blocked policy are
-              yours to set.
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {blocking !== undefined && (
-              <Badge tone="caution" dot>
-                {blocking.prompt.externalKey ?? blocking.prompt.title} is holding the rail
-              </Badge>
-            )}
-            <Badge tone={done === items.length ? "success" : "accent"}>
-              {done}/{items.length} done
-            </Badge>
-            <Badge tone={pinned === 0 ? "neutral" : "violet"}>
-              {pinned === 0 ? "all inherited" : `${pinned} pinned`}
-            </Badge>
-          </div>
-        </div>
-        <div className="mt-3 border-t border-line pt-2 text-xs text-fg-dim">
-          Inherited from this step: <span className="text-fg-muted">{overrideChip(parentRule) ?? "no agent yet"}</span>
-          {" · on blocked "}
-          <span className="text-fg-muted">{onUnfinishedChip(parentRule)}</span>
-        </div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line pb-2">
+        <h3 className="min-w-0 flex-1 truncate text-sm font-medium">{parent?.label ?? "Sub-steps"}</h3>
+        {blocking !== undefined && <Badge tone="caution">{blocking.prompt.externalKey ?? blocking.prompt.title} needs attention</Badge>}
+        <Badge tone={items.length > 0 && done === items.length ? "success" : "neutral"}>{done}/{items.length} settled</Badge>
+        <details className="text-xs text-fg-muted"><summary className="cursor-pointer">Inheritance</summary><p className="py-2">{pinned} pinned · {overrideChip(parentRule) ?? "No agent"} · unfinished: {onUnfinishedChip(parentRule)}. Sub-steps run in agent-defined order before their parent finishes.</p></details>
       </div>
 
       {items.length === 0 ? (
@@ -139,7 +111,7 @@ export function SubPipeline({
           renderGate={renderGate === undefined ? undefined : (item) => renderGate(item)}
           renderCard={(item, index) => {
             const view = ruleFor(item.prompt.id);
-            const childDone = item.children.filter(isDone).length;
+            const childDone = item.children.filter((child) => isTerminal(child)).length;
             return (
               <StationCard
                 index={index}

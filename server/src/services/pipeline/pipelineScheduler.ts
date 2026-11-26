@@ -246,6 +246,27 @@ interface PendingRedirect {
 const redirects = new Map<string, PendingRedirect>();
 
 /**
+ * Station runs the operator force-stopped. A bare interrupt used to end with
+ * no status, which reads as "unfinished", so the scheduler launched a fresh
+ * continuation straight away: every extra click on Stop killed one agent and
+ * started the next. A run in this set has already paused its rail, and its
+ * ending queues the station for Resume without spending an allowance.
+ */
+const operatorStops = new Set<string>();
+
+export type PauseMode = "graceful" | "immediate";
+export interface PauseOptions { mode?: PauseMode }
+export interface StopOptions { interruptAgent?: boolean }
+
+/** Request bodies are untrusted; anything but a known value means "use the setting". */
+export function pauseOptionsFrom(body: Record<string, unknown>): PauseOptions {
+  return body.mode === "graceful" || body.mode === "immediate" ? { mode: body.mode } : {};
+}
+export function stopOptionsFrom(body: Record<string, unknown>): StopOptions {
+  return typeof body.interruptAgent === "boolean" ? { interruptAgent: body.interruptAgent } : {};
+}
+
+/**
  * Stops a pipeline run so an operator note reaches it now rather than on the
  * agent's next `agent-step` call. Only the rail's current run qualifies: the
  * scheduler is what restarts it, and a run it does not own would just stop.
@@ -718,6 +739,24 @@ async function applyExecuteEnded(pipeline: SuitePipelineRun, runId: string, prom
     }
   }
 
+  if (operatorStops.delete(runId) && posted.status !== "DONE" && posted.status !== "SKIPPED") {
+    // An operator's stop is an order, not an unfinished ending. The rail was
+    // paused before the interrupt, so this queues the station to continue its
+    // session on Resume. It starts now only if Resume landed while the agent
+    // was still shutting down.
+    workspaces.queueContinuation(promptId, {
+      attempt: workspaces.continuationCount(promptId) + 1,
+      of: settings.pipelinePolicy.maxContinuations,
+      cause: "The operator stopped the run.",
+      previousRunId: runId,
+      writeSystemRemark: !workspaces.runHasContinuationRemark(promptId, runId),
+      countsTowardAllowance: false,
+    });
+    const updated = workspaces.updatePipelineRun(live.id, { currentPromptId: promptId, currentRunId: null });
+    if (updated.state === "PLAYING") await startCurrentStation(updated, promptId, { onExhausted: "park" });
+    return;
+  }
+
   // Sub-step DONE/SKIPPED never applies the parent's onDone (stop / skip_rest);
   // that policy is reserved for the station itself finishing.
   const parentId = workspaces.parentPromptId(promptId);
@@ -1042,12 +1081,15 @@ async function playSuiteUnlocked(suiteId: number, body: Record<string, unknown> 
  * agent working right now — the difference from Stop being that the run stays
  * PAUSED, and so still resumable, rather than becoming terminal.
  */
-async function pauseSuiteUnlocked(suiteId: number): Promise<{ paused: SuitePipelineRun; interruptId: string | null }> {
+async function pauseSuiteUnlocked(suiteId: number, options: PauseOptions = {}): Promise<{ paused: SuitePipelineRun; interruptId: string | null }> {
   const active = workspaces.activePipeline(suiteId);
   if (active === null || active.state !== "PLAYING") {
     throw new WorkspaceError(409, "pipeline_not_playing", "Pause requires a playing pipeline");
   }
-  const immediate = settings.pipelinePolicy.pauseMode === "immediate";
+  // The stop center names the mode on its button, so its promise has to hold
+  // whatever the setting says; callers that pass nothing keep the setting.
+  const immediate = (options.mode ?? settings.pipelinePolicy.pauseMode) === "immediate";
+  if (immediate && active.currentRunId !== null) operatorStops.add(active.currentRunId);
   log.info(`pause suite=${suiteId} mode=${immediate ? "immediate" : "graceful"}`);
   if(active.currentPromptId!==null) {const c=executionStore.forPrompt(active.currentPromptId);if(c)executionStore.setDesired(c.id,"PAUSED");}
   const updated = workspaces.updatePipelineRun(active.id, { state: "PAUSED" });
@@ -1081,12 +1123,12 @@ function stoppableNamedRun(pipelineId: number): PipelineRun | null {
   return latest !== null && latest.state === "INTERRUPTED" && latest.stopReason === "server_restart" ? latest : null;
 }
 
-async function stopSuiteUnlocked(suiteId: number): Promise<{ stopped: SuitePipelineRun; interruptId: string | null }> {
+async function stopSuiteUnlocked(suiteId: number, options: StopOptions = {}): Promise<{ stopped: SuitePipelineRun; interruptId: string | null }> {
   const active = stoppableSuiteRun(suiteId);
   if (active === null) throw new WorkspaceError(409, "pipeline_not_active", "No active pipeline to stop");
   // With `stopInterruptsAgent` off, Stop only ends auto-advance: the agent
   // already working keeps its station and finishes on its own.
-  const interruptId = settings.pipelinePolicy.stopInterruptsAgent ? active.currentRunId : null;
+  const interruptId = (options.interruptAgent ?? settings.pipelinePolicy.stopInterruptsAgent) ? active.currentRunId : null;
   log.info(`stop suite=${suiteId} interrupt=${interruptId !== null}`);
   if(active.currentPromptId!==null) {const c=executionStore.forPrompt(active.currentPromptId);if(c)executionStore.setDesired(c.id,"STOPPED");}
   const stopped = workspaces.updatePipelineRun(active.id, {
@@ -1524,24 +1566,53 @@ export const pipelineScheduler = {
     return enqueue(pipeline.workspaceId, () => playNamedUnlocked(pipelineId, body));
   },
 
-  async pauseNamed(pipelineId: number): Promise<PipelineRun> {
+  async pauseNamed(pipelineId: number, options: PauseOptions = {}): Promise<PipelineRun> {
     const pipeline = workspaces.getPipeline(pipelineId);
-    return enqueue(pipeline.workspaceId, async () => {
+    let interruptId: string | null = null;
+    const paused = await enqueue(pipeline.workspaceId, async () => {
       const active = workspaces.activeNamedPipelineRun(pipelineId);
       if (active === null || active.state !== "PLAYING") {
         throw new WorkspaceError(409, "pipeline_not_playing", "Pause requires a playing pipeline");
       }
       if (active.currentSuiteId !== null) {
-        const result = await pauseSuiteUnlocked(active.currentSuiteId);
-        if (result.interruptId !== null) {await cancelManagedCommands(result.interruptId);await runHub.stop(result.interruptId);}
+        interruptId = (await pauseSuiteUnlocked(active.currentSuiteId, options)).interruptId;
       } else {
         workspaces.updateNamedPipelineRun(active.id, { state: "PAUSED" });
       }
       return workspaces.namedPipelineRunById(active.id)!;
     });
+    // Outside the queue, as Stop does, so the workspace's queue is not held
+    // while the agent shuts down.
+    if (interruptId !== null) {await cancelManagedCommands(interruptId);await runHub.stop(interruptId);}
+    return paused;
   },
 
-  async stopNamed(pipelineId: number): Promise<PipelineRun> {
+  /**
+   * Stop one agent now, from anywhere in the app. A pipeline station's rail is
+   * paused first so its ending cannot launch a successor (see `operatorStops`);
+   * any other run is simply interrupted. Safe to call repeatedly.
+   */
+  async stopAgent(runId: string): Promise<{ stopped: boolean; pipelinePaused: boolean }> {
+    const owner = workspaces.pipelineByCurrentRun(runId);
+    let pipelinePaused = false;
+    if (owner !== null) {
+      await enqueue(owner.workspaceId, async () => {
+        const live = workspaces.pipelineById(owner.id);
+        if (live === null || live.currentRunId !== runId || (live.state !== "PLAYING" && live.state !== "PAUSED")) return;
+        operatorStops.add(runId);
+        if (live.state === "PLAYING") {
+          if (live.currentPromptId !== null) {const c=executionStore.forPrompt(live.currentPromptId);if(c)executionStore.setDesired(c.id,"PAUSED");}
+          await syncNamedFromSuite(workspaces.updatePipelineRun(live.id, { state: "PAUSED" }));
+        }
+        pipelinePaused = true;
+      });
+      log.info(`stop agent run=${runId} pipeline=${owner.id} paused=${pipelinePaused}`);
+      if (pipelinePaused) await cancelManagedCommands(runId);
+    }
+    return { stopped: await runHub.stop(runId), pipelinePaused };
+  },
+
+  async stopNamed(pipelineId: number, options: StopOptions = {}): Promise<PipelineRun> {
     const pipeline = workspaces.getPipeline(pipelineId);
     let interruptId: string | null = null;
     const stopped = await enqueue(pipeline.workspaceId, async () => {
@@ -1549,7 +1620,7 @@ export const pipelineScheduler = {
       if (active === null) throw new WorkspaceError(409, "pipeline_not_active", "No active pipeline to stop");
       if (active.currentSuiteId !== null) {
         try {
-          const result = await stopSuiteUnlocked(active.currentSuiteId);
+          const result = await stopSuiteUnlocked(active.currentSuiteId, options);
           interruptId = result.interruptId;
         } catch (error) {
           if (!(error instanceof WorkspaceError) || error.code !== "pipeline_not_active") throw error;

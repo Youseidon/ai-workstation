@@ -4,7 +4,8 @@ import { userLocalStorage } from "@/lib/identityStorage";
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { ProviderId, ProviderInfo } from "@hydra/shared";
-import { isProviderId, modelMatchesEffort } from "@hydra/shared";
+import { isProviderId } from "@hydra/shared";
+import { modelChoice } from "@/features/providers/lib/modelChoice";
 
 /**
  * Which model each provider should run with. A key that is *present* with the
@@ -35,12 +36,16 @@ function parse(raw: string | null): ModelChoices {
   if (raw === null) return EMPTY;
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return EMPTY;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+      return EMPTY;
     const result: ModelChoices = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
       if (!isProviderId(key)) continue;
       if (value === null) result[key] = null;
-      else if (typeof value === "string" && value.trim() !== "") result[key] = value.trim();
+      else if (typeof value === "string" && value.trim() !== "")
+        result[key] = value.trim();
     }
     return result;
   } catch {
@@ -102,6 +107,8 @@ export interface ModelSelection {
   isPinned(provider: ProviderId): boolean;
   /** True when the server owns model selection and ignores manual choices. */
   isAuto(provider: ProviderId): boolean;
+  /** Raw saved browser pin, including choices currently locked by policy. */
+  configured(provider: ProviderId): string | null | undefined;
   /** Pin a model (`null` pins "provider default"). */
   select(provider: ProviderId, model: string | null): void;
   /** Drop the pin so the provider follows its settings value again. */
@@ -114,39 +121,47 @@ export interface ModelSelection {
  * silently rewrite the configured default for every other tab.
  */
 export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
-  const choices = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const choices = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot,
+  );
 
   const resolve = useCallback(
     (provider: ProviderId): string | null => {
       const info = providers.find((entry) => entry.id === provider);
-      if (info?.modelSelectionMode === "auto") return info.model;
-      if (!(provider in choices)) return info?.model ?? null;
-      const requested = choices[provider] ?? null;
-      if (info === undefined) return requested;
-      if (info.models.some((model) => model.id === requested)) return requested;
-      // Keep the pin in storage so changing effort or tier restores it, but
-      // never let a filtered-out catalog id escape the picker.
-      if (info.modelAccessTier === "all" && modelMatchesEffort(info.id, requested, info.reasoningEffort)) {
-        return requested;
-      }
-      return info.model;
+      if (info === undefined) return choices[provider] ?? null;
+      const choice = modelChoice(info, choices[provider]);
+      // A null browser choice sends no override; the server still applies its current default.
+      return choice.active ? (choice.configured ?? null) : info.model;
     },
     [choices, providers],
   );
 
   const isPinned = useCallback(
-    (provider: ProviderId) => providers.find((entry) => entry.id === provider)?.modelSelectionMode !== "auto" && provider in choices,
+    (provider: ProviderId) => {
+      const info = providers.find((entry) => entry.id === provider);
+      return info === undefined
+        ? provider in choices
+        : modelChoice(info, choices[provider]).active;
+    },
     [choices, providers],
   );
 
   const isAuto = useCallback(
-    (provider: ProviderId) => providers.find((entry) => entry.id === provider)?.modelSelectionMode === "auto",
+    (provider: ProviderId) =>
+      providers.find((entry) => entry.id === provider)?.modelSelectionMode ===
+      "auto",
     [providers],
   );
 
   const select = useCallback(
     (provider: ProviderId, model: string | null) => {
-      if (providers.find((entry) => entry.id === provider)?.modelSelectionMode === "auto") return;
+      if (
+        providers.find((entry) => entry.id === provider)?.modelSelectionMode ===
+        "auto"
+      )
+        return;
       write({ ...choices, [provider]: model });
     },
     [choices, providers],
@@ -161,5 +176,10 @@ export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
     [choices],
   );
 
-  return { resolve, isPinned, isAuto, select, clear };
+  const configured = useCallback(
+    (provider: ProviderId) => choices[provider],
+    [choices],
+  );
+
+  return { resolve, isPinned, isAuto, configured, select, clear };
 }

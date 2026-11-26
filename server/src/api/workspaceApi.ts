@@ -1,6 +1,6 @@
 import { conversationContext } from "../services/runs/conversationContext.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { pipelineScheduler } from "../services/pipeline/pipelineScheduler.ts";
+import { pauseOptionsFrom, pipelineScheduler, stopOptionsFrom } from "../services/pipeline/pipelineScheduler.ts";
 import { adoptExecution, validatePlanOwnership } from "../services/execution/executionSupervisor.ts";
 import { ExecutionError } from "../repositories/executionStore.ts";
 import { executionStore, WorkspaceError, workspaces, chatThreads } from "../repositories/workspaces.ts";
@@ -313,13 +313,13 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     const namedPipelinePauseMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/pause$/);
     if(namedPipelinePauseMatch){
       if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{run:await pipelineScheduler.pauseNamed(id(namedPipelinePauseMatch[1]!))});
+      else json(res,200,{run:await pipelineScheduler.pauseNamed(id(namedPipelinePauseMatch[1]!),pauseOptionsFrom(await body(req)))});
       return true;
     }
     const namedPipelineStopMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/stop$/);
     if(namedPipelineStopMatch){
       if(method!=="POST") json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
-      else json(res,200,{run:await pipelineScheduler.stopNamed(id(namedPipelineStopMatch[1]!))});
+      else json(res,200,{run:await pipelineScheduler.stopNamed(id(namedPipelineStopMatch[1]!),stopOptionsFrom(await body(req)))});
       return true;
     }
     const namedPipelineFlowchartMatch=url.pathname.match(/^\/api\/pipelines\/(\d+)\/flowchart$/);
@@ -454,7 +454,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;
     }
     let runMatch=url.pathname.match(/^\/api\/runs\/([^/]+)\/interrupt$/);
-    if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else if(!await activeRuns.stop(runMatch[1]!))throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");else json(res,200,{interrupted:true});return true;}
+    if(runMatch){if(method!=="POST")json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});else{const result=await pipelineScheduler.stopAgent(decodeURIComponent(runMatch[1]!));if(!result.stopped)throw new WorkspaceError(409,"run_not_active","The agent process is no longer active");json(res,200,{interrupted:true,pipelinePaused:result.pipelinePaused});}return true;}
     const threadsMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/threads(?:\/([^/]+))?(\/history)?$/);
     if(threadsMatch){
       const workspaceId=id(threadsMatch[1]!);

@@ -1,11 +1,11 @@
-import type { OperationsPrompt, OperationsSuite } from "@hydra/shared";
+import { DEFAULT_STATUS_CATALOG, isTerminalDisplayStatus, type OperationsPrompt, type OperationsSuite, type StatusDefinition } from "@hydra/shared";
 
 export type WorkFilter = "all" | "attention" | "working";
 /** @deprecated use WorkFilter */
 export type TasksFilter = WorkFilter;
 
-export function isTerminal(item: OperationsPrompt): boolean {
-  return item.operationalState === "DONE" || item.operationalState === "SKIPPED";
+export function isTerminal(item: OperationsPrompt, catalog: readonly StatusDefinition[] = DEFAULT_STATUS_CATALOG): boolean {
+  return isTerminalDisplayStatus(catalog, item.operationalState);
 }
 
 /** Walk station roots and their children (nesting is at most two levels). */
@@ -81,7 +81,7 @@ export function filterPromptTree(items: OperationsPrompt[], filter: TasksFilter)
 }
 
 export function countStations(items: OperationsPrompt[]): { done: number; total: number } {
-  return { done: items.filter(isTerminal).length, total: items.length };
+  return { done: items.filter((item) => isTerminal(item)).length, total: items.length };
 }
 
 export function countSubSteps(items: OperationsPrompt[]): { done: number; total: number } {

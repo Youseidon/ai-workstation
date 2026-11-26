@@ -142,6 +142,10 @@ export const workspaceApi = {
   removePipeline(serverUrl:string,id:number){return request<void>(serverUrl,`/api/pipelines/${id}`,{method:"DELETE"});},
   pipelineRuns(serverUrl:string,id:number){return request<{runs:PipelineRunDetail[]}>(serverUrl,`/api/pipelines/${id}/runs`).then(r=>r.runs);},
   playPipeline(serverUrl:string,id:number,value:{provider?:ProviderId|null;model?:string|null;briefing?:{promptId:number;content:string}}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/play`,{method:"POST",...json(value)}).then(r=>r.run);},
-  pausePipeline(serverUrl:string,id:number){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/pause`,{method:"POST",...json({})}).then(r=>r.run);},
-  stopPipeline(serverUrl:string,id:number){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/stop`,{method:"POST",...json({})}).then(r=>r.run);},
+  /** `mode` overrides the Pause setting; omitted, the server uses the setting. */
+  pausePipeline(serverUrl:string,id:number,value:{mode?:"graceful"|"immediate"}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/pause`,{method:"POST",...json(value)}).then(r=>r.run);},
+  /** `interruptAgent` overrides the "Stop interrupts agent" setting. */
+  stopPipeline(serverUrl:string,id:number,value:{interruptAgent?:boolean}={}){return request<{run:PipelineRun}>(serverUrl,`/api/pipelines/${id}/stop`,{method:"POST",...json(value)}).then(r=>r.run);},
+  /** Stops one agent now and resolves once it has exited. A pipeline station's rail is paused rather than advanced. */
+  stopAgent(serverUrl:string,runId:string){return request<{interrupted:boolean;pipelinePaused:boolean}>(serverUrl,`/api/runs/${encodeURIComponent(runId)}/interrupt`,{method:"POST",...json({})});},
 };

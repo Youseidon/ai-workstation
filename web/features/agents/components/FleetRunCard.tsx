@@ -9,13 +9,15 @@ import { agentState, ACTIVITY_LABEL } from "@/features/runs/lib/agentState";
 import { fleetClock, runOrigin, waitingElapsed, type PipelinePlace, type RunOrigin } from "@/features/agents/lib/fleet";
 import { providerTheme } from "@/features/providers/lib/providerTheme";
 import { useFleetConsole } from "@/contexts/fleetContext";
+import { useStopCenter } from "@/features/stop/components/StopCenter";
 import type { RunStatus } from "@/models/runs";
 
 /** Shared identity, resolved model, activity and server clock for each run. */
 export function FleetRunCard({ run, origin: suppliedOrigin, selected, onSelect, compact = false }: {
   run: RunStatus; origin?: RunOrigin; selected?: boolean; onSelect?(): void; compact?: boolean;
 }) {
-  const { providers, items, lastRun, inputRequests, runTabIds, interrupt, stale } = useFleetConsole();
+  const { providers, items, lastRun, inputRequests, runTabIds, stale } = useFleetConsole();
+  const stopCenter = useStopCenter();
   const provider = providers.find(provider => provider.id === run.provider);
   const request = inputRequests[run.runId];
   const state = useMemo(() => provider ? agentState(provider, [run], items, lastRun) : null, [provider, run, items, lastRun]);
@@ -38,7 +40,7 @@ export function FleetRunCard({ run, origin: suppliedOrigin, selected, onSelect, 
       {origin.href && <Link href={origin.href} aria-label="Open pipeline">Pipeline ↗</Link>}
       <Link href={runOwnerHref(run, runTabIds)} aria-label="Open session">Open ↗</Link>
       {request && onSelect && <button type="button" onClick={onSelect} aria-expanded={selected}>{selected ? "Hide question" : "Answer request"}</button>}
-      <button type="button" className="fleet-stop" disabled={stale} onClick={() => interrupt(run.runId)} aria-label={`Stop ${provider?.label ?? run.provider}: ${origin.title}`}>Stop</button>
+      <button type="button" className="fleet-stop" disabled={stale} onClick={() => stopCenter.open({ runId: run.runId })} aria-label={`Stop ${provider?.label ?? run.provider}: ${origin.title}`}>Stop</button>
     </div>
   </article>;
   const contents = <>

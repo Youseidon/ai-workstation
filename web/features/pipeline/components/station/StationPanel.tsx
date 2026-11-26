@@ -191,7 +191,7 @@ export function StationPanel({
             {item.children.length > 0 && (
               <section className="rounded-panel border border-line bg-surface-1 p-3">
                 <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wider text-fg-dim">
-                  <span>Sub-steps · {item.children.filter(isTerminal).length}/{item.children.length}</span>
+                  <span>Sub-steps · {item.children.filter((item) => isTerminal(item)).length}/{item.children.length}</span>
                   {onOpenSubSteps !== undefined && (
                     <button type="button" onClick={onOpenSubSteps} className="normal-case tracking-normal text-accent hover:underline">
                       Open flow ›

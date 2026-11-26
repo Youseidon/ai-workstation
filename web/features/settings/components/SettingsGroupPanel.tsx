@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { SettingValue } from "@hydra/shared";
+import type { SettingField, SettingValue } from "@hydra/shared";
 import { SettingRow } from "@/features/settings/components/SettingField";
 import { SpendMap } from "@/features/settings/components/SpendMap";
 import { Button } from "@/components/ui/Button";
@@ -9,149 +9,225 @@ import { useDialogs } from "@/components/ui/Dialogs";
 import { Skeleton } from "@/components/ui/Spinner";
 import { SERVER_URL } from "@/api/serverUrl";
 import { useSettings } from "@/features/settings/hooks/useSettings";
-import { GROUP_BLURB, GROUP_TITLE } from "@/features/settings/lib/settingsGroups";
+import {
+  GROUP_BLURB,
+  GROUP_TITLE,
+} from "@/features/settings/lib/settingsGroups";
+import {
+  clearSubmittedDrafts,
+  dangerousSetting,
+  dirtySettings,
+  type SettingsDraftState,
+} from "@/features/settings/lib/drafts";
 
-/** The one budget that is money, and so reads differently on every agent. */
-const SPEND_CAP_KEY = "budget.maxSpendUsd";
-
-/**
- * Inline editor for one settings group. Used by the Agents page dialog and by
- * the pipeline inspector so Policy / Budgets are edited where they matter.
- */
 export function SettingsGroupPanel({
   group,
   onSaved,
   compact = false,
   header = true,
+  draftState,
+  excludeKeys = [],
+  disabled = false,
 }: {
   group: string;
   onSaved?(): void;
-  /** Tighter layout for side drawers. */
   compact?: boolean;
-  /** Off when the surrounding dialog already carries the title and blurb. */
   header?: boolean;
+  /** The configuration workspace owns drafts so closing or switching editors preserves them. */
+  draftState?: SettingsDraftState;
+  excludeKeys?: string[];
+  disabled?: boolean;
 }) {
   const settings = useSettings(SERVER_URL);
   const dialogs = useDialogs();
-  const [drafts, setDrafts] = useState<Record<string, SettingValue>>({});
+  const [localDrafts, setLocalDrafts] = useState<Record<string, SettingValue>>(
+    {},
+  );
   const [notice, setNotice] = useState<string | null>(null);
+  const { drafts, setDrafts } = draftState ?? {
+    drafts: localDrafts,
+    setDrafts: setLocalDrafts,
+  };
+  const fields =
+    settings.snapshot?.fields.filter(
+      (field) => field.group === group && !excludeKeys.includes(field.key),
+    ) ?? [];
+  const dirty = dirtySettings(fields, drafts);
+  const locked = settings.saving || disabled;
 
-  const fields = settings.snapshot?.fields.filter((field) => field.group === group) ?? [];
-  const dirty = Object.keys(drafts).filter((key) => {
-    const field = fields.find((entry) => entry.key === key);
-    return field !== undefined && drafts[key] !== field.value;
-  });
-
-  const clear = (keys: string[]) => {
-    setDrafts((current) => {
-      const next = { ...current };
-      for (const key of keys) delete next[key];
-      return next;
+  const clear = (submitted: Record<string, SettingValue>) =>
+    setDrafts((current) => clearSubmittedDrafts(current, submitted));
+  const confirmDanger = async (
+    changes: { field: SettingField; value: SettingValue }[],
+  ) => {
+    const dangerous = changes.filter(({ field, value }) =>
+      dangerousSetting(field, value),
+    );
+    if (dangerous.length === 0) return true;
+    return dialogs.confirm({
+      title: "This turns off a sandbox or permission check",
+      description: (
+        <span className="block space-y-2">
+          {dangerous.map(({ field, value }) => (
+            <span className="block" key={field.key}>
+              <strong>{field.label}</strong>
+              <span className="block">
+                {field.options?.find((option) => option.value === String(value))
+                  ?.hint ?? field.description}
+              </span>
+            </span>
+          ))}
+          <span className="block">
+            The agent may act outside its workspace or without approval. This
+            applies to new runs across your workspaces.
+          </span>
+        </span>
+      ),
+      confirmLabel: "Save anyway",
+      tone: "danger",
     });
   };
-
   const saveDirty = async () => {
-    if (dirty.length === 0) return;
-    const dangerous = dirty.filter((key) => {
-      const field = fields.find((entry) => entry.key === key);
-      if (field === undefined) return false;
-      const next = drafts[key];
-      if (field.type === "boolean") return next === true && field.dangerWhenTrue;
-      return field.options?.find((option) => option.value === String(next))?.danger === true;
-    });
-    if (dangerous.length > 0) {
-      const labels = dangerous.map((key) => fields.find((field) => field.key === key)?.label ?? key);
-      const confirmed = await dialogs.confirm({
-        title: "This loosens a check",
-        description: `${labels.join(", ")} — make sure you mean it.`,
-        confirmLabel: "Save anyway",
-        tone: "danger",
-      });
-      if (!confirmed) return;
-    }
-    const patch = Object.fromEntries(dirty.map((key) => [key, drafts[key] as SettingValue]));
+    if (dirty.length === 0 || locked) return;
+    const patch = Object.fromEntries(
+      dirty.map((key) => [key, drafts[key] as SettingValue]),
+    );
+    if (
+      !(await confirmDanger(
+        fields
+          .filter((field) => dirty.includes(field.key))
+          .map((field) => ({ field, value: patch[field.key] as SettingValue })),
+      ))
+    )
+      return;
     const result = await settings.save(patch);
     if (!result.ok) return;
-    clear(dirty);
+    clear(patch);
     setNotice(
-      result.changed.length === 0
-        ? "No changes to save."
-        : `Saved ${result.changed.length} setting${result.changed.length === 1 ? "" : "s"}.`,
+      `Saved ${result.changed.length} setting${result.changed.length === 1 ? "" : "s"}. ${fields.some((field) => dirty.includes(field.key) && field.requiresRestart) ? "Marked settings require a server restart." : "Applies to new runs."}`,
+    );
+    onSaved?.();
+  };
+  const reset = async (key: string) => {
+    const field = fields.find((entry) => entry.key === key);
+    if (field === undefined || locked) return;
+    if (!(await confirmDanger([{ field, value: field.defaultValue }]))) return;
+    const submitted = drafts[key] === undefined ? {} : { [key]: drafts[key] };
+    const result = await settings.reset([key]);
+    if (!result.ok) return;
+    clear(submitted);
+    setNotice(
+      `Reset ${field.label} to its inherited value. ${field.requiresRestart ? "Requires a server restart." : "Applies to new runs."}`,
     );
     onSaved?.();
   };
 
-  const title = GROUP_TITLE[group] ?? group;
-  const blurb = GROUP_BLURB[group];
-
   return (
-    <div className={compact ? "space-y-3" : "space-y-4"}>
-      {header && !compact && (
+    <div className={compact ? "space-y-2" : "space-y-3"}>
+      {header && (
         <div>
-          <h3 className="text-sm font-medium text-fg">{title}</h3>
-          {blurb !== undefined && <p className="mt-1 text-xs leading-5 text-fg-dim">{blurb}</p>}
+          <h3 className="text-sm font-medium text-fg">
+            {GROUP_TITLE[group] ?? group}
+          </h3>
+          {GROUP_BLURB[group] !== undefined && (
+            <p className="mt-1 text-xs text-fg-dim">{GROUP_BLURB[group]}</p>
+          )}
         </div>
       )}
-      {header && compact && blurb !== undefined && (
-        <p className="text-xs leading-5 text-fg-dim">{blurb}</p>
+      {settings.errors.length > 0 && (
+        <div role="alert" className="text-xs text-danger">
+          {settings.errors.join(" · ")}{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => void settings.reload()}
+          >
+            Retry loading settings
+          </button>
+        </div>
       )}
-
       {settings.loading ? (
-        <div className="space-y-2">
+        <div role="status" aria-label="Loading settings">
           <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-2/3" />
+          <Skeleton className="mt-2 h-9 w-full" />
         </div>
       ) : fields.length === 0 ? (
-        <p className="text-sm text-fg-muted">This group has no settings.</p>
+        settings.errors.length === 0 && (
+          <p className="text-sm text-fg-muted">This group has no settings.</p>
+        )
       ) : (
         <>
-          {fields.map((field) => (
-            <SettingRow
-              key={field.key}
-              field={field}
-              draft={drafts[field.key]}
-              disabled={settings.saving}
-              footer={
-                field.key === SPEND_CAP_KEY
-                  ? <SpendMap usd={Number(drafts[field.key] ?? field.value) || 0} />
-                  : undefined
-              }
-              onChange={(key, value) => {
-                setNotice(null);
-                setDrafts((current) => ({ ...current, [key]: value }));
-              }}
-              onRevert={(key) => {
-                setNotice(null);
-                void settings.reset([key]);
-                clear([key]);
-              }}
-            />
-          ))}
-          {dirty.length > 0 && (
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button variant="ghost" size="sm" onClick={() => clear(dirty)} disabled={settings.saving}>
-                Discard
-              </Button>
-              <Button
-                variant="success"
-                size="sm"
-                onClick={() => void saveDirty()}
-                loading={settings.saving}
-                title={`Saved to ${settings.snapshot?.storagePath ?? "the server"}`}
-              >
-                Save {dirty.length}
-              </Button>
-            </div>
-          )}
-          {(notice !== null || settings.errors.length > 0) && (
-            <p
-              className={`text-xs ${settings.errors.length > 0 ? "text-danger" : "text-fg-dim"}`}
-              role={settings.errors.length > 0 ? "alert" : undefined}
+          <div className="text-xs text-fg-dim">
+            Saved for your account · all workspaces · new runs
+            {fields.some((field) => field.requiresRestart)
+              ? " (restart exceptions marked)"
+              : ""}
+          </div>
+          <div>
+            {fields.map((field) => (
+              <SettingRow
+                key={field.key}
+                field={field}
+                draft={drafts[field.key]}
+                disabled={locked}
+                compact={compact}
+                footer={
+                  field.key === "budget.maxSpendUsd" ? (
+                    <SpendMap
+                      usd={Number(drafts[field.key] ?? field.value) || 0}
+                    />
+                  ) : undefined
+                }
+                onChange={(key, value) => {
+                  setNotice(null);
+                  setDrafts((current) => ({ ...current, [key]: value }));
+                }}
+                onRevert={(key) => void reset(key)}
+              />
+            ))}
+          </div>
+          <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-line bg-surface-1 py-3">
+            <span
+              role="status"
+              className={`text-xs ${dirty.length > 0 ? "text-warning" : "text-fg-muted"}`}
             >
-              {settings.errors.length > 0 ? settings.errors.join(" · ") : notice}
-            </p>
-          )}
+              {settings.saving
+                ? "Saving…"
+                : dirty.length > 0
+                  ? `${dirty.length} unsaved · retained while this page is open`
+                  : (notice ?? "All changes saved")}
+            </span>
+            {dirty.length > 0 && (
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={locked}
+                  onClick={() => {
+                    clear(
+                      Object.fromEntries(
+                        dirty.map((key) => [key, drafts[key] as SettingValue]),
+                      ),
+                    );
+                    setNotice(
+                      "Unsaved edits discarded. Saved settings unchanged.",
+                    );
+                  }}
+                >
+                  Discard edits
+                </Button>
+                <Button
+                  variant="success"
+                  size="sm"
+                  loading={settings.saving}
+                  disabled={locked}
+                  onClick={() => void saveDirty()}
+                >
+                  Save {dirty.length}
+                </Button>
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

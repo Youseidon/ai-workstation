@@ -317,7 +317,7 @@ export function SuiteBoard({ suiteId }: { suiteId: number }) {
                         readOnly
                         subSteps={
                           item.children.length > 0
-                            ? { done: item.children.filter(isTerminal).length, total: item.children.length }
+                            ? { done: item.children.filter((item) => isTerminal(item)).length, total: item.children.length }
                             : undefined
                         }
                         onSelect={() => select(item.prompt.id)}

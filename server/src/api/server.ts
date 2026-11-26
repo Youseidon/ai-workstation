@@ -771,8 +771,11 @@ wss.on("connection", (ws: WebSocket) => {
       case "interrupt": {
         // Any client may stop any run: the agent dock is on every page, and the
         // tab that started a run is often not the one watching it finish.
+        // Through the scheduler, so a pipeline station's rail pauses instead
+        // of reading the stop as unfinished work and starting a new agent.
         if (typeof parsed.runId !== "string" || parsed.runId === "") return;
-        void runHub.stop(parsed.runId);
+        const runId = parsed.runId;
+        void pipelineScheduler.stopAgent(runId).catch((error: unknown) => connLog.warn(`stop agent failed run=${runId}`, error));
         return;
       }
       case "input_response": {

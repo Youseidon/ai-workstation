@@ -8,6 +8,7 @@ import { sectionFor } from "@/lib/navigation";
 import { AppSidebar, useSidebarState } from "./AppSidebar";
 import { LiveFleetRail } from "./LiveFleetRail";
 import { FleetProvider } from "@/contexts/fleetContext";
+import { StopCenterProvider } from "@/features/stop/components/StopCenter";
 import { DetailLayerProvider } from "./DetailDrawer";
 import { SidebarSlotProvider } from "./SidebarCollection";
 
@@ -65,6 +66,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <FleetProvider>
+    <StopCenterProvider>
     <ChatProvider active={chat}>
       <Suspense fallback={null}><ChatLinkSync active={chat} /></Suspense>
       <SidebarSlotProvider value={slot}>
@@ -84,6 +86,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </DetailLayerProvider>
       </SidebarSlotProvider>
     </ChatProvider>
+    </StopCenterProvider>
     </FleetProvider>
   );
 }

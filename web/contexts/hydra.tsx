@@ -698,6 +698,7 @@ export function HydraProvider({ children }: { children: ReactNode }) {
             const index = pendingTabsRef.current.findIndex((pending) => pending.requestId === message.clientRequestId);
             if (index !== -1) pendingTabsRef.current.splice(index, 1);
           }
+          if (message.kind === "settings_updated") window.dispatchEvent(new Event("hydra.settings-updated"));
           dispatch({ type: "server", message, tabId, requestId });
         } catch {
           // Ignore frames we cannot parse rather than tearing down the socket.

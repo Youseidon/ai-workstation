@@ -31,7 +31,7 @@ export function HumanGate({
         }}
         aria-label={pending ? "Approval point — waiting on you. Open to answer." : "Approval point — answered. Open conversation."}
         className={cn(
-          "relative grid size-7 place-items-center rounded-md shadow-md ring-1 ring-inset transition-transform",
+          "relative grid size-7 place-items-center overflow-hidden rounded-md shadow-md ring-1 ring-inset transition-transform",
           "rotate-45 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           pending ? "bg-warning text-surface-0 ring-warning/60" : "bg-success/90 text-surface-0 ring-success/60",
           selected && "outline-2 outline-offset-2 outline-accent",

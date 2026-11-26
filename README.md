@@ -116,13 +116,39 @@ their station directly. The overview refreshes when workspace operations change.
 On smaller screens, expand **Insights** to see run activity and the attention
 queue alongside the compact directory.
 
-The **Agent assignments** panel above a suite's flowchart sets its agent and
-model for this pipeline. Prompts and new sub-steps inherit that choice. Expand
-**Prompt overrides** to choose a different agent for an individual prompt, or
-use the **Agent** button on its card. **Use suite agent for all prompts** clears
-existing agent overrides while preserving the flowchart and station outcomes.
-Assignments are scoped to the pipeline, including when another pipeline uses
-the same suite.
+Inside a pipeline, the compact transport keeps its execution control and
+**Needs you** queue visible while steps scroll. **Details** expands the current
+position and run rules; the execution overflow menu holds secondary controls.
+The ordered suite strip and sidebar distinguish selection, running work,
+attention and automatically updated completion. Progress counts only this named
+pipeline's enabled steps: skipped steps settle the rail and are disclosed in
+progress tooltips. Empty suites and unavailable progress never receive a
+completion tick. In edit mode, square suite checks still control membership;
+the circular completion marks are read-only.
+
+**Stop and pause** have one home: the **Stop** button in the top rail, on every
+page. Every other Stop or Pause control (fleet cards, the Agents page, a
+pipeline's transport) opens the same popup. For a running pipeline it offers
+**Pause** (the agent finishes its step, then nothing new starts), **Force stop
+agent** (the agent is killed now and the pipeline pauses on that step; Resume
+continues it without spending an unfinished-continuation allowance) and **Stop
+pipeline** (the run ends and its agent is killed; finished steps stay). Other
+live agents get a plain **Stop agent**. Each button shows a spinner until the
+server confirms the change, and a pause in progress is announced in a line
+under the rail.
+
+Steps use a compact grid in numbered execution order, or a nested **List** with
+attention and working filters. **Hide completed** recovers space without removing
+work from the pipeline; **Show completed** brings it back. Select a step for its
+conversation, evidence and actions in the details drawer. **Sub-steps** opens its
+nested execution order. The drawer opens on demand, including from deep links.
+
+Open **Studio → Suite agents** (or a suite's pencil) to set its agent and model
+for this pipeline. Prompts and new sub-steps inherit that choice. **Prompt
+overrides**, or the pencil on a step, chooses a different agent for an individual
+prompt. **Use suite agent for all prompts** clears existing agent overrides while
+preserving the flowchart and station outcomes. Assignments are scoped to the
+pipeline, including when another pipeline uses the same suite.
 
 **Automatically reassign agents** is off by default for every pipeline. When
 enabled, the scheduler checks provider-reported usage before jobs and skips
@@ -395,6 +421,14 @@ accounts use their own state directory.
   `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, Copilot
   `allow-all-paths` / `yolo`, or turning on
   **Host access (Docker)** is flagged inline and asks for confirmation before saving.
+
+In **Agents → Configuration**, compact provider rows separate enabled state,
+availability and the effective model. Open a provider for saved defaults, browser
+model pins, plan usage, installation details and updates. The **Shared settings**
+directory includes every account-wide group supplied by the server. Unsaved field
+edits survive closing an editor, switching providers and visiting Live fleet while
+the Agents page stays open; Save persists them, Discard only clears drafts, and
+Reset removes a saved override.
 
 The Agents page is generated from the field table in `server/src/config/settings.ts`.
 Adding a new tunable is one entry there — label, group, type, `.env` variable,
@@ -736,7 +770,11 @@ handles via `delta: false` block replacement keyed on `blockId`.
 the adapter's `interrupt()` — `Query.interrupt()` for Claude, `SIGINT` then
 `SIGKILL` for spawned CLIs — and hard-aborts after a 2s grace period if the
 provider does not stop, so a hung interrupt can never leave a run un-cancellable.
-Disconnecting the browser interrupts the run too.
+Disconnecting the browser interrupts the run too. An operator's interrupt (the
+socket message or `POST /api/runs/:id/interrupt`) goes through
+`pipelineScheduler.stopAgent`: when the run is a pipeline station's, the rail is
+paused first, so the ending is never read as unfinished work that launches a
+successor agent.
 
 **Errors.** A child process that dies unexpectedly, a malformed stream, or a
 provider-reported failure becomes an `error` event, not a dropped socket. Child
