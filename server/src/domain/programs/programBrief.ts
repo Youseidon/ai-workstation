@@ -1,15 +1,3 @@
-/**
- * A whole program, as an agent reads it.
- *
- * A work item's context is one item and its neighbours. A question about a
- * program — "what happens to S3 if S2-04 fails", "which of these will the
- * pipeline actually run" — needs the rest: every suite and item in order, what
- * each one waits for, what it has to pass to close, and which pipelines run it
- * with which rules. The data is gathered by `workspaces.programBrief`; this
- * file only decides how it reads, so the ask run and the revision run are told
- * the same facts in the same words.
- */
-
 import type { OnDoneAction, OnUnfinishedAction, ProgramDraftBody, StepStatus } from "@hydra/shared";
 
 export interface ProgramBriefItem {
@@ -36,19 +24,12 @@ export interface ProgramBrief {
     stages: Array<{
       suiteId: number;
       label: string;
-      /** Only this program's suites carry steps; other stages are named for order. */
       steps: Array<{ key: string | null; title: string; provider: string | null; model: string | null; onDone: OnDoneAction; onUnfinished: OnUnfinishedAction }> | null;
     }>;
   }>;
   maxContinuations: number;
 }
 
-/**
- * How much work-item text one brief carries before it shows summaries and
- * points at `--item` instead. Kept under what agent shells show of one
- * command's output (Claude Code cuts at 30 000 characters): a brief that is
- * silently truncated reads as a program that ends halfway.
- */
 export const BRIEF_CONTENT_BUDGET = 20_000;
 
 const RUN_SEMANTICS = [
@@ -91,13 +72,10 @@ function pipelinesMarkdown(brief: ProgramBrief): string {
 }
 
 export interface ProgramBriefOptions {
-  /** Only this item, in full. Keys match case-insensitively. */
   item?: string | null;
-  /** Keys to show in place of the library's own, for a revision draft. */
   keyFor?: (item: ProgramBriefItem) => string | null;
 }
 
-/** The program, its items and its pipelines, as Markdown. */
 export function programBriefMarkdown(brief: ProgramBrief, options: ProgramBriefOptions = {}): string {
   const keyOf = (item: ProgramBriefItem) => options.keyFor?.(item) ?? item.key;
   const wanted = options.item?.trim().toUpperCase() ?? "";
@@ -171,7 +149,6 @@ function itemMarkdown(item: ProgramBriefItem, full: boolean): string {
   ].join("\n");
 }
 
-/** The ask run's context: the brief, the question, and what it may not do. */
 export function programConsultMarkdown(brief: ProgramBrief, question: string, liveBanner: string): string {
   return [
     liveBanner,
@@ -189,7 +166,6 @@ export function programConsultMarkdown(brief: ProgramBrief, question: string, li
   ].join("\n");
 }
 
-/** Maps library item ids to the keys a revision draft uses for them. */
 export function draftKeysById(body: ProgramDraftBody): Map<number, string> {
   const keys = new Map<number, string>();
   for (const suite of body.suites) for (const prompt of suite.prompts) {

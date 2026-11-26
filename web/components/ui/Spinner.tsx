@@ -1,10 +1,5 @@
 import { cn } from "@/lib/cn";
 
-/**
- * Indeterminate progress. Inherits `currentColor`, so it matches whatever it
- * sits inside. Under reduced motion the arc stops spinning but the ring stays,
- * which still reads as "busy" (the global rule freezes the animation).
- */
 export function Spinner({ size = 14, className }: { size?: number; className?: string }) {
   return (
     <svg
@@ -26,7 +21,6 @@ export function Spinner({ size = 14, className }: { size?: number; className?: s
   );
 }
 
-/** Content-shaped loading placeholder. */
 export function Skeleton({ className }: { className?: string }) {
   return <div aria-hidden className={cn("skeleton", className)} />;
 }

@@ -74,7 +74,6 @@ test("settlement fences credentials and retains ownership until evidence finaliz
     f.store.releaseSettledLease(e.id);
     assert.equal(f.store.pending().length,0);
     assert.ok(f.reserve("next"));
-    // An old finalizer cannot release the successor's lease.
     f.store.releaseSettledLease(e.id);
     assert.throws(()=>f.reserve("third"),/writer/);
   } finally {f.db.close();}

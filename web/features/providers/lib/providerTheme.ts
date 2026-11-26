@@ -1,30 +1,14 @@
 import type { ProviderId } from "@hydra/shared";
 
 export interface ProviderTheme {
-  /** Tag text colour. */
   text: string;
-  /** Tag background. */
   chip: string;
-  /** Left rule on log entries. */
   rule: string;
-  /** Selected state in the switcher. */
   active: string;
-  /** Solid fill, for dots and avatar cores. */
   fill: string;
-  /**
-   * The raw CSS variable. SVG `fill`/`stroke` and `color-mix()` need a real
-   * colour value rather than a utility class — the avatars in a later phase are
-   * drawn with this.
-   */
   cssVar: string;
 }
 
-/**
- * One hue per agent, drawn from theme tokens rather than the fixed Tailwind
- * palette so an agent keeps its identity in every theme. A hardcoded
- * `amber-300` reads well on a near-black surface and is unreadable on white;
- * `agent-claude` is defined per theme and stays legible in all three.
- */
 export const providerTheme: Record<ProviderId, ProviderTheme> = {
   claude: {
     text: "text-agent-claude",

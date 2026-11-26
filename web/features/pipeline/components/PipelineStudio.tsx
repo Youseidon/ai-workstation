@@ -4,12 +4,6 @@ import { useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/cn";
 
-/**
- * The Pipeline studio: everything you configure or review, in one wide popup.
- * The side drawer answers "what is happening"; the studio answers "how is it
- * set up, and how did it go". Sections are grouped, searchable, and each says
- * in one line what it is for, so nothing hides behind a terse tab label.
- */
 export type StudioSection = "agents" | "step" | "policy" | "budgets" | "statuses" | "definition" | "verification" | "history";
 
 export interface StudioSectionInfo {
@@ -17,7 +11,6 @@ export interface StudioSectionInfo {
   group: "Agents" | "Rules" | "Quality";
   label: string;
   blurb: string;
-  /** Extra words the filter and the command palette match. */
   keywords: string;
 }
 
@@ -48,12 +41,9 @@ export function PipelineStudio({
   section: StudioSection;
   onSectionChange(section: StudioSection): void;
   onClose(): void;
-  /** Where the studio is pointed: pipeline · suite · step. */
   context: ReactNode;
-  /** Sections that cannot open right now, with the reason. */
   unavailable?: Partial<Record<StudioSection, string>>;
   badges?: Partial<Record<StudioSection, ReactNode>>;
-  /** The current section's content. */
   children: ReactNode;
 }) {
   const [query, setQuery] = useState("");

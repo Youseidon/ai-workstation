@@ -55,7 +55,7 @@ export function ConversationPanel({ items, workdir, storageKey, workspaceId, pen
     const visible=[...el.querySelectorAll<HTMLElement>("[data-reading-anchor]")].find(node => node.getBoundingClientRect().bottom > top + 8);
     if(following.current) acknowledgedTail.current=fingerprint;
     anchor.current={id:visible?.id ?? "",offset:visible ? visible.getBoundingClientRect().top-top : 0,top:el.scrollTop,following:following.current,tail:acknowledgedTail.current};
-    try { userSessionStorage.setItem(`chat-anchor:${storageKey}`,JSON.stringify(anchor.current)); } catch { /* storage is optional */ }
+    try { userSessionStorage.setItem(`chat-anchor:${storageKey}`,JSON.stringify(anchor.current)); } catch {  }
   },[storageKey,active,log,fingerprint]);
   const restore = useCallback(() => {
     const el=container.current;
@@ -68,7 +68,7 @@ export function ConversationPanel({ items, workdir, storageKey, workspaceId, pen
     else el.scrollTop=saved.top;
   },[active,log]);
   useEffect(() => {
-    const timer=setTimeout(() => { try { setWide(userSessionStorage.getItem(`chat-width:${storageKey}`) === "wide"); } catch { /* optional */ } },0);
+    const timer=setTimeout(() => { try { setWide(userSessionStorage.getItem(`chat-width:${storageKey}`) === "wide"); } catch {  } },0);
     return () => clearTimeout(timer);
   },[storageKey]);
   useLayoutEffect(() => {
@@ -118,7 +118,7 @@ export function ConversationPanel({ items, workdir, storageKey, workspaceId, pen
       {log && <button type="button" className="chat-text-button" onClick={() => setLog(false)}>← Conversation</button>}
       <Menu label="Conversation options" items={[
         {id:"log",label:log ? "Show conversation" : "Execution log",onSelect:() => { capture(); setLog(!log); }},
-        {id:"width",label:wide ? "Comfortable width" : "Wider conversation",onSelect:() => { capture(); setWide(!wide); try { userSessionStorage.setItem(`chat-width:${storageKey}`,wide ? "reading" : "wide"); } catch { /* optional */ } }},
+        {id:"width",label:wide ? "Comfortable width" : "Wider conversation",onSelect:() => { capture(); setWide(!wide); try { userSessionStorage.setItem(`chat-width:${storageKey}`,wide ? "reading" : "wide"); } catch {  } }},
         ...(turns.length >= 6 ? [{id:"outline",label:"Jump to a message",onSelect:() => setOutline(!outline)}] : []),
       ]} />
     </div>

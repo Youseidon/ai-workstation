@@ -1,0 +1,11 @@
+Hydra README illustration
+Generated with: built-in image_gen tool
+Asset: docs/assets/hydra-workshop.png
+
+Use case: illustration-story
+Asset type: wide editorial illustration for the README of Hydra, a self-hosted console coordinating six coding agents.
+Primary request: A charming six-headed mechanical hydra sharing one body at a developer's desk, each of its exactly six long necks helping tend a row of small computer monitors. One head studies a flowchart, another watches code, another looks at a green successful check; the others confer with an air of friendly competence. A coffee mug nearby. The joke is that six heads can finally agree on one workspace.
+Style/medium: polished tactile miniature diorama, clay and matte metal, playful human editorial art, detailed yet uncluttered.
+Composition/framing: panoramic 3:1 landscape, the complete six-headed creature and desk clearly visible, generous breathing room, dark charcoal studio backdrop.
+Lighting/mood: warm desk lamp with subtle cyan and violet monitor glow; calm late-night building session, approachable and a little mischievous.
+Constraints: exactly six distinct heads on a single connected body, no text or letters anywhere, no brand/vendor logos, no watermark. Decorative conceptual art, not an app screenshot. Do not invent or reproduce the Hydra logo.

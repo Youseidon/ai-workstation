@@ -2,13 +2,7 @@
 
 import { cn } from "@/lib/cn";
 
-/**
- * The small pencil that opens something's settings. Sits beside a card's own
- * click target (never inside it: buttons cannot nest), quiet until the card is
- * hovered or the pencil is focused.
- */
 export function EditIconButton({ label, onClick, className }: {
-  /** Accessible name, e.g. "Edit S1-02 in Studio". */
   label: string;
   onClick(): void;
   className?: string;

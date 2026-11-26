@@ -13,7 +13,6 @@ export interface SubStepSummary {
   total: number;
 }
 
-/** Two readable lines; details and execution rules belong to the item panel. */
 export const STATION_CARD_HEIGHT = 80;
 
 const EDGE: Record<string, string> = {
@@ -27,14 +26,6 @@ const EDGE: Record<string, string> = {
   neutral: "before:bg-line-strong",
 };
 
-/**
- * One card on a flowchart. Stations and sub-steps share it so a nested
- * sub-pipeline reads like the pipeline that spawned it.
- *
- * The card is a selector, not a toolbar: clicking it opens the item panel,
- * where every action lives in one fixed place. Only composing the flowchart
- * (remove, in edit mode) is done on the card itself.
- */
 export function StationCard({
   index,
   item,
@@ -58,7 +49,6 @@ export function StationCard({
   occupancy: ReturnType<typeof stationOccupancy>;
   selected?: boolean;
   readOnly?: boolean;
-  /** Sub-step only: the rule is the parent station's, not pinned here. */
   inherited?: boolean;
   subSteps?: SubStepSummary;
   onSelect?(): void;
@@ -79,7 +69,6 @@ export function StationCard({
       style={{ height: STATION_CARD_HEIGHT }}
       className={cn(
         "group relative flex min-w-0 flex-row overflow-visible rounded-panel border bg-surface-2 transition-[border-color,box-shadow,background-color]",
-        // Status edge: the one colour cue that reads at a glance across a row.
         "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-['']",
         EDGE[tone] ?? EDGE.neutral,
         selected
@@ -89,7 +78,7 @@ export function StationCard({
             : "border-line hover:border-line-strong hover:bg-surface-3",
       )}
     >
-      {/* The whole card is the hit target; inner controls sit above it. */}
+      { }
       <button
         type="button"
         onClick={onSelect}
@@ -154,10 +143,6 @@ function CardChip({
   );
 }
 
-/**
- * The one line an operator needs when a card is why the rail will not move.
- * Short form on the card; the long form is the tooltip and the panel.
- */
 function stuckNote(item: OperationsPrompt): { short: string; long: string } | null {
   if (item.humanIntervention?.status === "PENDING") {
     return { short: "Waiting on your approval", long: "An approval point after this step needs your decision before the agent continues." };
@@ -168,7 +153,6 @@ function stuckNote(item: OperationsPrompt): { short: string; long: string } | nu
       long: "Blocked on a human response. Answer it in the Conversation tab, mark it complete if the work is already done, or skip it.",
     };
   }
-  // `recoverable` also covers a run that ended UNREPORTED or FAILED — same fix.
   if (item.prompt.recoverable) {
     return {
       short: "Run stopped without a status",

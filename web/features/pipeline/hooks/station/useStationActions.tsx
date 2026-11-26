@@ -15,13 +15,9 @@ export const DEFAULT_RETRY_RESPONSE =
   "Retry requested with no additional context. Inspect the existing working tree and prior evidence, then continue incomplete work without repeating resolved blockers.";
 
 export interface StationActionContext {
-  /** The saved pipeline this board drives, or null on a suite without one. */
   pipelineId: number | null;
-  /** State of the pipeline's live run, when there is one. */
   pipelineState: PipelineState | null;
-  /** Re-read everything the board shows. Called after every action. */
   refresh(): Promise<unknown>;
-  /** Opens the explicit allocation review when an execution limit prevents Run. */
   onAllocationRequired?(promptId: number): void;
 }
 
@@ -31,21 +27,8 @@ class AllocationRequiredError extends Error {
   }
 }
 
-/**
- * Why an item-level action is not available right now, or null when it is.
- * One answer, worded for a tooltip, so a disabled button always says why.
- */
 export type Gate = string | null;
 
-/**
- * Every action an operator can take on one work item, in one place. The
- * pipeline board and the suite view both use it, so "Respond & resume" means
- * the same thing wherever it is clicked.
- *
- * "Resume" follows the context: on a saved pipeline it plays the rail (which
- * picks the item back up in order), on a bare suite it starts a run for the
- * item directly.
- */
 export function useStationActions({ pipelineId, pipelineState, refresh, onAllocationRequired }: StationActionContext) {
   const console_ = useHydra();
   const dialogs = useDialogs();
@@ -68,7 +51,6 @@ export function useStationActions({ pipelineId, pipelineState, refresh, onAlloca
     console_.runs.some((run) => run.workspace.id === workspaceId && run.role === "execute");
   const playing = pipelineState === "PLAYING";
 
-  /** Why a manual run of this item cannot start, or null. */
   const runGate = (item: OperationsPrompt): Gate => {
     if (console_.connection !== "open") return "The backend is disconnected";
     if (playing) return "The pipeline is playing — it runs this item in order";
@@ -81,7 +63,6 @@ export function useStationActions({ pipelineId, pipelineState, refresh, onAlloca
     return null;
   };
 
-  /** Runs an operation, refreshes, then toasts. A returned sentence is a shortfall. */
   const act = async (operation: () => Promise<string | void>, success?: string): Promise<boolean> => {
     setBusy(true);
     try {
@@ -119,7 +100,6 @@ export function useStationActions({ pipelineId, pipelineState, refresh, onAlloca
     if (!ok) return "The agent connection is unavailable. Run it from Chat.";
   };
 
-  /** Continue after a human step: play the rail, or run the item on a bare suite. */
   const resume = async (item: OperationsPrompt): Promise<string | void> => {
     if (pipelineId !== null) {
       if (playing) return;
@@ -151,7 +131,6 @@ export function useStationActions({ pipelineId, pipelineState, refresh, onAlloca
     }, "Agent stopped");
   };
 
-  /** Answer a blocker or an approval point, then continue. */
   const respond = (item: OperationsPrompt, content: string) =>
     act(async () => {
       await workspaceApi.respond(SERVER_URL, item.prompt.id, content.trim() || DEFAULT_RETRY_RESPONSE);
@@ -199,16 +178,11 @@ export function useStationActions({ pipelineId, pipelineState, refresh, onAlloca
     }, "Skipped");
   };
 
-  /**
-   * "Run with context": a note read first by every run of this item until it
-   * is done. What happens after saving depends on where the rail is.
-   */
   const brief = async (item: OperationsPrompt, running: boolean) => {
     let existing: string[] = [];
     try {
       existing = (await workspaceApi.briefings(SERVER_URL, item.prompt.id)).map((row) => row.content);
     } catch {
-      // A failed read only hides the earlier notes; adding one still works.
     }
     const content = await dialogs.prompt({
       title: `Run ${label(item)} with context`,

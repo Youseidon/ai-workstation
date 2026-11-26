@@ -32,14 +32,6 @@ import { createLogger } from "../utils/logger.ts";
 
 const log = createLogger("settings");
 
-/*
- * Every tunable lives in one table. `.env` supplies the default for each field;
- * overrides saved from the Agents page are persisted to a JSON file and layered
- * on top. Adapters read through the `settings` accessor at run time, so a change
- * applies to the next run without restarting the server — and the Agents page
- * is generated from this table, so adding a knob is a one-entry change.
- */
-
 interface FieldDef {
   key: string;
   label: string;
@@ -50,10 +42,8 @@ interface FieldDef {
   fallback: SettingValue;
   placeholder?: string;
   options?: SettingOption[];
-  /** The ladder of values a number field is offered as. */
   scale?: SettingScale;
   requiresRestart?: boolean;
-  /** Marks values that loosen a sandbox or permission check. */
   isDangerous?: (value: SettingValue) => boolean;
 }
 
@@ -1024,10 +1014,6 @@ const FIELDS: FieldDef[] = [
 
 const FIELDS_BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
 
-/* -------------------------------------------------------------------------- */
-/* Value layering: built-in fallback → .env → saved override                   */
-/* -------------------------------------------------------------------------- */
-
 function coerce(type: SettingType, raw: string, fallback: SettingValue): SettingValue {
   switch (type) {
     case "boolean":
@@ -1059,7 +1045,6 @@ const STORAGE_PATH = resolve(
   process.env.SETTINGS_FILE ?? ".hydra/settings.json",
 );
 
-/** Pre-rename location; moved once so saved overrides (and API keys) survive the rename. */
 const PRE_RENAME_STORAGE_PATH = resolve(config.repoRoot, ".agent-console/settings.json");
 
 function load(): void {
@@ -1086,11 +1071,9 @@ function load(): void {
 function persist(): void {
   const body = JSON.stringify(Object.fromEntries(overrides), null, 2);
   mkdirSync(dirname(STORAGE_PATH), { recursive: true, mode: 0o700 });
-  // 0600: this file can hold API keys.
   writeFileSync(STORAGE_PATH, `${body}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-/** Accepts a raw value from the client and coerces it to the field's type. */
 function normalize(field: FieldDef, value: unknown): SettingValue | null {
   switch (field.type) {
     case "boolean":
@@ -1155,19 +1138,11 @@ function commaList(key: string): string[] {
     .filter(Boolean);
 }
 
-/**
- * Splits a shell-ish extra-args string into argv. Supports single and double
- * quotes; deliberately not a full shell parser.
- */
 function argvList(key: string): string[] {
   const value = text(key);
   const matches = value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
   return matches.map((token) => token.replace(/^["']|["']$/g, ""));
 }
-
-/* -------------------------------------------------------------------------- */
-/* Public accessor — what the rest of the server reads                         */
-/* -------------------------------------------------------------------------- */
 
 export const settings = {
   get modelSelectionMode(): ModelSelectionMode {
@@ -1185,8 +1160,6 @@ export const settings = {
   reasoningEffortFor(provider: ProviderId): ReasoningEffort {
     const configured = settings[provider].reasoningEffort;
     if (configured !== null) return configured;
-    // Kilo exposed its provider-specific --variant setting before the common
-    // effort control existed. Honour low/medium/high values already saved there.
     if (provider === "kilocode" && isReasoningEffort(settings.kilocode.variant)) {
       return settings.kilocode.variant;
     }
@@ -1195,17 +1168,6 @@ export const settings = {
   get statusIntervalMs(): number {
     return count("statusIntervalMs") || 1000;
   },
-  /**
-   * Run budgets. One allowance, whatever the work item's depth.
-   *
-   * These used to be halved for a decomposed sub-step, on the theory that a
-   * slice of the parent's work deserves a slice of its allowance. In practice
-   * it is what killed 23 execute runs: a sub-step got 125 tool calls, Cursor
-   * spends about 30 a minute, and a run died three minutes in while it was
-   * still reading. A sub-step *is* the unit of work — the ceilings below are
-   * safety ceilings, and a run that reaches one now gets a wrap-up turn and a
-   * continuation rather than a silent kill.
-   */
   budgetFor(): {
     maxToolCalls: number | null;
     maxWallClockMs: number | null;
@@ -1215,8 +1177,6 @@ export const settings = {
     maxToolResultBytes: number;
     maxOpenToolCallMs: number | null;
   } {
-    // 0 is a real answer here — "no limit" — and not a missing value to paper
-    // over with the default: an unset field already reads as its default.
     const limit = (key: string): number | null => {
       const value = count(key);
       return value <= 0 ? null : value;
@@ -1226,12 +1186,8 @@ export const settings = {
     return {
       maxToolCalls: limit("budget.maxToolCalls"),
       maxWallClockMs: minutes === null ? null : minutes * 60_000,
-      // The money, in dollars. The runner turns it into a token allowance at
-      // its own provider's and model's rate, so one cap means the same spend on
-      // every agent. It is the one budget a wrap-up turn does not get.
       maxSpendUsd: limit("budget.maxSpendUsd"),
       maxToolOutputBytes: limit("budget.maxToolOutputBytes"),
-      // The thrash detector, not a ceiling on work.
       noProgressToolCalls: limit("budget.noProgressToolCalls"),
       maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes")),
       maxOpenToolCallMs: openToolMinutes === null ? null : openToolMinutes * 60_000,
@@ -1255,12 +1211,6 @@ export const settings = {
       tasksMax: tasks <= 0 ? null : tasks,
     };
   },
-  /**
-   * House rules for the pipeline transport, resolved once so the scheduler and
-   * the browser all read the same values. Anything
-   * unrecognised in the store falls back to the built-in default rather than
-   * reaching the rule table as a bad value.
-   */
   get pipelinePolicy(): PipelinePolicy {
     const pauseMode = text("pipeline.pauseMode");
     const onDone = text("pipeline.defaultOnDone");
@@ -1284,24 +1234,13 @@ export const settings = {
     };
   },
 
-  /**
-   * One switch that lifts every provider's sandbox/permission gate so Docker
-   * and other host services work. Per-provider knobs still exist; this
-   * overlays them at run time.
-   */
   get hostAccess(): boolean {
     return flag("hostAccess");
   },
 
-  /**
-   * How long transcript events stick around. Only `agent_run_event` is swept —
-   * runs, remarks, status events and commands are the record and stay.
-   */
   get retention(): { eventsPerRun: number; eventAgeDays: number; keepFinalEvents: number } {
     const eventsPerRun = Math.max(0, count("retention.eventsPerRun") || 4000);
     const eventAgeDays = Math.max(0, count("retention.eventAgeDays") || 0);
-    // A zero keep would leave an aged run with no readable tail; floor at 1 when
-    // the field is somehow cleared rather than honouring a silent wipe.
     const keepFinalEvents = Math.max(1, count("retention.keepFinalEvents") || 200);
     return { eventsPerRun, eventAgeDays, keepFinalEvents };
   },
@@ -1487,10 +1426,6 @@ export const settings = {
   },
 };
 
-/* -------------------------------------------------------------------------- */
-/* Snapshot / update / reset                                                   */
-/* -------------------------------------------------------------------------- */
-
 function describeField(field: FieldDef): SettingField {
   const current = raw(field.key);
   const defaultValue = defaults.get(field.key) ?? field.fallback;
@@ -1504,7 +1439,6 @@ function describeField(field: FieldDef): SettingField {
     envVar: field.envVar,
     placeholder: field.placeholder ?? null,
     options: field.options ?? null,
-    // Secrets never leave the server: the client learns only whether one is set.
     defaultValue: sensitive ? "" : defaultValue,
     value: sensitive ? "" : current,
     overridden: overrides.has(field.key) && current !== defaultValue,
@@ -1516,7 +1450,6 @@ function describeField(field: FieldDef): SettingField {
   };
 }
 
-/** Groups that actually have at least one field. Used by the UI-coverage test. */
 export function groupsWithFields(): string[] {
   return [...GROUPS].filter((group) => FIELDS.some((field) => field.group === group));
 }
@@ -1565,7 +1498,6 @@ export function updateSettings(patch: SettingsPatch): UpdateResult {
   for (const [key, value] of staged) {
     if (raw(key) === value) continue;
     const defaultValue = defaults.get(key);
-    // Setting a field back to its .env value drops the override entirely.
     if (defaultValue !== undefined && defaultValue === value) overrides.delete(key);
     else overrides.set(key, value);
     changed.push(key);
@@ -1588,7 +1520,6 @@ export function updateSettings(patch: SettingsPatch): UpdateResult {
   return { ok: true, errors: [], changed, snapshot: snapshot() };
 }
 
-/** Drops saved overrides, returning the given keys (or everything) to .env values. */
 export function resetSettings(keys?: string[]): UpdateResult {
   const changed: string[] = [];
   if (keys === undefined || keys.length === 0) {
@@ -1614,14 +1545,6 @@ export function resetSettings(keys?: string[]): UpdateResult {
   return { ok: true, errors: [], changed, snapshot: snapshot() };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Host-access overlay                                                         */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Unix sockets Docker-style clients talk to. `DOCKER_HOST=unix://…` wins;
- * otherwise the default engine socket. TCP Docker hosts need no socket grant.
- */
 export function hostUnixSockets(): string[] {
   const dockerHost = process.env.DOCKER_HOST?.trim();
   if (dockerHost === undefined || dockerHost === "") return ["/var/run/docker.sock"];
@@ -1632,41 +1555,31 @@ export function hostUnixSockets(): string[] {
   return [];
 }
 
-/** Effective Claude permission mode after the host-access overlay. */
 export function effectiveClaudePermissionMode(): string {
   return settings.hostAccess ? "bypassPermissions" : settings.claude.permissionMode;
 }
 
-/** Effective Codex sandbox mode after the host-access overlay. */
 export function effectiveCodexSandboxMode(): string {
   return settings.hostAccess ? "danger-full-access" : settings.codex.sandboxMode;
 }
 
-/** Effective Grok permission mode after the host-access overlay. */
 export function effectiveGrokPermissionMode(): string {
   return settings.hostAccess ? "bypassPermissions" : settings.grok.permissionMode;
 }
 
-/** Effective Grok sandbox profile after the host-access overlay. */
 export function effectiveGrokSandboxMode(): string {
   return settings.hostAccess ? "off" : settings.grok.sandboxMode;
 }
 
-/** Effective Copilot permission mode after the host-access overlay. */
 export function effectiveCopilotPermissionMode(): string {
   return settings.hostAccess ? "yolo" : settings.copilot.permissionMode;
 }
 
-/** Effective Kilo approval behaviour after the host-access overlay. */
 export function effectiveKilocodePermissionMode(): string {
-  // Host access means the run may need real commands (docker compose, …) and
-  // has nowhere to put an ask prompt, so approvals are pre-granted like the
-  // other providers' bypass modes. The plan-agent consult ignores this.
   if (settings.hostAccess) return "auto";
   return settings.kilocode.autoApprove ? "auto" : "kilos own permission rules";
 }
 
-/** Effective Cursor --force after the host-access overlay. */
 export function effectiveCursorForce(): boolean {
   return settings.hostAccess ? true : settings.cursor.force;
 }
@@ -1675,12 +1588,10 @@ function hostAccessSuffix(value: string): string {
   return settings.hostAccess ? `${value} · host access` : value;
 }
 
-/** Status-bar / tooltip string; includes the overlay so the UI is honest. */
 export function describeEffectiveAccess(base: string): string {
   return hostAccessSuffix(base);
 }
 
-/** Permission/sandbox the process should start with for this run. */
 export function permissionForRun(
   provider: ProviderId,
   override: PermissionOverride,

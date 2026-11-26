@@ -6,10 +6,6 @@ import { useCallback, useSyncExternalStore } from "react";
 import type { ProviderId, ProviderInfo } from "@hydra/shared";
 import { isProviderId } from "@hydra/shared";
 
-/**
- * Which provider the next run should use. Shared across Chat, Pipeline and the
- * top-bar picker so navigating does not reset the choice mid-session.
- */
 const STORAGE_KEY = "hydra.preferred-provider";
 
 let cache: ProviderId | null = null;
@@ -61,10 +57,6 @@ function write(next: ProviderId): void {
   for (const listener of listeners) listener();
 }
 
-/**
- * Honour the user's pick while it is usable; otherwise fall back to the first
- * available provider. Derived during render — never synced into state.
- */
 export function usePreferredProvider(providers: ProviderInfo[]): {
   preferred: ProviderId | null;
   selected: ProviderId;

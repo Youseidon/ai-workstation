@@ -71,8 +71,6 @@ export function ConversationExchange({ turn, number, progress, hasChanges, onQuo
       while (turn.blocks[i + 1]?.kind === "tool" && !(turn.blocks[i + 1] as Extract<LogItem, { kind: "tool" }>).result?.isError) group.push(turn.blocks[++i] as typeof item);
       blocks.push(<details key={item.id} id={`evidence-${item.id}`} className="chat-activity text-sm text-fg-muted"><summary>{activityLabel(group)}{group.some(t => t.result === null) ? " · Working" : ""}</summary>{group.map(t => <Evidence key={t.id} item={t} />)}</details>);
     } else if (item.kind === "btw") blocks.push(item.direction === "OPERATOR"
-      // `/btw` sits inside the run it was sent to, in order, so the reply and
-      // what the agent did after it read the note are right below it.
       ? <div key={item.id} className="chat-user rounded-lg border border-accent/30 p-3 text-sm">
           <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-semibold"><span>You · btw</span>{item.state !== null && <span className="font-normal text-fg-muted">· {btwDeliveryLabel(item.delivery, item.state)}</span>}</div>
           <p className="whitespace-pre-wrap break-words">{item.text}</p>

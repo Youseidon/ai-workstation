@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Why a work item is showing what it is showing.
- *
- * This is the panel the whole status redesign exists to make possible. Before
- * it, a red badge was an assertion the operator had to take on faith: the app
- * could say FAILED without anything having decided that, and there was nowhere
- * to look. Now every change records what caused it, which rule decided, and
- * what backed the decision — so the badge is the start of an answer rather than
- * the end of one.
- *
- * Nothing here is inferred at render time. Every line is read from the ledger
- * row written in the same transaction as the status. If a field is missing it
- * is left out rather than guessed at; a plausible-looking reconstruction is
- * exactly the thing that made the old behaviour untrustworthy.
- */
-
 import { describeTrigger, statusDefinition, STEP_TRANSITIONS } from "@hydra/shared";
 import type { OperationsPrompt, PromptStatusEvent, StatusDefinition } from "@hydra/shared";
 import { StatusIcon } from "@/features/pipeline/components/StatusIcon";
@@ -25,7 +9,6 @@ function when(timestamp: string): string {
   return new Date(timestamp).toLocaleString("en-GB", { hour12: false });
 }
 
-/** Evidence is free-form JSON; render it as plain pairs rather than guessing a shape. */
 function Evidence({ evidence }: { evidence: Record<string, unknown> }) {
   const entries = Object.entries(evidence).filter(([, value]) => value !== null && value !== "");
   if (entries.length === 0) return null;
@@ -50,15 +33,11 @@ export function WhyThisStatus({
   triggerSentences,
 }: {
   item: OperationsPrompt;
-  /** Newest first, as the API returns them. */
   events: PromptStatusEvent[];
   catalog: readonly StatusDefinition[];
   triggerSentences: Record<string, string>;
 }) {
   const definition = statusDefinition(catalog, item.operationalState);
-  // The newest ledger row is the one that put it here. An overlay (a live
-  // process, an unmet prerequisite) has no ledger row of its own, so the last
-  // stored change is still the honest answer to "how did it get to this point".
   const latest = events[0] ?? null;
   const rule = latest?.ruleId == null
     ? null

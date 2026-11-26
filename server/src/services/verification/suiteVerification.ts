@@ -1,20 +1,5 @@
-/*
- * Which sections of a work item are worth putting in front of a reviewer.
- *
- * This list used to end with `money rules`, `gst verification`, `rounding`,
- * `snapshots` and `financial-records deletion` — one installation's domain
- * headings, hardcoded into a general orchestration tool. On any other
- * repository they matched nothing, so a reviewer was handed a near-empty
- * checklist and asked to judge against it.
- *
- * The generic headings below are a *fallback*, not the mechanism: what a work
- * item is actually judged against is its definition of done (see migration 23),
- * which is structured, inherited and checkable. This is what is shown when
- * nobody has written one yet.
- */
 const USEFUL_SECTION = /^(objective|goal|purpose|scope|context|background|requirements?|deliverables?|definition of done|acceptance\b|verification\b|validation\b|testing\b|exit\b|success\b|constraints|rules\b|invariants?\b|non-?goals?\b|out of scope)/i;
 
-/** Keep decision and verification material while dropping report templates and repeated policy prose. */
 export function compactWorkItem(content:string):string {
   const lines=content.trim().split(/\r?\n/);const intro:string[]=[];const sections:string[][]=[];let current:string[]|null=null;
   for(const line of lines){const heading=line.match(/^##\s+(.+)$/);if(heading){current=USEFUL_SECTION.test(heading[1]!.trim())?[line]:null;if(current)sections.push(current);continue;}if(current)current.push(line);else if(sections.length===0&&!/^#\s/.test(line))intro.push(line);}
@@ -28,7 +13,6 @@ export function uniqueCommands(contents:string[]):string[] {
   return commands;
 }
 
-/** Suite-wide vs single-item dossier title. Kept pure so the scoped form is unit-tested. */
 export function dossierHeading(
   suite: { key: string | null; name: string },
   scope: { promptKey: string | null; title: string } | null = null,
@@ -39,17 +23,10 @@ export function dossierHeading(
   return `# Independent verification: ${suiteLabel} › ${itemLabel}`;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Report parsing                                                              */
-/* -------------------------------------------------------------------------- */
-
 import type { SuiteVerificationCheck, SuiteVerificationItem, SuiteVerificationVerdict } from "@hydra/shared";
 
-/** Maps whatever word the agent used onto one of our four outcomes. */
 export function normalizeCheck(value: string): SuiteVerificationCheck | null {
   const text = value.toUpperCase();
-  // FAIL before PASS: "PASS/FAIL" style cells and "FAILED TO PASS" must not
-  // read as a pass. Absence of evidence is UNVERIFIED, not failure.
   if (/\bFAIL(ED|URE)?\b|\b✗\b|\bNO\b/.test(text)) return "FAILED";
   if (/\bWARN(ING)?\b|\bPARTIAL\b/.test(text)) return "WARNING";
   if (/\bUNVERIFIED\b|\bUNKNOWN\b|\bN\/?A\b|\bSKIP(PED)?\b|\bNOT (RUN|CHECKED)\b/.test(text)) return "UNVERIFIED";
@@ -68,14 +45,6 @@ function splitRow(line: string): string[] {
 
 const SEPARATOR = /^\|?[\s:-]*-{2,}[\s:|-]*\|?$/;
 
-/**
- * Pulls the per-item results out of the agent's markdown report.
- *
- * Written to be forgiving: the column order, the header wording and the exact
- * status word all vary between providers and between runs. Anything that cannot
- * be parsed is simply not claimed as an item — the full report is stored
- * verbatim either way, so a parser miss loses presentation, never evidence.
- */
 export function parseReportItems(markdown: string): SuiteVerificationItem[] {
   const lines = markdown.split(/\r?\n/);
   const items: SuiteVerificationItem[] = [];
@@ -89,7 +58,6 @@ export function parseReportItems(markdown: string): SuiteVerificationItem[] {
     const next = lines[index + 1];
     if (next === undefined || !SEPARATOR.test(next.trim())) continue;
 
-    // Locate the columns by meaning, not position.
     const statusColumn = header.findIndex((cell) => /status|result|pass|verdict|outcome|check/.test(cell));
     const itemColumn = header.findIndex((cell) => /item|work|prompt|id|key|task|criterion/.test(cell));
     const evidenceColumn = header.findIndex((cell) => /evidence|finding|note|detail|observ/.test(cell));
@@ -124,16 +92,11 @@ export function parseReportItems(markdown: string): SuiteVerificationItem[] {
   return items;
 }
 
-/** `S0-03` out of `S0-03 — C# contract emitter`, when the agent used one. */
 export function extractKey(title: string): string | null {
   const match = title.match(/\b([A-Z]{1,3}\d+(?:[-.]\d+)+)\b/);
   return match?.[1] ?? null;
 }
 
-/**
- * The overall verdict. An explicit statement by the agent wins; otherwise it is
- * derived from the items, where anything not positively verified is not a pass.
- */
 export function deriveVerdict(
   markdown: string,
   items: SuiteVerificationItem[],

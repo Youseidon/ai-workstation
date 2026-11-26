@@ -4,10 +4,6 @@ import type { OperationsPrompt, PipelinePolicy, ProviderId } from "@hydra/shared
 import { cn } from "@/lib/cn";
 import type { InspectorTab } from "./PipelineInspector";
 
-/**
- * Sticky summary of the ceilings and rules that govern the next Play.
- * Chips open the matching inspector tab.
- */
 export function RunConfidenceStrip({
   execution,
   policy,
@@ -30,7 +26,6 @@ export function RunConfidenceStrip({
   occupancyWrapUp: boolean;
   latestAudit: OperationsPrompt["latestAudit"];
   onOpenTab(tab: InspectorTab): void;
-  /** Drop the frame when nested inside another panel. */
   bare?: boolean;
   autoReassign?: boolean;
 }) {

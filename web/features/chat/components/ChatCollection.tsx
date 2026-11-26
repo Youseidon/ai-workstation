@@ -15,7 +15,6 @@ function groupName(thread: ThreadRow): string {
   return time >= +today ? "Today" : time >= +yesterday ? "Yesterday" : "Earlier";
 }
 
-/** Chat's sidebar collection: New chat, search, grouped threads and archive. Rendered inside the shared sidebar. */
 export function ChatCollection({ onNavigate }: { onNavigate(): void }) {
   const chat = useChat();
   const dialogs = useDialogs();

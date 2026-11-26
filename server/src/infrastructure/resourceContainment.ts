@@ -87,14 +87,10 @@ export function buildSpawnPlan(
     args: [...args],
     unitName: null,
     containment: platform === "win32" ? "process" : "process-group",
-    // A detached POSIX child becomes a process-group leader, allowing a signal
-    // to reach every descendant even when aggregate cgroup limits are absent.
     detached: platform !== "win32",
   };
 }
 
-/** systemd services do not inherit the wrapper's cwd or environment. Forward
- * variable names, never secret values in command-line arguments. */
 export function withSpawnEnvironment(plan: SpawnPlan, cwd: string, env: NodeJS.ProcessEnv): SpawnPlan {
   if (plan.containment !== "systemd") return plan;
   const separator = plan.args.indexOf("--");
@@ -133,7 +129,6 @@ export async function readSystemdUnitOutcome(unitName: string, limits: ResourceL
   } catch {
     return { result: null, peakMemoryBytes: null, stopReason: null };
   } finally {
-    // A finished transient unit should not accumulate in `systemctl --user`.
     void execFileAsync("systemctl", ["--user", "reset-failed", unitName], { timeout: 2_000 }).catch(() => undefined);
   }
 }

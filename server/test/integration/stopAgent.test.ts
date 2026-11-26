@@ -1,9 +1,3 @@
-/**
- * The stop center's three actions. The incident behind them: a bare interrupt
- * of a pipeline station ended with no status, the scheduler read that as
- * unfinished work and launched a fresh agent, so every extra click on Stop
- * killed one agent and started another.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,8 +26,6 @@ function fixture() {
   workspaces.addNamedPipelineStep(pipeline.id, prompt.id, { provider: "cursor" });
 
   const started: StartExecuteArgs[] = [];
-  // Each station is a live run whose interrupt ends it the way a real one
-  // does: the run row closes, the hub forgets it, the scheduler is told.
   setPipelineStationStarter(async (args) => {
     started.push({ ...args });
     const runId = newId("run");
@@ -86,7 +78,6 @@ test("force-stopping a station pauses the pipeline instead of starting a new age
     assert.equal(workspaces.activeNamedPipelineRun(ctx.pipeline.id)!.state, "PAUSED");
     assert.equal(workspaces.continuationCount(ctx.prompt.id), 0, "an operator stop spends no allowance");
 
-    // The second and third clicks of an impatient operator.
     assert.equal((await pipelineScheduler.stopAgent(first)).stopped, false);
     assert.equal((await pipelineScheduler.stopAgent(first)).stopped, false);
     assert.equal(ctx.started.length, 1);
@@ -110,7 +101,6 @@ test("a graceful pause leaves the agent working and starts nothing after it", as
     assert.equal(runHub.has(first), true, "the agent keeps its step");
     assert.equal(workspaces.activePipeline(ctx.suite.id)!.currentRunId, first);
 
-    // Changing one's mind mid-pause: force-stop the agent that was finishing.
     assert.deepEqual(await pipelineScheduler.stopAgent(first), { stopped: true, pipelinePaused: true });
     assert.equal(ctx.started.length, 1);
     assert.equal(workspaces.activePipeline(ctx.suite.id)!.state, "PAUSED");

@@ -4,7 +4,6 @@ function unfinished(item: OperationsPrompt): boolean {
   return item.operationalState !== "DONE" && item.operationalState !== "SKIPPED";
 }
 
-/** The leaf the scheduler reaches when it advances from an unfinished station. */
 export function nextPipelineLeaf(items: OperationsPrompt[]): OperationsPrompt | null {
   const station = items.find(unfinished);
   if (station === undefined) return null;

@@ -1,11 +1,3 @@
-/**
- * The transcript projection for database access.
- *
- * These lines are the operator's evidence that an agent talked to the app at
- * all, so the projection has to be faithful about direction, outcome and what
- * changed — a log that flatters the app is worse than no log.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DbAccessPayload, NormalizedEvent } from "@hydra/shared";
@@ -34,8 +26,6 @@ function dbEvent(payload: Partial<DbAccessPayload> = {}): NormalizedEvent {
 const db = (items: LogItem[]) => items.filter((item): item is Extract<LogItem, { kind: "db" }> => item.kind === "db");
 
 test("a database call becomes its own line, not a footnote on a tool call", () => {
-  // Folding it into the curl that made it would bury the one thing the
-  // operator came looking for inside a command's output.
   const items = applyEvent([], dbEvent());
   assert.equal(items.length, 1);
   const [line] = db(items);
@@ -62,16 +52,12 @@ test("reads and writes stay distinguishable after projection", () => {
 });
 
 test("database lines accumulate rather than replacing each other", () => {
-  // Unlike streamed text, which collapses by blockId, every call is a separate
-  // event in the record and none may be swallowed by the next.
   let items: LogItem[] = [];
   for (let i = 0; i < 4; i += 1) items = applyEvent(items, dbEvent({ operation: "remarks", summary: `+1 PROGRESS remark` }));
   assert.equal(db(items).length, 4);
 });
 
 test("a status heartbeat still stays out of the transcript", () => {
-  // Guards the neighbouring switch arm: db_access was added right beside it,
-  // and drowning the log in per-second heartbeats would undo the point.
   const status: NormalizedEvent = {
     id: "s-1", runId: "run-1", provider: "claude", model: null,
     timestamp: "2026-09-04T00:00:00.000Z",

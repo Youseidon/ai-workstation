@@ -32,11 +32,6 @@ import { WhyThisStatus } from "./WhyThisStatus";
 
 export type StationTab = "overview" | "conversation" | "activity" | "sessions";
 
-/**
- * The right-hand panel for one work item. Header says what it is, tabs say
- * everything known about it, and the footer holds every action — always in the
- * same place, with the action that fits its state on the far right.
- */
 export function StationPanel({
   suite,
   item,
@@ -61,19 +56,15 @@ export function StationPanel({
   parent: OperationsPrompt | null;
   statusCatalog: readonly StatusDefinition[];
   triggerSentences: Record<string, string>;
-  /** Changes whenever server data may have changed; re-reads the activity. */
   revision: string | number;
   actions: StationActions;
   tab: StationTab;
   onTabChange(tab: StationTab): void;
   focusSignal: number;
   onFocusComposer(): void;
-  /** This item's run is the one working right now. */
   running: boolean;
   verifying: boolean;
-  /** Who runs this item, shown under the title. */
   agent?: { provider: ProviderId | null; model: string | null; source: string } | null;
-  /** Opens this step's settings in the Pipeline studio; hidden without it. */
   onConfigure?(): void;
   onSelect(promptId: number): void;
   onOpenSubSteps?(): void;
@@ -265,11 +256,6 @@ export function StationPanel({
   );
 }
 
-/**
- * The footer. Three fixed slots, left to right: the overflow menu (every
- * action, always in the same order), one secondary action, and the primary
- * action that fits the item's state — so the eye and the hand learn one place.
- */
 function ActionBar({
   suite,
   item,
@@ -377,7 +363,6 @@ function usePromptActivity(promptId: number, revision: string | number): PromptA
       disposed = true;
     };
   }, [promptId, revision]);
-  // Only trust the fetched payload when it belongs to the item on screen.
   return state !== null && state.id === promptId && state.value.item.prompt.id === promptId ? state.value : null;
 }
 
@@ -389,7 +374,6 @@ function sessionModel(provider: string, model: string): string {
   return isProviderId(provider) ? (modelLabel(provider, model) ?? model) : model;
 }
 
-/** The drawer's session list: one wrapping card per session; the log opens wide. */
 function SessionCards({ sessions, onOpen }: { sessions: PromptActivity["sessions"]; onOpen(id: string): void }) {
   if (sessions.length === 0) return <p className="p-4 text-sm text-fg-dim">No sessions yet.</p>;
   return (
@@ -422,7 +406,6 @@ function SessionCards({ sessions, onOpen }: { sessions: PromptActivity["sessions
   );
 }
 
-/** The wide session reader: sessions on the left, the chosen session's full log on the right. */
 function SessionBrowser({ item, sessions, initial }: { item: OperationsPrompt; sessions: PromptActivity["sessions"]; initial: string }) {
   const [sessionId, setSessionId] = useState<string>(initial);
   const active = sessions.find((entry) => entry.id === sessionId) ?? sessions[0] ?? null;
@@ -530,10 +513,6 @@ const VERDICT_TONE = {
   UNVERIFIABLE: { border: "border-caution/30", bg: "bg-caution/10", text: "text-caution" },
 } as const;
 
-/**
- * Did the agent that vanished without posting a status actually finish? Verdict
- * first, then the checks it stands on.
- */
 function CompletionAuditCard({ audit }: { audit: CompletionAuditRecord }) {
   const tone = audit.verdict === null ? { border: "border-info/30", bg: "bg-info/5", text: "text-info" } : VERDICT_TONE[audit.verdict];
   return (

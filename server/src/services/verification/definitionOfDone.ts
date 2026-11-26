@@ -1,19 +1,3 @@
-/**
- * Producing the evidence a definition of done is judged on.
- *
- * The gate itself lives in `workspaces.writeStatus` and is a pure read: it asks
- * what has been *recorded* about each criterion and never runs anything. This
- * is the other half — the part that goes and finds out.
- *
- * The split is not tidiness. Running a criterion means holding a shell open for
- * as long as a test suite takes; doing that from inside the gate would mean a
- * SQLite write transaction held open for minutes, and a console whose whole job
- * is watching live agents blocked on its own event loop. So the paths that
- * intend to close a work item run the commands first, here, and then write the
- * status. A command nobody ran is UNVERIFIED, and UNVERIFIED closes nothing —
- * the same rule as a run that ended without reporting, for the same reason.
- */
-
 import { unmetCriteria, type DodEvaluation } from "@hydra/shared";
 import { recipeFingerprint } from "../../infrastructure/sourceFingerprint.ts";
 import { requestCommand } from "../execution/commandTasks.ts";
@@ -22,20 +6,6 @@ import { workspaces, WorkspaceError } from "../../repositories/workspaces.ts";
 
 const log = createLogger("dod");
 
-/**
- * Run every command criterion for a work item and file what each one returned.
- *
- * Sequential on purpose. These are builds, test suites and type checks against
- * one working tree — running them at once would have them fighting over the
- * same `node_modules`, the same ports and the same lock files, and a criterion
- * that fails because another criterion was running is worse than a slow gate.
- *
- * Policy conflicts are refused before any evidence is recorded. An authorized
- * criterion that cannot be run is a criterion that did not
- * pass, and that is a fact about the work item, not an error for the caller:
- * a close refused because the operator typed a command that does not exist is
- * exactly right, and the message saying so is the evidence.
- */
 export async function runDefinitionOfDoneCommands(promptId: number, runId: string | null = null): Promise<void> {
   let plan: { workDirectory: string; criteria: ReturnType<typeof workspaces.dodCommandPlan>["criteria"] };
   try {
@@ -54,9 +24,6 @@ export async function runDefinitionOfDoneCommands(promptId: number, runId: strin
     try {
       await requestCommand(promptId,criterion.id,runId);
     } catch (error) {
-      // Refused before it ran at all — a cwd outside the workspace is the one
-      // that gets here. Recorded as a failure with the refusal as its reason,
-      // so the operator sees why rather than seeing nothing.
       const message = error instanceof Error ? error.message : String(error);
       workspaces.recordDodResult({
         promptId, criterionId: criterion.id, runId, source: "RUNNER",
@@ -67,20 +34,6 @@ export async function runDefinitionOfDoneCommands(promptId: number, runId: strin
   }
 }
 
-/**
- * File a reviewer's verdicts against the criteria it was asked about.
- *
- * Only checks that quoted a `criterionId` back are recorded, and only against
- * criteria this work item actually has. Matching a reviewer's prose to a
- * criterion by string similarity would be a fuzzy comparison deciding whether
- * work closes; a check that names nothing is simply not filed.
- *
- * `COMMAND` and `CHILDREN_CLOSED` results are refused here however confidently
- * the reviewer reports them. Those two are settled by an exit code and by the
- * child rollup — that is the entire reason they are not prose — and letting a
- * model's opinion overwrite a recorded exit code would hand back the thing this
- * feature was built to take away.
- */
 export function recordReviewerVerdicts(args: {
   promptId: number;
   runId: string | null;
@@ -115,7 +68,6 @@ export function recordReviewerVerdicts(args: {
   return filed;
 }
 
-/** One line per unmet criterion, for a log or a stop reason. */
 export function describeUnmet(evaluation: DodEvaluation): string {
   return unmetCriteria(evaluation)
     .map((entry) => `${entry.text} — ${entry.result}${entry.evidence === "" ? "" : ` (${entry.evidence})`}`)

@@ -6,23 +6,18 @@ export interface RunOrigin {
   title: string;
   context: string;
   href?: string;
-  /** Where in a pipeline the run is working, when a pipeline owns it. */
   pipeline?: PipelinePlace;
 }
 
-/** Pipeline › suite › (station ›) step, each with its short key when it has one. */
 export interface PipelinePlace {
-  /** The named pipeline, or null when the suite runs on its own. */
   name: string | null;
   suiteKey: string | null;
   suiteName: string;
-  /** The parent station when the running prompt is a sub-step. */
   stationKey: string | null;
   stepKey: string | null;
   stepTitle: string;
 }
 
-/** Source labels work even before optional pipeline metadata arrives. */
 export function runOrigin(run: RunStatus): RunOrigin {
   const source = run.source;
   switch (source.type) {
@@ -57,7 +52,6 @@ function findPrompt(prompts: OperationsPrompt[], id: number): OperationsPrompt |
   }
 }
 
-/** Only a suite run's recorded currentRunId establishes pipeline ownership. */
 export function fleetMetadata(operations: OperationsSnapshot | null, pipelines: PipelineRecord[], runs: RunStatus[], flowcharts: Record<string, PipelineFlowchartView> = {}) {
   const origins: Record<string, RunOrigin> = {};
   const queued: QueuedAgentTask[] = [];
@@ -86,13 +80,9 @@ export function fleetMetadata(operations: OperationsSnapshot | null, pipelines: 
       }
     } else if (active.state === "PLAYING" && active.currentPromptId !== null) {
       const promptId = active.currentPromptId;
-      // Socket announcements can beat the operations refresh. Do not show
-      // the same task as queued and live during that interval.
       if (runs.some(run => run.role === "execute" && "promptId" in run.source && run.source.promptId === promptId)) continue;
       const prompt = findPrompt(suite.prompts, promptId);
       if (!prompt) continue;
-      // Operations contains baseline rules, not the named pipeline's overrides.
-      // Leave assignment unknown until its scoped flowchart has been read.
       const chart = flowcharts[active.id];
       const rule = chart?.steps.find(step => step.promptId === promptId) ?? chart?.subSteps.find(step => step.promptId === promptId)?.rule;
       const defaults = chart?.defaults;
@@ -105,7 +95,6 @@ export function fleetMetadata(operations: OperationsSnapshot | null, pipelines: 
   return { origins, queued };
 }
 
-/** Compare server timestamps/elapsed values, so waiting clocks also freeze offline. */
 export function waitingElapsed(run: RunStatus, request: PendingAgentInput): number | null {
   if (!request.requestedAt) return null;
   const requested = Date.parse(request.requestedAt);

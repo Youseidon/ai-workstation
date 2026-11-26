@@ -1,13 +1,3 @@
-/**
- * The one door, and the wall around it.
- *
- * The app has always told agents "never open or modify SQLite directly" — in a
- * Markdown block, while leaving the file inside the directory it gave them
- * write access to. These tests cover the two things that turn that instruction
- * into a fact: the database living somewhere an agent cannot reach, and a
- * command that makes reporting easier than not reporting.
- */
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -28,7 +18,6 @@ const SHIM = resolve(fileURLToPath(import.meta.url), "../../../bin/agent-step.mj
 let seq = 0;
 const uniqueName = (prefix: string): string => `${prefix}-${process.pid}-${Date.now()}-${(seq += 1)}`;
 
-/** A work item with a live execute run against it, for the status-post tests. */
 function ledgerFixture() {
   const dir = mkdtempSync(join(tmpdir(), "agent-door-item-"));
   const workspace = workspaces.create({ name: uniqueName("ws"), description: "", workDirectory: dir });
@@ -67,24 +56,13 @@ function run(args: string[], env: Record<string, string> = {}) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* The wall                                                            */
-/* ------------------------------------------------------------------ */
-
 test("the database is not inside any workspace an agent can write to", () => {
-  // The guarantee, asserted against the real resolved path. A prompt asking an
-  // agent not to touch the file is an instruction a model may drop; a file it
-  // cannot reach is a fact.
   workspaces.assertDatabaseOutOfReach();
 });
 
 test("a database inside a workspace stops the server rather than warning", () => {
   const dir = mkdtempSync(join(tmpdir(), "agent-door-"));
   try {
-    // Point a workspace at the directory the database is actually in. By the
-    // time an agent has opened the file, a status set behind the API's back —
-    // no ledger row, no recorded cause — is indistinguishable from a real one,
-    // so this has to be refused up front rather than detected later.
     const workspace = workspaces.create({
       name: `door-${process.pid}-${Date.now()}`, description: "",
       workDirectory: dirname(workspaces.databasePath),
@@ -94,17 +72,11 @@ test("a database inside a workspace stops the server rather than warning", () =>
     } finally {
       workspaces.remove(workspace.id);
     }
-    // With it gone, the check passes again — the guard tracks the workspaces
-    // that exist rather than a one-time decision made at boot.
     workspaces.assertDatabaseOutOfReach();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-/* ------------------------------------------------------------------ */
-/* The door                                                            */
-/* ------------------------------------------------------------------ */
 
 test("the launcher carries this run's credentials and nothing else does", () => {
   const path = createAgentShim({ runId: "run-door-1", token: "tok-abc", port: 4999 });
@@ -113,11 +85,7 @@ test("the launcher carries this run's credentials and nothing else does", () => 
     const script = readFileSync(path, "utf8");
     assert.match(script, /tok-abc/);
     assert.match(script, /run-door-1/);
-    // Not world-readable: it holds a live run credential.
     assert.equal(statSync(path).mode & 0o077, 0, "the launcher is readable by other users");
-    // Credentials must not reach process.env — the Claude adapter runs the SDK
-    // in this process, so a per-run variable there would be shared by every
-    // concurrent run, and an agent could post against another run's work item.
     assert.equal(process.env.HYDRA_RUN_TOKEN, undefined);
   } finally {
     removeAgentShim("run-door-1");
@@ -137,31 +105,20 @@ test("the command refuses a claim with no evidence, before spending a round trip
   assert.equal(done.code, 1);
   assert.match(done.err, /--verification/);
 
-  // A blocker without the action a human must take is not a blocker, it is a
-  // shrug. Caught locally so the run learns immediately rather than after a
-  // 422 it might not read.
   const blocked = run(["blocked", "--reason", "the thing is down"], env);
   assert.equal(blocked.code, 1);
   assert.match(blocked.err, /--action/);
 });
-
-/* ------------------------------------------------------------------ */
-/* Handing over instead of stopping                                    */
-/* ------------------------------------------------------------------ */
 
 test("the command refuses a handover that does not say what remains", () => {
   const env = { HYDRA_RUN_URL: "http://127.0.0.1:1/x", HYDRA_RUN_TOKEN: "t" };
   const result = run(["continue"], env);
   assert.equal(result.code, 1);
   assert.match(result.err, /--remaining/);
-  // The brief is the whole point of a continuation: an empty one costs the next
-  // run everything this one learned.
   assert.match(result.err, /instructions for the run that picks this up/);
 });
 
 test("continue is offered beside done and blocked, not buried", () => {
-  // A command an agent is not told about is a command it does not use, and
-  // "work remains" would go back to being reported as BLOCKED.
   const usage = run(["help"]).out;
   assert.match(usage, /agent-step continue --remaining/);
   assert.match(usage, /exactly one of 'done', 'continue' or 'blocked'/);
@@ -185,8 +142,6 @@ test("the door accepts CONTINUE and turns it into a brief and a TODO", () => {
     assert.equal(event.trigger, "agent_continue");
     assert.equal(event.ruleId, "agent-continue");
     assert.equal(event.actorType, "AGENT");
-    // The evidence carries both halves the next run is entitled to: what is
-    // left, and whatever this run managed to verify before it ran out.
     assert.match(String((event.evidence as Record<string, unknown>).remaining), /Ports 3-8/);
     const brief = (history.remarks as Array<{ kind: string; content: string }>).find((r) => r.kind === "CONTINUATION");
     assert.match(brief?.content ?? "", /Ports 3-8/);
@@ -200,8 +155,6 @@ test("CONTINUE is not a status anything can be left in", () => {
   try {
     const runId = beginExecute(ctx.prompt.id, ctx.workspace.id);
     workspaces.markAgentRunRunning(runId);
-    // A handover with nothing in it is not a handover. The next run would get
-    // a work item back on TODO with an empty brief and no idea what happened.
     assert.throws(
       () => workspaces.updateAgentStatus(runId, {
         requestId: `req-empty-${Date.now()}`, expectedStatus: "IN_PROGRESS", status: "CONTINUE", reason: "",
@@ -224,8 +177,6 @@ test("a second CONTINUE with the same requestId is the same handover, not anothe
       requestId, expectedStatus: "IN_PROGRESS", status: "CONTINUE", reason: "Finish the migration.",
     });
     const first = post();
-    // Idempotent exactly as done and blocked are: a retried command must not
-    // file a second brief or a second ledger row.
     assert.deepEqual(post(), first);
     const history = workspaces.promptHistory(ctx.prompt.id);
     assert.equal((history.remarks as Array<{ kind: string }>).filter((r) => r.kind === "CONTINUATION").length, 1);
@@ -243,14 +194,8 @@ test("without credentials it says so instead of failing obscurely", () => {
 
 test("help is available and exits cleanly", () => {
   assert.equal(run(["help"]).code, 0);
-  // Bare invocation prints usage but is still a failure: the agent asked for
-  // nothing, so nothing was recorded.
   assert.equal(run([]).code, 1);
 });
-
-/* ------------------------------------------------------------------ */
-/* What the agent is told                                              */
-/* ------------------------------------------------------------------ */
 
 test("the contract leads with the command, not a curl to assemble", () => {
   const markdown = progressApiMarkdown({
@@ -258,18 +203,13 @@ test("the contract leads with the command, not a curl to assemble", () => {
   });
   assert.match(markdown, /\/tmp\/x\/agent-step" remark/);
   assert.match(markdown, /\/tmp\/x\/agent-step" done/);
-  // Four things a model can get wrong between it and a status post — the URL,
-  // the header, the JSON, and a unique id — are gone from the happy path.
   assert.doesNotMatch(markdown, /curl/);
   assert.doesNotMatch(markdown, /secret-token/);
-  // requestId is named only to say the launcher owns it.
   assert.match(markdown, /requestId must be unique/);
   assert.ok(Buffer.byteLength(markdown) < 1024);
 });
 
 test("with no launcher the raw contract is still there", () => {
-  // A model that cannot run the command must still have a way to report.
-  // Silently having none is the exact failure all of this guards against.
   const markdown = progressApiMarkdown({ runId: "r1", token: "tok", port: 4000, canDecompose: true, shimPath: null });
   assert.match(markdown, /curl/);
   assert.match(markdown, /expectedStatus/);
@@ -281,16 +221,10 @@ test("a sub-step at maximum depth is not offered decompose", () => {
   assert.doesNotMatch(deep, /decompose --file/);
 });
 
-/* ------------------------------------------------------------------ */
-/* The author door                                                     */
-/* ------------------------------------------------------------------ */
-
 test("the authoring commands are offered, and only to author runs", () => {
   const usage = run(["help"]).out;
   assert.match(usage, /agent-step propose-program --file/);
   assert.match(usage, /agent-step propose-suite --file/);
-  // Said plainly, because an execute run that tries one gets a 403 and an
-  // author run that goes looking for `done` will not find one.
   assert.match(usage, /Author runs \(drafting a program\) have their own two commands/);
 });
 
@@ -320,8 +254,6 @@ test("a suite proposal with no suite key is refused before the round trip", () =
 });
 
 test("a refused proposal names the field, so the next attempt is different", () => {
-  // A proposal is refused per field. "Some of that proposal was refused" with
-  // no field name is an invitation to re-post the same body.
   const source = readFileSync(SHIM, "utf8");
   assert.match(source, /formatFields/);
   assert.match(source, /error\?\.fields/);
@@ -340,10 +272,8 @@ test("the author brief says what a work item is and how to post one", () => {
   assert.match(brief, /Plan the transition\./);
   assert.match(brief, /\/tmp\/x\/agent-step" propose-program --file program\.json/);
   assert.match(brief, /\/tmp\/x\/agent-step" propose-suite --file suite\.json/);
-  // The two things a drafted work item is worthless without.
   assert.match(brief, /## Verify/);
   assert.match(brief, /One session's worth/);
-  // And the fact that decides what this run may do.
   assert.match(brief, /Read the working tree, do not change it/);
   assert.match(brief, /Nothing you post here starts any work/);
   assert.doesNotMatch(brief, /secret-token/);
@@ -369,17 +299,10 @@ test("a revise run is shown the draft it is changing, not a blank page", () => {
   assert.match(brief, /S1-01 — First/);
   assert.match(brief, /\(no work items yet\)/);
   assert.match(brief, /Split S1; it is too big\./);
-  // No launcher for this provider, so the raw contract has to be there.
   assert.match(brief, /curl/);
 });
 
-/* ------------------------------------------------------------------ */
-/* Server-verified done                                                */
-/* ------------------------------------------------------------------ */
-
 test("agent-step prints each failing Verify command on verification_failed", () => {
-  // The 409 body is useless if the shim collapses it to one line the model
-  // skims past. One block per command is what the prompt requires.
   const source = readFileSync(SHIM, "utf8");
   assert.match(source, /verification_failed/);
   assert.match(source, /formatVerificationFailures/);

@@ -2,12 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { KiloMapper } from "../../../src/providers/adapters/kilocode.ts";
 
-/**
- * Shapes transcribed from `kilo run --format json` (kilo 7.8.1). The CLI exits
- * 0 even when the run failed, so the mapper — not the exit code — owns the
- * terminal state.
- */
-
 test("Kilo announces its session on the first event and streams text blocks", () => {
   const mapper = new KiloMapper();
   const [start, text] = mapper.map({
@@ -23,7 +17,6 @@ test("Kilo announces its session on the first event and streams text blocks", ()
     payload: { blockId: "prt_1", delta: false, text: "Created the file.", kind: "message" },
   });
 
-  // The session id is announced once, not on every line.
   assert.deepEqual(mapper.map({ type: "text", sessionID: "ses_1", part: { id: "prt_2", type: "text", text: "Done." } }), [
     { type: "assistant_text", payload: { blockId: "prt_2", delta: false, text: "Done.", kind: "message" } },
   ]);
@@ -31,7 +24,6 @@ test("Kilo announces its session on the first event and streams text blocks", ()
 
 test("Kilo's tool parts arrive complete and produce use plus result", () => {
   const mapper = new KiloMapper();
-  // The first line also carries the session id, so it announces that first.
   const events = mapper.map({
     type: "tool_use",
     sessionID: "ses_1",
@@ -111,11 +103,9 @@ test("Kilo reports a failed run as an error result despite exiting 0", () => {
   });
 
   assert.equal(mapper.settled, true);
-  // events[0] is the session announcement that rides the first line.
   assert.deepEqual(events[1], { type: "error", payload: { message: "Model not found: kilo/nope.", fatal: true } });
   assert.equal(events[2]?.type, "result");
   assert.equal(events[2]?.payload.state, "error");
-  // The process still exits 0; the settled result must win over a done result.
   assert.deepEqual(mapper.finish(0), []);
 });
 

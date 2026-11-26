@@ -1,10 +1,3 @@
-/**
- * The Agents page used to render only the "General" group, which quietly hid
- * every field in "Run budgets" and "Pipeline policy" — they were saved, read
- * and honoured by the server, but had no control anywhere in the UI. These
- * pin the derivation so a new group cannot go missing the same way.
- */
-
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sharedSettingsGroups as sharedGroups } from "../../../features/agents/lib/configuration";
@@ -13,7 +6,6 @@ import {
   GROUP_TITLE,
 } from "../../../features/settings/lib/settingsGroups";
 
-/** Mirrors AgentsView: provider groups render inside their agent's card. */
 const PROVIDER_GROUPS = [
   "Claude Code",
   "Codex CLI",
@@ -23,7 +15,6 @@ const PROVIDER_GROUPS = [
   "Kilo Code",
 ];
 
-/** Mirrors the server's exported GROUPS order. */
 const SERVER_GROUPS = [
   "General",
   "Run budgets",

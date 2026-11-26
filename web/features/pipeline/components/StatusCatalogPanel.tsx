@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * The status catalog, editable.
- *
- * Every state the pipeline can show is one row here: what it is called, what it
- * means, how it looks, and what it does to the run. The labels used to be
- * hardcoded in two maps in `status.ts` that disagreed with the shared rule
- * table — so the same run read as "blocked" in one place and "Needs you" in
- * another, and nobody could change either.
- *
- * Locked fields render their reason in place of a control: some of these are
- * invariants rather than preferences, and a screen that could break them would
- * be worse than no screen. Showing why beats hiding the field.
- */
-
 import { useCallback, useEffect, useState } from "react";
 import {
   DEFAULT_STATUS_CATALOG,
@@ -29,7 +15,6 @@ import { SERVER_URL } from "@/api/serverUrl";
 import { Badge, Button, Select, Switch, TextInput, useToast } from "@/components/ui";
 import { StatusIcon } from "./StatusIcon";
 
-/** What entering a state sets in motion, in words rather than a token. */
 const ON_ENTER_LABEL: Record<StatusOnEnter, string> = {
   none: "Nothing — it just sits there",
   advance: "Move on to the next station",
@@ -64,7 +49,8 @@ function Row({
 }) {
   const [draft, setDraft] = useState(definition);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setDraft(definition), [definition]);
+  const [draftSource, setDraftSource] = useState(definition);
+  if (draftSource !== definition) { setDraftSource(definition); setDraft(definition); }
 
   const dirty =
     draft.label !== definition.label
@@ -221,8 +207,6 @@ export function StatusCatalogPanel({ onChanged }: { onChanged?: () => void }) {
       onChanged?.();
       toast.success(done);
     } catch (error) {
-      // The server refuses a locked field by name, so the message says which
-      // control was rejected rather than that "something" went wrong.
       toast.error("That change was refused", error instanceof Error ? error.message : undefined);
     }
   };

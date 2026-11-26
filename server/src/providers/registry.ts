@@ -11,10 +11,6 @@ import { KiloAdapter } from "./adapters/kilocode.ts";
 import type { AgentAdapter } from "../contracts/agentAdapter.ts";
 import { toProviderInfo } from "./providerInfo.ts";
 
-/**
- * Adding a provider means adding one adapter file and one line here — the
- * transport layer and the frontend do not change.
- */
 const adapters: Record<ProviderId, AgentAdapter> = {
   claude: new ClaudeAdapter(),
   codex: new CodexAdapter(),
@@ -29,19 +25,11 @@ const DETECTION_TTL_MS = 15_000;
 let cache: { at: number; providers: ProviderInfo[] } | null = null;
 let detectionInflight: Promise<ProviderInfo[]> | null = null;
 
-/**
- * Stand-in adapters, for tests that need a real run — real runner, real
- * database, real status ledger — without spawning a CLI or depending on which
- * ones happen to be installed. `setPipelineStationStarter` is the same seam one
- * layer up. Nothing in the server sets these.
- */
 const overrides = new Map<ProviderId, AgentAdapter>();
 
 export function setAdapterOverride(id: ProviderId, adapter: AgentAdapter | null): void {
   if (adapter === null) overrides.delete(id);
   else overrides.set(id, adapter);
-  // Detection is cached, and a cached answer about the adapter that was just
-  // replaced is an answer about something else.
   cache = null;
   usageCache = null;
 }
@@ -50,7 +38,6 @@ export function getAdapter(id: ProviderId): AgentAdapter {
   return overrides.get(id) ?? adapters[id];
 }
 
-/** Settings toggles override detection so a disabled agent never starts a run. */
 function applyEnabledGate(info: ProviderInfo): ProviderInfo {
   const tier = settings.modelAccessTier;
   const effort = settings.reasoningEffortFor(info.id);
@@ -96,17 +83,10 @@ function applyEnabledGate(info: ProviderInfo): ProviderInfo {
   return common;
 }
 
-/**
- * Resolve a browser/API request against the already filtered account catalog.
- * Restricted tiers never accept a custom or stale id; All models retains the
- * old custom-id behaviour.
- */
 export function resolveProviderModel(info: ProviderInfo, requested: string | null): string | null {
   if (info.modelSelectionMode === "auto") return info.model;
   if (requested === null) return info.model;
   if (info.models.some((model) => model.id === requested)) return requested;
-  // All models still accepts typed custom ids, but not Cursor variants that
-  // the effort filter already removed from the picker.
   if (info.modelAccessTier === "all" && modelMatchesEffort(info.id, requested, info.reasoningEffort)) {
     return requested;
   }

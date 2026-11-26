@@ -14,6 +14,7 @@
     "dev:web": "npm run dev --workspace web",
     "dev:sandbox": "node scripts/dev-sandbox.mjs",
     "free-ports": "node scripts/free-ports.mjs",
+    "reset-password": "node --import tsx scripts/reset-password.mjs",
     "serve": "npm run build && npm run free-ports && concurrently --kill-others-on-fail -n server,web -c cyan,magenta \"npm:serve:server\" \"npm:serve:web\"",
     "serve:server": "npm run serve --workspace server",
     "serve:web": "npm run start --workspace web",

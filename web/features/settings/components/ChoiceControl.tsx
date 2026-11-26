@@ -12,22 +12,13 @@ interface Props {
   onChange(value: string): void;
 }
 
-/** Short enough to sit side by side as one segmented control. */
 function fitsInline(options: SettingOption[]): boolean {
   return options.length <= 5 && options.reduce((total, option) => total + option.label.length, 0) <= 44;
 }
 
-/**
- * A choice between a handful of options, with every option visible. Replaces
- * the native `<select>`, which hid the alternatives behind a click and crammed
- * each one's explanation into a truncated `<option>` string.
- *
- * Only the selected option spells out its hint; the rest carry it as a tooltip.
- */
 export function ChoiceControl({ labelledBy, value, options, disabled, onChange }: Props) {
   const selected = options.find((option) => option.value === value) ?? null;
 
-  // Radio-group keyboard behaviour: arrows move the choice, not just focus.
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
       : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;

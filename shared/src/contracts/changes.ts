@@ -17,7 +17,6 @@ export interface RunChangeSummary {
   message:string|null;
   capturedAt:string;
   updatedAt:string;
-  /** The pipeline holding this run's work item as a step. Null for ad-hoc runs. */
   pipeline:{id:number;name:string}|null;
 }
 

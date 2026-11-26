@@ -11,20 +11,13 @@ export interface MenuItem {
   label: ReactNode;
   onSelect(): void;
   disabled?: boolean;
-  /** Shown as a tooltip — use it to say why an item is disabled. */
   title?: string;
   tone?: "default" | "danger";
-  /** Draws a divider above this item. */
   separated?: boolean;
   hint?: ReactNode;
-  /** Extra classes for the row, e.g. to show an item only at some widths. */
   className?: string;
 }
 
-/**
- * A small overflow menu: a trigger button and a list of actions. Closes on
- * outside click, Escape, and selection. Arrow keys move between items.
- */
 export function Menu({
   items,
   label,
@@ -37,16 +30,13 @@ export function Menu({
   portal = false,
 }: {
   items: MenuItem[];
-  /** Accessible name for the trigger. */
   label: string;
-  /** Trigger content; defaults to an ellipsis. */
   trigger?: ReactNode;
   align?: "left" | "right";
   placement?: "below" | "above";
   size?: ButtonSize;
   variant?: ButtonVariant;
   className?: string;
-  /** Escape a scrolling thread list without clipping its row actions. */
   portal?: boolean;
 }) {
   const [open, setOpen] = useState(false);

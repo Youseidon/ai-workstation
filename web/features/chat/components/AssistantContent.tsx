@@ -4,7 +4,6 @@ import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-/** Small non-executing lexer; unrecognized languages retain literal source. */
 export function highlightedCode(source: string, language: string) {
   if (!/^(js|jsx|javascript|ts|tsx|typescript|json|python|py|bash|sh|shell|css|sql)$/.test(language)) return source;
   return source.split(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:const|let|var|function|return|import|from|export|if|else|class|def|for|while|true|false|null|None|SELECT|FROM|WHERE)\b|\b\d+(?:\.\d+)?\b)/g)
@@ -35,7 +34,6 @@ export const AssistantContent = memo(function AssistantContent({ text, streaming
     code: ({ className, children, node }) => {
       const source = String(children);
       const language = /language-([\w+-]+)/.exec(className ?? "")?.[1] ?? "";
-      // Fenced code is represented with a trailing newline, including unfinished fences.
       return language || source.endsWith("\n") || node?.position?.start.line !== node?.position?.end.line
         ? <CodeBlock source={source} language={language} />
         : <code>{children}</code>;

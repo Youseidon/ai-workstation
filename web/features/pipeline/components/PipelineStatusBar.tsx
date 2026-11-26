@@ -9,21 +9,17 @@ import { cn } from "@/lib/cn";
 import { CONTROL_LABEL, type PipelineControl, type PipelineStatusView } from "../lib/status";
 
 export interface PipelineRecoveryActions {
-  /** Present only when the blocker is a lost-status run, not a human question. */
   onRetry?(): void;
   onSkip(): void;
-  /** Opens the stuck item in the side panel, where every other action lives. */
   onOpen(): void;
   label: string;
 }
 
 export interface PipelinePosition {
-  /** 1-based stage index, 0 when the pipeline has not entered a stage yet. */
   stageIndex: number;
   stageCount: number;
   stageName: string | null;
   stationLabel: string | null;
-  /** Deepest sub-step under the station, when the run drilled into one. */
   subStepLabel: string | null;
   provider: ProviderId | null;
 }
@@ -56,11 +52,6 @@ function variantFor(control: PipelineControl): "primary" | "success" | "danger" 
   return "success";
 }
 
-/**
- * The single source of truth for "what is this pipeline doing, and what can I
- * do about it". Exactly one control is primary; everything else is demoted, so
- * two equally-loud buttons never leave the operator guessing which one applies.
- */
 export function PipelineStatusBar({
   status,
   position,
@@ -75,18 +66,12 @@ export function PipelineStatusBar({
 }: {
   status: PipelineStatusView;
   position: PipelinePosition | null;
-  /** Why the primary control cannot fire right now, in plain words. */
   blockedReason: string | null;
-  /** Set only while blockedReason names a specific stuck item — lets the
-   * operator clear it right here instead of hunting for it in the flowchart. */
   recoveryActions: PipelineRecoveryActions | null;
   busy: boolean;
   onControl(control: PipelineControl): void;
-  /** Opens the rules panel. The pill is the affordance for "why these buttons?". */
   onExplain(): void;
-  /** The "needs you" counter, parked next to the controls. */
   inbox?: ReactNode;
-  /** The rules the next Play runs under; folded away until asked for. */
   rules?: ReactNode;
   onReviewAllocation?(): void;
 }) {

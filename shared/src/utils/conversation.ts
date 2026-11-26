@@ -1,9 +1,3 @@
-/**
- * Gives an ad-hoc chat the short, topic-first label users expect from hosted
- * LLM clients. It is deterministic so the browser can label a just-created
- * tab immediately and the server can persist exactly the same title without
- * spending a second model turn merely to name the first one.
- */
 export function conversationTitle(input: string): string {
   let text = input
     .replace(/```[\s\S]*?```/g, " ")

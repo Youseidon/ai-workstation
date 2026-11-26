@@ -19,11 +19,6 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   tone?: "primary" | "danger";
-  /**
-   * Requires the user to type this exact string before confirming. Use it for
-   * irreversible cascades — deleting a workspace takes its programs, suites and
-   * prompts with it, which is too much to hang on a reflexive Enter.
-   */
   confirmPhrase?: string;
 }
 
@@ -36,14 +31,11 @@ export interface PromptOptions {
   hint?: ReactNode;
   confirmLabel?: string;
   multiline?: boolean;
-  /** Return an error message to block submission, or null to allow it. */
   validate?(value: string): string | null;
 }
 
 interface DialogsApi {
-  /** Resolves true if confirmed, false if cancelled or dismissed. */
   confirm(options: ConfirmOptions): Promise<boolean>;
-  /** Resolves the entered text, or null if cancelled. */
   prompt(options: PromptOptions): Promise<string | null>;
 }
 
@@ -53,21 +45,11 @@ type Request =
   | { kind: "confirm"; options: ConfirmOptions; resolve: (value: boolean) => void }
   | { kind: "prompt"; options: PromptOptions; resolve: (value: string | null) => void };
 
-/**
- * Promise-based replacements for `window.confirm` / `window.prompt`.
- *
- * The native ones cannot be themed, cannot be styled, freeze the tab, and give
- * no room for validation or a typed-phrase guard on destructive actions. These
- * read the same at the call site — `await dialogs.confirm({...})` — so adopting
- * them is a one-line change wherever the old ones were used.
- */
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<Request | null>(null);
   const [value, setValue] = useState("");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Guards against a second resolve if the user hits Escape and the button
-  // handler both fire for the same request.
   const settled = useRef(false);
 
   const open = useCallback((next: Request, initial: string) => {

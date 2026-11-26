@@ -20,7 +20,6 @@ export interface ToastOptions {
   title: string;
   description?: string;
   tone?: ToastTone;
-  /** Milliseconds. Pass 0 to require an explicit dismiss. */
   duration?: number;
   action?: { label: string; onClick(): void };
 }
@@ -49,7 +48,6 @@ const TONE: Record<ToastTone, { ring: string; text: string; glyph: string }> = {
   info: { ring: "ring-info/40", text: "text-info", glyph: "i" },
 };
 
-/** Errors stay until dismissed; everything else clears itself. */
 const DEFAULT_DURATION: Record<ToastTone, number> = {
   success: 4000,
   info: 4000,
@@ -57,11 +55,6 @@ const DEFAULT_DURATION: Record<ToastTone, number> = {
   error: 0,
 };
 
-/**
- * Transient feedback. Replaces the pattern of pinning a red bar to the top of
- * the page for every failure, which pushed the layout down and gave successful
- * actions no feedback at all.
- */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastRecord[]>([]);
   const mounted = useIsClient();
@@ -77,7 +70,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setItems((current) => current.filter((item) => item.id !== id));
   }, []);
 
-  // Any toast still pending when the provider unmounts must not fire.
   useEffect(() => {
     const pending = timers.current;
     return () => {
@@ -98,7 +90,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         duration: options.duration ?? DEFAULT_DURATION[tone],
         action: options.action,
       };
-      // Cap the stack so a burst of failures cannot cover the app.
       setItems((current) => [...current.slice(-4), record]);
       if (record.duration > 0) {
         timers.current.set(

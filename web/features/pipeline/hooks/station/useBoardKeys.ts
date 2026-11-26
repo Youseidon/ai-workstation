@@ -3,22 +3,15 @@
 import { useEffect, useRef } from "react";
 
 export interface BoardKeyHandlers {
-  /** Item ids in the order they are drawn. */
   order: number[];
   selectedId: number | null;
   panelOpen: boolean;
   select(promptId: number): void;
   reply(promptId: number): void;
   closePanel(): void;
-  /** Space: play or pause. Omit where there is no transport. */
   toggleRun?(): void;
 }
 
-/**
- * The board's keyboard: j/k move through items, Enter opens the selected one,
- * r replies to it, Space plays or pauses, Esc closes the panel. Ignored while
- * typing, and while a dialog or menu is open (those own their keys).
- */
 export function useBoardKeys(handlers: BoardKeyHandlers): void {
   const latest = useRef(handlers);
   useEffect(() => {

@@ -9,10 +9,6 @@ import { collectInbox, type InboxEntry } from "../../lib/station/inbox";
 
 export { collectInbox, type InboxEntry };
 
-/**
- * "⚑ N need you": one counter in a fixed place, and a list that jumps straight
- * to the conversation for each waiting item, however deep it is nested.
- */
 export function NeedsYouInbox({
   entries,
   onOpen,

@@ -128,11 +128,9 @@ test("parseCursorPeriodUsage maps the billing cycle from totalPercentUsed", () =
   });
   assert.equal(parsed.windows.length, 1);
   assert.equal(parsed.windows[0]?.kind, "monthly");
-  // Spend-page "Included in Pro" uses totalPercentUsed, not includedSpend/limit (~50%).
   assert.equal(parsed.windows[0]?.usedPercent, 2.07);
   assert.equal(parsed.windows[0]?.resetsAt, "2026-10-01T00:59:37.000Z");
   assert.equal(parsed.windows[0]?.durationMinutes, 30 * 24 * 60);
-  // No on-demand spend limit → no credits line (avoid conflicting $ figures).
   assert.equal(parsed.credits, null);
 });
 

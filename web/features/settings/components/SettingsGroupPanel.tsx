@@ -33,7 +33,6 @@ export function SettingsGroupPanel({
   onSaved?(): void;
   compact?: boolean;
   header?: boolean;
-  /** The configuration workspace owns drafts so closing or switching editors preserves them. */
   draftState?: SettingsDraftState;
   excludeKeys?: string[];
   disabled?: boolean;

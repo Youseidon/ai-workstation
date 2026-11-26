@@ -1,17 +1,3 @@
-/**
- * What the pipeline transport controls render, cell by cell.
- *
- * This started as a characterisation test around the old `if` chain, and it
- * passed unchanged through the conversion to the declarative table in
- * `shared/src/pipelineRules.ts` — that is what proved the conversion faithful.
- * It has since been extended deliberately for the recovery rows and for the
- * removal of the `resumable` argument.
- *
- * This file covers the view the UI actually renders. The table's structural
- * invariants — totality, ordering, no unreachable rows — live next to the table
- * itself in `shared/test/pipelineRules.test.ts`.
- */
-
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { OnUnfinishedAction, PromptPipelineRule } from "@hydra/shared";
@@ -44,7 +30,6 @@ function status(over: Partial<Args> = {}) {
   });
 }
 
-/** The whole table in one shape, so a changed cell names itself in the diff. */
 interface Cell {
   name: string;
   args: Partial<Args>;
@@ -227,17 +212,6 @@ test("every control the table can emit has a label", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* D2: resumability is derived, not supplied                           */
-/* ------------------------------------------------------------------ */
-
-/*
- * `pipelineStatus` used to take a `resumable` boolean. A STOPPED or INTERRUPTED
- * run is never active and so was never resumable, which made two branches of
- * the old chain unrenderable. The argument is gone; these assert that the
- * contradiction it allowed cannot come back.
- */
-
 test("a terminal run never offers Resume, whatever the station is doing", () => {
   const states = ["STOPPED", "INTERRUPTED", "COMPLETE"] as const;
   for (const state of states) {
@@ -266,10 +240,6 @@ test("every view names the row that produced it and explains itself", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Copy that the operator actually reads                               */
-/* ------------------------------------------------------------------ */
-
 test("the station label is interpolated into the headline", () => {
   assert.equal(
     status({ run: { state: "PLAYING", stopReason: null, waitReason: null } }).headline,
@@ -293,12 +263,6 @@ test("WAITING_HUMAN says something different when an intervention is unanswered"
   assert.match(onIntervention.headline, /only you can make/);
 });
 
-/*
- * The two things the status bar got wrong about S6-08.5: a station that ended
- * without posting a status was called "blocked", and a station parked because
- * its continuations ran out was told its rule was "wait". Both read as
- * statements of fact about the operator's own configuration.
- */
 test("a station that never posted a status is not called blocked", () => {
   const view = status({
     run: { state: "WAITING_HUMAN", stopReason: null, waitReason: null },
@@ -343,10 +307,6 @@ test("a null stopReason produces no trailing explanation", () => {
   assert.equal(view.headline, "This run is stopped.");
 });
 
-/*
- * Every reason the scheduler can persist. If `terminate()` gains a new one and
- * this list is not updated, the operator sees a raw snake_case token in the UI.
- */
 test("every stopReason the scheduler writes has a human sentence", () => {
   const written = [
     "operator_stop",
@@ -374,15 +334,7 @@ test("every stopReason the scheduler writes has a human sentence", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Chips and lookups the station cards render                          */
-/* ------------------------------------------------------------------ */
-
 test("every operational state has a label and a tone", () => {
-  // Counted against the vocabulary rather than a literal. This assertion used
-  // to read `assert.equal(states.length, 8)`, which meant adding a state to the
-  // shared model broke the test in a way that said nothing about what was
-  // wrong, and removing one from the label map would not have broken it at all.
   const states = Object.keys(LABEL) as Array<keyof typeof LABEL>;
   assert.deepEqual([...states].sort(), [...STEP_DISPLAY_STATUSES].sort());
   for (const state of states) {
@@ -392,8 +344,6 @@ test("every operational state has a label and a tone", () => {
 });
 
 test("every state in the catalog explains itself", () => {
-  // A state the operator cannot understand is a state they cannot act on, and
-  // the description is what the "why this status" panel renders.
   for (const state of STEP_DISPLAY_STATUSES) {
     const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
     assert.ok(definition.description.length > 20, `${state} has no usable description`);
@@ -405,8 +355,6 @@ test("every state in the catalog explains itself", () => {
 });
 
 test("no state both satisfies a dependency and is unfinished", () => {
-  // The asymmetry that matters: SKIPPED settles a parent but must not entitle a
-  // dependant to run against work that was never done.
   for (const state of STEP_DISPLAY_STATUSES) {
     const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
     if (definition.satisfiesDependency) {
@@ -418,8 +366,6 @@ test("no state both satisfies a dependency and is unfinished", () => {
 });
 
 test("only a state that needs attention can win a parent rollup", () => {
-  // Precedence is meaningless on a state that never propagates; a non-zero one
-  // there would look configurable while doing nothing.
   for (const state of STEP_DISPLAY_STATUSES) {
     const definition = statusDefinition(DEFAULT_STATUS_CATALOG, state);
     if (!definition.needsAttention) {

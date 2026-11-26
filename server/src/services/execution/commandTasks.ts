@@ -30,7 +30,6 @@ export async function stopAllManagedCommands():Promise<void> {
 }
 export { recipeFingerprint } from "../../infrastructure/sourceFingerprint.ts";
 
-/** One admission path for the agent API, close gates and completion audits. */
 export async function requestCommand(promptId:number,criterionId:number,runId:string|null=null,requestId?:string):Promise<number> {
   if (runId && workspaces.stationPolicy(promptId).verification === "deferred")
     throw new ExecutionError("phase_forbidden", "Verification belongs to the designated Verify station; hand off pending commands instead.");
@@ -66,7 +65,6 @@ export async function requestCommand(promptId:number,criterionId:number,runId:st
   }
   const execute=async():Promise<number>=>{
     if(commandsClosing)throw new ExecutionError("server_closing","Command dispatch stopped for shutdown");
-    // Recompute after waiting: another writer may have advanced the tree.
     if(runId) executionStore.assertAttempt(runId);
     const before=sourceFingerprint(plan.workDirectory);
     let commandEffect:ReturnType<typeof executionStore.reserve>|null=null;

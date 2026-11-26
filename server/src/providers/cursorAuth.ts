@@ -4,12 +4,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { fetchJson, writeJsonAtomic } from "./accountUsage.ts";
 
-/**
- * Cursor CLI stores login tokens at ~/.config/cursor/auth.json. The IDE keeps
- * the same access token in state.vscdb. Plan usage needs that login token —
- * CURSOR_API_KEY is not accepted by the dashboard endpoints.
- */
-
 const CURSOR_OAUTH_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 const CURSOR_API_BASE = process.env.CURSOR_API_ENDPOINT?.replace(/\/$/, "") || "https://api2.cursor.sh";
 
@@ -22,7 +16,6 @@ export function cursorAuthJsonPath(): string {
   return join(homedir(), ".config", "cursor", "auth.json");
 }
 
-/** IDE `state.vscdb` locations, including the Windows path when running under WSL. */
 export function cursorStateDbPaths(): string[] {
   const home = homedir();
   const paths = [
@@ -45,7 +38,6 @@ export function cursorStateDbPaths(): string[] {
       }
     }
   } catch {
-    // ignore unreadable mounts
   }
   return paths;
 }
@@ -89,7 +81,6 @@ export function readCursorTokenFromStateDb(): string | null {
         db.close();
       }
     } catch {
-      // try next path
     }
   }
   return null;
@@ -123,7 +114,6 @@ export async function refreshCursorAccessToken(): Promise<string | null> {
   try {
     writeJsonAtomic(cursorAuthJsonPath(), { accessToken, refreshToken });
   } catch {
-    // Still return the fresh token even if persistence fails.
   }
   return accessToken;
 }

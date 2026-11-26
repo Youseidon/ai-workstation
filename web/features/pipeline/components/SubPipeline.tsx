@@ -19,13 +19,6 @@ export interface SubTrailEntry {
   label: string;
 }
 
-/**
- * The flowchart a station spawned by decomposing itself, drawn with the same
- * cards and the same snake as the pipeline above it. Sub-steps are not
- * flowchart entries — order and membership come from the agent — so this view
- * configures rather than composes: which agent runs each slice, what happens
- * when one blocks, and skipping a slice that no longer applies.
- */
 export function SubPipeline({
   trail,
   items,
@@ -40,29 +33,22 @@ export function SubPipeline({
   onConfigure,
   renderGate,
 }: {
-  /** Station first, deepest open node last. Clicking an entry navigates up. */
   trail: SubTrailEntry[];
   items: OperationsPrompt[];
-  /** Effective rule of the node these sub-steps hang off. */
   parentRule: PromptPipelineRule;
   ruleFor(promptId: number): SubStepRuleView;
   activeRun: SuitePipelineRun | null;
   runs: RunStatus[];
   selectedId: number | null;
-  /** `null` returns to the station flowchart; an index returns to that depth. */
   onNavigate(index: number | null): void;
-  /** Drill into a sub-step's own sub-steps. */
   onOpen(promptId: number): void;
-  /** Show a sub-step in the item panel. */
   onSelect(promptId: number): void;
-  /** Opens a sub-step's settings in the studio. */
   onConfigure?(promptId: number): void;
   renderGate?(item: OperationsPrompt): ReactNode;
 }) {
   const parent = trail[trail.length - 1];
   const done = items.filter((item) => isTerminal(item)).length;
   const pinned = items.filter((item) => !ruleFor(item.prompt.id).inherited).length;
-  // The first slice the scheduler will refuse to walk past.
   const blocking = items.find(
     (item) => item.prompt.recoverable || item.operationalState === "BLOCKED",
   );

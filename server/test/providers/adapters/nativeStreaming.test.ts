@@ -56,8 +56,6 @@ async function runFixture(mode: "codex" | "kilo", scenario = "normal", stop = fa
     const pid = requests[0]?.pid as number;
     assert.equal(requests[0]?.cwd, directory, "provider runs in the selected workspace under every containment mode");
     assert.deepEqual(requests[0]?.serverOnlyEnv, [], "server-only persistence capabilities are not forwarded");
-    // Cleanup is synchronous with generator completion, but process reaping may
-    // take a tick after SIGKILL; wait for the actual child close.
     for (let n = 0; n < 100; n++) {
       try { process.kill(pid, 0); } catch { break; }
       await new Promise(resolve => setTimeout(resolve, 10));

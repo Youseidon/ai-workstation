@@ -18,8 +18,6 @@ interface ResponseBody {
   snapshot?: SettingsSnapshot;
 }
 
-/* Pure request helpers: no React state, so they are safe to call from an effect. */
-
 async function getSnapshot(serverUrl: string): Promise<Outcome> {
   try {
     const response = await apiFetch(new URL("/api/settings", serverUrl), {
@@ -83,11 +81,6 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Talks to the server's settings endpoints. The Agents page is rendered from
- * the snapshot's field descriptors, so a new server-side setting shows up in
- * the UI without any frontend change.
- */
 export function useSettings(serverUrl: string) {
   const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null);
   const [saving, setSaving] = useState(false);

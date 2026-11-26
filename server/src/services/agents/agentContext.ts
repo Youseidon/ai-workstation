@@ -29,22 +29,14 @@ export function liveTreeBanner(writer: LiveWriter | null | undefined): string {
 export interface ContextExtras {
   liveWriter?: LiveWriter | null;
   question?: string;
-  /** Decompose depth; a leaf is never told it may decompose. */
   depth?: number;
   maxDepth?: number;
-  /**
-   * Uncapped execute context: every remark and clarification, no section byte
-   * caps, standing instructions always included. Served by
-   * `agent-step context --full`.
-   */
   full?: boolean;
-  /** Pipeline run. The golden rule is prepended and overrides the work item. */
   unattended?: boolean;
 }
 
 export const CONTEXT_TRUNCATION_NOTICE = "…(truncated; run `agent-step context --full` for everything)";
 
-/** Cap a section body to `maxBytes`, appending the standard truncation notice. */
 export function cappedSection(text: string, maxBytes: number): string {
   const body = text.trim();
   if (body === "") return body;
@@ -61,10 +53,6 @@ export function cappedSection(text: string, maxBytes: number): string {
   return `${cut.trimEnd()}${notice}`;
 }
 
-/**
- * True when ≥ 80 % of the description's non-empty lines already appear in the
- * projected AGENTS.md / CLAUDE.md supplied to the agent by its adapter or CLI.
- */
 export function descriptionContainedInInstructions(description: string, agentsMd: string, claudeMd: string): boolean {
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   if (lines.length === 0) return true;
@@ -78,8 +66,6 @@ export function descriptionContainedInInstructions(description: string, agentsMd
 }
 
 function executeProtocol(canDecompose: boolean, unattended: boolean, policy: StationPolicy): string {
-  // Two sentences on when to / when not to split; depth refusal points at
-  // continue instead of BLOCKED — remaining work is never a human question.
   const decompose = canDecompose
     ? `\`decompose\` splits remaining work into 2–12 mostly independent slices that can each be verified on their own (endpoints, files, modules). Choose coherent units from the remaining acceptance criteria and verification prerequisites.`
     : `\`decompose\` is refused at this depth — sub-steps cannot be split further. Finish it, or post \`continue\` with what remains; it will be resumed on this working tree.`;
@@ -106,11 +92,6 @@ function formatRemark(item: { actorType: string; kind: string; createdAt: string
   return `### ${item.actorType} · ${item.kind} · ${item.createdAt}\n\n${item.content.trim()}`;
 }
 
-/**
- * What the operator has already done or decided for this one work item. First
- * in the prompt on purpose: it exists to stop the agent repeating work, and a
- * note read after the agent has planned its approach is a note read too late.
- */
 export function briefingSection(briefings: ReadonlyArray<{ createdAt: string; content: string }>): string {
   if (briefings.length === 0) return "";
   const body = briefings.map((item) => `### ${item.createdAt}\n\n${item.content.trim()}`).join("\n\n");
@@ -120,10 +101,6 @@ export function briefingSection(briefings: ReadonlyArray<{ createdAt: string; co
   );
 }
 
-/**
- * Execute context: ordered, capped sections. Consult/clarify keep the older
- * shape so their callers do not have to change with the diet.
- */
 export function contextMarkdown(context: AgentPromptContext, purpose: ContextPurpose = "execute", extras?: ContextExtras): string {
   if (purpose !== "execute") return legacyContextMarkdown(context, purpose, extras);
 
@@ -187,8 +164,6 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     : section("Program gate", cap(`${context.gate.code} — ${context.gate.name}\n\n${context.gate.description}`, 1024));
   const depSection = section("Dependencies / gate", cap(dependencies, 1024)) + gate;
 
-  // Integration checklist for a resumed parent. Absent when there are no
-  // children — a station that never decomposed must not see an empty section.
   let subStepsSection = "";
   if (context.children.length > 0) {
     const lines = context.children.map((child) => {
@@ -217,9 +192,6 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
   const clarificationsSource = full
     ? context.clarifications
     : context.clarifications.filter((item) => item.state === "DONE" && item.answer !== null);
-  // agentContext already filters to "answered since last DONE/TODO" for the
-  // default path; full keeps every exchange. Re-check state here so a stale
-  // fixture cannot smuggle an unanswered row into the capped section.
   const clarifications = clarificationsSource.length === 0
     ? "None."
     : clarificationsSource.map((item) =>
@@ -245,7 +217,6 @@ export function contextMarkdown(context: AgentPromptContext, purpose: ContextPur
     + executeProtocol(canDecompose, unattended, policy);
 }
 
-/** Consult / clarify keep the pre-diet layout. */
 function legacyContextMarkdown(context: AgentPromptContext, purpose: ContextPurpose, extras?: ContextExtras): string {
   const key = context.prompt.externalKey ?? String(context.prompt.id);
   const dependencies = context.dependencies.length === 0
@@ -300,33 +271,17 @@ export function consultWorkspaceMarkdown(args: {
 }
 
 export interface ProgressApiArgs {
-  /**
-   * Absolute path to this run's `agent-step` launcher, or null when it could
-   * not be written — in which case the raw HTTP contract is emitted instead.
-   */
   stationPolicy?: StationPolicy;
   shimPath?: string | null;
   runId: string;
   token: string;
   port: number;
-  /** False at maximum decompose depth: the operation would be refused. */
   canDecompose: boolean;
-  /** False when this run has no Git change capture and therefore cannot checkpoint. */
   canCheckpoint?: boolean;
-  /** Standalone runs may pause for decisions; pipeline-managed runs never may. */
   canAsk?: boolean;
-  /**
-   * When true, emit the curl contract *instead of* the shim (providers that
-   * cannot exec the launcher). Defaults to `shimPath == null`.
-   */
   usesCurl?: boolean;
 }
 
-/**
- * The orchestration contract an execute run works through. Kept beside the
- * context it is appended to, so the two stay in step, and depth-aware so a leaf
- * sub-step is never handed an operation the server will reject.
- */
 export function progressApiMarkdown(args: ProgressApiArgs): string {
   const usesCurl = args.usesCurl ?? args.shimPath == null;
   if (usesCurl) return curlProgressApiMarkdown(args);
@@ -397,11 +352,6 @@ curl -fsS -X POST ${auth} ${base}/reply -d '{"text":"…"}'
 `;
 }
 
-/**
- * The run's remaining allowance, appended to the context and to every Progress
- * API response. The agent cannot see the runner's counters, so this is the only
- * way it learns to bank its work before it is stopped.
- */
 export function budgetMarkdown(budget: BudgetSnapshot | null): string {
   if (budget === null) return "";
   const rows: string[] = [];

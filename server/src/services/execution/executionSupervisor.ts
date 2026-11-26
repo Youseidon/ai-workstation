@@ -20,7 +20,6 @@ function assertIdle(promptId:number):void {
   if(active?.currentRunId || (workspaces.promptOptions(home.workspaceId).find(p=>p.id===promptId)?.currentRun?.processActive ?? false)) throw new WorkspaceError(409,"execution_active","Drain the current worker to a checkpoint before adopting or changing engines");
 }
 
-/** Operator intake. Initial decomposition reuses existing prompt IDs. */
 export function adoptExecution(promptId:number,input:Record<string,unknown>) {
   assertIdle(promptId);
   const home=workspaces.promptHome(promptId), saved=workspaces.resolvePrompt(home.workspaceId,promptId);
@@ -40,7 +39,6 @@ export function adoptExecution(promptId:number,input:Record<string,unknown>) {
   const owners=[...new Set(criteria.map(c=>c.verifierPromptId))];
   const proposal:ExecutionPlan=input.plan as unknown as ExecutionPlan ?? {revision:1,rationale:"Initial plan from the saved requirement and its assigned verification owners",units:owners.map(owner=>({promptId:owner,criterionIds:criteria.filter(c=>c.verifierPromptId===owner).map(c=>c.id),targets:[workspaces.promptPreview(owner).title],dependencies:owner===promptId?[]:[promptId],phase:owner===promptId?"implementation":"verification",recipeIds:workspaces.dodCommandPlan(owner).criteria.map(c=>c.id),rationale:"Existing bounded work item with its server-owned checks"}))};
   validatePlanOwnership(promptId,proposal,criteria.filter(c=>c.phase==="verification").map(c=>c.verifierPromptId));
-  // Adoption and initial plan must commit together; workspaces owns the DB transaction.
   return workspaces.adoptExecutionContract({promptId,originalPrompt:saved.content,authority:(input.authority ?? {}) as Record<string,unknown>,criteria,policy:input.policy as unknown as ExecutionPolicy,engine:"shadow",...(typeof input.budgetScope==="string"?{budgetScope:input.budgetScope}:{})},proposal);
   });
 }
@@ -68,7 +66,7 @@ export function unitHandoff(promptId:number,reason:string):string {
   const plan=executionStore.plan(c.id),status=executionStore.status(c.id),unit=plan.units.find(u=>u.promptId===promptId);
   const checks=workspaces.definitionOfDoneEvaluation(promptId).criteria;
   let checkpoint:unknown=null;
-  try {const capture=workspaces.runChangeSet(workspaces.latestExecuteRunId(promptId));if(capture)checkpoint={headCommit:capture.headCommit,baseCommit:capture.baseCommit,state:capture.state};} catch { /* initial unit */ }
+  try {const capture=workspaces.runChangeSet(workspaces.latestExecuteRunId(promptId));if(capture)checkpoint={headCommit:capture.headCommit,baseCommit:capture.baseCommit,state:capture.state};} catch {  }
   const remedies=executionStore.remedies(c.id,promptId);
   return JSON.stringify({contractId:c.id,contractVersion:c.version,originalPromptHash:c.promptHash,planRevision:plan.revision,phase:unit?.phase,generation:status.generation,acceptedUnits:status.acceptedUnits,assignedCriterionIds:unit?.criterionIds,remainingTargets:unit?.targets.slice(0,100),pendingVerification:status.pendingObligations,checkpoint,checks:checks.slice(0,20).map(check=>({criterionId:check.criterionId,result:check.result,evidence:check.evidence.slice(0,800),output:check.output.slice(-800)})),omittedChecks:Math.max(0,checks.length-20),evidenceIds:evidenceStore.latestFor(promptId).slice(-20),remedies:remedies.slice(-6).map(remedy=>({...remedy,evidence:remedy.evidence.slice(0,1500)})),reason:reason.slice(0,3000),nextAction:reason.slice(0,3000)},null,2);
 }
@@ -99,7 +97,7 @@ export async function reserveSupervisedStart(args:StartExecuteArgs,reason="Execu
   const remedies=executionStore.remedies(c.id,promptId);
   const unitAttempts=executionStore.unitUsage(c.id,promptId);
   let previousFailure="";
-  try {previousFailure=workspaces.runFailureFacts(workspaces.latestExecuteRunId(promptId)).errorText;} catch { /* initial attempt */ }
+  try {previousFailure=workspaces.runFailureFacts(workspaces.latestExecuteRunId(promptId)).errorText;} catch {  }
   const facts=workspaces.promptOutcome(promptId).result || previousFailure || reason;
   const signature=failureSignature(facts);
   const ordinaryFraction=c.policy.recoveryAttempts>0?0.8:1;

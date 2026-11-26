@@ -1,8 +1,3 @@
-/**
- * `/btw`: operator notes to a working run, delivered through the inbox for
- * headless providers, natively where the adapter allows, and settled when the
- * run ends before the agent read them.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

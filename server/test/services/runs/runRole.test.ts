@@ -54,17 +54,10 @@ test("unknown run roles are malformed", () => {
 });
 
 test("the role CHECK on agent_run lists exactly RUN_ROLES", () => {
-  // These are two copies of one list, and their drifting apart is what forced a
-  // rebuild of `agent_run` twice — migration 22 for `handoff`/`review`, and
-  // migration 34 for `author`. A rebuild of that table is the most dangerous
-  // statement in this codebase (it cascades into the entire transcript history),
-  // so the next person to add a role finds out here, in a unit test, rather than
-  // from a CHECK constraint failure on a live database.
   const source = readFileSync(new URL("../../../src/repositories/workspaces.ts", import.meta.url), "utf8");
   const checks = [...source.matchAll(/CHECK\(role IN \(([^)]*)\)\)/g)]
     .map((match) => match[1]!.split(",").map((value) => value.trim().replace(/'/g, "")));
   assert.ok(checks.length > 0, "no role CHECK found — the migration was rewritten");
-  // The newest rebuild is the one in force; the earlier ones are history.
   assert.deepEqual([...checks.at(-1)!].sort(), [...RUN_ROLES].sort());
 });
 
@@ -194,7 +187,6 @@ test("cursor adapter fails fast on a consult override", async () => {
         log: createLogger("test"),
         permissionOverride: "consult",
       })) {
-        /* drain */
       }
     },
     /read-only consult isolation is not supported/,

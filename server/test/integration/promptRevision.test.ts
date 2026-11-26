@@ -39,8 +39,6 @@ describe("prompt content versioning", () => {
 
       const restored = workspaces.restorePromptRevision(ctx.prompt.id, afterFirst[0]!.id as number) as Record<string, unknown>;
       assert.equal(restored.content, "original text");
-      // The restore is itself an edit, so the text it displaced is kept too —
-      // undo has to be undoable or it is just a different way to lose work.
       const afterRestore = workspaces.promptRevisions(ctx.prompt.id);
       assert.equal(afterRestore.length, 2);
       assert.equal(afterRestore[0]!.content, "rewritten by the bulk pass");

@@ -5,20 +5,10 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 
-/**
- * Leaving an editor with unsaved changes asks first: save and leave, discard
- * and leave, or keep editing. It covers in-app links (the sidebar, the section
- * switcher, content links) and reloads or closing the tab. Browser back and
- * forward cannot be intercepted by the router, so editors also keep their
- * unsaved changes recoverable (see PipelineBoard) and offer them back.
- */
 export function UnsavedChangesGuard({ dirty, what, onSave, onDiscard }: {
   dirty: boolean;
-  /** Called when the user chooses to discard, before leaving. */
   onDiscard?(): void;
-  /** What is unsaved, e.g. "this pipeline". */
   what: string;
-  /** Saves; resolves false (after reporting why) when it could not. */
   onSave(): Promise<boolean>;
 }) {
   const router = useRouter();
@@ -35,7 +25,6 @@ export function UnsavedChangesGuard({ dirty, what, onSave, onDiscard }: {
       const url = new URL(anchor.href, location.href);
       if (url.origin !== location.origin) return;
       if (url.pathname === location.pathname && url.search === location.search) return;
-      // Stop the router's link handler too: it listens below the document.
       event.preventDefault();
       event.stopPropagation();
       setPending(`${url.pathname}${url.search}${url.hash}`);

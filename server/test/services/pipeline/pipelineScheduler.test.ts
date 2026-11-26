@@ -19,10 +19,6 @@ function unique(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${seq}`;
 }
 
-/**
- * Every (status × trigger) cell the decision table answers, including the
- * tripwire for pairs the scheduler must not guess at.
- */
 test("decideExecuteEnded enumerates the continuation-loop decision table", () => {
   const rows: Array<{ status: PromptStatus; trigger: string | null; action: string; detail?: string }> = [
     { status: "DONE", trigger: "agent_post", action: "applyOnDone" },
@@ -38,7 +34,6 @@ test("decideExecuteEnded enumerates the continuation-loop decision table", () =>
     { status: "FAILED", trigger: "run_start_failed", action: "continuation", detail: "unfinished" },
     { status: "NEEDS_REVIEW", trigger: "dod_unmet", action: "continuation", detail: "unfinished" },
     { status: "NEEDS_REVIEW", trigger: null, action: "continuation", detail: "unfinished" },
-    // Tripwires — pairs the table does not cover must stop the rail.
     { status: "BLOCKED", trigger: "run_ended_without_post", action: "terminate", detail: "unexpected_status:BLOCKED" },
     { status: "TODO", trigger: "operator_retry", action: "terminate", detail: "unexpected_status:TODO" },
     { status: "TODO", trigger: null, action: "terminate", detail: "unexpected_status:TODO" },
@@ -149,7 +144,7 @@ test("UNREPORTED continues up to maxContinuations then parks continuations_exhau
     const parked = workspaces.activePipeline(ctx.suite.id)!;
     assert.equal(parked.state, "WAITING_HUMAN");
     assert.equal(parked.waitReason, "continuations_exhausted");
-    assert.equal(started.length, 3); // initial + 2 continuations
+    assert.equal(started.length, 3);
   } finally {
     ctx.cleanup();
   }
@@ -216,7 +211,6 @@ test("agent_post BLOCKED keeps working when a command check has not passed", asy
   }
 });
 
-/** An older rail parked on a question. A new blocked post no longer creates this wait. */
 async function leaveParkedOnHumanQuestion(
   ctx: ReturnType<typeof fixture>,
   verificationSummary: string,
@@ -325,7 +319,6 @@ test("a continuation after a refused done carries the Verify failure in its brie
     workspaces.addAgentRemark(runId, {
       requestId: randomUUID(), kind: "PROGRESS", content: "ported half the handlers",
     });
-    // Run ends without a final status → UNREPORTED → continuation.
     workspaces.finishAgentRun(runId, "done");
     await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
     assert.equal(workspaces.continuationCount(promptId), 1);
@@ -492,7 +485,6 @@ test("when every fallback is cooling, a continuation that cannot start parks no_
       provider: "claude",
       fallbackProviders: ["codex"],
     });
-    // Play with everything cooling: startCurrentStation should park.
     await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
     const parked = workspaces.activePipeline(ctx.suite.id)!;
     assert.equal(parked.state, "WAITING_HUMAN");
@@ -505,7 +497,6 @@ test("when every fallback is cooling, a continuation that cannot start parks no_
   }
 });
 
-/** Adapters that report themselves installed, so the fallback list is not empty by accident. */
 async function stubProviders(ids: Array<"claude" | "codex" | "cursor">): Promise<() => void> {
   const { setAdapterOverride } = await import("../../../src/providers/registry.ts");
   const available = { available: true, reason: null, version: null, binary: null };
@@ -528,12 +519,6 @@ async function stubProviders(ids: Array<"claude" | "codex" | "cursor">): Promise
   return () => { for (const id of ids) setAdapterOverride(id, null); };
 }
 
-/*
- * The incident: Codex ran out of allowance mid-work and left the tree dirty.
- * Every fallback was then refused by the dirty tree, each refusal was booked as
- * that provider failing to start, and the run parked `no_provider_available`
- * with all of them cooling — so neither Resume nor Retry could start anything.
- */
 test("a start the workspace refuses parks with its own reason and blames no provider", async () => {
   const { resetProviderHealth, coolingFor } = await import("../../../src/providers/providerHealth.ts");
   resetProviderHealth();
@@ -543,7 +528,6 @@ test("a start the workspace refuses parks with its own reason and blames no prov
   let dirty = true;
   const ok = stubStarts();
   const startOk = async (args: StartExecuteArgs) => {
-    // `stubStarts` installed the working starter; borrow it once the tree is clean.
     const runId = newId("run");
     const credential = runContexts.create(runId, args.workspaceId, args.promptId!);
     workspaces.beginAgentRun({ runId, workspaceId: args.workspaceId, promptId: args.promptId!, provider: args.provider, model: args.model, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
@@ -564,14 +548,12 @@ test("a start the workspace refuses parks with its own reason and blames no prov
     assert.equal(parked.state, "WAITING_HUMAN");
     assert.equal(parked.waitReason, "worktree_dirty");
     assert.equal(workspaces.activeNamedPipelineRun(ctx.pipeline.id)?.waitReason, "worktree_dirty");
-    // One attempt, no fallback walk, nobody cooled, and the station untouched.
     assert.deepEqual(attempts, ["claude"]);
     for (const id of ["claude", "codex", "cursor"] as const) assert.equal(coolingFor(id), null, `${id} was blamed`);
     assert.equal(workspaces.promptOutcome(promptId).status, "TODO");
     const events = workspaces.promptHistory(promptId).events as Array<{ trigger: string | null }>;
     assert.equal(events.some((event) => event.trigger === "provider_fallback"), false);
 
-    // Still dirty: Resume tries again and parks again, rather than refusing.
     await pipelineScheduler.playNamed(ctx.pipeline.id);
     assert.equal(workspaces.activePipeline(ctx.suite.id)!.waitReason, "worktree_dirty");
 
@@ -623,7 +605,6 @@ test("Resume after no_provider_available is a real retry: cooling is cleared and
     const credential = runContexts.create(runId, args.workspaceId, args.promptId!);
     workspaces.beginAgentRun({ runId, workspaceId: args.workspaceId, promptId: args.promptId!, provider: args.provider, model: args.model, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt, role: "execute" });
     if (outOfAllowance) {
-      // Died after the run row existed, so the station is left FAILED.
       workspaces.finishAgentRun(runId, "error");
       throw new Error("You've hit your usage limit. Try again at 5:22 PM.");
     }
@@ -640,7 +621,6 @@ test("Resume after no_provider_available is a real retry: cooling is cleared and
     assert.equal(workspaces.promptOutcome(promptId).status, "FAILED");
     assert.equal(coolingFor("claude")?.id, "quota");
 
-    // The operator topped up and pressed Resume. Nothing else changed.
     outOfAllowance = false;
     await pipelineScheduler.playNamed(ctx.pipeline.id);
     const live = workspaces.activePipeline(ctx.suite.id)!;
@@ -689,7 +669,6 @@ test("Resume after continuations_exhausted grants a fresh unfinished allowance",
   try {
     const promptId = ctx.prompts[0]!.id;
     await pipelineScheduler.playNamed(ctx.pipeline.id, { provider: "claude" });
-    // Exhaust with UNREPORTED endings (these do spend the allowance).
     for (let attempt = 0; attempt < 2; attempt++) {
       const live = workspaces.activePipeline(ctx.suite.id)!;
       const runId = live.currentRunId!;
@@ -707,7 +686,6 @@ test("Resume after continuations_exhausted grants a fresh unfinished allowance",
     assert.equal(parked.waitReason, "continuations_exhausted");
     assert.equal(workspaces.continuationCount(promptId), 2);
 
-    // Resume must reset the count and start the station again.
     await pipelineScheduler.playNamed(ctx.pipeline.id, {});
     assert.equal(workspaces.continuationCount(promptId), 0);
     const resumed = workspaces.activePipeline(ctx.suite.id)!;
@@ -715,7 +693,6 @@ test("Resume after continuations_exhausted grants a fresh unfinished allowance",
     assert.equal(resumed.waitReason, null);
     assert.ok(resumed.currentRunId !== null);
 
-    // One unfinished ending after Resume counts as attempt 1, not an immediate re-park.
     const runId = resumed.currentRunId!;
     workspaces.finishAgentRun(runId, "done");
     await pipelineScheduler.onExecuteEnded({ runId, workspaceId: ctx.workspace.id, promptId, processState: "done" });
@@ -748,7 +725,6 @@ test("a fresh play skips named stages that are already finished", async () => {
     assert.equal(run.currentSuiteId, openSuite.id);
     assert.deepEqual(started.map((args) => args.promptId), [openPrompt.id]);
 
-    // Once every stage is finished, a fresh play is refused instead of recording an empty run.
     const live = workspaces.activePipeline(openSuite.id)!;
     await pipelineScheduler.stopNamed(pipeline.id);
     workspaces.finishAgentRun(live.currentRunId!, "done");
@@ -765,7 +741,6 @@ test("a fresh play skips named stages that are already finished", async () => {
   }
 });
 
-/** Deterministic account telemetry without contacting any real provider. */
 async function usageProviders(capped: ProviderId[] = []) {
   const { setAdapterOverride } = await import("../../../src/providers/registry.ts");
   const { resetProviderHealth } = await import("../../../src/providers/providerHealth.ts");
@@ -816,7 +791,6 @@ test("automatic reassignment is off by default and a quota failure never switche
     assert.equal(workspaces.continuationCount(ctx.prompts[0]!.id), 0);
     const { coolingFor } = await import("../../../src/providers/providerHealth.ts");
     assert.ok(Date.parse(coolingFor("claude")!.until) - Date.now() > 6 * 24 * 60 * 60_000);
-    // Disabling reassignment keeps the chosen agent even while it is cooling.
     const started = stubStarts();
     await pipelineScheduler.playNamed(ctx.pipeline.id);
     assert.equal(started[0]?.provider, "claude");

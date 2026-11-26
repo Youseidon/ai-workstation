@@ -15,18 +15,8 @@ import {
   type Theme,
 } from "@/lib/theme";
 
-/**
- * Appearance controls: theme, and a switch that turns off ambient motion and
- * blur for anyone who wants a calm UI without changing their OS setting.
- *
- * The current theme is read from `<html>` through `useSyncExternalStore`.
- * `ThemeScript` stamps it there before React runs, so there is nothing to copy
- * into component state and no frame where the wrong theme is shown.
- */
 export function ThemeToggle() {
   const [open, setOpen] = useState(false);
-  // Read straight from the document, which ThemeScript already stamped before
-  // React ran — no effect, no extra frame showing the wrong theme.
   const theme = useSyncExternalStore(subscribeAppearance, getThemeSnapshot, getServerThemeSnapshot);
   const effects = useSyncExternalStore(subscribeAppearance, getEffectsSnapshot, getServerEffectsSnapshot);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,7 +122,6 @@ export function ThemeToggle() {
   );
 }
 
-/** A miniature of the theme: its surface, its line, and its accent. */
 function ThemeSwatch({ theme }: { theme: Theme }) {
   return (
     <span

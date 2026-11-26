@@ -50,18 +50,6 @@ function when(iso: string): string {
   return `${Math.floor(delta / 86_400_000)}d ago`;
 }
 
-/**
- * Everything a suite's verification history has to say.
- *
- * Verifications used to leave nothing behind — the agent kind ran as an
- * anonymous prompt whose events were never stored, and the record audit was
- * recomputed per request and thrown away. Both are now durable, so this panel
- * reads persisted records rather than in-page state, and survives reload,
- * navigation and restart.
- *
- * When a parent owns the verify/audit actions (the board menu), this panel
- * collapses to a one-line verdict and expands for history and reports.
- */
 export function VerificationPanel({
   suite,
   provider,
@@ -76,11 +64,8 @@ export function VerificationPanel({
   provider: Parameters<ReturnType<typeof useHydra>["verifySuite"]>[1];
   model: string | null;
   workspaceBusy: boolean;
-  /** Start collapsed to a one-line verdict summary. */
   defaultCollapsed?: boolean;
-  /** Hide built-in verify/audit buttons when a parent owns those actions. */
   hideActions?: boolean;
-  /** After an external audit, select this record, expand, and scroll its banner. */
   focusRecordId?: number | null;
   onFocusHandled?(): void;
 }) {
@@ -96,7 +81,6 @@ export function VerificationPanel({
   const [showTranscript, setShowTranscript] = useState(false);
   const verdictRef = useRef<HTMLDivElement | null>(null);
 
-  // The live verification run for this suite, if one is going right now.
   const liveRun = useMemo<RunStatus | null>(
     () =>
       console_.runs.find(
@@ -105,9 +89,6 @@ export function VerificationPanel({
     [console_.runs, suite.id],
   );
 
-  // Every state write happens in a promise continuation rather than in the
-  // synchronous part of the call, so using this from an effect cannot cascade
-  // renders.
   const load = useCallback(
     () =>
       workspaceApi
@@ -120,23 +101,17 @@ export function VerificationPanel({
           return records;
         })
         .catch(() => {
-          // An unreachable backend is not "no history"; show an empty list
-          // rather than a skeleton that never resolves.
           setHistory([]);
           return [] as SuiteVerificationRecord[];
         }),
     [suite.id],
   );
 
-  // Refetches when the suite changes and again when a verification finishes —
-  // a completed run means a new record exists, so ask rather than guess.
   const liveRunId = liveRun?.runId ?? null;
   useEffect(() => {
     void load();
   }, [load, liveRunId]);
 
-  // External audit/verify completion: reload, select the new record, expand,
-  // and bring the verdict banner into view.
   useEffect(() => {
     if (focusRecordId === null) return;
     let disposed = false;
@@ -156,10 +131,6 @@ export function VerificationPanel({
     };
   }, [focusRecordId, load, onFocusHandled]);
 
-  // `liveRunId` is a dependency for a reason: the record is selected while it is
-  // still RUNNING and empty, and its id does not change when it completes.
-  // Without this the panel would keep showing the empty in-progress snapshot
-  // after the verification had finished and written its results.
   useEffect(() => {
     if (selectedId === null) return;
     let disposed = false;
@@ -170,8 +141,6 @@ export function VerificationPanel({
     return () => { disposed = true; };
   }, [selectedId, liveRunId]);
 
-  // Never render a detail that belongs to a different record than the one
-  // selected — the fetch above is async and the user can click again mid-flight.
   const shown = detail !== null && detail.id === selectedId ? detail : null;
 
   const startAgentVerification = async () => {
@@ -238,7 +207,6 @@ export function VerificationPanel({
     }
   };
 
-  // What changed since the verification before this one.
   const changes = useMemo(() => {
     if (history === null || shown === null) return [];
     const index = history.findIndex((record) => record.id === shown.id);
@@ -319,7 +287,7 @@ export function VerificationPanel({
 
       {!collapsed && (
         <>
-          {/* Live run ---------------------------------------------------------- */}
+          { }
           {liveRun !== null && (
             <div className="border-b border-line p-4">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -456,7 +424,7 @@ export function VerificationPanel({
                 )}
               </div>
 
-              {/* History ------------------------------------------------------- */}
+              { }
               <section aria-label="Verification history" className="min-w-0">
                 <div className="mb-2 text-xs uppercase tracking-wider text-fg-dim">
                   History · {history.length}

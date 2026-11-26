@@ -1,4 +1,3 @@
-/** Incremental SSE framing; UTF-8 decoding belongs to the response reader. */
 export class SseDecoder {
   private buffer = "";
   private data: string[] = [];

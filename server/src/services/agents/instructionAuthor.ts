@@ -1,22 +1,10 @@
-/**
- * What an instruction run is told.
- *
- * The run edits one file and nothing else. Most of the guarantee is not in this
- * text — the file is captured and restored when the run ends, so the workspace
- * only changes when the operator applies the proposal — but an agent that
- * understands that writes a better proposal: it edits the whole file into its
- * final shape rather than leaving notes for later.
- */
-
 import { INSTRUCTION_FILE_NAMES, type WorkspaceInstructionField } from "@hydra/shared";
 
 export interface InstructionAuthorPromptArgs {
   workspace: { name: string; workDirectory: string; description: string };
   field: WorkspaceInstructionField;
   goal: string;
-  /** False when the file does not exist yet and the agent creates it. */
   exists: boolean;
-  /** The file on disk is an earlier proposal, not the stored text. */
   reworking: boolean;
   feedback: string | null;
 }

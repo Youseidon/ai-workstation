@@ -1,9 +1,5 @@
 import type { SettingScale } from "../contracts/settings.ts";
 
-/**
- * A numeric setting in words. `short` is the form for slider ticks and chips,
- * where "1,000 calls" has to fit in the width of "1k".
- */
 export function formatSettingValue(value: number, scale: SettingScale, short = false): string {
   if (value === 0 && scale.zeroLabel !== null) return short ? "∞" : scale.zeroLabel;
   const trim = (amount: number): string => String(Math.round(amount * 10) / 10);

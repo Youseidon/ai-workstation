@@ -11,15 +11,6 @@ import type { useModelSelection } from "@/features/providers/hooks/useModelSelec
 
 export type AgentChoice = { provider: ProviderId | null; model: string | null };
 
-/**
- * The one agent + model picker. Suite defaults, prompt overrides and sub-step
- * pins all use it, so choosing an agent looks and behaves the same at every
- * level: a row of provider chips, the active chip names its model, and
- * clicking the active chip opens the model menu.
- *
- * `inherit` adds a leading chip meaning "no choice here; follow the level
- * above" — it is selected while `value.provider` is null.
- */
 export function AgentModelPicker({
   label,
   value,
@@ -30,7 +21,6 @@ export function AgentModelPicker({
   size = "md",
   onChange,
 }: {
-  /** Accessible name of the group, e.g. "Suite agent" or "Agent for S1-02". */
   label: string;
   value: AgentChoice;
   providers: ProviderInfo[];
@@ -79,8 +69,6 @@ export function AgentModelPicker({
               aria-haspopup={info !== undefined ? "listbox" : undefined}
               title={unavailable ? `${id} is unavailable right now` : active ? "Change model" : `Use ${id}`}
               onClick={() => {
-                // Clicking the active agent only opens its model menu; it does
-                // not round-trip an unchanged choice.
                 if (!active) onChange({ provider: id, model: models?.resolve(id) ?? info?.model ?? null });
                 setMenuFor(menuFor === id || info === undefined ? null : id);
               }}
@@ -126,10 +114,6 @@ export function AgentModelPicker({
   );
 }
 
-/**
- * Ordered relief agents. Click to append, click again to remove; the badge is
- * the position. Shared by suite defaults and station rules.
- */
 export function FallbackOrderPicker({
   label,
   value,
@@ -139,7 +123,6 @@ export function FallbackOrderPicker({
 }: {
   label: string;
   value: ProviderId[];
-  /** The primary agent, which cannot also be its own fallback. */
   exclude: ProviderId | null;
   disabled?: boolean;
   onChange(next: ProviderId[]): void;

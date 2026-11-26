@@ -7,15 +7,10 @@ export interface SwitchProps {
   onCheckedChange(next: boolean): void;
   disabled?: boolean;
   id?: string;
-  /** Accessible name when no visible label is associated via `htmlFor`. */
   "aria-label"?: string;
   className?: string;
 }
 
-/**
- * Small on/off control. Colours come from theme tokens so the knob stays
- * legible when the page flips between light and dark.
- */
 export function Switch({
   checked,
   onCheckedChange,

@@ -1,8 +1,3 @@
-/**
- * A push-driven async iterable: event-emitter callbacks `push()` into it, the
- * adapter's `run()` generator `for await`s over it. Backpressure is not needed
- * here because CLI event streams are low volume.
- */
 export class AsyncQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
   private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];

@@ -1,39 +1,3 @@
-/**
- * The status vocabulary: what a work item can be, what each state means, and
- * what put it there.
- *
- * This is the base layer of `shared` — it imports nothing, so both `index.ts`
- * and `pipelineRules.ts` can sit on top of it without a cycle. The tone and
- * rule-policy vocabularies live here rather than in `pipelineRules` for the
- * same reason: a status has a colour and an editability policy before there is
- * any transport interlocking to talk about.
- *
- * Three things are deliberately data rather than code:
- *
- * 1. **The catalog.** Every state carries its own label, description, colour
- *    and consequences. The engine keys off the immutable `id`; everything else
- *    is presentation and policy the operator owns, persisted in SQLite and
- *    layered over the defaults here. A hardcoded label map cannot be renamed,
- *    cannot be explained on screen, and — as this app proved twice — drifts
- *    into two copies that disagree.
- *
- * 2. **The triggers.** A status without a recorded cause is an assertion the
- *    operator has to take on faith. Every transition names one of these, and
- *    the sentence is rendered verbatim next to the badge.
- *
- * 3. **The transitions.** An ordered, first-match-wins table, so the answer to
- *    "why is this red" is a row you can point at rather than a branch buried in
- *    a scheduler.
- */
-
-/* ------------------------------------------------------------------ */
-/* Shared vocabularies                                                 */
-/* ------------------------------------------------------------------ */
-
-/**
- * Semantic colour roles. The web `Badge` imports this rather than declaring its
- * own, so the two cannot drift.
- */
 export type StatusTone =
   | "neutral"
   | "accent"
@@ -52,11 +16,6 @@ export function isStatusTone(value: unknown): value is StatusTone {
   return typeof value === "string" && (STATUS_TONES as readonly string[]).includes(value);
 }
 
-/**
- * Icon keys, not glyphs. The server stores a key and the web maps it to an SVG,
- * so an operator picking an icon cannot inject markup and a theme can change
- * every glyph at once.
- */
 export const STATUS_ICONS = [
   "dot", "spinner", "check", "cross", "question", "alert",
   "clock", "skip", "review", "search", "pause", "link",
@@ -67,10 +26,6 @@ export function isStatusIcon(value: unknown): value is StatusIcon {
   return typeof value === "string" && (STATUS_ICONS as readonly string[]).includes(value);
 }
 
-/**
- * Settings keys a rule row can defer to. Only keys an actual row references
- * live here; the rest of the pipeline policy group joins as rows start using it.
- */
 export type PolicyKey =
   | "pipeline.pauseMode"
   | "pipeline.onRestart"
@@ -78,34 +33,11 @@ export type PolicyKey =
   | "pipeline.reviewAfterContinuations"
   | "pipeline.dodEnforcement";
 
-/**
- * How much of a rule row the operator is allowed to change.
- *
- * `locked` is not an oversight — some rows are invariants rather than
- * preferences, and a settings screen that could break them would be worse than
- * no settings screen. The reason is shown in the UI instead of a missing
- * control, so a locked row explains itself.
- */
 export type RulePolicy =
   | { kind: "locked"; reason: string }
   | { kind: "setting"; key: PolicyKey; reason: string }
   | { kind: "stationRule"; field: "onDone" | "onUnfinished"; reason: string };
 
-/* ------------------------------------------------------------------ */
-/* The stored status                                                   */
-/* ------------------------------------------------------------------ */
-
-/**
- * What can be written to `prompt.status`.
- *
- * `UNREPORTED`, `FAILED` and `NEEDS_REVIEW` are the three that used to be
- * inferred. Before them, a run whose agent finished the work but dropped its
- * final status post was written `BLOCKED` by the system and became
- * indistinguishable from an agent that stopped to ask a question; the only
- * thing separating the two was re-reading the last status event to see whether
- * its actor was `SYSTEM`. That inference is what made the pipeline's verdicts
- * untrustworthy, and storing the distinction is what retires it.
- */
 export const STEP_STATUSES = [
   "TODO",
   "IN_PROGRESS",
@@ -122,24 +54,11 @@ export function isStepStatus(value: unknown): value is StepStatus {
   return typeof value === "string" && (STEP_STATUSES as readonly string[]).includes(value);
 }
 
-/**
- * What a work item shows on a card.
- *
- * A superset of the stored statuses: three of these are live overlays that
- * exist only while something is true right now, and are never written to the
- * database. Keeping them in one catalog is deliberate — the operator sees one
- * list of states and edits it in one place, rather than learning which half of
- * the vocabulary lives where.
- */
 export const STEP_DISPLAY_STATUSES = [
   ...STEP_STATUSES,
-  /** A process is running against this item. */
   "WORKING",
-  /** TODO with every prerequisite satisfied. */
   "READY",
-  /** TODO waiting on a dependency, an open child, or an earlier sibling. */
   "WAITING_DEPENDENCY",
-  /** IN_PROGRESS but the process is gone — a crash before the bookkeeping ran. */
   "RECOVERY_NEEDED",
 ] as const;
 export type StepDisplayStatus = (typeof STEP_DISPLAY_STATUSES)[number];
@@ -148,16 +67,10 @@ export function isStepDisplayStatus(value: unknown): value is StepDisplayStatus 
   return typeof value === "string" && (STEP_DISPLAY_STATUSES as readonly string[]).includes(value);
 }
 
-/** The overlays, as a set, for the places that need to reject them on a write. */
 export const OVERLAY_STATUSES: readonly StepDisplayStatus[] = [
   "WORKING", "READY", "WAITING_DEPENDENCY", "RECOVERY_NEEDED",
 ];
 
-/* ------------------------------------------------------------------ */
-/* The catalog                                                         */
-/* ------------------------------------------------------------------ */
-
-/** What entering a state should set in motion. */
 export const STATUS_ON_ENTER = ["none", "advance", "park", "review", "continue", "handoff", "retry"] as const;
 export type StatusOnEnter = (typeof STATUS_ON_ENTER)[number];
 
@@ -165,7 +78,6 @@ export function isStatusOnEnter(value: unknown): value is StatusOnEnter {
   return typeof value === "string" && (STATUS_ON_ENTER as readonly string[]).includes(value);
 }
 
-/** The half of a definition the operator may rewrite. */
 export interface StatusPresentation {
   label: string;
   shortLabel: string;
@@ -174,27 +86,11 @@ export interface StatusPresentation {
   icon: StatusIcon;
 }
 
-/** The half that changes what the engine does. */
 export interface StatusPolicy {
-  /** No further work is expected. Terminal states settle a parent's rollup. */
   isTerminal: boolean;
-  /**
-   * A declared dependency on this item is satisfied.
-   *
-   * Split from `isTerminal` because `SKIPPED` is asymmetric on purpose: it
-   * settles a parent, but it does not entitle a dependant to run against work
-   * that was never done.
-   */
   satisfiesDependency: boolean;
-  /** A parent cannot close while a child sits here. */
   blocksParent: boolean;
-  /** Counts toward the attention list and the blocked-stations panel. */
   needsAttention: boolean;
-  /**
-   * Worst-child ordering for the parent rollup: when every child has settled,
-   * the parent takes the highest-precedence attention status among them.
-   * Higher wins. Zero for states that never propagate.
-   */
   precedence: number;
   onEnter: StatusOnEnter;
 }
@@ -204,12 +100,7 @@ export type StatusEditableKey = keyof StatusPresentation | StatusPolicyKey;
 
 export interface StatusDefinition extends StatusPresentation, StatusPolicy {
   id: StepDisplayStatus;
-  /** False for the four live overlays, which are derived and never stored. */
   storable: boolean;
-  /**
-   * Fields the operator may not change, with the reason shown in their place.
-   * An empty list means everything on this row is editable.
-   */
   locked: readonly StatusEditableKey[];
   lockedReason: string | null;
 }
@@ -222,11 +113,6 @@ const DEFINITION_OF_DONE =
   "Closing a work item is what the whole pipeline exists to decide. Letting it stop "
   + "counting as finished would make every rollup and every dependency wrong at once.";
 
-/**
- * The shipped catalog. A `status_definition` row in SQLite overrides any field
- * of the matching entry; anything the operator has not touched falls through to
- * here, so a fresh install and an upgraded one behave identically.
- */
 export const DEFAULT_STATUS_CATALOG: readonly StatusDefinition[] = [
   {
     id: "TODO",
@@ -382,8 +268,6 @@ export const DEFAULT_STATUS_CATALOG: readonly StatusDefinition[] = [
     lockedReason: "A skipped item is settled; the pipeline must be able to move past it.",
   },
 
-  /* ---- live overlays: derived every read, never stored ---- */
-
   {
     id: "WORKING",
     storable: false,
@@ -462,18 +346,12 @@ const CATALOG_BY_ID = new Map<StepDisplayStatus, StatusDefinition>(
   DEFAULT_STATUS_CATALOG.map((entry) => [entry.id, entry]),
 );
 
-/**
- * The shipped definition for a state. Callers that need the operator's edits go
- * through the server's resolved catalog instead; this is the fallback beneath it
- * and the source the database is seeded from.
- */
 export function defaultStatusDefinition(id: StepDisplayStatus): StatusDefinition {
   const found = CATALOG_BY_ID.get(id);
   if (found === undefined) throw new Error(`No status definition for ${id}`);
   return found;
 }
 
-/** Look a definition up in a resolved catalog, falling back to the shipped one. */
 export function statusDefinition(
   catalog: readonly StatusDefinition[],
   id: StepDisplayStatus,
@@ -481,7 +359,6 @@ export function statusDefinition(
   return catalog.find((entry) => entry.id === id) ?? defaultStatusDefinition(id);
 }
 
-/** Whether a field on this row is the operator's to change. */
 export function statusFieldEditable(
   definition: StatusDefinition,
   field: StatusEditableKey,
@@ -489,15 +366,6 @@ export function statusFieldEditable(
   return !definition.locked.includes(field);
 }
 
-/* ------------------------------------------------------------------ */
-/* Triggers — what put an item where it is                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * The closed set of causes. Every status change records exactly one, so
- * "why is this red" always has an answer that was written down at the time
- * rather than reconstructed afterwards.
- */
 export const STATUS_TRIGGERS = [
   "agent_post",
   "agent_decompose",
@@ -529,10 +397,6 @@ export function isStatusTrigger(value: unknown): value is StatusTrigger {
   return typeof value === "string" && (STATUS_TRIGGERS as readonly string[]).includes(value);
 }
 
-/**
- * One sentence per cause, rendered verbatim beside the badge. Operator-editable
- * for the same reason the labels are: the wording is theirs, the token is ours.
- */
 export const DEFAULT_TRIGGER_SENTENCES: Record<StatusTrigger, string> = {
   agent_post: "The agent posted this status itself.",
   agent_decompose: "The agent split this work item into sub-steps.",
@@ -559,10 +423,6 @@ export const DEFAULT_TRIGGER_SENTENCES: Record<StatusTrigger, string> = {
   import: "It was created by an import.",
 };
 
-/**
- * A cause as a sentence. An unrecognised token is passed through rather than
- * dropped: a raw token in the UI is ugly, but silence is worse.
- */
 export function describeTrigger(
   trigger: string | null,
   sentences: Partial<Record<string, string>> = DEFAULT_TRIGGER_SENTENCES,
@@ -571,14 +431,6 @@ export function describeTrigger(
   return sentences[trigger] ?? DEFAULT_TRIGGER_SENTENCES[trigger as StatusTrigger] ?? trigger;
 }
 
-/* ------------------------------------------------------------------ */
-/* Transitions — the step-level interlocking                           */
-/* ------------------------------------------------------------------ */
-
-/**
- * What the engine observed. These are facts about a run or a check, never
- * conclusions — the conclusion is the row that matches.
- */
 export const STEP_SIGNALS = [
   "agent_posted_done",
   "agent_posted_blocked",
@@ -602,29 +454,19 @@ export function isStepSignal(value: unknown): value is StepSignal {
   return typeof value === "string" && (STEP_SIGNALS as readonly string[]).includes(value);
 }
 
-/** What the scheduler should do once the status is written. */
 export const STEP_NEXT_ACTIONS = ["advance", "park", "review", "continue", "rule"] as const;
 export type StepNextAction = (typeof STEP_NEXT_ACTIONS)[number];
 
 export interface StepTransitionRow {
-  /** Stable id: a React key, a test label, and what the ledger records. */
   id: string;
   when: {
     signal: StepSignal;
-    /**
-     * Whether the run made at least one tool call. Omitted matches either way;
-     * it is what separates "left work a successor must not redo" from "left
-     * nothing to summarise".
-     */
     producedWork?: boolean;
   };
-  /** Where the item lands. `null` means the row defers to the station's rule. */
   to: StepStatus | null;
   trigger: StatusTrigger;
   next: StepNextAction;
-  /** When this row applies, as a short phrase. Rendered verbatim. */
   condition: string;
-  /** One sentence: what this row concluded and why. */
   because: string;
   policy: RulePolicy;
 }
@@ -637,12 +479,6 @@ const LOCKED_AGENT_AUTHORITY =
   "A status the agent posted through the audited API is the most direct evidence there "
   + "is. Overriding it from a rule table would make the API pointless.";
 
-/**
- * The interlocking, in order. First match wins.
- *
- * Rows are split so that every variation is its own row — the point is that a
- * reader can see each distinct outcome, rather than a ternary buried in one.
- */
 export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
   {
     id: "agent-done",
@@ -688,10 +524,6 @@ export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
     policy: { kind: "locked", reason: "A parent waits on its children by construction." },
   },
   {
-    // Above run-crashed / run-start-failed in the catalog: a provider that
-    // could not run is swapped, not continued. The scheduler writes this
-    // trigger itself after classifyFailure; the signal is not produced by
-    // endOfRunSignal.
     id: "provider-fallback",
     when: { signal: "provider_could_not_run" },
     to: "TODO",
@@ -829,11 +661,6 @@ export const STEP_TRANSITIONS: readonly StepTransitionRow[] = [
   },
 ];
 
-/**
- * The row that decides an outcome. First match wins, exactly like the transport
- * table. Returns `null` only for a signal no row covers, which the totality
- * test in `statusModel.test.ts` exists to prevent.
- */
 export function matchStepTransition(args: {
   signal: StepSignal;
   producedWork?: boolean;
@@ -846,17 +673,6 @@ export function matchStepTransition(args: {
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Catalog-driven predicates                                           */
-/* ------------------------------------------------------------------ */
-
-/**
- * Whether a display state settles a parent and lets the pipeline move past it.
- *
- * Callers used to spell this inline as `!== "COMPLETE" && !== "SKIPPED"`, in
- * four places that had to be kept in step by hand. Reading it off the catalog
- * means an operator who marks a state terminal changes every one of them at once.
- */
 export function isTerminalDisplayStatus(
   catalog: readonly StatusDefinition[],
   id: StepDisplayStatus,
@@ -864,7 +680,6 @@ export function isTerminalDisplayStatus(
   return statusDefinition(catalog, id).isTerminal;
 }
 
-/** Whether a dependant may run once its prerequisite reaches this state. */
 export function satisfiesDependency(
   catalog: readonly StatusDefinition[],
   id: StepDisplayStatus,
@@ -872,7 +687,6 @@ export function satisfiesDependency(
   return statusDefinition(catalog, id).satisfiesDependency;
 }
 
-/** Whether this state belongs on the attention list. */
 export function needsAttention(
   catalog: readonly StatusDefinition[],
   id: StepDisplayStatus,
@@ -880,10 +694,6 @@ export function needsAttention(
   return statusDefinition(catalog, id).needsAttention;
 }
 
-/**
- * The state a parent should take when every child has settled and at least one
- * needs attention: the highest-precedence attention status among them.
- */
 export function rollupStatus(
   catalog: readonly StatusDefinition[],
   childStatuses: readonly StepDisplayStatus[],
@@ -897,27 +707,6 @@ export function rollupStatus(
   return winner === null ? null : winner.id;
 }
 
-/* ------------------------------------------------------------------ */
-/* The definition of done                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * What "finished" means for a work item, as data rather than prose.
- *
- * Before this, the only acceptance criteria the app had were whatever a regex
- * could scrape out of the work item's markdown — and that regex had one
- * installation's domain headings baked into it, so on any other repository it
- * matched almost nothing and the reviewer was handed an empty checklist.
- *
- * Three kinds, because they are checked by three different things and only one
- * of them can be argued with:
- *
- * - `PROSE` is judged by the reviewer agent. It is the flexible kind and the
- *   least trustworthy: a model can talk itself into a pass.
- * - `COMMAND` is run by the *server*, in the workspace directory, and judged on
- *   its exit code. Nothing in the loop can talk an exit code into being 0.
- * - `CHILDREN_CLOSED` is read off the child rollup the app already computes.
- */
 export const DOD_CRITERION_KINDS = ["PROSE", "COMMAND", "CHILDREN_CLOSED"] as const;
 export type DodCriterionKind = (typeof DOD_CRITERION_KINDS)[number];
 
@@ -942,7 +731,6 @@ export const DOD_KIND_HINT: Record<DodCriterionKind, string> = {
     "Satisfied when every sub-step this item was split into has settled and none needs attention.",
 };
 
-/** Who produced a result. `RUNNER` is this server executing a command itself. */
 export const DOD_RESULT_SOURCES = ["AGENT", "REVIEWER", "RUNNER", "HUMAN"] as const;
 export type DodResultSource = (typeof DOD_RESULT_SOURCES)[number];
 
@@ -950,13 +738,6 @@ export function isDodResultSource(value: unknown): value is DodResultSource {
   return typeof value === "string" && (DOD_RESULT_SOURCES as readonly string[]).includes(value);
 }
 
-/**
- * `UNVERIFIED` is not a soft failure — it is the absence of evidence, and it is
- * distinct from `FAILED` for the same reason `UNREPORTED` is distinct from
- * `FAILED` on a work item: "nobody checked" and "it was checked and it did not
- * pass" are different facts, and collapsing them is what makes a verdict
- * untrustworthy. Neither one closes an item.
- */
 export const DOD_RESULTS = ["PASSED", "FAILED", "UNVERIFIED"] as const;
 export type DodResult = (typeof DOD_RESULTS)[number];
 
@@ -964,7 +745,6 @@ export function isDodResult(value: unknown): value is DodResult {
   return typeof value === "string" && (DOD_RESULTS as readonly string[]).includes(value);
 }
 
-/** What an unmet definition of done is allowed to do. */
 export const DOD_ENFORCEMENTS = ["block", "warn", "off"] as const;
 export type DodEnforcement = (typeof DOD_ENFORCEMENTS)[number];
 
@@ -978,10 +758,6 @@ export const DOD_ENFORCEMENT_LABEL: Record<DodEnforcement, string> = {
   off: "Do not check",
 };
 
-/**
- * Where a definition of done can be attached. A work item inherits the nearest
- * one above it, so a house rule is written once.
- */
 export const DOD_SCOPES = ["workspace", "program", "suite", "prompt"] as const;
 export type DodScope = (typeof DOD_SCOPES)[number];
 
@@ -996,22 +772,12 @@ export const DOD_SCOPE_LABEL: Record<DodScope, string> = {
   prompt: "this work item",
 };
 
-/*
- * Caps on a command criterion, stated here so the server, the editor and the
- * validator cannot disagree about them.
- *
- * These are a security boundary, not tuning. A criterion's command comes out of
- * the database and runs as the server's own user, so an unbounded timeout is a
- * hung console and an unbounded capture is a heap the operator cannot see
- * filling.
- */
 export const DOD_COMMAND_TIMEOUT_DEFAULT_MS = 120_000;
 export const DOD_COMMAND_TIMEOUT_MIN_MS = 1_000;
 export const DOD_COMMAND_TIMEOUT_MAX_MS = 600_000;
 export const DOD_COMMAND_OUTPUT_MAX_BYTES = 16_000;
 export const DOD_COMMAND_MAX_LENGTH = 2_000;
 
-/** Clamp a requested timeout into the range the server will actually honour. */
 export function clampDodTimeout(milliseconds: number): number {
   if (!Number.isFinite(milliseconds)) return DOD_COMMAND_TIMEOUT_DEFAULT_MS;
   return Math.min(DOD_COMMAND_TIMEOUT_MAX_MS, Math.max(DOD_COMMAND_TIMEOUT_MIN_MS, Math.round(milliseconds)));
@@ -1020,45 +786,31 @@ export function clampDodTimeout(milliseconds: number): number {
 export interface DodCriterion {
   id: number;
   kind: DodCriterionKind;
-  /** What the criterion says, in the operator's words. Always present. */
   text: string;
-  /** The shell command, for `COMMAND` only. */
   command: string | null;
-  /** Relative to the workspace directory. `null` means the workspace root. */
   cwd: string | null;
   expectExitCode: number;
   timeoutMs: number;
-  /** An optional criterion is reported but never blocks a close. */
   required: boolean;
   sortOrder: number;
 }
 
 export interface DefinitionOfDone {
-  /** The scope this was resolved *for*. */
   scope: DodScope;
   scopeId: number;
   enforcement: DodEnforcement;
-  /**
-   * Which scope the criteria actually came from, or `null` when nothing is
-   * defined anywhere above this item. Rendered, because "this suite has no
-   * definition of done" and "this suite inherits the workspace's" look
-   * identical otherwise.
-   */
   inheritedFrom: { scope: DodScope; scopeId: number } | null;
   criteria: DodCriterion[];
 }
 
-/** One criterion and the newest thing anyone recorded about it. */
 export interface DodCriterionResult {
   criterionId: number;
   kind: DodCriterionKind;
   text: string;
   required: boolean;
   result: DodResult;
-  /** `null` when nothing has ever been recorded for this criterion. */
   source: DodResultSource | null;
   evidence: string;
-  /** Captured command output, for a `COMMAND` the server ran. */
   output: string;
   exitCode: number | null;
   runId: string | null;
@@ -1067,28 +819,15 @@ export interface DodCriterionResult {
 
 export interface DodEvaluation {
   enforcement: DodEnforcement;
-  /** Every *required* criterion passed. Vacuously true when none is defined. */
   satisfied: boolean;
-  /**
-   * Whether falling short may actually stop a close. False under `warn` and
-   * `off`, so the caller never has to re-derive the policy from the enum.
-   */
   blocking: boolean;
   criteria: DodCriterionResult[];
 }
 
-/** The required criteria that are not passing. The reason a close is refused. */
 export function unmetCriteria(evaluation: DodEvaluation): DodCriterionResult[] {
   return evaluation.criteria.filter((entry) => entry.required && entry.result !== "PASSED");
 }
 
-/**
- * What gets stored as `evidence_json` when a definition of done refuses a
- * close, shaped for the key/value renderer in the "Why this status" panel.
- *
- * The failing command's *own output* is what goes in the value — an operator
- * looking at a refused close needs the compiler's words, not ours.
- */
 export function dodUnmetEvidence(evaluation: DodEvaluation): Record<string, unknown> {
   const unmet = unmetCriteria(evaluation);
   const required = evaluation.criteria.filter((entry) => entry.required).length;
@@ -1104,7 +843,6 @@ export function dodUnmetEvidence(evaluation: DodEvaluation): Record<string, unkn
   return evidence;
 }
 
-/** One sentence for a refused close, for the ledger's `reason`. */
 export function dodUnmetReason(evaluation: DodEvaluation): string {
   const unmet = unmetCriteria(evaluation);
   const names = unmet.slice(0, 3).map((entry) => entry.text).join("; ");

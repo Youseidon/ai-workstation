@@ -8,21 +8,7 @@ import {
   THEME_STORAGE_KEY,
 } from "@/lib/theme";
 
-/**
- * Stamps `data-theme` / `data-effects` onto <html> before the first paint.
- *
- * This has to be a blocking inline script rather than an effect: React runs
- * after the browser has already painted, which would show one frame of the
- * default theme before switching. The keys and allowed values are interpolated
- * from `lib/theme.ts` so the two can never disagree about a name.
- *
- * `next/script` with `beforeInteractive` is the App Router way to get this into
- * <head> ahead of any framework code — a hand-written <head> in a root layout
- * is discouraged, and an inline script needs an `id` for Next to track it.
- */
 export function ThemeScript() {
-  // Before anything reads storage: carry preferences saved under the app's
-  // pre-rename prefix ("agent-console.") over to "hydra.", once.
   const source = `(function(){try{
 var s=localStorage,o="agent-console.",k,i;
 for(i=s.length-1;i>=0;i--){k=s.key(i);if(k&&k.indexOf(o)===0){var n="hydra."+k.slice(o.length);if(s.getItem(n)===null)s.setItem(n,s.getItem(k));s.removeItem(k);}}
@@ -39,8 +25,6 @@ document.documentElement.dataset.effects=${JSON.stringify(DEFAULT_EFFECTS)};
 }})();`;
 
   return (
-    // The App Router docs specify beforeInteractive scripts go in the root
-    // layout; this lint rule only knows about the pages router's _document.
     // eslint-disable-next-line @next/next/no-before-interactive-script-outside-document
     <Script id="hydra-theme" strategy="beforeInteractive">
       {source}

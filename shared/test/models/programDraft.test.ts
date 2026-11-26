@@ -1,7 +1,3 @@
-/**
- * The pure half of agent-authored programs: what a proposal must look like
- * before anything is stored, and what the operator is shown about it.
- */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -105,7 +101,6 @@ test("a dependency on a work item that is not in the draft is reported, not sile
   }
   assert.deepEqual(resolvedDependencies(body), [{ promptKey: "S2-01", dependsOnKey: "S1-01" }]);
   assert.ok(programDraftIssues(body).some((issue) => issue.includes("S7-04")));
-  // It is only a warning: the draft is still applicable, minus that edge.
   assert.equal(canApplyProgramDraft(body), true);
 });
 

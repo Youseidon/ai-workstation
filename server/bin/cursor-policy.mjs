@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// This process runs before execution. Stream-json activity arrives too late to
-// authorize a command. Keep this independent of the database/server imports.
 import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { parse } from "shell-quote";
@@ -22,8 +20,6 @@ function shellDecision(input, config) {
   const handoff = `Station policy: verification belongs to ${p.verifier ?? "the Verify station"}. Use approved managed commands, or record the outstanding check and hand off.`;
   const cwd = input.cwd ?? input.working_directory ?? input.workingDirectory ?? config.root;
   if (typeof cwd !== "string" || !inside(config.root, canonical(resolve(config.root, cwd)))) return deny("Command working directory is outside this workspace.");
-  // Reject expansion, redirects, multiline scripts and alternate shell syntax.
-  // A conservative allowlist is deliberate: unknown syntax never falls through.
   if (/[\n\r`$<>\\(){}]/.test(command)) return deny(handoff);
   let tokens;
   try { tokens = parse(command); } catch { return deny("Cannot parse command; use one plain approved command."); }
@@ -36,7 +32,6 @@ function shellDecision(input, config) {
   if (commands.some(args => !args.length)) return deny(handoff);
   for (const args of commands) {
     const [bin, ...rest] = args;
-    // Exact executable names prevent PATH wrappers such as /tmp/npm.
     if (["ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "diff"].includes(bin)) {
       if (rest.some(arg => /^(--pre(?:=|$)|--hostname-bin(?:=|$))/.test(arg))) return deny(handoff);
       continue;
@@ -83,8 +78,6 @@ function decide(input, config) {
 }
 
 const manifestPath = process.argv[2] ?? process.env.HYDRA_CURSOR_POLICY;
-// The project registration may coexist with ordinary editor/CLI sessions.
-// Only runs carrying the platform's explicit capability manifest are gated.
 if (!manifestPath) { process.stdout.write(JSON.stringify({ permission: "allow" })); process.exit(0); }
 try {
   const config = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -93,7 +86,6 @@ try {
     || !isAbsolute(config.root) || !isAbsolute(config.directory)) throw new Error("Invalid policy manifest");
   const input = JSON.parse(readFileSync(0, "utf8"));
   const decision = decide(input, config);
-  // Audit decisions, not command contents (which may contain run credentials).
   appendFileSync(config.audit, JSON.stringify({ at: new Date().toISOString(), event: input.hook_event_name,
     permission: decision.permission, probe: JSON.stringify(input).includes("HYDRA_POLICY_PROBE_") }) + "\n", { mode: 0o600 });
   process.stdout.write(JSON.stringify(decision));

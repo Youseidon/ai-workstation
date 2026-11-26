@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   InstructionProposalRecord,
   ProgramDraftBody,
@@ -29,15 +29,8 @@ import { ProviderModelPicker, useAgentChoice } from "./ProviderModelPicker";
 interface Props {
   serverUrl: string;
   workspaceId: number;
-  /** The stored instruction files, to tell whether a proposal against one is stale. */
   instructions: { claudeMd: string; agentsMd: string };
-  /** Called after an apply, so the tree beside this panel repaints. */
   onApplied(): void | Promise<void>;
-  /**
-   * A proposal to open on mount — `program:<id>` or `instructions:<id>` — e.g.
-   * the one just opened from the request bar. The caller remounts the panel (by
-   * `key`) to show one opened elsewhere.
-   */
   initialOpenKey?: string | null;
 }
 
@@ -51,15 +44,6 @@ const STATE_TONE = { PENDING: "info", APPLIED: "success", DISCARDED: "neutral" }
 
 const CHANGE_TONE = { added: "success", changed: "info", moved: "violet", removed: "danger" } as const;
 
-/**
- * Everything agents (or the operator) have proposed in this workspace: new
- * programs, changes to programs, and changes to CLAUDE.md and AGENTS.md.
- *
- * Requests are made from the request modal; this is where their results are
- * read and decided on: a list on the left (what waits on you first), the open
- * proposal on the right. A proposal is not a change. Nothing is created or
- * modified until Apply, which is why Apply is the only primary button in each.
- */
 export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onApplied, initialOpenKey = null }: Props) {
   const toast = useToast();
   const dialogs = useDialogs();
@@ -70,29 +54,37 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
   const [openKey, setOpenKey] = useState<string | null>(initialOpenKey);
   const [busy, setBusy] = useState(false);
 
+  const fetchAll = useCallback(() => Promise.all([
+    workspaceApi.programDrafts(serverUrl, workspaceId),
+    workspaceApi.instructionProposals(serverUrl, workspaceId),
+  ]), [serverUrl, workspaceId]);
+  const loadFailed = useCallback((error: unknown) => {
+    toast.error("Could not load proposals", error instanceof Error ? error.message : String(error));
+    setEntries([]);
+    setProposals([]);
+  }, [toast]);
   const load = useCallback(async () => {
     try {
-      const [drafts, instructionProposals] = await Promise.all([
-        workspaceApi.programDrafts(serverUrl, workspaceId),
-        workspaceApi.instructionProposals(serverUrl, workspaceId),
-      ]);
+      const [drafts, instructionProposals] = await fetchAll();
       setEntries(drafts);
       setProposals(instructionProposals);
     } catch (error) {
-      toast.error("Could not load proposals", error instanceof Error ? error.message : String(error));
-      setEntries([]);
-      setProposals([]);
+      loadFailed(error);
     }
-  }, [serverUrl, workspaceId, toast]);
+  }, [fetchAll, loadFailed]);
+
+  const openSource = `${serverUrl}|${workspaceId}|${initialOpenKey ?? ""}`;
+  const [openKeySource, setOpenKeySource] = useState(openSource);
+  if (openKeySource !== openSource) { setOpenKeySource(openSource); setOpenKey(initialOpenKey); }
 
   useEffect(() => {
-    setOpenKey(initialOpenKey);
-    void load();
-  }, [load, initialOpenKey]);
+    let disposed = false;
+    fetchAll()
+      .then(([drafts, instructionProposals]) => { if (!disposed) { setEntries(drafts); setProposals(instructionProposals); } })
+      .catch((error: unknown) => { if (!disposed) loadFailed(error); });
+    return () => { disposed = true; };
+  }, [fetchAll, loadFailed, initialOpenKey]);
 
-  // While an author run is filling a draft in, its suites appear a post at a time.
-  // Polling rather than the run socket: this panel is not the console, and a
-  // five-second refresh is enough to watch a plan take shape.
   const authoring = (entries ?? []).some((entry) => entry.draft.state === "PENDING" && entry.draft.runId !== null);
   useEffect(() => {
     if (!authoring) return;
@@ -100,9 +92,6 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
     return () => clearInterval(timer);
   }, [authoring, load]);
 
-  // An instruction proposal is written when its run ends, and any execute run
-  // can leave one behind, so the list reloads whenever the set of live runs
-  // changes — debounced, since a pipeline can start and end runs in a burst.
   const liveRunIds = console_.runs.map((run) => run.runId);
   const liveRuns = liveRunIds.join(",");
   useEffect(() => {
@@ -135,7 +124,6 @@ export function ProgramDraftPanel({ serverUrl, workspaceId, instructions, onAppl
 
   const pending = rows?.filter((row) => rowState(row) === "PENDING") ?? [];
   const resolved = rows?.filter((row) => rowState(row) !== "PENDING") ?? [];
-  // With nothing chosen, the first proposal waiting on a decision is shown.
   const activeKey = rows?.some((row) => row.key === openKey) ? openKey : pending[0]?.key ?? null;
   const active = rows?.find((row) => row.key === activeKey) ?? null;
   const [showResolved, setShowResolved] = useState(false);
@@ -316,7 +304,6 @@ function ProposalRow({ row, active, writing, onSelect }: { row: Row; active: boo
   );
 }
 
-/** One program draft, opened: its editor wired to the draft routes. */
 function ProgramDraftEntry({ serverUrl, entry, providers, busy, act, onApplied, onDeleted }: {
   serverUrl: string;
   entry: Entry;
@@ -394,8 +381,6 @@ function ProgramDraftEntry({ serverUrl, entry, providers, busy, act, onApplied, 
   );
 }
 
-/* -------------------------------------------------------------------------- */
-
 interface EditorProps {
   serverUrl: string;
   entry: Entry;
@@ -408,13 +393,6 @@ interface EditorProps {
   onDelete(): Promise<void>;
 }
 
-/**
- * The draft, editable in place.
- *
- * The preview and the issue list are recomputed locally from the same shared
- * functions the server applies with, so what the buttons say is true of the
- * text on screen rather than of the last thing that was saved.
- */
 function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRevise, onDiscard, onDelete }: EditorProps) {
   const [body, setBody] = useState<ProgramDraftBody>(entry.draft.body);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -422,12 +400,9 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
   const [feedback, setFeedback] = useState("");
   const reviseAgent = useAgentChoice(providers);
   const reviseProvider = reviseAgent.choice.provider;
-  const saved = useRef(entry.draft.body);
-
-  useEffect(() => {
-    setBody(entry.draft.body);
-    saved.current = entry.draft.body;
-  }, [entry.draft.body]);
+  const saved = entry.draft.body;
+  const [bodySource, setBodySource] = useState(saved);
+  if (bodySource !== saved) { setBodySource(saved); setBody(saved); }
 
   const editable = entry.draft.state === "PENDING";
   const baseline = entry.draft.targetProgramId !== null ? entry.draft.baseline : null;
@@ -440,7 +415,7 @@ function DraftEditor({ serverUrl, entry, providers, busy, onSave, onApply, onRev
   }, [changes]);
   const preview = useMemo(() => programDraftPreview(body), [body]);
   const applicable = useMemo(() => canApplyProgramDraft(body), [body]);
-  const dirty = useMemo(() => JSON.stringify(body) !== JSON.stringify(saved.current), [body]);
+  const dirty = useMemo(() => JSON.stringify(body) !== JSON.stringify(saved), [body, saved]);
 
   const patchSuite = (index: number, patch: Partial<ProgramDraftSuite>) => {
     setBody((current) => ({

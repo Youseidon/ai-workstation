@@ -59,7 +59,6 @@ export function AgentCommandCenter() {
     if (next === "configuration") params.set("view", next); else params.delete("view");
     router.replace(`/agents${params.size ? `?${params}` : ""}`, { scroll: false });
   };
-  // Configuration links keep working after navigating from a standby provider.
   useEffect(() => {
     if (!configuration || !window.location.hash) return;
     document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: "start" });

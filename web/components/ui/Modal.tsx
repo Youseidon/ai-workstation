@@ -31,23 +31,13 @@ export interface ModalProps {
   title: ReactNode;
   description?: ReactNode;
   size?: ModalSize;
-  /** Rendered in the footer, right-aligned. */
   footer?: ReactNode;
-  /** Set false for flows that must be resolved by a button (destructive ops). */
   dismissible?: boolean;
-  /** Replaces the body's default padding, e.g. for split layouts that run edge to edge. */
   bodyClassName?: string;
-  /** Extra controls in the header, left of the close button. */
   headerActions?: ReactNode;
   children?: ReactNode;
 }
 
-/**
- * An accessible modal dialog: portalled, focus-trapped, Escape-closable, and it
- * hands focus back to whatever opened it. This replaces the `window.confirm` /
- * `window.prompt` calls the app used to rely on, which cannot be styled, cannot
- * be themed, and block the whole browser tab.
- */
 export function Modal({
   open,
   onClose,
@@ -66,14 +56,12 @@ export function Modal({
   const descriptionId = useId();
   const mounted = useIsClient();
 
-  // Remember the trigger so focus can go back where the user left it.
   useEffect(() => {
     if (!open) return;
     restoreRef.current = document.activeElement as HTMLElement | null;
     return () => restoreRef.current?.focus?.();
   }, [open]);
 
-  // Move focus into the dialog once it exists.
   useEffect(() => {
     if (!open) return;
     const panel = panelRef.current;
@@ -82,7 +70,6 @@ export function Modal({
     (first ?? panel).focus();
   }, [open]);
 
-  // Nothing behind the scrim should scroll.
   useEffect(() => {
     if (!open) return;
     const previous = document.body.style.overflow;
@@ -95,7 +82,6 @@ export function Modal({
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Escape" && dismissible) {
-        // Also stops a modal <dialog> underneath from cancelling with us.
         event.preventDefault();
         event.stopPropagation();
         onClose();
@@ -113,7 +99,6 @@ export function Modal({
       }
       const first = items[0]!;
       const last = items[items.length - 1]!;
-      // Wrap at both ends so Tab can never escape into the page behind.
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();

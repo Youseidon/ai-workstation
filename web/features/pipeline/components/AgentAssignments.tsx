@@ -8,7 +8,6 @@ import type { useModelSelection } from "@/features/providers/hooks/useModelSelec
 
 type DefaultsPatch = { defaultProvider?: ProviderId | null; defaultModel?: string | null; defaultFallbackProviders?: ProviderId[]; resetPromptAgents?: boolean };
 
-/** Suite lead → prompt exceptions → ordered relief agents, all in one place. */
 export function AgentAssignments({ pipeline, suiteName, view, providers, models, policy, busy, promptLabel, onDefaults, onAutoReassign, onPrompt, onConfigure }: {
   pipeline: PipelineRecord;
   suiteName: string;

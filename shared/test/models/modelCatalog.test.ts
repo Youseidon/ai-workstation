@@ -40,8 +40,6 @@ test("exactly one entry per provider is the unset default", () => {
   }
 });
 
-// The generated cursor block is the only place a pool is meaningful; a
-// regeneration that drops the field would silently flatten the picker.
 test("every generated cursor model declares a pool", () => {
   const generated = MODEL_CATALOG.cursor.filter((option) => option.id !== null);
   assert.ok(generated.length > 20, "cursor catalog looks unpopulated — refresh it from cursor-agent --list-models");
@@ -61,8 +59,6 @@ test("cursor serves models from both pools", () => {
   }
 });
 
-// Cursor brands its own pool by id prefix; that is the only signal the CLI
-// gives, so the classification has to keep tracking it.
 test("the cursor pool holds only Cursor-branded ids", () => {
   for (const option of MODEL_CATALOG.cursor) {
     if (option.pool !== "cursor" || option.id === null) continue;
@@ -88,7 +84,6 @@ test("a catalog id resolves to its label and pool; anything else is custom", () 
   assert.equal(modelPool("cursor", "claude-opus-5-high"), "vendor");
   assert.equal(modelPool("claude", "claude-opus-5"), null);
 
-  // An id Cursor no longer lists must not read as a catalog entry.
   assert.equal(isCustomModel("cursor", "cursor-grok-4.4-medium"), true);
   assert.equal(modelPool("cursor", "cursor-grok-4.4-medium"), null);
   assert.equal(modelLabel("cursor", "cursor-grok-4.4-medium"), "cursor-grok-4.4-medium");
@@ -177,7 +172,6 @@ test("restricted catalogs remove provider defaults and unknown custom ids", () =
 });
 
 test("Cursor's default model stays in Cursor's own pool, not the API-billed vendor pool", () => {
-  // A pipeline fallback starts Cursor with no model: it must not land on Opus.
   const picked = recommendedModel("cursor", MODEL_CATALOG.cursor, "frontier");
   const option = MODEL_CATALOG.cursor.find((model) => model.id === picked);
   assert.equal(option?.pool, "cursor", `frontier default was ${picked}`);
@@ -185,7 +179,6 @@ test("Cursor's default model stays in Cursor's own pool, not the API-billed vend
     MODEL_CATALOG.cursor.find((model) => model.id === recommendedModel("cursor", MODEL_CATALOG.cursor, "professional"))?.pool,
     "cursor",
   );
-  // With nothing from Cursor's pool allowed, vendor models are still usable.
   const vendorOnly = [
     { id: "claude-opus-5", label: "opus", hint: "", pool: "vendor" as const },
     { id: "claude-sonnet-5", label: "sonnet", hint: "", pool: "vendor" as const },

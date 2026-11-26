@@ -12,7 +12,6 @@ import { StopCenterProvider } from "@/features/stop/components/StopCenter";
 import { DetailLayerProvider } from "./DetailDrawer";
 import { SidebarSlotProvider } from "./SidebarCollection";
 
-/** Applies Chat deep links that arrive by client navigation after Chat started. */
 function ChatLinkSync({ active }: { active: boolean }) {
   const search = useSearchParams().toString();
   const { started, openLink } = useChat();
@@ -22,7 +21,6 @@ function ChatLinkSync({ active }: { active: boolean }) {
     if (seen.current === search) return;
     const first = seen.current === null;
     seen.current = search;
-    // The first visit's link was read when Chat started.
     if (!first) openLink(`?${search}`);
   }, [active, started, search, openLink]);
   return null;
@@ -33,14 +31,6 @@ function ChatStageMount({ visible }: { visible: boolean }) {
   return started ? <ChatStage visible={visible} /> : null;
 }
 
-/**
- * The one application shell, mounted above every route: the shared sidebar,
- * the single `main` landmark and the shared overlay layer. Routes render
- * content only; they never install another sidebar, header or viewport.
- *
- * Chat's conversations live here rather than in the `/` route so leaving Chat
- * keeps running conversations, drafts and queued messages mounted.
- */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const section = sectionFor(pathname);
@@ -55,7 +45,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     onNavigate: sidebar.closeDrawer,
   }), [sidebar.drawerOpen, sidebar.closeDrawer, drawerSlot, asideSlot]);
 
-  // Track the visual viewport so the mobile keyboard never hides the content's bottom edge.
   useEffect(() => {
     if (!window.visualViewport) return;
     const viewport = window.visualViewport;
@@ -80,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="app-route" hidden={chat}>{children}</div>
           </div>
         </main>
-        {/* The shared detail drawer docks here; routes portal their detail into it. */}
+        { }
         <div ref={setDetailLayer} className="app-detail-layer" />
       </div>
       </DetailLayerProvider>

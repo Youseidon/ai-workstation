@@ -64,16 +64,12 @@ function activity(target: OperationsPrompt, remarks: PromptRemark[]): PromptActi
   return { item: target, remarks, events: [], clarifications: [], sessions: [], audits: [], producedWork: false };
 }
 
-/* needsYou ----------------------------------------------------------------- */
-
 test("an unanswered approval point needs you even without the attention flag", () => {
   assert.equal(needsYou(item(1, "READY", { gate: gate(1, "PENDING") })), true);
   assert.equal(needsYou(item(1, "READY", { gate: gate(1, "COMPLETE", "ok") })), false);
   const filtered = filterPromptTree([item(1, "READY", { gate: gate(1, "PENDING") }), item(2, "READY")], "attention");
   assert.deepEqual(filtered.map((entry) => entry.prompt.id), [1]);
 });
-
-/* thread ------------------------------------------------------------------- */
 
 test("thread orders the conversation and marks the unanswered blocker", () => {
   const target = item(1, "BLOCKED", { attention: true });
@@ -125,8 +121,6 @@ test("composer answers when waiting, takes notes otherwise, closes when done", (
   assert.equal(composerMode(item(1, "SKIPPED")), "closed");
 });
 
-/* inbox -------------------------------------------------------------------- */
-
 test("inbox collects nested waiting items, oldest first, with what they ask", () => {
   const deep = item(3, "BLOCKED", { attention: true, lastActivityAt: "2026-11-01T01:00:00.000Z", latestIntervention: "Need a key" });
   const gated = item(4, "READY", { gate: gate(4, "PENDING"), lastActivityAt: "2026-11-01T05:00:00.000Z" });
@@ -139,8 +133,6 @@ test("inbox collects nested waiting items, oldest first, with what they ask", ()
   assert.equal(entries[1]?.ask, "Approve the schema migration");
   assert.equal(entries[1]?.suite.id, 2);
 });
-
-/* open target -------------------------------------------------------------- */
 
 const suites = [suite(10, [item(1, "READY", { children: [item(2, "BLOCKED")] })]), suite(20, [item(3, "READY")])];
 

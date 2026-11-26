@@ -1,7 +1,6 @@
 import type { NormalizedEvent } from "@hydra/shared";
 
 export interface ContextTurn { id: string; prompt: string | null; provider: string; role: string; events: NormalizedEvent[] }
-/** Only user/assistant exchanges: prior tool output is never promoted to instructions. */
 export function conversationContext(turns: ContextTurn[], limit = 24000): string {
   const exchanges = turns.slice(-12).map(turn => {
     const blocks = new Map<string, string>();

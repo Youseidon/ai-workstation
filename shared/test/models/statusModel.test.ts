@@ -24,10 +24,6 @@ import {
 } from "../../src/models/statusModel";
 import type { StepSignal } from "../../src/models/statusModel";
 
-/* ------------------------------------------------------------------ */
-/* The catalog is total                                                */
-/* ------------------------------------------------------------------ */
-
 test("every display status has exactly one definition", () => {
   const ids = DEFAULT_STATUS_CATALOG.map((entry) => entry.id);
   assert.deepEqual([...ids].sort(), [...STEP_DISPLAY_STATUSES].sort());
@@ -46,9 +42,6 @@ test("storable is the line between a stored status and a live overlay", () => {
 });
 
 test("an overlay cannot carry entry behaviour it will never reach", () => {
-  // An overlay is derived on every read and never written, so nothing can
-  // observe it being "entered". A configurable on-enter there would be a
-  // control that silently does nothing.
   for (const overlay of OVERLAY_STATUSES) {
     const definition = statusDefinition(DEFAULT_STATUS_CATALOG, overlay);
     assert.equal(definition.onEnter, "none", `${overlay} has entry behaviour that can never fire`);
@@ -60,15 +53,9 @@ test("no state is terminal without also being a way to finish", () => {
   const terminal = DEFAULT_STATUS_CATALOG.filter((entry) => entry.isTerminal).map((entry) => entry.id);
   assert.deepEqual([...terminal].sort(), ["DONE", "SKIPPED"]);
   for (const entry of DEFAULT_STATUS_CATALOG) {
-    // Terminal and blocks-parent are opposites by construction; a state that is
-    // both would deadlock a parent that can never close.
     assert.notEqual(entry.isTerminal, entry.blocksParent, `${entry.id} is both terminal and blocking`);
   }
 });
-
-/* ------------------------------------------------------------------ */
-/* The transition table is total, ordered, and reachable               */
-/* ------------------------------------------------------------------ */
 
 test("every signal is decided by some row", () => {
   for (const signal of STEP_SIGNALS) {
@@ -110,10 +97,6 @@ test("every row explains itself and names a known trigger", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* The behaviour the whole redesign exists to guarantee                */
-/* ------------------------------------------------------------------ */
-
 test("a run that ends without posting is never read as success or failure", () => {
   const row = matchStepTransition({ signal: "run_ended_no_post" });
   assert.ok(row !== null);
@@ -122,8 +105,6 @@ test("a run that ends without posting is never read as success or failure", () =
   assert.notEqual(row.to, "FAILED");
   assert.notEqual(row.to, "DONE");
   assert.notEqual(row.to, "BLOCKED");
-  // This is the invariant the pipeline's credibility rests on, so it must not
-  // be reachable through a settings screen.
   assert.equal(row.policy.kind, "locked");
 });
 
@@ -142,8 +123,6 @@ test("unfinished runs continue the same station rather than handing off or revie
     "handoff was removed from STEP_NEXT_ACTIONS",
   );
 
-  // An agent that stopped to ask a question parks for a human; it is never
-  // continued automatically.
   const blocked = matchStepTransition({ signal: "agent_posted_blocked", producedWork: true });
   assert.notEqual(blocked?.next, "continue");
 });
@@ -154,10 +133,6 @@ test("a status the agent posted itself is never overridden by a rule", () => {
     assert.equal(row?.policy.kind, "locked");
   }
 });
-
-/* ------------------------------------------------------------------ */
-/* Triggers and rollup                                                 */
-/* ------------------------------------------------------------------ */
 
 test("every trigger has a sentence", () => {
   for (const trigger of STATUS_TRIGGERS) {
@@ -176,7 +151,6 @@ test("an unknown trigger is passed through rather than dropped", () => {
 
 test("an operator's wording wins over the shipped sentence", () => {
   assert.equal(describeTrigger("agent_post", { agent_post: "The robot said so." }), "The robot said so.");
-  // A partial override still falls through for everything it does not mention.
   assert.equal(describeTrigger("run_crashed", { agent_post: "…" }), DEFAULT_TRIGGER_SENTENCES.run_crashed);
 });
 
@@ -187,20 +161,11 @@ test("a parent takes the worst outcome among its settled children", () => {
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, ["BLOCKED", "NEEDS_REVIEW"]), "NEEDS_REVIEW");
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, ["UNREPORTED", "BLOCKED"]), "UNREPORTED");
 
-  // Children that all finished cleanly propagate nothing, so the parent is free
-  // to close on its own definition of done rather than inheriting a state.
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, ["DONE", "SKIPPED"]), null);
   assert.equal(rollupStatus(DEFAULT_STATUS_CATALOG, []), null);
 });
 
-/* ------------------------------------------------------------------ */
-/* The definition of done                                              */
-/* ------------------------------------------------------------------ */
-
 test("every kind of criterion says what it is and how it is checked", () => {
-  // A kind an operator cannot tell apart from another is a kind they will pick
-  // wrongly, and the difference here is the whole point: one of the three
-  // cannot be argued with and the other two can.
   for (const kind of DOD_CRITERION_KINDS) {
     assert.ok(DOD_KIND_LABEL[kind]?.length > 0, `${kind} has no label`);
     assert.ok(DOD_KIND_HINT[kind]?.length > 30, `${kind} does not explain how it is checked`);
@@ -211,8 +176,6 @@ test("every kind of criterion says what it is and how it is checked", () => {
 });
 
 test("a command timeout cannot exceed what the server will honour", () => {
-  // The cap is a boundary, not tuning: an unbounded criterion is a console that
-  // hangs. The editor and the runner read it from here so they cannot disagree.
   assert.equal(clampDodTimeout(Number.MAX_SAFE_INTEGER), DOD_COMMAND_TIMEOUT_MAX_MS);
   assert.equal(clampDodTimeout(-1), 1_000);
 });
@@ -220,21 +183,14 @@ test("a command timeout cannot exceed what the server will honour", () => {
 test("the rule row an unmet definition of done lands on holds the line", () => {
   const row = matchStepTransition({ signal: "dod_unmet" });
   assert.ok(row !== null);
-  // It must not close the item, and it must not claim the work failed: neither
-  // was established. NEEDS_REVIEW is the honest answer and `park` is the honest
-  // next move.
   assert.equal(row.to, "NEEDS_REVIEW");
   assert.notEqual(row.to, "DONE");
   assert.notEqual(row.to, "FAILED");
   assert.equal(row.next, "park");
-  // The setting it defers to has to be one the rules panel can actually open.
   assert.equal(row.policy.kind, "setting");
 });
 
 test("every settings key a rule row defers to is one the pipeline policy group has", () => {
-  // The server's field table is the other half of this and cannot be imported
-  // from `shared`, so this pins the names and `settingsCoverage.test.ts` pins
-  // the group. Continuations replaced handoffTrigger.
   const known = new Set([
     "pipeline.pauseMode",
     "pipeline.onRestart",

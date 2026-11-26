@@ -10,13 +10,6 @@ import { useWorkspace } from "@/contexts/workspaceContext";
 import { workspaceApi, ApiError } from "@/api/workspacesApi";
 import { SERVER_URL } from "@/api/serverUrl";
 
-/**
- * Chat's thread library and open conversations, owned by the shell rather than
- * the `/` route. The sidebar collection and the conversation stage both read
- * this one controller, and leaving Chat does not discard open conversations,
- * queued messages or in-flight acceptance handling.
- */
-
 const STORAGE_KEY = "hydra.chat-tabs.v1";
 export interface WorkTab { id: string; workspaceId: number; title: string | null; updatedAt?: string }
 export interface ThreadHistory { loaded: boolean; loading: boolean; next: string | null; error: string | null }
@@ -41,7 +34,6 @@ function parseLink(search: string) {
 }
 
 export interface ChatController {
-  /** True once Chat has been opened in this page session. */
   started: boolean;
   tabs: WorkTab[];
   activeId: string | null;
@@ -66,7 +58,6 @@ export interface ChatController {
   loadHistory(tab: WorkTab, before?: string): Promise<void>;
   markRead(threadId: string, owner: number, timestamp: string): void;
   rename(tabId: string, title: string): void;
-  /** Applies a `?thread=&workspace=&prompt=` link that arrived after Chat started. */
   openLink(search: string): void;
 }
 
@@ -78,11 +69,6 @@ export function useChat(): ChatController {
   return value;
 }
 
-/**
- * `active` is true while the Chat section is on screen. The controller starts
- * on the first visit (so a deep link to another section never adopts Chat's
- * last workspace), and it polls the library only while Chat is visible.
- */
 export function ChatProvider({ active, children }: { active: boolean; children: ReactNode }) {
   const console_ = useHydra();
   const latestConsole = useRef(console_);
@@ -111,7 +97,7 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
   useEffect(() => {
     if(!active || hydrated) return;
     let stored: {tabs?:WorkTab[];activeId?:string;lastActive?:Record<number,string>} = {};
-    try { stored = JSON.parse(userLocalStorage.getItem(STORAGE_KEY) ?? "{}"); } catch { /* start with a new draft */ }
+    try { stored = JSON.parse(userLocalStorage.getItem(STORAGE_KEY) ?? "{}"); } catch {  }
     const valid = Array.isArray(stored?.tabs) ? stored.tabs.filter(tab => typeof tab.id === "string" && tab.id && Number.isSafeInteger(tab.workspaceId) && tab.workspaceId > 0 && (tab.title === null || typeof tab.title === "string")) : [];
     const link = parseLink(location.search);
     if (link.thread && link.owner !== null && !valid.some(tab => tab.id === link.thread)) valid.push({id:link.thread,workspaceId:link.owner,title:null});
@@ -125,7 +111,7 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
 
   useEffect(() => {
     if(!hydrated) return;
-    try { userLocalStorage.setItem(STORAGE_KEY,JSON.stringify({tabs,activeId,lastActive:lastActive.current})); } catch { /* drafts remain usable */ }
+    try { userLocalStorage.setItem(STORAGE_KEY,JSON.stringify({tabs,activeId,lastActive:lastActive.current})); } catch {  }
   },[tabs,activeId,hydrated]);
 
   useEffect(() => {
@@ -162,8 +148,6 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
     finally { if(request === libraryRequest.current) setLoading(false); }
   },[workspaceId,query,archived]);
 
-  // Search is server-side over titles. Poll only summaries, never every
-  // transcript, and only while the Chat collection is on screen.
   useEffect(() => {
     if(!active) return;
     const timer = setTimeout(() => { void refreshLibrary(); },180);
@@ -188,7 +172,6 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
       try { page = await workspaceApi.threadHistory(SERVER_URL,tab.workspaceId,tab.id,before); }
       catch(error) {
         if(!(error instanceof ApiError) || error.status !== 404 || before) throw error;
-        // Pipeline's Open in Chat uses the run identity, including saved/legacy runs.
         const session = await workspaceApi.session(SERVER_URL,tab.id);
         if(session.workspaceId !== tab.workspaceId) throw new Error("Conversation belongs to another workspace");
         page = {sessions:[session],next:null};
@@ -196,7 +179,6 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
       latestConsole.current.restoreThread(tab.id,page.sessions);
       setHistory(current => ({...current,[tab.id]:{loaded:true,loading:false,next:page.next,error:null}}));
     } catch(error) {
-      // A local unsent draft has no durable row yet.
       const local = error instanceof ApiError && error.status === 404 && !records[tab.id] && tab.id.startsWith("work-");
       setHistory(current => ({...current,[tab.id]:{loaded:local,loading:false,next:null,error:local ? null : error instanceof Error ? error.message : "Could not restore conversation"}}));
     } finally { inFlight.current.delete(tab.id); }
@@ -208,7 +190,6 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
     else setHistory(current => ({...current,[activeTab.id]:{...emptyHistory,loaded:true}}));
   },[activeTab,history,records,loadHistory,deepLink]);
 
-  // Only the Chat route owns `?thread=` and the document title.
   useEffect(() => {
     if(!active || !activeTab) return;
     const url = new URL(location.href);
@@ -285,7 +266,6 @@ export function ChatProvider({ active, children }: { active: boolean; children: 
       const title = tab.title ?? "New chat";
       if(!archived && title.toLowerCase().includes(query.toLowerCase())) result.set(tab.id,{id:tab.id,workspaceId:tab.workspaceId,title,pinned:false,archived:false,unread:false,updatedAt:tab.updatedAt ?? "1970-01-01T00:00:00.000Z",lastReplyAt:null,lastReadAt:null,local:true});
     }
-    // Running and waiting conversations remain discoverable even if archived or filtered.
     for(const run of console_.runs) {
       if(run.workspace.id !== workspaceId) continue;
       const id = console_.runTabIds[run.runId] ?? (run.source.type === "custom" ? run.source.threadId : undefined) ?? run.runId;

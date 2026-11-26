@@ -7,27 +7,12 @@ import type { ProviderId, ProviderInfo } from "@hydra/shared";
 import { isProviderId } from "@hydra/shared";
 import { modelChoice } from "@/features/providers/lib/modelChoice";
 
-/**
- * Which model each provider should run with. A key that is *present* with the
- * value `null` means "explicitly use the provider's own default" (send no `-m`);
- * a key that is *absent* means the user has not chosen yet, so the model
- * configured in settings is used instead. That distinction is why this is a
- * Partial map rather than a plain Record with nulls.
- */
 export type ModelChoices = Partial<Record<ProviderId, string | null>>;
 
 const STORAGE_KEY = "hydra.models";
 
-/*
- * localStorage is an external store, so it is read through
- * useSyncExternalStore rather than an effect: React then handles the
- * server-renders-empty / client-renders-stored difference itself, and a change
- * made in another tab propagates here through the `storage` event.
- */
-
 const EMPTY: ModelChoices = {};
 
-/** getSnapshot must be referentially stable, so the parsed value is memoized. */
 let cache: ModelChoices = EMPTY;
 let cacheRaw: string | null = null;
 const listeners = new Set<() => void>();
@@ -49,8 +34,6 @@ function parse(raw: string | null): ModelChoices {
     }
     return result;
   } catch {
-    // A corrupt value is not a reason to take the console down over a UI
-    // preference; fall back to "nothing pinned".
     return EMPTY;
   }
 }
@@ -59,7 +42,6 @@ function readRaw(): string | null {
   try {
     return userLocalStorage.getItem(STORAGE_KEY);
   } catch {
-    // Private mode or storage disabled by policy.
     return null;
   }
 }
@@ -73,14 +55,12 @@ function getSnapshot(): ModelChoices {
   return cache;
 }
 
-/** Nothing is pinned during SSR — the same value every render, as required. */
 function getServerSnapshot(): ModelChoices {
   return EMPTY;
 }
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  // Another tab writing the key should move this tab's switcher too.
   window.addEventListener("storage", listener);
   return () => {
     listeners.delete(listener);
@@ -92,8 +72,6 @@ function write(next: ModelChoices): void {
   try {
     userLocalStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // Not being able to remember the choice is not a reason to reject it, so
-    // seed the cache directly and carry on for this session.
     cacheRaw = null;
     cache = next;
   }
@@ -101,25 +79,14 @@ function write(next: ModelChoices): void {
 }
 
 export interface ModelSelection {
-  /** The model to run `provider` with, after the settings fallback. */
   resolve(provider: ProviderId): string | null;
-  /** True when the user has picked a model rather than inheriting settings. */
   isPinned(provider: ProviderId): boolean;
-  /** True when the server owns model selection and ignores manual choices. */
   isAuto(provider: ProviderId): boolean;
-  /** Raw saved browser pin, including choices currently locked by policy. */
   configured(provider: ProviderId): string | null | undefined;
-  /** Pin a model (`null` pins "provider default"). */
   select(provider: ProviderId, model: string | null): void;
-  /** Drop the pin so the provider follows its settings value again. */
   clear(provider: ProviderId): void;
 }
 
-/**
- * Model choices live here rather than in the settings file: switching models
- * mid-session is a per-run decision, and writing it back to settings would
- * silently rewrite the configured default for every other tab.
- */
 export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
   const choices = useSyncExternalStore(
     subscribe,
@@ -132,7 +99,6 @@ export function useModelSelection(providers: ProviderInfo[]): ModelSelection {
       const info = providers.find((entry) => entry.id === provider);
       if (info === undefined) return choices[provider] ?? null;
       const choice = modelChoice(info, choices[provider]);
-      // A null browser choice sends no override; the server still applies its current default.
       return choice.active ? (choice.configured ?? null) : info.model;
     },
     [choices, providers],

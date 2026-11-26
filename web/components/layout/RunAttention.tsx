@@ -2,7 +2,6 @@
 
 import { useHydra } from "@/hooks/useHydra";
 
-/** Counts for the sidebar summary and the collapsed/mobile navigation trigger. */
 export function useAttentionCounts() {
   const { runs, inputRequests } = useHydra();
   return { running: runs.length, decisions: Object.keys(inputRequests).length };

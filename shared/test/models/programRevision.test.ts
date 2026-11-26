@@ -5,7 +5,6 @@ import { canApplyProgramDraft, normalizeProgramDraftBody, type ProgramDraftBody 
 
 const VERIFY = "Do it.\n\n## Verify\n\n```sh\nnpm test\n```\n";
 
-/** Normalized, as the server builds it: a baseline is always what a save would store. */
 function baseline(): ProgramDraftBody {
   const normalized = normalizeProgramDraftBody(rawBaseline(), { revision: true });
   assert.ok(normalized.ok);

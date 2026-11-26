@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-/**
- * Builds every Hydra brand asset from two sources of truth: the parametric
- * mark geometry below and the outlined wordmark in `source/wordmark.json`.
- *
- *   node brand/build.mjs
- *
- * Writes brand/logo/*.svg, brand/icons/*, the web app's icon files
- * (web/app/{favicon.ico,icon.svg,apple-icon.png}, web/public/brand/*) and the
- * geometry module the app renders inline (web/components/brand/geometry.ts).
- * Never hand-edit those outputs: change a parameter here and rebuild, so the
- * favicon, the sidebar mark and the brand book can never drift apart.
- *
- * Only dependency is `sharp`, which Next already installs at the repo root.
- */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,37 +13,21 @@ const out = (path, data) => {
   console.log("  wrote", path);
 };
 
-/* -------------------------------------------------------------------------- */
-/* Palette                                                                     */
-/* -------------------------------------------------------------------------- */
-
-// Every brand colour is an existing theme token; see brand/README.md.
 export const PALETTE = {
-  cyan: "#38d9f0", // Hydra Cyan — Midnight/Deep --accent
-  violet: "#b39bf8", // Venom Violet — Midnight/Deep --violet
-  deepCyan: "#0d7287", // Daylight --accent
-  deepViolet: "#6b4bd6", // Daylight --violet
-  abyss: "#12151c", // Midnight --surface-0
-  trench: "#0b0d10", // Deep --surface-0
-  plate: "#1d2230", // Midnight --surface-2
-  bone: "#e8edf7", // Midnight --fg
-  ink: "#0f1520", // Daylight --fg
-  paper: "#f5f7fb", // Daylight --surface-0
+  cyan: "#38d9f0",
+  violet: "#b39bf8",
+  deepCyan: "#0d7287",
+  deepViolet: "#6b4bd6",
+  abyss: "#12151c",
+  trench: "#0b0d10",
+  plate: "#1d2230",
+  bone: "#e8edf7",
+  ink: "#0f1520",
+  paper: "#f5f7fb",
 };
-// Head order = PROVIDER_IDS order; colours = Midnight --agent-* tokens.
 const AGENTS = ["#f0a97a", "#5ee9a4", "#62b8f5", "#f57fa8", "#b087f0", "#ffd166"];
 
-/* -------------------------------------------------------------------------- */
-/* Mark geometry                                                               */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Six necks leave a hexagonal core at 60° intervals and curl clockwise, each
- * ending in an elongated head aimed along its neck. The necks start inside the
- * core so the body reads as one animal, not six things orbiting a dot.
- */
 const FULL = { r0: 6, r1: 15, r2: 23, rh: 22, sweep: 58, bend: 18, neck: 4.6, hx: 5.7, hy: 4.7, push: 1.3, core: 6, eye: 1.2 };
-/** The small cut: heavier necks and rounder heads so 16 px still reads as six. */
 const SMALL = { ...FULL, neck: 5.6, hx: 6.1, hy: 5.6, push: 0.8, rh: 21.5, sweep: 54, core: 6.6 };
 
 const rad = (d) => (d * Math.PI) / 180;
@@ -74,8 +44,6 @@ function geometry(o) {
     const c2 = at(o.r2, a + o.sweep - o.bend);
     const p3 = at(o.rh, a + o.sweep);
     necks.push(`M${n(p0[0])} ${n(p0[1])}C${n(c1[0])} ${n(c1[1])} ${n(c2[0])} ${n(c2[1])} ${n(p3[0])} ${n(p3[1])}`);
-    // The head points along the neck's final tangent; the eye sits forward and
-    // to the outside of the curl, which is what makes each one look outward.
     const len = Math.hypot(p3[0] - c2[0], p3[1] - c2[1]);
     const ux = (p3[0] - c2[0]) / len;
     const uy = (p3[1] - c2[1]) / len;
@@ -95,10 +63,6 @@ const full = geometry(FULL);
 const small = geometry(SMALL);
 
 let ids = 0;
-/**
- * The mark as SVG markup inside a 64×64 box.
- * fill: one colour, "gradient", or an array of six (one per head).
- */
 function mark(g, { fill, core, eyes = true, gradient = [PALETTE.cyan, PALETTE.violet], x = 0, y = 0, scale = 1 }) {
   const id = `h${ids++}`;
   const defs = [];
@@ -108,7 +72,6 @@ function mark(g, { fill, core, eyes = true, gradient = [PALETTE.cyan, PALETTE.vi
     paint = () => `url(#${id}g)`;
   }
   if (eyes) {
-    // A mask, not a painted dot: the eye is a hole, so the mark sits on any background.
     defs.push(`<mask id="${id}m" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/>${g.heads.map((h) => `<circle cx="${h.ex}" cy="${h.ey}" r="${g.eye}" fill="#000"/>`).join("")}</mask>`);
   }
   const body = [
@@ -120,15 +83,10 @@ function mark(g, { fill, core, eyes = true, gradient = [PALETTE.cyan, PALETTE.vi
   return `${defs.length ? `<defs>${defs.join("")}</defs>` : ""}<g${transform}><g${eyes ? ` mask="url(#${id}m)"` : ""}>${body}</g></g>`;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Wordmark                                                                    */
-/* -------------------------------------------------------------------------- */
-
 const word = JSON.parse(readFileSync(join(here, "source/wordmark.json"), "utf8"));
 const WORD_W = word.bbox.x2 - word.bbox.x1;
 const WORD_H = word.bbox.y2 - word.bbox.y1;
 
-/** The wordmark placed with its x-height band's left edge at (x, baseline). */
 function wordmark({ fill, x, baseline, scale }) {
   return `<path transform="translate(${n(x - word.bbox.x1 * scale)} ${n(baseline)}) scale(${n(scale * 10000) / 10000})" d="${word.d}" fill="${fill}"/>`;
 }
@@ -136,14 +94,6 @@ function wordmark({ fill, x, baseline, scale }) {
 const svg = (w, h, inner, title) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${title}"><title>${title}</title>${inner}</svg>\n`;
 
-/* -------------------------------------------------------------------------- */
-/* Lockups                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Horizontal lockup. The wordmark's x-height is centred on the core, and the
- * gap between mark and word is one head length (12 units at 64).
- */
 function horizontal({ markFill, gradient, wordFill }) {
   const s = 0.33;
   const baseline = 32 + (word.xHeight * s) / 2;
@@ -160,15 +110,6 @@ function stacked({ markFill, gradient, wordFill }) {
   return svg(width, height, mark(full, { fill: markFill, gradient, x: markX }) + wordmark({ fill: wordFill, x: (width - WORD_W * s) / 2, baseline, scale: s }), "Hydra");
 }
 
-/* -------------------------------------------------------------------------- */
-/* App icon                                                                    */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The app tile: an Abyss plate lit from above, a soft cyan bloom behind the
- * core, and the gradient mark. `shape` is "rounded" for general use, "square"
- * for platforms that apply their own mask (Apple touch, maskable PWA).
- */
 function appIcon({ shape = "rounded", markScale = 0.72, geometry: g = full, eyes = true, bloom = true }) {
   const size = 1024;
   const r = shape === "rounded" ? 230 : 0;
@@ -185,17 +126,14 @@ ${bloom ? `<circle cx="512" cy="512" r="${n(size * markScale * 0.62)}" fill="url
 ${mark(g, { fill: "gradient", eyes, x: offset, y: offset, scale: ms })}`, "Hydra");
 }
 
-/** Favicon tile: flat plate, small-cut mark, no gradient — crisp at 16 px. */
 function faviconTile() {
   return svg(64, 64, `<rect width="64" height="64" rx="14" fill="${PALETTE.abyss}"/>${mark(small, { fill: PALETTE.cyan, eyes: false, x: 4, y: 4, scale: 56 / 64 })}`, "Hydra");
 }
 
-/** The browser-tab icon. Follows the OS colour scheme, transparent background. */
 function tabIcon() {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>.m{fill:${PALETTE.deepCyan};stroke:${PALETTE.deepCyan}}@media (prefers-color-scheme:dark){.m{fill:${PALETTE.cyan};stroke:${PALETTE.cyan}}}</style><g class="m">${small.necks.map((d) => `<path d="${d}" fill="none" stroke-width="${small.neck}" stroke-linecap="round"/>`).join("")}${small.heads.map((h) => `<ellipse cx="${h.cx}" cy="${h.cy}" rx="${small.hx}" ry="${small.hy}" transform="rotate(${h.angle} ${h.cx} ${h.cy})" stroke="none"/>`).join("")}<path d="${small.core}" stroke="none"/></g></svg>\n`;
 }
 
-/** README / social banner, 1280×640. */
 function banner() {
   const s = 1.05;
   const markScale = 5.2;
@@ -217,11 +155,6 @@ ${wordmark({ fill: PALETTE.bone, x: wordX, baseline, scale: s })}
 <text x="${wordX + 4}" y="${baseline + 118}" fill="#8892a4" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="20" letter-spacing="1">claude · codex · cursor · grok · copilot · kilo</text>`, "Hydra — Many heads. One console.");
 }
 
-/* -------------------------------------------------------------------------- */
-/* ICO                                                                         */
-/* -------------------------------------------------------------------------- */
-
-/** A Vista+ ICO: a directory of embedded PNGs, which every current browser reads. */
 function ico(pngs) {
   const header = Buffer.alloc(6 + 16 * pngs.length);
   header.writeUInt16LE(0, 0);
@@ -242,10 +175,6 @@ function ico(pngs) {
 }
 
 const png = (svgText, size) => sharp(Buffer.from(svgText), { density: 384 }).resize(size, size).png({ compressionLevel: 9 }).toBuffer();
-
-/* -------------------------------------------------------------------------- */
-/* Build                                                                       */
-/* -------------------------------------------------------------------------- */
 
 console.log("Hydra brand build");
 
@@ -270,7 +199,6 @@ for (const [name, text] of Object.entries(logo)) out(`brand/logo/${name}`, text)
 
 const tile = appIcon({});
 const square = appIcon({ shape: "square", markScale: 0.66 });
-// Maskable icons are cropped to a circle of 80% diameter; keep the mark inside it.
 const maskable = appIcon({ shape: "square", markScale: 0.54 });
 const fav = faviconTile();
 
@@ -282,7 +210,6 @@ const favicon = ico(await Promise.all([16, 32, 48].map(async (size) => ({ size, 
 out("brand/icons/favicon.ico", favicon);
 out("brand/icons/hydra-banner.png", await sharp(Buffer.from(logo["hydra-banner.svg"])).png({ compressionLevel: 9 }).toBuffer());
 
-// The web app's copies. Next's file conventions pick up app/{favicon,icon,apple-icon}.
 out("web/app/favicon.ico", favicon);
 out("web/app/icon.svg", tabIcon());
 out("web/app/apple-icon.png", await png(square, 180));
@@ -290,7 +217,6 @@ out("web/public/brand/hydra-icon-192.png", await png(tile, 192));
 out("web/public/brand/hydra-icon-512.png", await png(tile, 512));
 out("web/public/brand/hydra-maskable-512.png", await png(maskable, 512));
 
-// Geometry for the inline React mark, so the app renders the same curves.
 out("web/components/brand/geometry.ts", `/**
  * Generated by brand/build.mjs — do not edit. Change the parameters there and
  * run \`node brand/build.mjs\`, so the app's inline mark and the logo files stay
@@ -309,7 +235,6 @@ export const MARK_SMALL: MarkGeometry = ${JSON.stringify(small)};
 export const WORDMARK = { d: ${JSON.stringify(word.d)}, x: ${word.bbox.x1}, y: ${word.bbox.y1}, width: ${WORD_W}, height: ${n(WORD_H)} } as const;
 `);
 
-// The brand book's living-mark demo draws from the same geometry.
 const book = join(here, "guidelines.html");
 const marker = /\/\* geometry:start[^\n]*\n[\s\S]*?\/\* geometry:end \*\//;
 const html = readFileSync(book, "utf8");

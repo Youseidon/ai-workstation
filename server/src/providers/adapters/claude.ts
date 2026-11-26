@@ -33,11 +33,6 @@ export const CLAUDE_CONSULT_DISALLOWED_TOOLS = [
   "NotebookEdit",
 ] as const;
 
-/**
- * The Agent SDK launches its own Claude Code, not the `claude` binary on PATH.
- * Older SDK bundles reject the newer `--effort` flag before a session is
- * created, so `supportsEffort` describes the SDK that will receive the argument.
- */
 export function claudeEffortExtraArgs(
   effort: "low" | "medium" | "high",
   supportsEffort: boolean,
@@ -45,7 +40,6 @@ export function claudeEffortExtraArgs(
   return supportsEffort ? { effort } : {};
 }
 
-/** Per-run Claude permission flags. */
 export function claudePermissionConfig(override: PermissionOverride): {
   permissionMode: string;
   allowDangerouslySkipPermissions: boolean;
@@ -69,12 +63,6 @@ export function claudePermissionConfig(override: PermissionOverride): {
   };
 }
 
-/*
- * Claude Code runs in-process through the Agent SDK's async generator — there is
- * no CLI to spawn. The prompt is supplied as an async iterable (streaming input
- * mode) because `Query.interrupt()` is only available in that mode.
- */
-
 interface ContentBlock {
   type?: string;
   text?: string;
@@ -94,12 +82,6 @@ interface RawUsage {
   cache_creation_input_tokens?: number;
 }
 
-/*
- * The Anthropic API reports cache reads/writes separately from `input_tokens`,
- * while Codex folds them in. `inputTokens` is normalized to "all input tokens
- * processed" so the counter in the status bar means the same thing whichever
- * provider is running; `cachedInputTokens` keeps the cached share visible.
- */
 function toUsage(raw: RawUsage | undefined): TokenUsage | null {
   if (!raw) return null;
   const cached = raw.cache_read_input_tokens ?? 0;
@@ -145,7 +127,6 @@ function stringifyContent(content: unknown): string {
   return JSON.stringify(content, null, 2);
 }
 
-/** A one-line description of a tool call, mirroring Claude Code's own summaries. */
 function summarizeToolInput(name: string, input: unknown): string {
   const record = (input ?? {}) as Record<string, unknown>;
   const pick = (key: string): string | null =>
@@ -175,7 +156,6 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly label = "Claude Code";
   readonly transport = "sdk" as const;
   readonly reportsTokens = true;
-  // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(effectiveClaudePermissionMode());
   }
@@ -187,20 +167,30 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly processes = new Map<string, { child: ChildProcess; plan: SpawnPlan }>();
 
   async checkAvailability(): Promise<AvailabilityReport> {
-    const version = await this.getVersion();
-    if (settings.claude.apiKey !== null || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      return { available: true, reason: null, version, binary: null };
+    let version: string | null;
+    try {
+      const sdk = await loadClaudeSdk();
+      version = sdk.version ? `agent-sdk ${sdk.version}` : null;
+    } catch {
+      return {
+        installed: false, available: false,
+        reason: "Claude Agent SDK is not installed or could not be loaded. Install it from Agents configuration.",
+        version: null, binary: null,
+      };
     }
-    // A Claude Code subscription login also authenticates the SDK.
+    if (settings.claude.apiKey !== null || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      return { installed: true, available: true, reason: null, version, binary: null };
+    }
     const { existsSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { homedir } = await import("node:os");
     const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
     if (existsSync(join(configDir, ".credentials.json"))) {
-      return { available: true, reason: null, version, binary: null };
+      return { installed: true, available: true, reason: null, version, binary: null };
     }
     return {
       available: false,
+      installed: true,
       reason: "ANTHROPIC_API_KEY not set and no Claude Code login found — set the key or run `claude` once to log in",
       version,
       binary: null,
@@ -357,9 +347,6 @@ export class ClaudeAdapter implements AgentAdapter {
         },
       };
     }
-    // Continue the same conversation rather than replaying its context: the
-    // wrap-up turn after a budget stop is only cheap because the session
-    // already holds everything the run learned.
     if (typeof opts.resumeSessionId === "string" && opts.resumeSessionId !== "") {
       options.resume = opts.resumeSessionId;
     }
@@ -370,7 +357,6 @@ export class ClaudeAdapter implements AgentAdapter {
       options.env = { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey };
     }
 
-    // Streaming input mode: one message, then the iterable ends and the turn runs.
     async function* promptStream(): AsyncGenerator<SDKUserMessage> {
       yield {
         type: "user",
@@ -382,11 +368,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     let session: Query;
     try {
-      // Loaded per run, so an SDK updated from the Agents page is picked up
-      // without a restart.
       const sdk = await loadClaudeSdk();
-      // extraArgs reach the SDK's own CLI, which may be older than the system
-      // `claude` command and therefore not know the current flag.
       options.extraArgs = claudeEffortExtraArgs(settings.reasoningEffortFor("claude"), sdk.supportsEffort);
       session = sdk.query({ prompt: promptStream(), options }) as Query;
     } catch (error) {
@@ -481,8 +463,6 @@ export class ClaudeAdapter implements AgentAdapter {
     const session = this.queries.get(runId);
     const startedAt = Date.now();
     try {
-      // The control request can hang if the CLI is mid-tool; the runner's
-      // abort signal is the backstop, so give up quickly either way.
       if (session) {
         await Promise.race([
           session.interrupt(),
@@ -490,7 +470,6 @@ export class ClaudeAdapter implements AgentAdapter {
         ]);
       }
     } catch {
-      // Fall through: the run's AbortController will tear the session down.
     }
     const tracked = this.processes.get(runId);
     if (!tracked || tracked.child.exitCode !== null || tracked.child.signalCode !== null) return;
@@ -516,9 +495,6 @@ export function* mapClaudeMessage(message: SDKMessage, state: MapperState): Gene
           payload: {
             state: "running",
             detail: `${message.model} · ${message.tools.length} tools · ${message.permissionMode}`,
-            // The SDK's own session id, banked on the init message: it is
-            // what `resume` takes, and a budget stop aborts the query long
-            // before any result message would carry it.
             sessionId: message.session_id ?? null,
           },
         };
@@ -562,7 +538,6 @@ export function* mapClaudeMessage(message: SDKMessage, state: MapperState): Gene
           const text = block.type === "text" ? block.text : block.thinking;
           if (typeof text !== "string" || text === "") continue;
           if (block.type === "text") state.setText(text);
-          // Skip blocks already delivered as deltas — the browser has them.
           if (state.streamedBlocks.get(blockId) === text) continue;
           state.streamedBlocks.set(blockId, text);
           yield {
@@ -768,6 +743,5 @@ function persistClaudeOAuth(next: ClaudeOAuth): void {
     };
     writeJsonAtomic(path, parsed);
   } catch {
-    // A failed write leaves the previous file in place; the in-memory token still works this request.
   }
 }

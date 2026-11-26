@@ -1,7 +1,3 @@
-/**
- * Execute-context diet: section order, caps, AGENTS.md dedupe, parent block,
- * protocol/progress size bounds. Snapshot-free — each test names the claim.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -187,7 +183,6 @@ test("protocol and progress sections stay under their byte bounds", () => {
   const progress = progressApiMarkdown({
     runId: "r1", token: "tok", port: 4000, canDecompose: true, shimPath: "/tmp/x/agent-step",
   });
-  // 1 KB of contract plus the operator-inbox lines; still one screen.
   assert.ok(Buffer.byteLength(progress) < 1400, `progress was ${Buffer.byteLength(progress)} bytes`);
   assert.match(progress, /inbox/);
   assert.match(progress, /reply --text/);
@@ -286,7 +281,6 @@ test("agentContext supplies parent, stopped remarks, and no AGENT_RESPONSE by de
     title: "Parent station", content: "Parent body with enough detail.",
   }) as PromptRecord;
 
-  // Drive a real decompose so parent/siblings/resumeBrief are the production shape.
   const runId = newId("run");
   const credential = runContexts.create(runId, workspace.id, parent.id);
   workspaces.beginAgentRun({

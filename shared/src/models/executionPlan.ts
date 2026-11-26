@@ -1,4 +1,3 @@
-/** Durable execution contracts are versioned separately from provider sessions. */
 export type ExecutionPhase = "implementation" | "verification" | "delivered";
 export type ExecutionDesiredState = "RUNNING" | "PAUSED" | "STOPPED";
 export interface ExecutionPolicy {
@@ -75,7 +74,6 @@ export function validateExecutionPolicy(policy: ExecutionPolicy, now = Date.now(
   if (policy.recoveryAttempts >= policy.maxAttempts) throw new Error("Recovery reserve leaves no worker capacity");
 }
 
-/** A replan can change ownership of remaining work, never the contract. */
 export function validateExecutionPlan(
   criteria: readonly ContractCriterion[], plan: ExecutionPlan,
   previous?: ExecutionPlan, accepted: readonly number[] = [], maxUnits = 157, preserveTargets=true,
@@ -120,7 +118,6 @@ export function validateExecutionPlan(
     const after = plan.units.find(u => u.promptId === id);
     if (!before || JSON.stringify(before) !== JSON.stringify(after)) throw new Error("Replan reopens accepted scope");
   }
-  // Verification cannot be needed to implement the thing it verifies.
   for (const unit of plan.units.filter(u => u.phase === "implementation")) {
     if (unit.dependencies.some(id => plan.units.find(u => u.promptId === id)!.phase === "verification")) throw new Error("Implementation depends on deferred verification");
   }

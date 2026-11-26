@@ -18,8 +18,6 @@ test("v43 upgrade preserves legacy history and an isolated backup restores and u
     run("seed");
     const db=new Database(path);
     const before=counts(db);
-    // Construct a v43 fixture from this disposable DB only. This is not a
-    // production rollback path, and no live database is opened by this test.
     db.pragma("foreign_keys = OFF");
     db.transaction(()=>{
       for(const table of ["shared_verification","command_task","execution_wakeup","budget_ledger","recovery_case","execution_lease","dispatch_outbox","execution_event","work_unit_meta","execution_plan","delivery_contract_version","delivery_contract"])db.exec(`DROP TABLE ${table}`);

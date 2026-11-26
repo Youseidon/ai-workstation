@@ -10,11 +10,6 @@ const EMPTY: Pick<WorkspaceGitContext, "branch" | "head" | "dirty" | "ahead" | "
   behind: 0,
 };
 
-/**
- * Reads branch, revision and working-tree state in one Git process. Porcelain
- * v2 is intended for machines, so this stays stable across Git versions and
- * avoids scraping the human-facing `git status` text.
- */
 export function workspaceGitContext(workDirectory: string): WorkspaceGitContext {
   if (!existsSync(workDirectory)) return { state: "unavailable", ...EMPTY };
 
@@ -30,8 +25,6 @@ export function workspaceGitContext(workDirectory: string): WorkspaceGitContext 
     },
   );
 
-  // Some process sandboxes attach a warning to `error` even when Git ran and
-  // returned usable output, so a successful exit status remains authoritative.
   if (result.status !== 0) {
     const stderr = result.stderr ?? "";
     return stderr.includes("not a git repository")

@@ -7,15 +7,6 @@ import { useToast } from "@/components/ui/Toast";
 import { SERVER_URL } from "@/api/serverUrl";
 import { workspaceApi } from "@/api/workspacesApi";
 
-/**
- * `/btw` to an agent that is already working. Accepts the message with or
- * without a leading `/btw`. The conversation itself (your note, its delivery,
- * the agent's reply) appears in the run's transcript in Chat.
- *
- * Providers with a live input channel (Codex today) get the note mid-turn.
- * Every other provider gets it on its next `agent-step` call, unless the
- * operator asks to interrupt and deliver it now.
- */
 export function BtwBar({
   runId,
   provider,
@@ -25,9 +16,7 @@ export function BtwBar({
 }: {
   runId: string;
   provider: ProviderId;
-  /** Interrupt & deliver restarts a pipeline station; outside a pipeline there is nothing to restart it. */
   canInterrupt: boolean;
-  /** Extra controls at the end of the row, e.g. "Open in Chat". */
   trailing?: ReactNode;
   autoFocus?: boolean;
 }) {

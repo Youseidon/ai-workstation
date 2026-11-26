@@ -6,7 +6,6 @@ import { providerTheme } from "@/features/providers/lib/providerTheme";
 import { useHydra } from "@/hooks/useHydra";
 import { useModelSelection } from "@/features/providers/hooks/useModelSelection";
 
-/** 6_666_667 → "6.7M". Three significant figures is already false precision here. */
 export function compactTokens(count: number): string {
   if (count >= 1_000_000) return `${Math.round(count / 100_000) / 10}M`;
   if (count >= 1000) return `${Math.round(count / 1000)}k`;
@@ -17,13 +16,10 @@ export interface SpendShare {
   provider: ProviderId;
   label: string;
   model: string | null;
-  /** Null when this provider has no price to convert with. */
   tokens: number | null;
-  /** Dollars per million input tokens, for the tooltip. */
   rate: number | null;
 }
 
-/** What one spend cap buys on each agent that can run, at the model it would use. */
 export function spendShares(usd: number, providers: ProviderInfo[], resolve: (id: ProviderId) => string | null): SpendShare[] {
   return providers
     .filter((provider) => provider.available)
@@ -39,11 +35,6 @@ export function spendShares(usd: number, providers: ProviderInfo[], resolve: (id
     });
 }
 
-/**
- * The spend cap, translated. The setting is one number of dollars; each agent
- * is held to the tokens that money buys at its own model's price, and this is
- * that conversion laid out so the cap never has to be read as a token count.
- */
 export function SpendMap({ usd }: { usd: number }) {
   const { providers } = useHydra();
   const models = useModelSelection(providers);

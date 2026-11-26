@@ -139,7 +139,7 @@ export function CreditsLine({
   );
 }
 
-function windowLabel(window: ProviderUsageWindow): string {
+export function windowLabel(window: ProviderUsageWindow): string {
   if (window.kind === "session" && window.durationMinutes !== null) {
     const hours = window.durationMinutes / 60;
     if (hours >= 1 && Math.abs(hours - Math.round(hours)) < 0.05)

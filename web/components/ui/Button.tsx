@@ -7,8 +7,6 @@ import { Spinner } from "./Spinner";
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
 export type ButtonSize = "sm" | "md" | "lg";
 
-/* Tailwind cannot build class names at runtime, so every variant is spelled
-   out. The tone colours come from theme tokens, so these survive a theme swap. */
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
     "bg-accent/15 text-accent ring-1 ring-inset ring-accent/40 hover:bg-accent/25 hover:ring-accent/60 active:bg-accent/30",
@@ -30,11 +28,9 @@ const SIZES: Record<ButtonSize, string> = {
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
-  /** Shows a spinner and blocks interaction without collapsing the layout. */
   loading?: boolean;
   iconLeft?: ReactNode;
   iconRight?: ReactNode;
-  /** Square, label-less button. Requires `aria-label` from the caller. */
   iconOnly?: boolean;
 }
 
@@ -66,7 +62,6 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         "disabled:pointer-events-none disabled:opacity-40",
         VARIANTS[variant],
         SIZES[size],
-        // `px-0!` so the size padding above cannot squeeze the icon.
         iconOnly && (size === "sm" ? "w-7 px-0!" : size === "md" ? "w-9 px-0!" : "w-11 px-0!"),
         className,
       )}

@@ -39,7 +39,6 @@ interface Props {
   onRead?(timestamp:string): void;
 }
 
-/** One mounted tab. Inactive tabs stay mounted so their draft and context are preserved. */
 export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTitle, hasEarlier, historyLoading, historyError, onLoadEarlier, onRead }: Props) {
   const console_ = useHydra();
   const { providers, connection, operationsRevision } = console_;
@@ -70,8 +69,6 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   }, [refreshPrompts, operationsRevision]);
 
   useEffect(() => {
-    // Only the explicit run link adopts a non-chat run. Merely opening a draft
-    // must not absorb unrelated Pipeline or Activity work in this workspace.
     if (console_.runs.some((run) => run.runId === tabId)) console_.claimRun(tabId, tabId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the console method changes with its state
   }, [tabId, workspaceId, liveRunIdentity]);
@@ -90,8 +87,6 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
   const running = writerRun !== null;
   const ownsWriter = writerRun !== null && console_.runTabIds[writerRun.runId] === tabId;
   const starting = console_.pendingLaunches.some((launch) => launch.tabId === tabId && launch.role === "execute");
-  // A tab holds one run at a time, so its single transcript never interleaves
-  // a writer with an Ask. Parallel research belongs in another tab.
   const asking = consults.length > 0
     || console_.pendingLaunches.some((launch) => launch.tabId === tabId && launch.role === "consult");
   const writingHere = ownsWriter || starting;
@@ -152,7 +147,6 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
 
   const send = (prompt: string) => {
     if (runBlockedReason) { toast.error("Could not start the run", runBlockedReason); return; }
-    // The socket can announce a run between render and click; enforce the rules here too.
     if (asking) {
       toast.error("Ask already running in this tab", "Wait for it to finish, or open another tab.");
       return;
@@ -173,8 +167,6 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
       toast.error("Could not start the run", "The agent connection is unavailable.");
       return;
     }
-    // A thread keeps the title of its opening turn; follow-ups should not look
-    // like a newly opened tab merely because their question is different.
     if (writerItems.length === 0) onTitle(savedPrompt?.title ?? conversationTitle(prompt));
   };
 
@@ -213,7 +205,6 @@ export function ChatWorkspace({ tabId, workspace, visible, initialPromptId, onTi
     queueSending.current = false;
     }, 0);
     return () => clearTimeout(timer);
-    // Revalidate against the current render before executing a queued request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queued, connection, selected, models, workspaceId, freshContext, selectedInfo?.permissionMode, savedPromptId, workspace.workDirectory, asking, running, starting, askBlockedReason, runBlockedReason]);
 

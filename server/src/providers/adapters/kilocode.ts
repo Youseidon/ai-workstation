@@ -14,27 +14,6 @@ import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.
 import type { RunOptions } from "../../contracts/agentAdapter.ts";
 import { KiloStreamMapper } from "../streams/kiloStream.ts";
 
-/*
- * `kilo run --format json <prompt>` emits opencode-style NDJSON, one object per
- * message part. Verified against kilo 7.8.1; see README for how to re-check.
- *
- *   {"type":"step_start","sessionID":"ses_…","part":{"type":"step-start",…}}
- *   {"type":"text","sessionID":"…","part":{"type":"text","text":"…",…}}
- *   {"type":"tool_use","sessionID":"…","part":{"type":"tool","callID":"…",
- *      "tool":"write","state":{"status":"completed","input":{…},
- *      "output":"…","title":"…",…}}}
- *   {"type":"step_finish","sessionID":"…","part":{"type":"step-finish",
- *      "reason":"stop"|"tool-calls","model":{"providerID":"kilo","modelID":"…"},
- *      "cost":0.0027,"tokens":{"input":…,"output":…,"reasoning":…,
- *      "cache":{"read":…,"write":…}}}}
- *   {"type":"error","error":{"name":"APIError","data":{"message":"…"}}}
- *
- * Two quirks the mapper exists for: every step_finish reports the tokens of
- * that one request (so a multi-step run's usage is the sum, not the last), and
- * fatal problems — model not found, expired login — arrive as an `error` event
- * while the process still exits 0. Errors therefore settle the run themselves.
- */
-
 interface KiloTokens {
   input?: number;
   output?: number;
@@ -80,8 +59,6 @@ function toUsage(raw: KiloTokens | null | undefined): TokenUsage | null {
   const output = raw.output ?? 0;
   const reasoning = raw.reasoning ?? 0;
   if (input === 0 && cacheRead === 0 && cacheWrite === 0 && output === 0) return null;
-  // Same convention as Claude/Grok: inputTokens is the whole prompt processed,
-  // of which the cache-read share is kept separate.
   const inputTokens = input + cacheRead + cacheWrite;
   return {
     inputTokens,
@@ -150,8 +127,6 @@ export class KiloMapper implements StreamMapper {
     const part = event.part ?? {};
     const sessionId = event.sessionID ?? null;
 
-    // The session id rides every event; announce it once, on the first line
-    // that carries one, so a budget stop can still resume what was spent.
     const prelude: AdapterEvent[] = [];
     if (sessionId !== null && !this.announcedSession) {
       this.announcedSession = true;
@@ -201,8 +176,6 @@ export class KiloMapper implements StreamMapper {
   finish(exitCode: number | null): AdapterEvent[] {
     if (this.settled || exitCode !== 0) return [];
     this.settled = true;
-    // A clean exit without a final result line: the run simply ended. Only an
-    // abnormal exit is an error — spawnAdapter already reports those.
     return [{
       type: "result",
       payload: { state: "done", usage: this.usage, text: this.lastText, exitCode: exitCode ?? 0 },
@@ -287,7 +260,6 @@ export class KiloAdapter extends SpawnAdapter {
   readonly id = "kilocode" as const;
   readonly label = "Kilo Code";
   readonly reportsTokens = true;
-  // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(effectiveKilocodePermissionMode());
   }
@@ -336,8 +308,6 @@ export class KiloAdapter extends SpawnAdapter {
       return providerUsageUnavailable("kilocode", "Kilo login expired — run `kilo auth login` again");
     }
 
-    // The Pass endpoint needs the editor-name headers the CLI always sends;
-    // without them it 400s while /api/profile/balance still succeeds.
     const passInput = new URLSearchParams({ batch: "1", input: JSON.stringify({ "0": null }) });
     const pass = await fetchJson(`${base}/api/trpc/kiloPass.getState?${passInput}`, {
       headers: {
@@ -402,12 +372,6 @@ interface KiloAuthFile {
   expires?: number;
 }
 
-/**
- * Mirrors where the kilo CLI keeps its login: `auth.json` under the same data
- * home the availability check already looks at. The `access` JWT doubles as
- * the gateway bearer token (verified against /api/profile). KILO_API_KEY is
- * an OpenRouter-style gateway key, not a profile credential, so it stays out.
- */
 function resolveKiloAccessToken(): string | null {
   const path = kiloAuthJsonPath();
   if (!existsSync(path)) return null;

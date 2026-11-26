@@ -55,11 +55,6 @@ export function parseGrokModels(output: string): ModelOption[] {
   return models;
 }
 
-/**
- * `kilo models` prints one `-m` value per line, `provider/modelID`, where the
- * model id itself carries a vendor path (`kilo/~anthropic/claude-opus-latest`).
- * A leading `~` marks the Kilo Gateway's pooled alias for that vendor model.
- */
 export function parseKiloModels(output: string): ModelOption[] {
   const models: ModelOption[] = [];
   for (const line of output.split(/\r?\n/)) {
@@ -68,8 +63,6 @@ export function parseKiloModels(output: string): ModelOption[] {
     const modelId = id.replace(/^[^/]+\//, "");
     const pooled = modelId.startsWith("~");
     const autoTier = id.startsWith("kilo-auto/") ? modelId : null;
-    // `~anthropic/claude-opus-latest` → "claude opus latest"; the vendor path
-    // stays in the id, which is what the mention filter searches anyway.
     const nameOnly = modelId.replace(/^~/, "").split("/").slice(-1)[0] ?? modelId;
     models.push({
       id,
@@ -124,7 +117,6 @@ export function parseCodexModels(value: unknown): ModelOption[] {
   });
 }
 
-/** Ask Codex's authenticated app-server so its own cache refresh rules apply. */
 function listCodexModels(binary: string): Promise<unknown> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(binary, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -158,7 +150,6 @@ function listCodexModels(binary: string): Promise<unknown> {
             return finish(null, message.result);
           }
         } catch {
-          // App-server stdout is expected to be JSONL; ignore non-protocol noise.
         }
       }
     };
@@ -239,7 +230,6 @@ async function discover(provider: ProviderId, binary: string | null): Promise<Mo
         const live = parseCodexModels(await listCodexModels(binary));
         if (live.length > 0) return live;
       } catch {
-        // A cached account catalog is still better than the bundled snapshot.
       }
     }
     const directory = process.env.CODEX_HOME ?? join(homedir(), ".codex");
@@ -257,12 +247,9 @@ async function discover(provider: ProviderId, binary: string | null): Promise<Mo
     const result = await runCommand(binary, ["models"], 10_000);
     return parseKiloModels(`${result.stdout}\n${result.stderr}`);
   }
-  // Copilot exposes its account-specific picker only inside an interactive
-  // session. `auto` is deliberately the stable, current provider route.
   return [];
 }
 
-/** Refresh one provider without ever making provider detection fail. */
 export async function discoverModels(provider: ProviderId, binary: string | null): Promise<ModelOption[]> {
   try {
     const models = await discover(provider, binary);

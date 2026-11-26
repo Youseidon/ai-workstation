@@ -30,7 +30,6 @@ export interface PreparedChangeCapture { repositoryRoot:string; branch:string|nu
 const repositoryWriters=new Map<string,string>();
 const repositoryLocks=new Map<string,InstanceLock>();
 
-/** Establishes the unambiguous boundary that makes per-run commits truthful. */
 export function prepareChangeCapture(cwd:string,runId?:string):PreparedChangeCapture {
   const root=git(cwd,["rev-parse","--show-toplevel"],true);
   if(root.stdout.trim()==="")throw new WorkspaceError(409,"git_repository_required","Writable agent runs require a Git repository.",undefined,{detail:"Initialize Git and create an initial commit before starting a writer. Read-only consults are still available."});
@@ -48,8 +47,6 @@ export function prepareChangeCapture(cwd:string,runId?:string):PreparedChangeCap
       throw error;
     }
   }
-  // Account runtimes have separate in-memory leases. Take the shared Git lock
-  // before inspecting or adopting changes, so neither can commit the other's work.
   try{
   const head=git(repositoryRoot,["rev-parse","--verify","HEAD"],true).stdout.trim();
   if(head==="")throw new WorkspaceError(409,"git_initial_commit_required","Create the repository's initial commit before starting a writable agent run.");
@@ -78,31 +75,12 @@ function commitWorkingTree(root:string,provider:ProviderId,subject:string,traile
   ]);
 }
 
-/**
- * Commits what the last writer in this repository left behind, under that
- * run's name, so the next run has a clean baseline.
- *
- * A run that dies — its provider out of allowance, the server restarted under
- * it — cannot checkpoint, and the wrap-up turn sent to do it dies the same way.
- * Its edits then sat in the tree and every later start was refused as a dirty
- * baseline: the pipeline could not be resumed, retried or handed to a fallback
- * provider until someone committed by hand in the workspace.
- *
- * The baseline is only ambiguous when nobody can say whose the changes are.
- * Here the capsule says: the newest capture for this repository ended
- * NEEDS_COMMIT (or never ended at all), its run is gone, and HEAD is where that
- * run left it. Anything else is a change no run accounts for, and is still
- * refused.
- */
 function adoptAbandonedChanges(root:string,head:string):boolean {
   const last=workspaces.latestRunChangeSet(root);
   if(last===null||workspaces.agentRunActive(last.runId))return false;
   if(last.state==="NEEDS_COMMIT"){
     if((last.headCommit??last.baseCommit)!==head)return false;
   }else if(last.state==="PENDING"){
-    // Never reconciled: the process died with the run. Its own checkpoints may
-    // have moved HEAD, which is fine as long as history still descends from
-    // where it started.
     const descends=spawnSync("git",["merge-base","--is-ancestor",last.baseCommit,head],{cwd:root,encoding:"utf8",timeout:GIT_TIMEOUT_MS});
     if(descends.status!==0)return false;
   }else return false;
@@ -141,7 +119,6 @@ function rangeStats(root:string,base:string,head:string):{filesChanged:number;ad
   return{filesChanged,additions,deletions,commitCount};
 }
 
-/** Reconciles the durable capsule with the repository as it exists now. */
 export function refreshChangeCapture(runId:string) {
   const capture=workspaces.runChangeSet(runId);
   if(capture===null)throw new WorkspaceError(404,"change_set_not_found","This run has no Git change capture record.");
@@ -156,7 +133,7 @@ export function refreshChangeCapture(runId:string) {
 export function assertRunChangesCommitted(runId:string):void {
   const captureId=workspaces.runChangeSet(runId)===null?(workspaces.wrapupSourceRunId(runId)??runId):runId;
   const capture=workspaces.runChangeSet(captureId);
-  if(capture===null)return; // legacy and deliberately read-only runs
+  if(capture===null)return;
   const refreshed=refreshChangeCapture(captureId);
   if(refreshed.state==="NEEDS_COMMIT")throw new WorkspaceError(409,"git_commit_required","Checkpoint the working-tree changes before ending this run.",undefined,{detail:refreshed.message});
 }
@@ -225,7 +202,6 @@ export function runFileDiff(runId:string,path:string):RunFileDiff {
   return{runId,path:file.path,previousPath:file.previousPath,patch:truncated?raw.slice(0,MAX_PATCH_BYTES)+"\n… diff truncated by Hydra\n":raw,truncated};
 }
 
-/** Intent and response are durable; Git runs outside both short transactions. */
 export function checkpointCommand(runId:string,input:Record<string,unknown>,provider:ProviderId,model:string|null):unknown {
   const capture=workspaces.runChangeSet(runId) ?? (workspaces.wrapupSourceRunId(runId)?workspaces.runChangeSet(workspaces.wrapupSourceRunId(runId)!):null);
   if(!capture)throw new WorkspaceError(409,"change_set_not_found","This run has no owned Git capture");

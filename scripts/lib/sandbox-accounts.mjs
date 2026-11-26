@@ -1,7 +1,6 @@
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-/** Keep copied orchestration data associated with its existing account IDs. */
 export function copySandboxAccounts(live, sandbox) {
   if (resolve(live) === resolve(sandbox)) throw new Error("Sandbox state must be separate from live state.");
   mkdirSync(dirname(sandbox), { recursive: true, mode: 0o700 });
@@ -9,7 +8,6 @@ export function copySandboxAccounts(live, sandbox) {
   for (const suffix of [".identities.sqlite", ".identities.sqlite-wal", ".identities.sqlite-shm", ".users"]) {
     rmSync(`${sandbox}${suffix}`, { recursive: true, force: true });
   }
-  // SQLite rebuilds SHM; the WAL contains writes not yet in the main file.
   for (const suffix of [".identities.sqlite", ".identities.sqlite-wal"]) {
     if (!existsSync(`${live}${suffix}`)) continue;
     copyFileSync(`${live}${suffix}`, `${sandbox}${suffix}`);

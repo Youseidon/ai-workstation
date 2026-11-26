@@ -1,12 +1,3 @@
-/**
- * Changing a program that already exists, end to end without a provider.
- *
- * The claims under test: a revision draft starts as an exact copy of the
- * program; an agent's changes land in the draft and nowhere else; apply writes
- * only what the draft changed, in place, keeping each item's status and
- * history; and an edit made to the program after the draft was opened is a
- * refusal, never something silently overwritten.
- */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -27,7 +18,6 @@ let seq = 0;
 const unique = (prefix: string) => `${prefix}-${process.pid}-${Date.now()}-${(seq += 1)}`;
 const VERIFY = "Do the thing.\n\n## Verify\n\n```sh\nnpm test\n```";
 
-/** A workspace with an applied three-item program on a pipeline. */
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "revision-"));
   const workspace = workspaces.create({ name: unique("ws"), description: "Use npm.", workDirectory: dir });
@@ -105,7 +95,6 @@ test("an agent's changes land in the draft, and the program is untouched until a
     const draft = workspaces.createProgramRevision({ workspaceId: f.workspace.id, programId: f.programId, goal: "Add linting." });
     const runId = beginAuthor(f.workspace.id, draft.id);
 
-    // The wholesale doors stay shut on a revision: they would drop identities.
     assert.equal(refusal(() => workspaces.proposeProgram(runId, { requestId: unique("req"), name: "x", suites: ["a"] })).code, "revision_draft");
 
     const reply = workspaces.reviseProgram(runId, {
@@ -131,7 +120,6 @@ test("apply writes the changes in place: status, history and untouched items sur
   const f = fixture();
   try {
     const first = f.item("S1-01");
-    // Give the item a real history: a run that started and ended.
     const executeId = newId("run");
     const credential = runContexts.create(executeId, f.workspace.id, first.id);
     workspaces.beginAgentRun({ runId: executeId, workspaceId: f.workspace.id, promptId: first.id, provider: "claude", model: null, tokenHash: credential.tokenHash, expiresAt: credential.expiresAt });
@@ -162,23 +150,19 @@ test("apply writes the changes in place: status, history and untouched items sur
     const program = f.program();
     assert.equal(program.overview, "Move the API, safely.");
     assert.deepEqual(program.suites.map((suite) => suite.prompts.map((prompt) => prompt.externalKey)), [["S1-01"], ["S1-02", "S2-01", "S2-03"]]);
-    // Same rows: the ids did not change, so nothing attached to them was lost.
     assert.equal(f.item("S1-01").id, first.id);
     assert.equal(f.item("S1-01").status, statusBefore);
     assert.equal(workspaces.sessionsForPrompt(first.id).length, 1);
     assert.equal(f.item("S1-01").isGate, true);
     assert.equal(f.item("S2-01").title, "Port every handler");
 
-    // The edit is in the revision history, like an operator's.
     const revisions = workspaces.promptRevisions(first.id);
     assert.equal(revisions[0]!.reason, `Applied program revision draft ${draft.id}`);
     assert.equal(revisions[0]!.content, VERIFY);
 
-    // Verify-block criteria followed the new text.
     const commands = workspaces.resolvedDefinitionOfDone(first.id).criteria.filter((entry) => entry.kind === "COMMAND").map((entry) => entry.command);
     assert.deepEqual(commands, ["npm test", "npm run lint"]);
 
-    // The new item waits on S2-01, and was put on the pipeline that runs its suite.
     const added = workspaces.promptOptions(f.workspace.id).find((option) => option.externalKey === "S2-03")!;
     assert.deepEqual(added.blockedBy, ["S2-01"]);
     const suiteId = program.suites[1]!.id;
@@ -214,8 +198,6 @@ test("an edit made to the program after the draft was opened is a conflict, not 
     edited.suites[0]!.prompts[1]!.content = "Draft instructions.";
     workspaces.saveProgramDraft(draft.id, edited);
 
-    // Someone edits the same item by hand in the meantime, and another one the
-    // draft did not touch.
     workspaces.updateChild("prompt", f.item("S1-01").id, { title: "Hand title" });
     workspaces.updateChild("prompt", f.item("S2-01").id, { content: "Hand instructions." });
 
@@ -224,8 +206,6 @@ test("an edit made to the program after the draft was opened is a conflict, not 
     assert.match(JSON.stringify(error.details), /S1-01's title was changed/);
     assert.equal(workspaces.programDraft(draft.id).state, "PENDING");
 
-    // Resolving it by agreeing with the hand edit lets the rest through, and
-    // the untouched item keeps the hand edit.
     edited.suites[0]!.prompts[0]!.title = "Hand title";
     workspaces.saveProgramDraft(draft.id, edited);
     workspaces.applyProgramDraft(draft.id);

@@ -19,7 +19,6 @@ export interface CodexStreamOptions {
   apiKey?: string;
 }
 
-/** One App Server connection owns exactly one turn; it never replays old turns. */
 export class CodexStreamMapper implements StreamMapper {
   settled = false;
   private channel?: StreamChannel;
@@ -60,8 +59,6 @@ export class CodexStreamMapper implements StreamMapper {
   map(value: unknown): AdapterEvent[] {
     if (this.settled || this.disposed) return [];
     const message = record(value);
-    // `turn/steer` answers. A refused steer (the turn just ended, say) is not
-    // a failed run; the operator's note falls back to the inbox instead.
     if (typeof message.id === "string" && this.steers.has(message.id)) {
       const resolve = this.steers.get(message.id)!;
       this.steers.delete(message.id);
@@ -69,15 +66,11 @@ export class CodexStreamMapper implements StreamMapper {
       return [];
     }
     if (message.error && message.id !== undefined) {
-      // A turn may finish while Stop is in flight; its terminal notification
-      // remains authoritative, with the process deadline as a backstop.
       if (message.id === 4) return [];
       throw new Error(`Codex ${message.id === 1 ? "initialization" : message.id === 5 ? "API-key authentication" : "request"} failed: ${string(record(message.error).message)}`);
     }
     if (this.interrupted && !this.turnRequested) return this.complete("interrupted");
     if (message.method && message.id !== undefined) {
-      // Never let an unhandled provider request stall a headless run or grant
-      // additional access. The caller's explicit sandbox remains authoritative.
       this.channel?.send({ id: message.id, error: { code: -32601, message: "Interactive requests are not supported by this connection" } });
       return [{ type: "error", payload: { message: `Codex requested unsupported interaction: ${string(message.method)}`, fatal: true } }, ...this.complete("error")];
     }
@@ -101,8 +94,6 @@ export class CodexStreamMapper implements StreamMapper {
       this.channel?.send({ id: 3, method: "turn/start", params: {
         threadId: this.threadId, cwd: this.options.cwd, model: this.options.model, effort: this.options.effort,
         approvalPolicy: "never",
-        // Use the resolved policy from this start/resume response, including
-        // configured workspace roots/network settings. Consults stay read-only.
         sandboxPolicy: this.options.sandbox === "read-only" ? this.sandboxPolicy() : record(message.result).sandbox ?? this.sandboxPolicy(),
         input: [{ type: "text", text: this.options.prompt, text_elements: [] }],
       } });
@@ -155,7 +146,6 @@ export class CodexStreamMapper implements StreamMapper {
         const turn = record(params.turn);
         const state = turn.status === "interrupted" ? "interrupted" : turn.status === "failed" ? "error" : "done";
         const events: AdapterEvent[] = [];
-        // Completion can contain a final-only item or a corrected snapshot.
         if (Array.isArray(turn.items)) for (const item of turn.items) events.push(...this.item(record(item), true));
         if (turn.error) events.push({ type: "error", payload: { message: string(record(turn.error).message) || "Codex turn failed", fatal: true } });
         return [...events, ...this.complete(state)];
@@ -231,11 +221,6 @@ export class CodexStreamMapper implements StreamMapper {
     return true;
   }
 
-  /**
-   * `/btw` into the active turn. `expectedTurnId` makes the server refuse it
-   * if the turn has already moved on, rather than starting a new one — a new
-   * turn after `turn/completed` is a run this mapper would never settle.
-   */
   steer(text: string): Promise<boolean> {
     if (this.settled || this.disposed || this.interrupted || !this.threadId || !this.turnId || this.channel === undefined) return Promise.resolve(false);
     const id = `steer-${(this.steerSequence += 1)}`;

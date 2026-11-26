@@ -22,7 +22,6 @@ import { Button } from "../../../components/ui/Button";
 interface Props {
   suggestion?: { text: string; nonce: number; append?: boolean };
   note?: ReactNode;
-  /** False while this composer belongs to a hidden work tab. */
   active?: boolean;
   quote?: string;
   onClearQuote?(): void;
@@ -32,13 +31,9 @@ interface Props {
   busy?: boolean;
   defaultMode?: "ask" | "run";
   onQueue?(prompt: string, mode: "ask" | "run", stop: boolean): void;
-  /** Hard lock on the textarea: connection, workspace, missing directory. */
   disabled: boolean;
-  /** True when an execute writer owns this workspace. */
   running: boolean;
-  /** True after submission while the server is preparing the run. */
   starting?: boolean;
-  /** True when that writer was launched from this work tab. */
   ownsWriter?: boolean;
   writer: { provider: ProviderId; model: string | null } | null;
   providers: ProviderInfo[];
@@ -47,9 +42,7 @@ interface Props {
   runBlockedReason: string | null;
   askBlockedReason: string | null;
   savedPrompt: PromptOption | null;
-  /** Workspace / work-item chips rendered in the composer header. */
   context: ReactNode;
-  /** Footer meta: workdir path shown next to provider · model. */
   workdir: string | null;
   onSubmit(prompt: string): void;
   onAsk(prompt: string): void;
@@ -58,13 +51,6 @@ interface Props {
   onClearSavedPrompt(): void;
 }
 
-/**
- * The composer.
- *
- * Run is the default; the selected mode governs both the button and Enter.
- * Drafts survive launch rejection, reconnect and continued typing.
- * Context chips live in the header so choosing what to run sits next to the box.
- */
 export function Composer({
   suggestion, note,
   active: tabActive = true,
@@ -129,8 +115,6 @@ export function Composer({
     if (wasPending.current && !launchPending && submitted.current !== null) {
       const sentDraft = submitted.current;
       if (launchFailed) {
-        // The input was cleared on send; put the message back unless the user
-        // has already started typing something new.
         if (value.trim() === "") setValue(sentDraft);
         else setFailedDraft(sentDraft);
       } else {
@@ -146,8 +130,6 @@ export function Composer({
   const retainSubmission = (text: string) => {
     submitted.current = text;
     if (draftKey) userSessionStorage.setItem(`chat-submitted:${draftKey}`, text);
-    // Clear immediately: the sent message appears in the transcript (or the
-    // queued banner), and is restored to the input if the launch fails.
     setValue("");
     setAskQuestion("");
   };
@@ -191,8 +173,6 @@ export function Composer({
     const element = textareaRef.current;
     if (!element) return;
     const observer = new ResizeObserver(() => {
-      // Native textarea resizing writes an inline height. Keep that space as
-      // the user continues typing instead of resetting it on every keystroke.
       if (element.style.height !== autoHeight.current) manualHeight.current = parseFloat(element.style.height) || 0;
     });
     observer.observe(element);

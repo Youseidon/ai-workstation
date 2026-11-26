@@ -1,849 +1,753 @@
 # Hydra
 
-![Hydra — Many heads. One console.](brand/logo/hydra-banner.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/logo/hydra-lockup-dark.svg">
+  <img src="brand/logo/hydra-lockup-daylight.svg" alt="Hydra — Many heads. One console." width="360">
+</picture>
 
-A self-hosted web console that gives six local CLI coding agents — **Claude Code**,
-**Codex CLI**, **Cursor CLI**, **Grok CLI**, **GitHub Copilot**, and **Kilo Code** — one shared browser UI. Type a prompt, pick a
-provider, and watch that agent work in real time: streamed assistant text,
-collapsible tool calls and results, a server-side elapsed clock, and live token
-counts, all rendered as a scrolling terminal-style log.
+**Six coding agents. One browser. Considerably fewer terminal tabs.**
 
-```
-┌─ Hydra ──────────────────────────────────────────────────────────────────┐
-│  ● Claude Code  ● Codex CLI  ○ Cursor CLI  ● Grok CLI  ● Copilot  ○ Kilo │
-├──────────────────────────────────────────────────────────────────────────┤
-│ 11:44:02  CODEX   ❯ create hello.txt containing "it works"               │
-│ 11:44:06  CODEX   I'll write the file and verify it.                     │
-│ 11:44:09  CODEX  │ ✓ apply_patch  workspace/hello.txt              ▸     │
-│ 11:44:13  CODEX  │ ✓ shell        wc -l hello.txt                  ▸     │
-│ 11:44:15  CODEX   ■ done · 13s · 41.2k tokens ───────────────────────────│
-├──────────────────────────────────────────────────────────────────────────┤
-│ ● connected │ Running (codex)… 13s · ↓41.2k tokens   sandbox: workspace-…│
-├──────────────────────────────────────────────────────────────────────────┤
-│ ❯ ask the agent to do something…                              [ Send ⏎ ] │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+Hydra is a self-hosted control room for **Claude Code, Codex CLI, Cursor CLI,
+Grok CLI, GitHub Copilot, and Kilo Code**. Point it at a project, pick an agent,
+and give it something useful to do. Watch the work arrive live, inspect the
+changes, or line up a whole pipeline and let the agents take turns.
 
----
+It runs on your machine, uses your provider logins or API keys, and works in
+real directories. The browser is the dashboard; the local agents do the work.
+Yes, they can edit actual files. Choose their workspace accordingly.
 
-## Quick start
+![A six-headed mechanical Hydra tending code, checks and plans at one shared desk](docs/assets/hydra-workshop.png)
+
+*Six heads, one desk. Someone still has to make the coffee. Illustration generated
+for this README; the actual console has fewer dragons.*
+
+[Get running](#get-running) · [Your first task](#your-first-task) ·
+[Build a pipeline](#build-a-pipeline) · [Configuration](#configuration) ·
+[Troubleshooting](#when-something-gets-weird) · [Development](#development)
+
+## What you can do with it
+
+- **Have a coding conversation.** Ask a question, run a task, change providers,
+  and keep named, pinned or archived threads for later.
+- **Watch the work happen.** Text streams in as it arrives, with expandable tool
+  calls, results, elapsed time and whatever usage the provider actually reports.
+- **Build a reusable work library.** Organise projects into programs, suites and
+  saved prompts, complete with dependencies and verification criteria.
+- **Turn a plan into a pipeline.** Assign agents to suites or individual steps,
+  follow progress, continue unfinished work, and deal with questions in one place.
+- **Ask an agent to write the plan.** Review and edit its proposed program before
+  adding anything to your library.
+- **Review what changed.** Browse per-run commits and unified or side-by-side
+  diffs, with links back to the work that produced them.
+- **Keep an eye on the bill-shaped things.** Check provider allowances, recorded
+  tokens, API cost estimates and CSV exports. Estimates are useful comparisons,
+  not invoices.
+- **Step away from the desk.** Optional Telegram notifications tell you when work
+  needs attention; separately enabled controls let you act from your phone.
+
+You only need **one** working provider. Collecting all six is optional.
+
+## Get running
+
+### Bring these
+
+- **Node.js 20.10 or newer**, with npm. Some provider CLIs need more;
+  Hydra’s Copilot installer requires Node.js 22 or newer.
+- **Git**, and an existing project directory for the agents to work in.
+- **A provider account or API key** for at least one supported agent. Hydra
+  does not supply model access or replace the provider’s subscription.
+
+The UI is a Next.js app, the backend is Node.js, and the data lives in SQLite.
+There is no separate database service to install.
+
+### Install and start
+
+Clone or download this repository, open a terminal in its root, then run:
 
 ```bash
 npm install
 cp .env.example .env
-npm run serve             # builds, then runs the backend and frontend without watch
+npm run serve
 ```
 
-Open <http://localhost:3000>. The backend listens on <http://127.0.0.1:4000>
-(`/api/providers`, `/api/health`, and the WebSocket at `/ws`).
+Already have a `.env`? Keep it; the copy command above is for a fresh install.
 
-### Accounts and existing data
+Open **[http://localhost:3000](http://localhost:3000)** and create a local account
+on the sign-in screen, or sign in to your existing one. Usernames are 3–64
+characters; passwords need at least 12. No email address is required.
 
-Hydra requires a local username and password. The existing installation owner
-keeps the original database, including workspaces, programs, pipelines, activity,
-transcripts, chat metadata and saved settings. Ownership is stored in the
-identity registry and remains unchanged across restarts. No cloud account or
-email service is required.
+The backend defaults to `http://127.0.0.1:4000`, with application endpoints under
+`/api` and the live WebSocket at `/ws`.
 
-Accounts can be created from the sign-in screen with a username and password.
-Every newly registered account starts with an empty database and its own agent
-settings, including when the identity registry is empty; registration never
-claims the original database. Workspace names and record IDs are
-local to an account. HTTP requests, WebSocket events, live runs and background
-pipeline recovery are routed to that account's runtime. Sign out using the
-account control at the bottom of the sidebar. Sessions expire after seven days;
-signing out immediately revokes the session and closes its live connections.
-Each account runtime is a separate backend process. Writable runs also take a
-shared Git repository lock, so accounts cannot write to the same checkout at
-the same time.
+**Use `serve` for real work.** It builds the app and runs without file watching.
+It also frees ports **3000 and 4000**, stopping anything already listening there.
+Do not run it again over a busy live console. For work on Hydra itself, use the
+[development sandbox](#development).
 
-The original database stays at `~/.local/state/hydra/hydra.sqlite` (or
-`HYDRA_DB`). Its sibling `hydra.sqlite.identities.sqlite` stores accounts and
-hashed sessions; `hydra.sqlite.users/<account-id>/` holds additional accounts'
-databases and settings. The owner's existing `.hydra/settings.json` (or
-`SETTINGS_FILE`) remains in use. Additional accounts use built-in setting
-defaults rather than inheriting the owner's `.env` settings or saved API keys.
-Browser drafts and preferences are namespaced by account; existing drafts are
-assigned to the installation owner on their first sign-in in that browser.
+### Connect an agent
 
-Back up the identity registry, all account databases and saved settings together,
-using SQLite's backup facility or while Hydra is stopped. Keep the identity
-registry when restoring: it records which account owns the original database.
-Do not delete it to reset a password.
+Open **Agents → Configuration**. Each provider shows whether it is enabled,
+installed and ready, along with its effective model.
 
-## Running a live pipeline
+1. If its executable is missing, use **Install** where available. Only the
+   installation owner can install or update shared executables through Hydra.
+   Other users can ask that owner or install the CLI on the host themselves.
+2. Follow the connection instructions. CLI login commands must run on the
+   **machine hosting Hydra**; being signed in to a vendor website is not enough.
+3. Save a supported API key in the provider settings, or finish the provider’s
+   CLI login. Then refresh detection and enable the provider you want to use.
 
-**`npm run serve` is the only way to run a pipeline that is doing real work.**
-
-`npm run dev` runs the server under `tsx watch`. Saving a file restarts it,
-which kills every agent in flight and applies any new migration to the database
-immediately — 22 of the first 34 pipeline runs on this console died exactly that
-way, mid-edit, and none of them resumed on their own. `serve` builds once and
-watches nothing, so editing code cannot touch a running suite.
-
-```bash
-npm run serve             # live: server on :4000, web on :3000, no file watching
-npm run dev:sandbox       # development: a copy of the database on :4100 / :3100
-```
-
-`dev:sandbox` copies `~/.local/state/hydra/hydra.sqlite` (and its WAL)
-to `/tmp/hydra-sandbox/`, then starts the watch server against the copy
-on its own ports. Pass `--keep` to reuse the existing copy instead of taking a
-fresh one (`npm run dev:sandbox -- --keep`). The live database is never opened.
-The sandbox copies the existing accounts, their data and the owner's saved
-settings. Sign in with the same credentials; sandbox sessions and settings
-are isolated from the live console. `--keep` reuses that account snapshot.
-
-Plain `npm run dev` refuses to start when it would open the live database at its
-default path. Point `HYDRA_DB` somewhere disposable, use `dev:sandbox`,
-or set `HYDRA_ALLOW_DEV_ON_LIVE=1` if you mean it. If a `serve` process
-already holds the lock, the message says so and points at `dev:sandbox`.
-
-### Pipeline behaviour
-
-The **Pipelines** dashboard opens with step completion, active pipelines, run
-completion and average duration. The directory keeps up to five pipelines or
-suites per page (three on phones), with search and status filters; records
-needing attention appear first. Select a row to open its pipeline. Suites open
-in a running pipeline that contains them when possible, or in their standalone
-view.
-
-**Run activity** switches between 7 and 30 UTC calendar days. Outcomes are
-grouped by run start date: complete versus stopped or interrupted. The run
-completion gauge uses that same window; average duration covers all finished
-runs. **Needs you** shows the oldest waiting items, two per page, and opens
-their station directly. The overview refreshes when workspace operations change.
-On smaller screens, expand **Insights** to see run activity and the attention
-queue alongside the compact directory.
-
-Inside a pipeline, the compact transport keeps its execution control and
-**Needs you** queue visible while steps scroll. **Details** expands the current
-position and run rules; the execution overflow menu holds secondary controls.
-The ordered suite strip and sidebar distinguish selection, running work,
-attention and automatically updated completion. Progress counts only this named
-pipeline's enabled steps: skipped steps settle the rail and are disclosed in
-progress tooltips. Empty suites and unavailable progress never receive a
-completion tick. In edit mode, square suite checks still control membership;
-the circular completion marks are read-only.
-
-**Stop and pause** have one home: the **Stop** button in the top rail, on every
-page. Every other Stop or Pause control (fleet cards, the Agents page, a
-pipeline's transport) opens the same popup. For a running pipeline it offers
-**Pause** (the agent finishes its step, then nothing new starts), **Force stop
-agent** (the agent is killed now and the pipeline pauses on that step; Resume
-continues it without spending an unfinished-continuation allowance) and **Stop
-pipeline** (the run ends and its agent is killed; finished steps stay). Other
-live agents get a plain **Stop agent**. Each button shows a spinner until the
-server confirms the change, and a pause in progress is announced in a line
-under the rail.
-
-Steps use a compact grid in numbered execution order, or a nested **List** with
-attention and working filters. **Hide completed** recovers space without removing
-work from the pipeline; **Show completed** brings it back. Select a step for its
-conversation, evidence and actions in the details drawer. **Sub-steps** opens its
-nested execution order. The drawer opens on demand, including from deep links.
-
-Open **Studio → Suite agents** (or a suite's pencil) to set its agent and model
-for this pipeline. Prompts and new sub-steps inherit that choice. **Prompt
-overrides**, or the pencil on a step, chooses a different agent for an individual
-prompt. **Use suite agent for all prompts** clears existing agent overrides while
-preserving the flowchart and station outcomes. Assignments are scoped to the
-pipeline, including when another pipeline uses the same suite.
-
-**Automatically reassign agents** is off by default for every pipeline. When
-enabled, the scheduler checks provider-reported usage before jobs and skips
-exhausted session (typically five-hour), weekly, and other allowance windows
-until their reset. Provider errors also trigger fallback, including providers
-without usage telemetry. The ordered fallback list resolves prompt → suite →
-house; only available providers outside their cooling period are eligible.
-Reassignment keeps the saved primary assignment and records the handoff in the
-prompt history. If none are available, the pipeline waits. With reassignment
-off, a provider failure waits for the operator without switching agents. Unknown
-usage does not block a job; quota errors without reset telemetry use a cooling
-period (five hours or a week when the error names that window).
-
-When a station's run ends, the scheduler follows these rules:
-
-| The run ended… | Decision | What the rail does |
+| Agent | How Hydra runs it | Connect on the Hydra machine |
 |---|---|---|
-| Agent posted **DONE** (and any definition-of-done gate passes) | **advance** | move on to the next ready station |
-| Agent posted **BLOCKED**, or a check says to wait for a person | **waive and continue** | the pipeline does not stop. The station closes when its command checks pass; a human-review check is waived and is not recorded as passed |
-| Agent posted **`continue`** with remaining work | **continuation** (productive) | re-run the **same** station on the same working tree with the agent's brief — **does not** spend the unfinished allowance and does not park |
-| Provider hit a limit or could not run | **fallback or park** | with automatic reassignment on, try the next available provider without spending a continuation; otherwise wait for the operator |
-| Anything else (budget, crash, unreported, verification failed, …) | **continuation** (unfinished) | re-run the same station up to `pipeline.maxContinuations` (default 4); then one read-only review; then park `continuations_exhausted` |
-
-There is no automatic remediation or retry/recover chain. Resume on a
-parked station writes a USER ledger row and grants a fresh unfinished-continuation
-allowance. Station rules expose `onDone` (`continue` / `stop` / `skip_rest`) and
-`onUnfinished` (`continue` / `skip` / `wait`). `wait` does not park the
-pipeline. A sentence in a prompt that says to stop for a human review does
-not either.
-
-A pipeline that *is* interrupted — the machine rebooted, the console was
-restarted or killed — comes back by itself: about ten seconds after boot, every
-run marked `INTERRUPTED` by a restart in the last 24 hours is resumed on the
-station it was holding, on the same working tree. Nothing is marked done or
-failed; the station is simply re-queued, and the ledger records `restart_resume`
-as the cause. A run **you** stopped with the Stop control stays stopped. This is
-the `pipeline.onRestart` setting; set it to `newRun` or `resumeSameRun` to go
-back to waiting for a button.
-
-Only a `serve` process resumes anything. A sandbox copies the database, not the
-world — its workspace rows still name your real project directories — so a
-development server that resumed the live console's pipeline would launch a real
-agent into a real repository. It logs what it is leaving alone instead.
-
-Run the two halves separately if you prefer: `npm run dev:server` /
-`npm run dev:web`, or `npm run serve:server` / `npm run serve:web`.
-`npm run build` typechecks the server and builds the frontend.
-
-### Agent commits and code review
-
-Writable work-item runs start only from a clean Git working tree. The run records
-that starting commit, and agents use `agent-step checkpoint --message "Short summary"`
-before posting `done`, `continue`, `blocked`, or `decompose`. A terminal post is
-refused while tracked or untracked workspace changes remain uncommitted. Budget
-and manual stops receive the same short finalization turn so partial work is
-checkpointed before another writer inherits the repository.
-
-Open **Changes** to browse the resulting per-run change capsules. Each capsule
-shows its base and head commit, commits, file totals, and lazy-loaded unified or
-side-by-side patches. Activity and work-item sessions link directly to the same
-review. Read-only consults remain available when a repository is dirty; the app
-never stashes, resets, or commits pre-existing operator changes.
-
-### Requirements
-
-- Node.js ≥ 20.10 (developed on 24.x)
-- At least one provider installed and authenticated — see below. The console
-  runs fine with only one; unavailable providers are shown greyed out with the
-  reason.
-
----
-
-## Providers
-
-| Provider | Driven by | Needs | Reports tokens |
-|---|---|---|---|
-| Claude Code | `@anthropic-ai/claude-agent-sdk`, in-process | `ANTHROPIC_API_KEY`, **or** an existing `claude` login | yes |
-| Codex CLI | `codex app-server`, JSON-RPC over stdio | `codex` on `PATH` + `OPENAI_API_KEY` or `codex login` | yes |
-| Cursor CLI | `cursor-agent -p --output-format …` (spawned) | `cursor-agent` on `PATH` + `cursor-agent login` | not reliably — the stat is hidden rather than faked |
-| Grok CLI | `grok -p --output-format streaming-json` (spawned) | `grok` on `PATH` + `XAI_API_KEY` or `grok login` | yes |
-| GitHub Copilot | `copilot -p --output-format json` (spawned) | `copilot` on `PATH` + `copilot login`, `COPILOT_GITHUB_TOKEN`, or a Copilot-enabled `gh` login | yes |
-| Kilo Code | `kilo serve`, authenticated loopback HTTP + SSE | `kilo` on `PATH` + `kilo auth login` | yes |
-
-All six adapters forward incremental text into the same conversation renderer. Codex uses App Server item deltas; Kilo subscribes to its event stream before starting the prompt. Claude requests partial SDK messages, Cursor enables partial stream-json output, Copilot enables streaming, and Grok uses streaming-json. Incoming chunks render immediately; the app does not animate a buffered final answer.
-
-### How detection works
-
-`GET /api/providers` (also pushed over the socket on connect, and re-run before
-every run) reports `{ available, reason, version, binary, permissionMode, model }`
-per provider. Nothing is hardcoded to an install path.
-
-- **Claude** — no binary is needed, the SDK runs in-process. Available if
-  `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, or if
-  `~/.claude/.credentials.json` exists (i.e. you have logged in with the CLI).
-  Version reported is the Agent SDK version.
-- **Codex** — the `CODEX_BIN` command (default `codex`) is looked up on `$PATH`;
-  version comes from `codex --version`. Auth is satisfied by `OPENAI_API_KEY` or
-  by `auth.json` under `$CODEX_HOME` (default `~/.codex`).
-- **Cursor** — same `$PATH` lookup for `CURSOR_BIN` (default `cursor-agent`).
-  Auth is satisfied by `CURSOR_API_KEY` or by a login under `~/.config/cursor/auth.json`
-  / `~/.cursor` / `~/.config/cursor-agent` / `~/.local/share/cursor-agent`. Plan usage
-  (billing-cycle included allowance) is fetched from Cursor's dashboard API using the
-  login token — not an API key. If the login heuristic is wrong for your install, set
-  `CURSOR_ASSUME_AUTHENTICATED=true`.
-- **Grok** — same `$PATH` lookup for `GROK_BIN` (default `grok`). Auth is
-  satisfied by `XAI_API_KEY` or by `auth.json` under `$GROK_HOME` (default
-  `~/.grok`). If that heuristic is wrong for your install, set
-  `GROK_ASSUME_AUTHENTICATED=true`.
-- **Copilot** — same `$PATH` lookup for `COPILOT_BIN` (default `copilot`). Auth is
-  resolved in the CLI's own order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`,
-  `GITHUB_TOKEN`, a plaintext credential file under `$COPILOT_HOME` (default
-  `~/.copilot`), then `gh auth token`. A `copilot login` normally stores its
-  token in the **OS credential store**, which this server cannot read — if you
-  logged in that way and nothing else applies, set
-  `COPILOT_ASSUME_AUTHENTICATED=true`. Plan usage (the monthly premium-request
-  or chat allowance and its reset date) comes from GitHub's own
-  `copilot_internal/user` endpoint using that token.
-- **Kilo** — same `$PATH` lookup for `KILOCODE_BIN` (default `kilo`). Auth is
-  satisfied by `kilo auth login` (credentials under the `XDG_DATA_HOME`
-  -resolved `kilo/auth.json`), or set `KILOCODE_ASSUME_AUTHENTICATED=true`.
-  Models are refreshed from `kilo models`, whose lines are already valid `-m`
-  values; the `~`-prefixed ones are the Kilo Gateway's pooled aliases.
-
-Unavailable providers cannot be selected; hovering the button shows why
-(`codex not found on PATH`, `ANTHROPIC_API_KEY not set…`). The ↻ button re-runs
-detection without a page reload.
-
-### Switching models
-
-Each provider in the header is a **split pill**: the left half selects the
-provider, the right half shows the model it will run with and opens that
-provider's model list. Two other ways to get there:
-
-- Type **`@`** in the prompt box. A bare `@` lists the providers with their
-  current models; typing filters across every provider × model pair, so
-  `@haiku`, `@5.6`, or `@claude:opus` each land in one go. `↑↓` moves, `⏎`/`tab`
-  picks, `esc` dismisses. The `@token` is stripped and never reaches the agent.
-- The **custom model id** field at the bottom of the dropdown, available when
-  the global access tier is **All models**, for anything newer than the catalog.
-
-At server startup, provider detection also refreshes the model picker. Cursor
-and Grok are queried through their model-list commands, Codex through its
-authenticated app-server (falling back to its local model cache), Claude
-through its account-scoped catalog cache, and Kilo through `kilo models`.
-`shared/src/models/modelCatalog.ts` (exported through `@hydra/shared`)
-(`MODEL_CATALOG`) is the offline fallback, so a failed or timed-out refresh can
-never prevent the app from starting. Re-detecting providers refreshes models
-again. Copilot is the exception: its account-specific picker is only exposed
-inside an interactive session, so the stable `auto` route remains available
-and explicit ids can be entered through the custom-model field.
-
-The Agents page has one global **Model access** ceiling: **Free**, **Efficient**,
-**Professional**, **Frontier**, or **All models**. It applies server-side to
-every new console, task, workspace, pipeline, fallback, author, handoff, and
-reviewer run. Higher tiers include the lower-cost tiers. Unknown/custom model
-ids are All-only; a provider with no account-available model in the selected
-tier is unavailable until the tier changes.
-
-**Model choice** can be switched between **Manual** and **Auto Select**. Auto
-Select disables model pickers throughout the console and makes the server
-ignore model overrides from browsers, tasks, and saved pipeline rules. Kilo
-uses its native `kilo-auto/free`, `kilo-auto/efficient`, or
-`kilo-auto/frontier` route when that route matches the access tier; other
-providers resolve to the recommended concrete model in the selected tier.
-Saved manual choices are preserved and become active again when Manual is
-restored.
-
-**Reasoning effort** can be set globally to **Low**, **Medium**, or **High**
-beside Model choice. Each provider's **Model & settings** dialog can inherit
-that value or override it. The server translates the effective value to the
-provider's native interface for every new run (including pipeline, fallback,
-handoff, reviewer, and resumed runs).
-
-In Manual mode, **precedence** for a run is: allowed model picked in the UI → allowed provider
-`Model` setting → the provider's recommended model for the global tier. Under
-All models the final fallback is the provider's own default (nothing is passed).
-Out-of-tier saved pipeline choices and browser pins are preserved but inactive,
-so returning to All restores them; the effective tier default is what actually
-runs. The resolved model is stamped on every event it produces.
-
-### Cursor station policy enforcement
-
-Saved work items expose structured `stationPolicy` capabilities. Set them through
-`PATCH /api/prompts/:id` (omit the field to preserve it):
-
-```json
-{
-  "stationPolicy": {
-    "version": 1,
-    "editFiles": true,
-    "build": true,
-    "generateContracts": true,
-    "verification": "deferred",
-    "verifier": "S6-11"
-  }
-}
-```
-
-The additive v45 migration materializes the existing explicit “No verification
-execution in this station” restriction. New/imported legacy items with that exact
-clause also resolve to deferred verification. Children inherit their parent's
-capabilities unless the operator sets an explicit policy. Active-run policy
-changes are refused. Setting `stationPolicy` to `null` restores legacy resolution;
-removing a prohibition from prose alone does not clear a persisted capability.
-
-All providers receive completion instructions from the resolved capabilities.
-Deferred stations author scenarios and hand off pending commands; their agent API
-cannot execute or rewrite verification recipes. Conflicting command criteria are
-refused without running them or recording a failed test.
-
-Cursor additionally enables its native sandbox and installs fail-closed
-`preToolUse`/`beforeShellExecution` hooks for the run. Deferred stations may inspect
-files, call their exact `agent-step` launcher, generate contracts with
-`npm run agent:run -- contracts`, and build a selected project with
-`npm run agent:build -- path/to/project.csproj`. Direct test runners, interpreters,
-unapproved scripts, shell expansion/redirection, delegated execution and edits to
-policy/command entrypoints are refused before execution. Use native file-editing
-tools for source changes. This intentionally conservative command grammar refuses
-unrecognized forms instead of trying to infer whether an arbitrary program is safe.
-
-Before admitting protected work, a harmless command in a disposable Git repository
-must produce an observed hook denial under `--force`. Success is cached for the
-installed CLI path, model and hook revision for the server's lifetime. Missing hook
-support or a missing receipt refuses the run. This was exercised with Cursor CLI
-`2026.11.22-e9042b2`; that version did not execute plugin-only hooks, so enforcement
-uses project hooks. Project/global user hooks are preserved. Temporary project
-registration and its Git exclude entry are removed after the run; an existing
-tracked `.cursor/hooks.json` is refused rather than silently modified. Global
-Cursor configuration is never rewritten.
-
-These are execution guardrails for cooperating agents, not an isolation boundary
-against hostile repository programs: an approved build/generator can itself execute
-repository code. OS isolation and the permissions of those programs still matter.
-Existing active runs retain their current process and instructions. Restart the
-console at a safe point to load the new adapter and migrate capabilities.
-
-### ⚠️ CLI flags drift
-
-Codex's, Cursor's, Grok's, Copilot's, and Kilo's headless/JSON flags change between releases. The
-streaming interfaces were checked against **codex-cli 0.169.0**, **cursor-agent 2026.09.02**,
-**grok 1.0.13**, **GitHub Copilot CLI 1.0.82**, and **kilo 7.8.1**; the Cursor mapper was written
-against the documented `stream-json` shape and is deliberately tolerant of
-unknown event types.
-
-The session APIs and resume flags can drift too. Codex now resumes through `thread/resume`; Kilo reuses its session ID through the local server. Check `codex app-server --help`, `kilo serve --help`, `cursor-agent --help`, `grok --help`, and `copilot --help` for installed versions. Codex extra arguments accept App Server configuration flags (`-c`, `--enable`, `--disable`); Kilo extra arguments accept server flags (`--pure`, `--print-logs`, `--log-level`). Old run-only flags fail explicitly instead of silently falling back to buffered output. Model, reasoning effort and approval settings remain separate. Cursor's `stream-json` format is required for partial output; `json` remains a whole-response compatibility option.
-
----
-
-## Provider settings
-
-Everything in `.env` that is safe to change while the server is running is also
-editable from the **Agents** page — per-provider default model, permission/sandbox
-mode, reasoning effort, binary name, extra CLI arguments, API keys, host access, run budgets,
-resource containment, pipeline policy, and transcript retention. (Day-to-day model switching happens in
-the header, not here; the `Model` field only supplies the fallback.) Changes are
-saved to the signed-in account's settings file (mode `0600`) and survive
-restarts. The installation owner retains `.hydra/settings.json`; additional
-accounts use their own state directory.
-
-- **Layering** — `.env` supplies the default for every field; saved overrides sit
-  on top. A field edited back to its `.env` value drops the override entirely.
-- **No restart** — adapters read settings through getters at run time, so a
-  change applies to the next run. Provider detection re-runs on save, so
-  switching `CODEX_BIN` or adding an API key updates the switcher immediately.
-- **Every open tab stays in sync** — saving broadcasts `settings_updated` over
-  the WebSocket with the re-detected providers.
-- **Secrets stay server-side** — `password` fields are write-only. The browser
-  is told whether a key is set, never its value.
-- **Dangerous values are called out** — selecting `bypassPermissions`,
-  `danger-full-access`, Cursor's `--force`, Grok sandbox `off`, Copilot
-  `allow-all-paths` / `yolo`, or turning on
-  **Host access (Docker)** is flagged inline and asks for confirmation before saving.
-
-In **Agents → Configuration**, compact provider rows separate enabled state,
-availability and the effective model. Open a provider for saved defaults, browser
-model pins, plan usage, installation details and updates. The **Shared settings**
-directory includes every account-wide group supplied by the server. Unsaved field
-edits survive closing an editor, switching providers and visiting Live fleet while
-the Agents page stays open; Save persists them, Discard only clears drafts, and
-Reset removes a saved override.
-
-The Agents page is generated from the field table in `server/src/config/settings.ts`.
-Adding a new tunable is one entry there — label, group, type, `.env` variable,
-options, description — and it appears in the UI with no frontend change.
-
-### Per-run resource containment
-
-Workspace instruction files are projected before each run. Headless Grok also
-receives the complete root `AGENTS.md` through its `--rules` option, including
-on resumed launches; a root file alone does not ensure Grok discovers it.
-Custom Grok `--rules` arguments are merged into that single rules argument.
-
-On Linux, when the user systemd manager is available, each agent run is launched
-in its own transient service/cgroup. `MemoryHigh`, `MemoryMax`,
-`MemorySwapMax`, and `TasksMax` apply to the provider and its complete descendant
-tree, including test workers, compilers, and language servers that remain in
-that cgroup. The shipped 8 GiB WSL defaults are 3 GiB high pressure,
-4 GiB hard memory, 512 MiB swap, and 512 tasks. Configure them on the Agents
-page or with `RUN_MEMORY_HIGH_MIB`, `RUN_MEMORY_MAX_MIB`,
-`RUN_MEMORY_SWAP_MAX_MIB`, and `RUN_TASKS_MAX`.
-
-An OOM kill is recorded as `resource_memory_limit:<bytes>` rather than a generic
-crash, and systemd's cgroup `MemoryPeak` is persisted with the run when it is
-available. Cancellation first sends the normal interrupt to every process in
-the unit, then force-kills the complete unit after the grace period.
-
-On macOS, Windows, Linux installations without a user systemd manager, and
-misconfigured WSL distributions where `systemctl --user` is unavailable, the
-runner falls back safely: on POSIX it starts a separate process group and
-signals the whole group; on Windows it can only signal the provider process.
-That fallback preserves tree cancellation on POSIX but **does not enforce an
-aggregate memory, swap, or task ceiling**. Enable systemd in WSL and ensure the
-account has a working user manager for full protection (`systemctl --user
-show-environment` must succeed).
-
-Separately, `BUDGET_MAX_OPEN_TOOL_CALL_MINUTES` (default 15) stops a run whose
-`tool_use` never receives its matching `tool_result`, so one hung command cannot
-consume the entire wall-clock budget.
-
-`REST: GET /api/settings` · `PUT /api/settings` (partial patch) ·
-`POST /api/settings/reset` (`{"keys": [...]}` or `{}` for everything).
-
-## Workspaces and saved prompts
-
-The separate **Workspaces** page at <http://localhost:3000/workspaces> manages
-the execution library. A workspace points to an existing work directory and
-contains programs, programs contain suites, and suites contain reusable
-prompts. The console lets you select a workspace and either type a custom
-prompt or choose one of those saved prompts.
-
-Data is stored in `$XDG_STATE_HOME/hydra/hydra.sqlite` (falling back
-to `~/.local/state/hydra/`), **deliberately outside the repository**. A
-workspace usually points at this repo, and that directory is an agent's cwd with
-write access — a database sitting inside it could be changed without going
-through the API, leaving a status with no recorded cause. A database at the
-pre-rename location (`~/.local/state/agent-console/console.sqlite`) is moved
-here on first start, and an older in-repo `.agent-console/console.sqlite` is
-copied and left in place; `HYDRA_DB` overrides all of these. The server refuses to start if
-the resolved path is inside any workspace's directory. The browser only uses the
-REST API; it never reads or writes SQLite directly. There is no default
-workspace: create one on the Workspaces page, pointing it at an existing
-directory, before you can add programs, suites, or run an agent. Each run
-uses that workspace's directory as `cwd`.
-
-Transcript events (`agent_run_event`) are capped by the **Retention** settings
-(`RETENTION_EVENTS_PER_RUN`, `RETENTION_EVENT_AGE_DAYS`,
-`RETENTION_KEEP_FINAL_EVENTS`): a sweep runs a minute after boot and then every
-six hours, deleting oldest events first while always keeping the last N of each
-run. Runs, remarks, status events and commands are not touched. Deletes free
-pages inside the file; reclaiming them on disk needs an offline `VACUUM` when
-`auto_vacuum` is not incremental (the default):
-
-```bash
-# Stop every console process first — VACUUM needs the file to itself.
-sqlite3 ~/.local/state/hydra/hydra.sqlite 'VACUUM;'
-```
-
-Workspace CRUD lives under `/api/workspaces`; nested program, suite and prompt
-CRUD lives under `/api/programs`, `/api/suites`, and `/api/prompts`. Deleting a
-parent cascades to its owned children.
-
-Prompt packs can be copied into a workspace with a two-step server-side import:
-`POST /api/workspaces/:id/imports/inspect` previews the manifest, suites,
-prompts, statuses, dependencies, and gates; the matching `/apply` endpoint
-inserts the previewed structure in one transaction. Both accept `rootPath` and
-`programKey`. The files are import input only: prompt Markdown is copied into
-SQLite, shared standing instructions are copied into the workspace description,
-and no source path, file hash, or continuing filesystem link is stored.
-
-### Letting an agent write the program
-
-A program can also be drafted by an agent rather than typed. On the Workspaces
-page, say what the program should achieve and pick a provider: the agent reads
-that workspace's working tree and proposes suites and the work items inside
-them, each one a session's worth of work with its own `## Verify` block.
-
-**Nothing it writes reaches the library.** An author run has no work item, so it
-cannot post a status, a remark or a decompose; the only thing it can write is a
-row in `program_draft`, which nothing reads until you apply it. You edit the
-draft in place — retitle, rewrite, delete, reorder, fix dependencies — and then
-press **Create program**, which is the single place a draft becomes rows in
-`program`, `suite` and `prompt`, in one transaction, through the same code path
-the disk importer uses. Tick *and a pipeline to run it* to stage every suite and
-work item at the same time.
-
-The agent posts through two commands, and a run that is stopped halfway leaves a
-partial draft the next run continues rather than nothing at all:
-
-```bash
-agent-step propose-program --file program.json   # the program and its suites
-agent-step propose-suite   --file suite.json     # one suite's work items
-```
-
-Keys are assigned by the server (`S1`, `S1-01`, …), never by the agent, so a
-model cannot collide with the unique indexes at the end of a long run. Re-posting
-a suite replaces that suite's work items, which is also how **Revise** works: tell
-the agent what to change and it edits the draft it can already see.
-
-The author run reads the tree but starts with ordinary write permissions —
-`agent-step` is a shell command talking to 127.0.0.1, and a read-only sandbox
-blocks that outright on Codex. So it holds the workspace's writer lock for its
-duration, exactly like an execute run, and "do not change the tree" is an
-instruction in its brief rather than a sandbox. The guarantee that matters is the
-other one: the draft table, and your approval.
-
-REST: `GET|POST /api/workspaces/:id/program-drafts`, and
-`GET|PATCH|DELETE /api/program-drafts/:id` with `/apply`, `/discard` and
-`/revise`.
-
-When a saved prompt runs, its body is not pasted into the composer or transcript.
-The server creates a persisted run and a random bearer token, writes a per-run
-`agent-step` launcher with that credential baked in (mode `0700`, removed when
-the run ends), and tells the agent to use it:
-
-```bash
-agent-step remark     --kind PROGRESS --text "What changed or was verified"
-agent-step done       --verification "The commands you ran and what you observed"
-agent-step repair-verify --file repair.json  # one observed-failing Verify line; audited and re-run
-agent-step continue   --remaining "What is left, as instructions for the next run on this tree"
-agent-step blocked    --reason "Observed evidence" --action "What only a human can do"
-```
-
-`repair.json` contains `oldCommand`, `newCommand`, and `reason`. The server only
-accepts the exact command it most recently observed failing, revisions the old
-work-item text, refuses unconditional-success replacements or replacements that
-drop the original targets/tools, and immediately runs the corrected criterion.
-Requests for a human to edit source, tests, config, or that Verify recipe are
-refused as recoverable work; the agent must repair it or post `continue`.
-
-The credential is per-run rather than per-process because the Claude adapter
-runs its SDK in-process, so environment variables would be shared by every
-concurrent run. The raw HTTP contract stays documented and working as a
-fallback. Every call an agent makes — accepted, refused or replayed — appears in
-the transcript as a flagged `⛁` line with the tables it touched, so a run that
-never reported is visibly different from one that reported and was refused.
-
-The underlying endpoint is still `GET /api/agent/runs/:runId/context`. That
-read-only endpoint composes workspace instructions, program and suite context,
-prompt content, dependency results, and gate information directly from SQLite.
-It returns Markdown by default and JSON for `Accept: application/json`, expires
-after the run, and cannot be changed to inspect a different prompt. The same
-run credential can append progress through `POST .../remarks` and perform the
-strict `IN_PROGRESS` → `DONE`/`BLOCKED` transition through `POST .../status`.
-Every mutation is idempotent, audited, transactionally applied, and scoped to
-the selected prompt. Custom prompts continue to be sent directly.
-
-Host, port, and `ALLOWED_ORIGINS` are deliberately **not** editable from the UI —
-they are boot-time only and live in `config.ts`.
-
----
-
-## Usage report
-
-**Report** shows recorded session usage in the selected workspace. Choose 7 or
-30 UTC calendar days, or all time, and optionally filter by provider. The token
-and API-estimate chart, provider shares, coverage gauges and breakdown all use
-that same selection. Sessions are grouped by start date; longer all-time
-histories use up to 30 time buckets.
-
-API estimates apply Hydra's configured model-family rates to recorded tokens;
-they are a comparison proxy, not subscription charges or historical invoices.
-**Behind the numbers** distinguishes model-family rates, provider defaults and
-unpriced sessions. Missing token data and unknown prices display as unknown,
-while reported zero remains zero. Cache reads stay inside input totals;
-reasoning is not added to output a second time.
-
-The breakdown shows three suites, tasks or sessions per page. Select a work
-item to open it, or its session count to inspect the underlying sessions.
-Unassigned sessions remain included. **Export CSV** downloads the selected
-sessions with exact usage, API estimates and applied rates; search inside the
-breakdown does not narrow the export. The report refreshes when workspace
-operations change.
-
-## Permission models (read this before pointing it at real code)
-
-The agents have different permission systems, and the console does
-not paper over that — it shows each provider's effective mode in the status bar
-and in the switcher tooltip. Defaults are set in `.env.example` and can be
-changed at any time from the Agents page:
-
-| Provider | Env var | Default | What it means |
-|---|---|---|---|
-| **All** | `AGENT_HOST_ACCESS` | `false` | One switch for Docker and other host services. When on, the per-provider rows below are overridden: Codex `danger-full-access`, Claude/Grok `bypassPermissions`, Grok sandbox `off`, Cursor `--force`, Copilot `yolo`, Kilo `--auto`. Required for `docker compose` — Codex's `workspace-write` sandbox cannot connect to `/var/run/docker.sock`. |
-| Claude | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | File edits auto-approved; commands still gated by Claude Code's own rules. `plan` for read-only, `bypassPermissions` for no checks at all. |
-| Codex | `CODEX_SANDBOX_MODE` | `workspace-write` | Writes confined to the selected workspace directory, network restricted. `read-only` is stricter, `danger-full-access` removes the sandbox. |
-| Cursor | `CURSOR_FORCE` | `true` | `--force` skips approval prompts unless explicitly denied. Protected work-item runs additionally enable sandboxing and platform command hooks; Host access does not remove those station restrictions. |
-| Grok | `GROK_PERMISSION_MODE` + `GROK_SANDBOX_MODE` | `acceptEdits` + `workspace` | File edits auto-approved; OS sandbox confines writes to the selected workspace directory. `bypassPermissions` skips prompts; sandbox `off` removes the sandbox. |
-| Copilot | `COPILOT_PERMISSION_MODE` | `allow-all-tools` | A headless `copilot -p` run cannot show an approval prompt, so tool approval is always pre-granted (`--allow-all-tools`); this picks how far outside the workspace that reaches. File access stays inside the working directory (plus the system temp dir) by default. `plan` is read-only planning with the built-in write tools denied; `allow-all-paths` and `yolo` drop that containment. Copilot's own OS-level command sandbox is experimental and is not used — shell commands run with your user's access. |
-| Kilo | `KILOCODE_AUTO_APPROVE` | `true` | Adds `--auto`: permissions not explicitly denied in kilo's own config are pre-granted, because a headless run has nowhere to put an ask prompt. Reads stay inside the workspace unless kilo's own permission rules say otherwise. Off, permission asks fail and the model routes around them. Consult runs use kilo's read-only `plan` agent and never get `--auto`. |
-
-`CLAUDE_PERMISSION_MODE=default` and `GROK_PERMISSION_MODE=default` are a poor
-fit for a headless console: prompts have nowhere to go, so tool calls get denied
-or the run stalls. Use `acceptEdits`, `plan`, or `dontAsk`.
-
-**Docker / compose.** Codex's default `workspace-write` sandbox cannot connect to
-`/var/run/docker.sock` even when your user is in the `docker` group — that is a
-sandbox deny, not a missing CLI. Turn on **Host access (Docker)** on the Agents
-page (or set `AGENT_HOST_ACCESS=true` and restart the server). The OS user that
-runs this console still has to be in the `docker` group, or Docker itself will
-refuse the socket.
-
-Each run uses the selected workspace's directory as `cwd`. Relative paths on a
-workspace resolve against the repo root. **Point a workspace at the project you
-want worked on, and remember the agents can read and write there.**
-
----
-
-## Architecture
+| Claude Code | The bundled Claude Agent SDK | An existing `claude` login, or `ANTHROPIC_API_KEY` |
+| Codex CLI | `codex app-server` over stdio | `codex login --device-auth`, or `OPENAI_API_KEY` |
+| Cursor CLI | The `cursor-agent` executable | `cursor-agent login` |
+| Grok CLI | The `grok` executable | `grok login --device-auth`, or `XAI_API_KEY` |
+| GitHub Copilot | The `copilot` executable | `copilot login`, a supported GitHub token, or a Copilot-enabled `gh` login |
+| Kilo Code | A local `kilo serve` process | `kilo auth login` |
+
+API-key names above also identify the corresponding environment variables.
+For a newly registered Hydra account, save keys in that account’s **Agents**
+settings: new accounts use built-in defaults and their own overrides rather
+than inheriting the installation owner’s `.env` provider settings or saved keys.
+Local CLI logins and executables are still shared at the OS-user level.
+
+Hydra checks `PATH` first and also finds CLIs installed through its setup flow.
+An explicit custom **Binary** setting takes precedence over fallback discovery.
+Unavailable providers show a reason instead of leaving you to guess.
+
+<details>
+<summary>Where installers put things, and what updates do</summary>
+
+The setup flow shows its fixed provider source before installation. npm-based
+CLIs go under `$XDG_DATA_HOME/hydra-cli/<provider>` (normally
+`~/.local/share/hydra-cli/<provider>`), separate from this checkout’s dependencies.
+Claude’s SDK is managed as a project dependency. Cursor and Grok use their
+configured official platform installers, which may update your shell’s PATH.
+
+Install and Update affect the host machine. A provider with active runs cannot
+be replaced. Installing it does not automatically enable it or change your model
+policy. Closing the setup dialog does not cancel an installation in progress.
+
+</details>
+
+## Your first task
+
+Start small. “Explain this project” is a better first date than “rewrite our
+entire billing system before lunch.”
+
+1. Open **Workspaces** and create a workspace pointing at an **existing directory
+   on the Hydra machine**. An absolute path makes the destination obvious.
+2. Select that workspace in the sidebar and open **Chat**.
+3. Choose an available provider and model in the composer.
+4. Select **Ask** for a read-only consultation, or **Run** to make changes.
+5. Send your prompt, watch the stream, and inspect the outcome.
+
+For an **Ask**, try:
 
 ```text
-shared/src/
-  index.ts                 explicit public exports for @hydra/shared
-  contracts/               event, WebSocket, HTTP and persisted-record shapes
-  models/                  model catalog, token/cost logic, status and program models
-  policies/                pipeline, station and provider-failure rules
-  utils/                   shared formatting, text and verification parsing
-server/src/
-  index.ts                 login gateway / private account-runtime entrypoint
-  api/                     HTTP/WebSocket server, workspace routes, access logging
-  config/                  boot configuration and live settings field table
-  contracts/               adapter, process and run service interfaces
-  models/                  execution, live-run and agent-context models
-  domain/                  pure pipeline decisions and program transformations
-  infrastructure/          processes, containment, instance locks, fingerprints
-  providers/
-    registry.ts            provider registration and detection
-    adapters/              one adapter per CLI/SDK, plus shared spawn machinery
-    streams/               Codex/Kilo stream mapping and SSE decoding
-    *.ts                   usage, discovery, authentication and update modules
-  repositories/            SQLite stores, additive migrations and retention
-  services/
-    agents/                agent context, input, instructions and CLI launchers
-    execution/             command execution and supervision
-    pipeline/              pipeline scheduling
-    programs/              program authoring
-    runs/                  lifecycle, sessions, live state and operator messages
-    verification/          definition-of-done checks and completion audits
-    workspaces/            Git capture and workspace instruction files
-  utils/                   logging, IDs, queues and line decoding
-server/bin/                agent-step and Cursor policy executables
-web/
-  app/                     Next.js routes, layouts and global styles
-  api/                     server URL and typed HTTP client
-  contexts/                application-wide WebSocket, workspace and fleet state
-  models/                  browser run-state models
-  hooks/                   application-wide React hooks
-  components/
-    layout/                shared shell, sidebar, drawers and navigation surfaces
-    theme/                 theme initialization and toggle
-    ui/                    reusable visual primitives
-  features/<feature>/
-    components/            feature views, panels and dialogs
-    hooks/                 feature-specific React hooks
-    lib/                   feature-specific state projections and pure helpers
-  lib/                     shared navigation, theme and browser utilities
+Give me a guided tour of this repository. Where does the app start,
+what are its main moving parts, and how do I run its checks?
 ```
 
-**Where new code belongs.** Put transport shapes shared by the browser and
-server in `shared/src/contracts/`; expose them through the explicit exports in
-`shared/src/index.ts`. Keep domain values, validation and their associated types
-together in `models/` or `policies/`. Internal shared modules import their owning
-module directly; other workspaces import `@hydra/shared`.
+For a **Run**, try something with a clear finish line:
 
-On the server, `api/` handles requests, `services/` coordinates work,
-`repositories/` owns persistence, and `infrastructure/` owns operating-system
-integration. Provider-specific wire formats stay in `providers/adapters/` and
-`providers/streams/`. Reusable implementation helpers belong to their owning
-module first; use `utils/` only when the helper has no domain owner. Avoid a
-catch-all `functions/`, `helpers/` or `types/` directory.
-
-In the browser, keep each feature's components, hooks and helpers together.
-For example, pipeline station UI lives in
-`web/features/pipeline/components/station/`, its hooks in
-`web/features/pipeline/hooks/station/`, and its tree/thread helpers in
-`web/features/pipeline/lib/station/`. Code used throughout the app belongs in
-`components/`, `contexts/`, `hooks/`, `api/` or `lib/` according to its role.
-`app/` retains Next.js routing conventions, and `@/` resolves from `web/`.
-
-Tests live under each workspace's `test/`, grouped by the same responsibility
-or feature as their source. Backend flows spanning several modules belong in
-`server/test/integration/`; architecture rules belong in
-`server/test/architecture/`. The test commands discover nested suites.
-
-**Provider adapter pattern.** Every adapter implements:
-
-```ts
-interface AgentAdapter {
-  isAvailable(): Promise<boolean>;
-  getVersion(): Promise<string | null>;
-  run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent>;
-  interrupt(runId: string): Promise<void>;
-}
+```text
+Improve the empty state on the projects page. Explain what a new user
+should do next, keep the existing visual style, and run the relevant checks.
 ```
 
-and yields only these event types, defined once in `shared/`:
+One workspace allows **one writable run and up to three read-only consults** at
+a time. Open another conversation for research while the writer is busy.
+Accounts also share a Git repository lock, so two accounts cannot write to the
+same checkout simultaneously.
 
+Saved work-item runs require a clean Git working tree. Commit or otherwise
+resolve your own changes before starting one; read-only consults can still run
+against a dirty repository. Hydra never stashes or resets your work for you.
+
+### A few useful tricks
+
+- Type **`@`** in the composer to find a provider or model. Arrow keys navigate;
+  Enter or Tab selects. The selection token is removed before the prompt is sent.
+- Use **`/btw`** to add a note to a running agent. Providers with live delivery
+  receive it mid-turn; others read it at their next `agent-step` check-in. Where
+  offered, **Interrupt & deliver now** resumes the session with your note.
+- Name and pin threads you want to keep handy; archive the ones you are done with.
+  Thread metadata is saved on the server. Drafts and reading positions stay in
+  that browser, scoped to your account.
+- Compatible follow-ups resume the provider’s native session. Switching provider
+  or mode uses bounded recorded conversation context instead.
+- Closing the browser disconnects the view; the server keeps the run. Reconnect
+  to inspect it. Use the **Stop** control when you actually want work to stop.
+
+## Find your way around
+
+The sidebar keeps the current workspace, section navigation and that section’s
+records together. Details open in a shared drawer, so inspecting one step does
+not mean abandoning the whole board.
+
+| Page | What lives there |
+|---|---|
+| **Chat** | Conversations, custom tasks and read-only questions |
+| **Pipeline** | Pipeline directory, execution board, assignments and waiting work |
+| **Activity** | Run history and the sessions behind it |
+| **Changes** | Per-run change capsules, commits and file diffs |
+| **Report** | Usage, API estimates, provider breakdowns and CSV export |
+| **Agents** | Live fleet, provider setup, model policy and shared settings |
+| **Workspaces** | Project directories, instructions, programs, suites and prompts |
+| **Account** | Password changes, Telegram connection and recent Telegram activity |
+
+The **Stop** button in the top rail is available across the app. Other stop and
+pause buttons open the same control centre. No hunt-the-emergency-button game.
+
+## Build a pipeline
+
+A good pipeline is a plan with sensible handoffs. Here is Hydra’s vocabulary:
+
+```text
+Workspace                     an existing project directory
+└── Program                   an outcome you want to deliver
+    ├── Suite                 a related batch of work
+    │   ├── Prompt / work item  one task, with its own checks
+    │   └── Prompt / work item
+    └── Suite
+
+Pipeline                      a saved execution setup selecting suites,
+                              ordering work and assigning agents
+Station / step                a work item in that execution flow
 ```
-assistant_text | tool_use | tool_result | status | result | error
+
+For example: a **“Make onboarding less confusing”** program could have suites
+for the first-run screen, sample data and verification. Each suite contains
+small, concrete work items. You could assign one agent to implementation and
+another to the review suite.
+
+### Make the plan
+
+Create programs, suites and prompts in **Workspaces**, or ask an agent to draft
+a program from your brief. The author reads the project and proposes suites,
+work items, dependencies and verification blocks.
+
+The proposal stays in a draft until you review it. Rename things, rewrite weak
+instructions, reorder work and fix dependencies, then choose **Create program**.
+You can also tick **and a pipeline to run it**. A stopped author run can leave a
+partial draft that a later run continues; **Revise** lets you request changes.
+
+The library is protected by that draft-and-apply step. The author itself has
+write permissions and holds the workspace writer lock; its instruction to leave
+the project unchanged is a brief, not a read-only sandbox.
+
+Already have a prompt pack on disk? The workspace import API supports an
+**inspect → apply** flow. It previews the manifest, suites, prompts, dependencies
+and gates before applying them together. Imported Markdown becomes stored
+content; it is not a live link to the source files.
+
+### Give “done” something to stand on
+
+Saved prompts can include a **`## Verify`** block. Shell commands in that block
+become definition-of-done criteria. For example, in this repository:
+
+````markdown
+Improve the shared validator and cover the edge case that caused the failure.
+
+## Verify
+```bash
+npm test --workspace shared
+npm run typecheck
 ```
+````
 
-Provider-specific shapes (`SDKMessage`, codex `item.completed`, cursor
-`stream-json`, grok `streaming-json`, copilot `assistant.*`/`tool.*` envelopes)
-never leave the adapter. Adding another
-provider is one new file in `server/src/providers/adapters/` plus one line in
-`registry.ts` (and `"id"` on `PROVIDER_IDS` plus a chip colour) — the transport
-layer and the rest of the frontend stay untouched.
+Pick checks that prove the requested behaviour. “The agent sounded confident”
+is not one of them. The server records verification evidence and completion
+checks; a declared finish still has to satisfy the applicable gate.
 
-**What the server owns, not the browser.** The run id, the elapsed clock (pushed
-as a `status` heartbeat every `STATUS_INTERVAL_MS`, so the displayed time is the
-real time rather than a drifting client timer), cumulative token usage, and the
-terminal state of the run.
+Work items may also have structured station capabilities, including deferred
+verification. Those stations implement or author scenarios and hand the checks
+to a designated verifier. With Cursor, protected stations additionally use
+native sandboxing and command hooks; a run is refused if enforcement cannot be
+verified. These controls do not make arbitrary repository programs safe.
 
-**Streaming.** Events are written to the socket the instant the adapter yields
-them; nothing is buffered until the run completes. Claude Code and Grok stream
-true text deltas; Codex and Cursor emit whole blocks, which the log projection
-handles via `delta: false` block replacement keyed on `blockId`.
+### Assign agents and press Play
 
-**Interrupt.** The browser sends `{ kind: "interrupt", runId }`. The runner calls
-the adapter's `interrupt()` — `Query.interrupt()` for Claude, `SIGINT` then
-`SIGKILL` for spawned CLIs — and hard-aborts after a 2s grace period if the
-provider does not stop, so a hung interrupt can never leave a run un-cancellable.
-Disconnecting the browser interrupts the run too. An operator's interrupt (the
-socket message or `POST /api/runs/:id/interrupt`) goes through
-`pipelineScheduler.stopAgent`: when the run is a pipeline station's, the rail is
-paused first, so the ending is never read as unfinished work that launches a
-successor agent.
+Create a pipeline, give it a name, and select its suites. In **Studio → Suite
+agents**, choose the provider and model for each suite. Prompts and new sub-steps
+inherit that choice; **Prompt overrides** handles exceptions. Assignments belong
+to that pipeline, so another pipeline can use the same suite differently.
 
-**Errors.** A child process that dies unexpectedly, a malformed stream, or a
-provider-reported failure becomes an `error` event, not a dropped socket. Child
-`stderr` goes to the server log only (set `DEBUG=1` to see it), never to the
-browser, unless the process exits non-zero — then the captured tail is attached
-to the fatal error event.
+Review the house rules and budgets, save, then **Play**. The board shows ordered
+steps, working and waiting states, conversations, evidence and nested sub-steps.
+**Needs you** opens the work waiting for your attention. **Hide completed** clears
+visual space without removing completed work.
 
----
+### What happens when a step finishes?
+
+For ordinary pipeline steps, the scheduler follows this general pattern:
+
+| Outcome | What happens next |
+|---|---|
+| **Done**, with required checks satisfied | Advance to the next ready step |
+| **Continue**, with an explicit handoff | Run the same station again on the same working tree; productive continuation does not spend the unfinished allowance |
+| Budget stop, crash, missing report or failed verification | Continue within the unfinished allowance, then review and park if still unresolved |
+| Provider cannot run or hits a limit | Try a fallback if enabled and eligible; otherwise wait for the operator |
+| **Blocked** or a human-review request | Pipeline policy may waive and continue; passing command checks still matter, and waived human review is not recorded as passed |
+
+The default unfinished allowance is **four continuations**, followed by one
+read-only review before parking at `continuations_exhausted`. Resuming a parked
+ordinary station records your decision and grants a fresh unfinished allowance.
+Step rules expose `onDone` (`continue`, `stop`, `skip_rest`) and `onUnfinished`
+(`continue`, `skip`, `wait`). A prose request to stop for human review, or the
+`wait` value alone, does **not** guarantee that the pipeline parks. Use the
+execution controls when you need it to stop.
+
+**Automatically reassign agents** is off by default. When enabled, Hydra checks
+reported allowance windows, skips exhausted or cooling providers and uses the
+prompt → suite → house fallback order. The primary assignment stays saved and
+the handoff appears in history. Unknown usage does not block a run; if no
+eligible provider is available, the pipeline waits.
+
+### Optional: a finite allowance for a bigger requirement
+
+The **Autonomous execution** panel can capture a requirement and its done
+criteria with limits for attempts, active time, tokens and a delivery deadline.
+Start in **shadow mode** to record proposed decisions, then enable the supervisor
+for the next safe Play.
+
+The supervised flow tracks work units, accepted work, recovery decisions and
+deferred verification separately. Its execution contract governs the allowance;
+it is not simply an unlimited series of ordinary continuations. Unknown token
+usage consumes the worker’s full reservation. If more allowance is needed,
+**Review new allocation** lets you approve cumulative limits with a reason while
+preserving recorded usage, accepted work and recovery history.
+
+### Pause, stop, restart
+
+| Control | Effect |
+|---|---|
+| **Pause** | Let the current agent finish its step, then start nothing new |
+| **Force stop agent** | Stop the current agent and pause on that step; Resume continues it without spending an unfinished-continuation allowance |
+| **Stop pipeline** | End the pipeline run and stop its agent; finished steps stay finished |
+| **Stop agent** | Stop a standalone live agent |
+
+On a server restart, `serve` normally resumes pipelines interrupted by a
+restart within the previous **24 hours**, re-queuing their current station on
+the same working tree. It does not mark that station done or failed just because
+the process disappeared. A pipeline you explicitly stopped stays stopped.
+
+`pipeline.onRestart` controls ordinary restart behaviour; supervised work also
+retains its recorded execution intent. The development sandbox never
+automatically resumes copied pipelines.
+
+### Review the actual work
+
+Writable work-item runs record a base commit. Agents checkpoint their work with
+`agent-step checkpoint` before posting a terminal handoff such as done, continue,
+blocked or decompose. Uncommitted tracked or untracked changes prevent that post.
+Budget and manual stops get a short finalisation turn to checkpoint partial work.
+
+Open **Changes** for the resulting change capsule: base and head commits, commit
+list, file totals, and patches. Activity and work-item sessions link to the same
+review. The operator’s pre-existing changes remain the operator’s responsibility;
+Hydra does not sweep them into an agent commit.
 
 ## Configuration
 
-Configuration comes from two layers:
+You can leave most knobs alone initially. Connect a provider, choose sensible
+permissions, and work out your preferred model before tuning the entire engine.
 
-1. **`.env` at the repo root**, read by both processes (the frontend picks it up
-   through `web/next.config.ts`). See `.env.example` for the annotated list.
-2. **The account's saved settings**, written by the Agents page. For the
-   installation owner, `.hydra/settings.json` layers over `.env`. Additional
-   accounts use their own settings file and built-in defaults.
+### What goes where
 
-`HYDRA_SECURE_COOKIES=1` enables Secure session cookies when serving the app
-through HTTPS. `ALLOWED_ORIGINS` must contain the browser's exact origin;
-untrusted origins and browser mutations without an allowed Origin are rejected.
-For local use, open both the page and backend with the same loopback hostname
-(`localhost` or `127.0.0.1`); the browser client aligns these aliases automatically.
+| Place | Use it for |
+|---|---|
+| Root **`.env`** | Boot-time network configuration and installation-owner defaults; start from [`.env.example`](.env.example) |
+| **Agents → Configuration** | Provider credentials, defaults, permissions, models, budgets, containment, pipeline policy and retention |
+| **Workspace settings** | Project path, standing instructions and stored `CLAUDE.md` / `AGENTS.md` content |
+| **Account** | Password and Telegram settings |
 
-API keys are read server-side only and are never sent to the browser — the client
-only ever sees `available`, `reason`, `version`, `permissionMode`, and `model`,
-plus a boolean for whether each key is set.
+Saved settings override defaults and apply to the **next run** without a
+restart. Provider detection refreshes on save and open tabs receive the update.
+The owner’s overrides live in `.hydra/settings.json`; other accounts have their
+own settings files and built-in defaults. Reset removes an override. Unsaved
+Agents-page drafts survive closing an editor while that page remains open.
 
-Note that keys saved through the Agents page are stored in
-`.hydra/settings.json` in plain text (file mode `0600`). If you would
-rather not have them on disk in that form, leave those fields empty and use
-`.env` or your provider's own login (`claude`, `codex login`, `grok login`,
-`copilot login`).
+Keys are write-only in the UI: the browser sees whether one is set, never its
+saved value. Settings files use mode `0600`, but saved keys are **plaintext on
+disk**. Prefer the provider’s own login if you do not want keys in that file.
+
+### Models without a scavenger hunt
+
+Choose a model in the composer, through an `@` mention, or in the pipeline’s
+assignments. Provider defaults are the fallback for unpinned choices.
+
+The account-wide **Model access** ceiling is **Free**, **Efficient**,
+**Professional**, **Frontier**, or **All models**. Higher tiers include lower
+tiers, and the server enforces the ceiling across new runs, fallbacks, authors
+and reviewers. Unknown/custom model IDs require **All models**.
+
+**Manual** keeps your model choices. **Auto Select** chooses within the access
+tier and disables manual pickers; saved manual choices return when you switch
+back. Global **Low / Medium / High** reasoning effort can be inherited or
+overridden per provider, then translated into that provider’s native setting.
+
+Model lists refresh from providers where supported, with the bundled catalog as
+an offline fallback. Copilot keeps its stable `auto` route; explicit IDs can be
+entered through the custom-model field when policy allows them.
+
+### Permissions: choose the size of the keys you hand over
+
+Each provider has its own permission system. Hydra shows the effective mode;
+the same-looking task can have different machine access with a different agent.
+
+| Provider | Shipped default | Practical meaning |
+|---|---|---|
+| Claude | `acceptEdits` | File edits are pre-approved; commands follow Claude’s rules |
+| Codex | `workspace-write` | Workspace writes with restricted network access |
+| Cursor | `CURSOR_FORCE=true` | Skip approval prompts unless denied; protected stations add sandbox and hook restrictions |
+| Grok | `acceptEdits` + `workspace` sandbox | Pre-approved edits within its configured sandbox |
+| Copilot | `allow-all-tools` | Headless tool approval; default file access is scoped, but shell commands run with your OS user’s access |
+| Kilo | `KILOCODE_AUTO_APPROVE=true` | Approve permissions not explicitly denied by Kilo’s config; consults use its read-only plan agent |
+
+**Host access (Docker)**, controlled by `AGENT_HOST_ACCESS`, defaults to `false`.
+Enabling it selects broad provider access modes for Docker and other host
+services. The OS user still needs permission to use those services. Cursor’s
+protected station restrictions remain in place.
+
+Headless agents cannot display an interactive approval dialog in your terminal.
+Choose modes that suit unattended execution; a provider waiting on an invisible
+permission prompt makes for a very quiet dashboard.
+
+### Budgets and resource limits
+
+The shipped defaults give each run **90 minutes**, **1,000 tool calls** and a
+**$100 API-estimate spend ceiling**. There are also controls for tool output,
+no-progress loops and an open tool call that never returns (15 minutes by
+default). Spend enforcement depends on reported usage and available pricing;
+it is not a provider billing cap.
+
+On Linux with a working **user systemd manager**, each run gets a transient
+service/cgroup covering its descendant processes. Defaults are **3 GiB memory
+pressure**, **4 GiB hard memory**, **512 MiB swap** and **512 tasks**. Tune these
+on Agents or through the `RUN_MEMORY_*` and `RUN_TASKS_MAX` variables.
+
+Without user systemd, POSIX falls back to process-group cancellation; Windows
+can signal the provider process only. Those fallbacks do **not** enforce aggregate
+memory, swap or task limits. On WSL, `systemctl --user show-environment` must work
+for cgroup containment.
+
+### Workspace instructions
+
+Standing instructions give every task the same project context. Non-empty
+stored `CLAUDE.md` and `AGENTS.md` fields are written to the workspace root
+before a run; empty fields leave existing files alone. Agent changes to these
+instructions become proposals you can review.
+
+If your repository already maintains instruction files, keep the stored fields
+empty or identical to those files. Otherwise a stored version can overwrite
+your repository’s version at the next run.
+
+### Network settings
+
+These values are boot-time settings; restart after changing them:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Backend bind address |
+| `PORT` | `4000` | Backend port |
+| `ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Exact browser origins allowed to access the app |
+| `NEXT_PUBLIC_AGENT_SERVER_URL` | `http://127.0.0.1:4000` | Backend address used by the browser; rebuild for a changed frontend value |
+| `HYDRA_SECURE_COOKIES` | `0` | Set to `1` when serving through HTTPS |
+
+For local use, stick with one loopback hostname; the browser client aligns
+`localhost` and `127.0.0.1` aliases. Remote use needs an address the browser can
+reach, the correct allowed origin, HTTPS and Secure cookies. Keep loopback as
+the default for a machine you are using locally.
+
+## Accounts, data and backups
+
+Every account has its own workspaces, programs, runs, chat metadata and settings,
+served by a separate backend runtime. Newly registered accounts always start
+empty, even when they are the first registration in an empty identity registry.
+Registration does not claim the installation’s original database.
+
+An existing installation owner keeps the original data and settings; ownership
+is recorded in the identity registry and survives restarts. Browser drafts and
+preferences are account-scoped. Sessions last seven days, and signing out revokes
+the session and closes its connections.
+
+By default, state lives **outside the repository**:
+
+```text
+~/.local/state/hydra/
+├── hydra.sqlite                         original installation database
+├── hydra.sqlite.identities.sqlite       accounts, sessions and Telegram setup
+└── hydra.sqlite.users/
+    └── <account-id>/
+        ├── hydra.sqlite                 that account’s app data
+        └── settings.json                that account’s overrides
+
+<checkout>/.hydra/settings.json           installation owner’s overrides
+```
+
+`XDG_STATE_HOME` changes the default state root; `HYDRA_DB` selects a database
+path explicitly. The identity registry and account directories sit alongside
+that selected path. `SETTINGS_FILE` can override the owner’s settings path.
+Hydra refuses a database path inside a configured workspace: an agent’s writable
+project directory is a bad place to keep the console’s source of truth.
+
+**Back up the registry, all account databases and saved settings together.** Use
+SQLite’s backup facility, or copy them while Hydra is stopped. Restoring the
+original database without its identity registry loses the ownership mapping.
+Deleting that registry is not a password-reset strategy.
+
+Transcript retention defaults to **4,000 events per run**, **30 days**, while
+keeping the **last 200 events** of each run. Cleanup starts after boot and runs
+periodically. It removes old transcript events, not the run records, remarks,
+status history or commands. Deleting events frees SQLite pages internally;
+shrinking the file can require an offline `VACUUM` after stopping Hydra.
+
+### Forgotten password? Still your machine.
+
+Change a known password from **Account**. If you cannot sign in, run this on the
+Hydra machine:
+
+```bash
+npm run reset-password -- <username>
+```
+
+It asks for the new password twice without echoing it, keeping it out of shell
+history. It opens only the account registry and can run while Hydra is up. Set
+`HYDRA_DB` first if you use a non-default database. Password changes and resets
+revoke the account’s other sessions; a running console closes affected live
+connections within 30 seconds.
+
+Accounts with Telegram connected can also use **Forgot password?** on the
+sign-in screen. The eight-digit code goes to the linked private chat, expires
+after 10 minutes, works once, and permits five wrong guesses.
+
+## Telegram: let the dragon tap you on the shoulder
+
+Optional, but handy when the pipeline needs you just as you have found a snack.
+Hydra uses outbound HTTPS long polling, so it does not need a public URL,
+webhook or incoming port.
+
+1. The **installation owner** creates a dedicated bot with `@BotFather`
+   (`/newbot`) and saves the token on **Account**. Use a bot just for Hydra:
+   only one reader should consume its messages.
+2. Each account chooses **Connect Telegram**, opens its single-use link and
+   presses **Start**. The link expires after 10 minutes; one Telegram user can
+   connect to at most one Hydra account.
+3. Connections start with **notifications only**. Enable **Full control**
+   separately if you want action buttons and question replies.
+
+| Command | What you get |
+|---|---|
+| `/status` | Running agents, elapsed time and active pipelines |
+| `/pipelines`, `/next` | Pipeline states, completed stations and current/next work |
+| `/gates` | Questions waiting for you |
+| `/cancel` | Cancel an answer in progress |
+| `/help` | Available commands |
+
+Notifications cover questions, pipelines waiting for attention, pipeline
+completion/stop/interruption, and failed runs. Intentionally interrupted agent
+runs are not reported as failures. `/gates` also lists questions that were
+already waiting when Hydra started.
+
+With Full control, buttons can stop agents, control pipelines and answer
+questions. Actions ask for confirmation, run through your account’s runtime,
+and appear in **Recent Telegram activity**. Buttons expire after 15 minutes;
+lowering access disables previously sent controls.
+
+The bot responds only to the linked user in their private chat. It ignores
+groups and unlinked users. Messages contain summaries, states, errors and agent
+questions, never transcripts, diffs or file contents. Bot chats are not
+end-to-end encrypted, so keep sensitive material out of those summaries.
+
+The token stays in the local account registry; it is not shown again in the
+browser. Replacing or removing the bot disconnects all account chats. Only the
+live `serve` console polls Telegram; the development sandbox leaves its copied
+bot stopped.
+
+## Reports that admit what they do not know
+
+**Report** shows usage in the selected workspace for **7 days**, **30 days** or
+**all time**, with an optional provider filter. Days use UTC and sessions are
+grouped by start date. Charts, shares and breakdowns use the same selection.
+
+API estimates apply configured model-family rates to recorded tokens. They are
+a comparison proxy, not your subscription charges or a historical invoice.
+**Behind the numbers** explains pricing coverage and unpriced sessions. Unknown
+usage stays unknown; a reported zero stays zero. Cursor does not reliably report
+tokens, so Hydra omits that stat rather than inventing one.
+
+**Export CSV** downloads the selected sessions, recorded usage, estimates and
+applied rates. Searching inside the breakdown does not narrow that export.
+
+## When something gets weird
+
+| Symptom | Start here |
+|---|---|
+| A provider is greyed out | Read its availability reason in Agents. Check the host’s executable, login, enabled state and model access tier, then refresh detection. |
+| “I logged in, but it still says unavailable” | Confirm you logged into the CLI on the Hydra machine. For credential stores Hydra cannot inspect, review that provider’s **Assume authenticated** option. |
+| My new account ignored `.env` keys | New accounts have personal defaults. Save keys and provider settings in that account’s Agents page. |
+| No workspace, or the directory is missing | Create a workspace in Workspaces and use an existing host path. Hydra does not create a project checkout for you. |
+| A saved task refuses to start because Git is dirty | Resolve your existing changes yourself. Use Ask if you only need research. |
+| Docker fails although it works in my terminal | Check **Host access (Docker)** and the OS user’s Docker permissions. Codex’s default sandbox cannot use the Docker socket. |
+| A pipeline keeps dying while I edit Hydra | Use `npm run serve` for live work and `npm run dev:sandbox` for development. Watch-mode restarts stop active agents. |
+| A step is waiting or parked | Inspect its conversation, evidence, provider availability and allowances in Needs you or the step drawer. Supervised budget exceptions need a reviewed new allocation. |
+| The browser cannot connect | Check the backend, browser-visible server URL, exact allowed origin and cookie settings. Rebuild after changing a public frontend URL. |
+| A CLI stopped understanding its arguments | Check that installed CLI’s `--help` and update support. Headless flags and stream formats change between releases. |
+| Memory limits seem absent | Check the user systemd manager. Process-group fallback cancels processes but does not impose a memory ceiling. |
+| Cannot sign in | Use the local reset-password command or your connected Telegram recovery flow. Keep the identity registry. |
+
+Advanced CLI arguments are provider-specific. Codex expects App Server
+configuration flags such as `-c`, `--enable` and `--disable`; Kilo expects server
+flags such as `--pure`, `--print-logs` and `--log-level`. Old run-only flags fail
+explicitly. Cursor needs `stream-json` for partial output; its `json` option is
+whole-response compatibility mode.
+
+## Security and sensible expectations
+
+Hydra requires login for application APIs and WebSockets. Passwords use salted
+scrypt hashes; session tokens are stored hashed and sent in HttpOnly,
+SameSite=Strict cookies. Authentication and recovery routes are rate limited.
+Private account runtimes require a gateway credential; agent callbacks use
+separate run-scoped credentials.
+
+**This is a local development tool for trusted users of the same machine.**
+Accounts separate application records and settings. Agents still run as the
+server’s OS user, with the file and command access their provider permits.
+Local CLI logins, installed tools, machine-level subscriptions and filesystem
+access remain shared. Use separate OS users or containers when people must not
+access each other’s files or provider credentials.
+
+Keep `.env`, saved settings, backups and the Telegram token private. File mode
+`0600` protects against other OS users, not an unrestricted agent running as the
+same user. Resource limits, hooks and prompts are useful controls; choose OS
+isolation to match the level of trust you actually need.
+
+## Development
+
+Hydra can be running someone’s real work from this very checkout. Please do not
+kick the chair out from under the agents.
+
+```bash
+npm run dev:sandbox
+```
+
+That copies the database, account registry, account data and saved settings to
+`/tmp/hydra-sandbox/`, then runs a watch backend on **4100** and a frontend on
+**3100**. Sign in with the same credentials. To reuse that snapshot:
+
+```bash
+npm run dev:sandbox -- --keep
+```
+
+The state copy is isolated; **the project directories are not**. Workspace rows
+still point at real folders. Manually launching an agent from the sandbox can
+still change a real repository. Copied pipelines never auto-resume, and the
+copied Telegram bot stays stopped.
+
+Plain `npm run dev` refuses the default live database. Prefer the sandbox;
+`HYDRA_DB` can point development at a disposable database if you need a different
+setup. Do not run `serve` or `free-ports` over a live instance to “see if it helps.”
+
+| Command | Purpose |
+|---|---|
+| `npm run serve` | Build, free live ports, run without watching |
+| `npm run dev:sandbox` | Develop against copied state on separate ports |
+| `npm run build` | Check shared/server and build the frontend |
+| `npm run typecheck` | Typecheck shared, server and web |
+| `npm test --workspace shared` | Shared contracts and domain behaviour |
+| `npm test --workspace server` | Backend tests, serially against a disposable database |
+| `npm test --workspace web` | Frontend logic tests |
+| `npm run lint --workspace web` | Frontend lint |
+| `npm run reset-password -- <username>` | Local account recovery |
+
+The root `npm test` chains workspaces with `&&`; a server failure prevents web
+tests from running. Run them separately when you need all results. Check
+[AGENTS.md](AGENTS.md) before changing code, especially around state, child
+processes, credentials and live-system safety.
+
+## Architecture
+
+TypeScript throughout, using npm workspaces: **`@hydra/shared`**, **`@hydra/server`**
+and **`@hydra/web`**. The frontend is Next.js 16 / React; the backend uses SQLite
+and streams normalised provider events over WebSockets.
+
+```text
+shared/src/
+  index.ts                   explicit public API for @hydra/shared
+  contracts/                 wire shapes and persisted-record contracts
+  models/                    catalogs, statuses, usage and execution models
+  policies/                  pipeline, station and provider-failure decisions
+  utils/                     shared formatting and parsing
+server/src/
+  index.ts                   gateway / private account-runtime entrypoint
+  api/                       HTTP, WebSockets and access logging
+  config/                    boot configuration and settings field table
+  contracts/                 service, adapter and process interfaces
+  models/                    run and context state
+  domain/                    pure rules and transformations
+  infrastructure/            processes, containment, locks and OS integration
+  providers/
+    adapters/                one normalising adapter per provider
+    streams/                 native stream decoding
+    registry.ts              provider registration and discovery
+  repositories/              SQLite stores, additive migrations and retention
+  services/                  agents, runs, pipelines, programs, verification,
+                             workspaces, execution and Telegram
+  utils/                     general helpers without a domain owner
+server/bin/                  agent-step and Cursor policy executables
+web/
+  app/                       Next.js routes and global styles
+  features/<feature>/        feature components/, hooks/ and lib/
+  components/                shared layout, theme and UI
+  contexts/                  WebSocket, workspace, account and fleet state
+  api/                       server URL and typed HTTP clients
+  models/                    browser state shapes
+  hooks/                     application-wide hooks
+  lib/                       shared browser utilities
+brand/                       brand sources and asset generator
+scripts/                     sandbox, port management and account recovery
+docs/assets/                 README illustration and generation prompt
+```
+
+**Placement guide.** Shared protocol shapes belong in `contracts/`; domain
+values and validation stay with their owning `models/` or `policies/` module.
+Internal shared imports are direct. Export the public API explicitly from
+`shared/src/index.ts`; consumers use `@hydra/shared`.
+
+On the server, `api/` handles transport, `services/` coordinates work,
+`repositories/` persists it, and `infrastructure/` handles the OS. Keep
+provider-specific formats behind `providers/adapters/` and `providers/streams/`.
+Put helpers with their feature before reaching for `utils/`.
+
+In the frontend, keep feature components, hooks and helpers together;
+application-wide pieces belong in the corresponding shared directories. `app/`
+keeps Next.js routing conventions and `@/` resolves from `web/`. Before changing
+Next.js code, read the relevant installed guide in `node_modules/next/dist/docs/`.
+
+Tests mirror source responsibilities under each workspace’s `test/`. Cross-module
+backend flows go in `server/test/integration/`; architecture rules go in
+`server/test/architecture/`.
+
+**The seams that matter:** adapters implement `AgentAdapter` and yield only
+`assistant_text`, `tool_use`, `tool_result`, `status`, `result` and `error`.
+Provider formats stop there. The server owns run IDs, elapsed time, token usage
+and terminal state; the browser renders them. Events stream as adapters yield
+them, and provider failures become events rather than silently lost output.
+
+Settings are table-driven from `server/src/config/settings.ts`. Agents use
+`agent-step` for scoped progress, checkpoints, completion, continuation and
+blockers, with audited callbacks. Schema changes are new additive migrations;
+never rewrite an applied migration. The browser talks only to the server.
+
+For branding, change [brand/build.mjs](brand/build.mjs) and run
+`node brand/build.mjs`; logos, app icons and geometry are generated together.
+See the [brand guide](brand/README.md). The decorative README illustration was
+created with the built-in image generator; its [prompt](docs/assets/hydra-workshop.prompt.txt)
+is included so the tiny workshop can have a future.
 
 ---
 
-## Security
-
-Hydra requires login for application APIs and WebSockets. Passwords are stored
-as salted scrypt hashes. Session tokens are random, stored hashed on the server,
-and sent in HttpOnly, SameSite=Strict cookies. Login and registration are rate
-limited. Private account runtimes require a gateway credential; agent callbacks
-continue to require their existing run-scoped bearer credentials. Only the
-installation owner can update provider executables through the app.
-
-**This remains a local development tool for trusted users of the same machine.**
-Account separation protects application records and settings, not operating
-system access. Agents still run as the server's OS user and can perform arbitrary
-code and file operations according to their configured permission model. Local
-CLI logins, installed executables, filesystem contents and machine-level provider
-subscriptions remain shared. Use separate OS users or containers when users
-must not access each other's files or provider credentials. Keep the default
-loopback binding; remote access needs HTTPS and Secure cookies.
-
----
-
-## Known limits
-
-- One writable run at a time per workspace, with up to three read-only consults.
-  Use another conversation for parallel research while a reply is running.
-- Every page shares one left sidebar: the workspace switcher, a section switcher,
-  the current section's records (Chat threads, Activity runs, change sets,
-  pipelines, workspaces) and running work. Details open in one shared drawer.
-- Chat threads live in that sidebar. Names, pins, archives and read state
-  persist on the backend; drafts and reading positions remain browser-local.
-  Search covers titles in the selected workspace, and older turns load on demand.
-  Compatible immediate sessions resume natively; provider or mode changes use
-  bounded recorded conversation context. Saved work-item executions remain
-  separate from custom conversations.
-- Cursor's headless output does not reliably include token usage, so the token
-  stat is omitted for Cursor runs rather than showing a made-up number.
+*Many heads. One console. You pick the next useful thing.*

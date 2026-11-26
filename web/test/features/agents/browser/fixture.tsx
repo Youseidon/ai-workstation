@@ -1,4 +1,3 @@
-// Browser-only fixture: every request, provider action and run is held in memory.
 import { useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { AgentCommandCenter } from "../../../../features/agents/components/AgentCommandCenter";
@@ -157,7 +156,8 @@ const emit = () => {
 const value = (key: string) =>
   snapshot.fields.find((entry) => entry.key === key)?.value;
 const states: Partial<Record<ProviderId, string>> = {};
-let failure: "save" | "reset" | "settings" | "usage" | "detect" | null = null;
+let failure:
+  "save" | "reset" | "settings" | "usage" | "detect" | "install" | null = null;
 let settingsDelay =
   new URLSearchParams(location.search).get("fixtureSettings") === "slow"
     ? 750
@@ -190,6 +190,14 @@ let usages: ProviderUsage[] = PROVIDER_IDS.map((id) => ({
   credits: { balance: 0, used: 0, limit: 0, enabled: false, currency: "USD" },
 }));
 
+let fixtureOwner = true;
+export function useFixtureIdentity() {
+  useSyncExternalStore(subscribe, () => version);
+  return {
+    user: { id: "fixture", username: "fixture", ownsLegacyData: fixtureOwner },
+    logout: async () => {},
+  };
+}
 function providers(): ProviderInfo[] {
   return PROVIDER_IDS.map((id) => {
     const reasoningEffort = (value(`${id}.reasoningEffort`) ||
@@ -204,14 +212,16 @@ function providers(): ProviderInfo[] {
     return {
       id,
       label: groups[id],
-      available: enabled && states[id] !== "unavailable",
+      installed: states[id] !== "missing",
+      available:
+        enabled && states[id] !== "unavailable" && states[id] !== "missing",
       reason: !enabled
         ? "Turned off in settings"
         : states[id] === "unavailable"
           ? "API key not configured or login unavailable"
           : null,
-      version: "1.2.3-fixture",
-      binary: `/fixture/bin/${id}`,
+      version: states[id] === "missing" ? null : "1.2.3-fixture",
+      binary: states[id] === "missing" ? null : `/fixture/bin/${id}`,
       reportsTokens: true,
       transport: id === "claude" ? "sdk" : "spawn",
       permissionMode: value("hostAccess")
@@ -383,6 +393,42 @@ window.fetch = async (input, init) => {
   if (url.pathname === "/api/settings") return Response.json(snapshot);
   if (url.pathname === "/api/providers/usage")
     return Response.json({ usage: usages });
+  const setup = /^\/api\/providers\/([a-z]+)\/(setup|install)$/.exec(
+    url.pathname,
+  );
+  if (setup) {
+    const id = setup[1] as ProviderId;
+    if (setup[2] === "install") {
+      if (!fixtureOwner)
+        return Response.json(
+          { error: "Only the installation owner can install providers" },
+          { status: 403 },
+        );
+      if (failure === "install") {
+        failure = null;
+        return Response.json(
+          { error: "Fixture installation failed" },
+          { status: 500 },
+        );
+      }
+      states[id] = "unavailable";
+      emit();
+      return Response.json({ provider: id, installed: true, version: "1.2.4" });
+    }
+    return Response.json({
+      provider: id,
+      installed: states[id] !== "missing",
+      canInstall: true,
+      reason: null,
+      source: `Official fixture installer for ${id}`,
+      documentationUrl: "https://vendor.fixture/install",
+      accountUrl: "https://vendor.fixture/account",
+      loginCommand: `${id} login`,
+      credentialKey: `${id}.apiKey`,
+      authNote:
+        "Run the CLI login on the Hydra machine, or save a key below. A website login alone does not authenticate the CLI.",
+    });
+  }
   if (url.pathname.endsWith("/update"))
     return Response.json({ updated: true, before: "1.2.3", after: "1.2.4" });
   if (url.pathname === "/api/providers")
@@ -391,6 +437,10 @@ window.fetch = async (input, init) => {
 };
 const fixture = {
   requests,
+  setOwner(owner: boolean) {
+    fixtureOwner = owner;
+    emit();
+  },
   setConnection(next: string) {
     connection = next;
     emit();

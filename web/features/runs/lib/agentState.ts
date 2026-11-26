@@ -2,13 +2,6 @@ import type { ProviderId, ProviderInfo } from "@hydra/shared";
 import type { LogItem } from "./log";
 import type { RunStatus } from "@/models/runs";
 
-/**
- * What an agent is visibly doing.
- *
- * Every value is derived from the run's own event stream, so the avatar is a
- * status readout rather than decoration: if it is spinning, the agent really is
- * mid-tool-call.
- */
 export type AgentActivity =
   | "offline"
   | "idle"
@@ -22,11 +15,9 @@ export type AgentActivity =
 export interface AgentState {
   provider: ProviderId;
   activity: AgentActivity;
-  /** The live execute run, when there is one. Consults live in `consults`. */
   run: RunStatus | null;
   consults: RunStatus[];
   consultCount: number;
-  /** One line of plain English about what is happening right now. */
   caption: string;
   available: boolean;
   reason: string | null;
@@ -38,7 +29,6 @@ export interface ProviderRuns {
   consults: RunStatus[];
 }
 
-/** How long a finished run keeps showing its outcome before going idle. */
 const AFTERGLOW_MS = 8000;
 
 const ACTIVITY_RANK: Record<AgentActivity, number> = {
@@ -52,10 +42,6 @@ const ACTIVITY_RANK: Record<AgentActivity, number> = {
   offline: 0,
 };
 
-/**
- * A provider can be writing and asking at once. `runs.find(provider)` would
- * hide the consult (or the writer) depending on insertion order.
- */
 export function runsForProvider(provider: ProviderId, runs: RunStatus[]): ProviderRuns {
   const mine = runs.filter((entry) => entry.provider === provider);
   return {
@@ -64,25 +50,17 @@ export function runsForProvider(provider: ProviderId, runs: RunStatus[]): Provid
   };
 }
 
-/** Status bar occupancy: a writer beats a consult in the same workspace. */
 export function preferExecuteRun(run: RunStatus | null, runs: RunStatus[]): RunStatus | null {
   if (run === null) return null;
   if (run.role === "execute") return run;
   return runs.find((entry) => entry.workspace.id === run.workspace.id && entry.role === "execute") ?? run;
 }
 
-/** One-line consult question for Dock/Fleet chips. */
 export function consultQuestion(run: RunStatus): string {
   const raw = run.source.type === "consult" ? run.source.question : (run.detail ?? "research");
   return raw.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Reads the tail of the transcript for one run.
- *
- * A tool call still awaiting its result is the most informative thing an agent
- * can be doing, so it outranks streamed prose.
- */
 function readTail(items: LogItem[], runId: string): { activity: AgentActivity; caption: string } | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
@@ -164,8 +142,6 @@ export function agentState(
     return { ...base, activity: "offline", caption: provider.reason ?? "not detected" };
   }
 
-  // Briefly keep showing how the last run ended, so a result that arrives while
-  // you are looking elsewhere is not gone by the time you look back.
   if (lastRun !== null && lastRun.provider === provider.id) {
     const age = now - new Date(lastRun.startedAt).getTime() - lastRun.elapsedMs;
     if (age < AFTERGLOW_MS) {

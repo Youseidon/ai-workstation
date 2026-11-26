@@ -1,7 +1,3 @@
-/**
- * Incremental newline splitter for a child process' stdout. CLI agents emit
- * JSONL, but a single `data` chunk can hold a partial line or several lines.
- */
 export class LineSplitter {
   private buffer = "";
 

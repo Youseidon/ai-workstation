@@ -11,7 +11,6 @@ export function processIdentity(pid:number,unitName:string|null=null,containment
   return {pid,startTicks:fields[19]!,bootId:readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim(),unitName,containment};
 }
 
-/** Unknown is never converted into dead, including permission/probe failures. */
 export async function writerLiveness(identity:ProcessIdentity|null, runId?:string):Promise<"alive"|"dead"|"unknown"> {
   if(identity?.unitName || (!identity && runId)) {
     const unitName=identity?.unitName ?? `hydra-${runId!.replace(/[^A-Za-z0-9_.-]/g,"-").slice(0,128)}`;
@@ -27,8 +26,6 @@ export async function writerLiveness(identity:ProcessIdentity|null, runId?:strin
   if(!identity || process.platform!=="linux") return "unknown";
   try {
     if(readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()!==identity.bootId) return "dead";
-    // A dead leader can leave children in its process group. Inspect every
-    // member, treating zombies as dead and unreadable entries conservatively.
     let uncertain=false;
     for(const name of readdirSync("/proc").filter(name=>/^\d+$/.test(name))) {
       try {
@@ -43,7 +40,6 @@ export async function writerLiveness(identity:ProcessIdentity|null, runId?:strin
   } catch { return "unknown"; }
 }
 
-/** Kill only an identity whose leader or stable systemd unit is still ours. */
 export async function terminateTrackedProcess(identity:ProcessIdentity):Promise<boolean> {
   if(identity.unitName) {
     try {await execFileAsync("systemctl",["--user","kill","--signal=SIGKILL","--kill-whom=all",identity.unitName],{timeout:2000});return true;} catch {return false;}

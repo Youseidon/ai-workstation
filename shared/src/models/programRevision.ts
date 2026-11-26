@@ -1,19 +1,3 @@
-/**
- * Changing a program that already exists.
- *
- * A revision is a program draft with a target: it opens as a copy of the
- * program (every suite and work item carrying the `sourceId` of the row it
- * copies), an agent or the operator edits the copy, and apply writes back only
- * what differs from the copy's starting point. Nothing here touches the
- * library; this module is the pure half — the edit operations an agent posts,
- * and the list of changes the operator reads before applying.
- *
- * Why operations instead of re-posting suites: "add `npm run lint` to every
- * Verify block" is one `replace-text`, not two hundred work items retyped by a
- * model, and a work item that is not mentioned is not rewritten — so it cannot
- * drift by a character on the way through.
- */
-
 import {
   DRAFT_NAME_MAX,
   DRAFT_NOTES_MAX,
@@ -29,7 +13,6 @@ import {
   type ProgramDraftSuite,
 } from "./programDraft.ts";
 
-/** One post's worth. A revision bigger than this is several posts. */
 export const REVISION_MAX_CHANGES = 400;
 
 export const REVISION_OPERATIONS = [
@@ -48,7 +31,6 @@ export type RevisionOperation = (typeof REVISION_OPERATIONS)[number];
 
 export interface RevisionResult {
   body: ProgramDraftBody;
-  /** One line per change, in the order they were applied: what the agent is told back. */
   applied: string[];
 }
 
@@ -81,13 +63,6 @@ function gateFrom(value: unknown): ProgramDraftGate | null {
   };
 }
 
-/**
- * Applies an agent's (or anyone's) list of edits to a revision draft body.
- *
- * All or nothing: the first refused change refuses the post, named by its
- * index, and the body is left as it was. Later changes see the effect of
- * earlier ones, so a post can add an item and then depend on it.
- */
 export function applyRevisionChanges(body: ProgramDraftBody, input: unknown): DraftValidation<RevisionResult> {
   const raw = (input ?? {}) as Record<string, unknown>;
   const changes = Array.isArray(raw.changes) ? raw.changes : null;
@@ -150,7 +125,6 @@ export function applyRevisionChanges(body: ProgramDraftBody, input: unknown): Dr
       if (!used.has(key)) return key;
     }
   };
-  /** `after` absent: the end. `after: null`: the start. Otherwise: just after that entry. */
   const insertAt = <T>(list: T[], after: unknown, find: (ref: unknown) => number): number => {
     if (after === undefined) return list.length;
     if (after === null) return 0;
@@ -340,23 +314,16 @@ export function applyRevisionChanges(body: ProgramDraftBody, input: unknown): Dr
     throw error;
   }
 
-  // The bounds every other writer of a draft body is held to, checked once on
-  // the result rather than re-derived per operation.
   const normalized = normalizeProgramDraftBody(draft, { revision: true });
   if (!normalized.ok) return normalized;
   return { ok: true, value: { body: normalized.value, applied } };
 }
-
-/* -------------------------------------------------------------------------- */
-/* What a revision changes                                                     */
-/* -------------------------------------------------------------------------- */
 
 export type RevisionChangeKind = "added" | "removed" | "changed" | "moved";
 
 export interface ProgramRevisionChange {
   scope: "program" | "suite" | "item";
   kind: RevisionChangeKind;
-  /** The draft key (or the baseline's, for a removal). Empty for the program. */
   key: string;
   label: string;
   details: string[];
@@ -382,11 +349,6 @@ function lineDelta(before: string, after: string): string {
   return `instructions edited (+${added} / −${removed} lines)`;
 }
 
-/**
- * The operator's reading list: everything a revision draft would change,
- * matched by `sourceId` rather than key or position, so a renamed or moved
- * work item reads as renamed or moved and not as one removal and one addition.
- */
 export function diffProgramRevision(baseline: ProgramDraftBody, draft: ProgramDraftBody): ProgramRevisionChange[] {
   const changes: ProgramRevisionChange[] = [];
 
@@ -400,7 +362,6 @@ export function diffProgramRevision(baseline: ProgramDraftBody, draft: ProgramDr
   for (const suite of baseline.suites) for (const prompt of suite.prompts) {
     if (typeof prompt.sourceId === "number") baseItems.set(prompt.sourceId, { prompt, suite });
   }
-  // Dependencies compare by identity, so a key that was reassigned is not a change.
   const identity = (body: ProgramDraftBody) => {
     const byKey = new Map<string, string>();
     for (const suite of body.suites) for (const prompt of suite.prompts) {

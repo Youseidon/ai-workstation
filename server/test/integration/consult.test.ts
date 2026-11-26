@@ -53,8 +53,6 @@ function future(): string {
 
 test("schema version 9 rebuilds agent_run with nullable prompt_id and execute-only uniqueness", () => {
   const source = readFileSync(new URL("../../src/repositories/workspaces.ts", import.meta.url), "utf8");
-  // Bounded to migration 9 alone: the slice used to run to the end of every
-  // migration, so any later table with a NOT NULL prompt_id failed this.
   const migrate9 = source.slice(source.indexOf("if (version < 9)"), source.indexOf("const afterNine"));
   assert.match(migrate9, /prompt_id INTEGER REFERENCES prompt\(id\) ON DELETE CASCADE/);
   assert.doesNotMatch(migrate9, /prompt_id INTEGER NOT NULL/);
@@ -121,9 +119,6 @@ test("consult finish leaves an IN_PROGRESS execute prompt untouched", () => {
     workspaces.finishAgentRun(consultId, "done");
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "IN_PROGRESS");
     workspaces.finishAgentRun(executeId, "error");
-    // The execute process failed, so the run failed. It is not BLOCKED: nothing
-    // asked the operator anything, and saying so would park the pipeline on a
-    // question that does not exist.
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "FAILED");
   } finally {
     ctx.cleanup();

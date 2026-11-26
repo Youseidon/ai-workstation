@@ -10,7 +10,6 @@ import { SERVER_URL } from "../api/serverUrl";
 
 const FleetContext = createContext<ReturnType<typeof fleetMetadata> & { targets: StopTargets; loading: boolean; error: string | null; refresh(): void }>({ origins: {}, queued: [], targets: { pipelines: [], agents: [] }, loading: true, error: null, refresh() {} });
 
-/** One metadata subscription shared by the rail and command center. No histories are loaded. */
 export function FleetProvider({ children }: { children: ReactNode }) {
   const { runs, operationsRevision, connection } = useFleetConsole();
   const [data, setData] = useState<{ operations: OperationsSnapshot | null; pipelines: PipelineRecord[]; flowcharts: Record<string, PipelineFlowchartView>; loading: boolean; error: string | null }>({ operations: null, pipelines: [], flowcharts: {}, loading: true, error: null });
@@ -43,7 +42,6 @@ export function FleetProvider({ children }: { children: ReactNode }) {
 
 export function useFleetMetadata() { return useContext(FleetContext); }
 
-/** Keep last-known fleet visibility separate from Chat's launch/recovery state. */
 export function useFleetConsole() {
   const api = useHydra();
   const frozen = api.disconnectedRuns?.length > 0;

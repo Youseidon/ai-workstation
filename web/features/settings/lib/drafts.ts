@@ -18,7 +18,6 @@ export function dirtySettings(
     .map((field) => field.key);
 }
 
-/** Clear only the submitted version: a newer edit made while a save was in flight must survive. */
 export function clearSubmittedDrafts(
   current: SettingDrafts,
   submitted: SettingDrafts,

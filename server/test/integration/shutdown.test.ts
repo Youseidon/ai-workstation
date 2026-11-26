@@ -13,12 +13,6 @@ import type { RunHandle } from "../../src/contracts/runs.ts";
 import type { StartExecuteArgs } from "../../src/contracts/runRequests.ts";
 import { workspaces } from "../../src/repositories/workspaces.ts";
 
-/*
- * `runHub.stopAll` latches the hub closed for the life of the process, so these
- * tests share a file of their own: anything asserting normal scheduling after
- * one of them ran would see a hub that never reopens.
- */
-
 let seq = 0;
 
 function unique(prefix: string): string {
@@ -116,11 +110,6 @@ test("shutdown interrupts every live run instead of orphaning it", async () => {
   }
 });
 
-/*
- * The station's run ends because the server is going down, not because the work
- * finished. Advancing here would spawn the successor into a process that is
- * about to exit — the orphaned-agent bug, re-entered through the back door.
- */
 test("a run ending during shutdown does not advance the pipeline", async () => {
   const ctx = fixture(2);
   const started = stubStarts();
@@ -140,8 +129,6 @@ test("a run ending during shutdown does not advance the pipeline", async () => {
 
     assert.equal(started.length, 1, "no successor may be started while shutting down");
     const active = workspaces.activePipeline(ctx.suite.id);
-    // Left PLAYING on purpose: the next boot marks it interrupted with a
-    // server_restart reason, which is what the recover/resume flow reads.
     assert.equal(active?.state, "PLAYING");
     assert.equal(active?.currentPromptId, ctx.prompts[0]!.id);
   } finally {

@@ -4,7 +4,6 @@ import test from "node:test";
 
 const consoleSource = readFileSync(new URL("../../../contexts/hydra.tsx", import.meta.url), "utf8");
 const chatSource = readFileSync(new URL("../../../features/chat/components/ChatWorkspace.tsx", import.meta.url), "utf8");
-// Chat state is owned by the shell-level controller, not the `/` route.
 const pageSource = readFileSync(new URL("../../../features/chat/hooks/useChatController.tsx", import.meta.url), "utf8");
 const activitySource = readFileSync(new URL("../../../features/activity/components/ActivityView.tsx", import.meta.url), "utf8");
 

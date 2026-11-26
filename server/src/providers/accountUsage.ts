@@ -7,12 +7,6 @@ import type {
   UsageWindowKind,
 } from "@hydra/shared";
 
-/**
- * Classify a quota window by the length the provider reported.
- *
- * Claude and Codex's short window is typically five hours (session), not a
- * calendar day. A daily kind is only used for ~24h windows.
- */
 export function classifyUsageWindow(durationMinutes: number | null | undefined): UsageWindowKind | null {
   if (durationMinutes == null || !Number.isFinite(durationMinutes) || durationMinutes <= 0) return null;
   if (durationMinutes <= 12 * 60) return "session";
@@ -67,7 +61,6 @@ export function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-/** Claude's OAuth usage endpoint sometimes returns 0–1 fractions. */
 export function claudePercent(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return clampPercent(value <= 1 ? value * 100 : value);
@@ -80,7 +73,6 @@ export function usedPercent(value: unknown): number | null {
 
 export function isoFromUnixSeconds(value: unknown): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  // Codex has used both seconds and milliseconds historically.
   const ms = value > 1e12 ? value : value * 1000;
   return new Date(ms).toISOString();
 }
@@ -90,7 +82,6 @@ export function isoFromUnknown(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
   if (text === "") return null;
-  // Cursor billing-cycle fields arrive as millisecond epoch strings.
   if (/^\d{10,}$/.test(text)) return isoFromUnixSeconds(Number(text));
   const parsed = Date.parse(text);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
@@ -119,10 +110,6 @@ function windowOf(
   if (used === null && resetsAt === null) return null;
   return { kind, durationMinutes, usedPercent: used, resetsAt };
 }
-
-/* -------------------------------------------------------------------------- */
-/* Claude — GET https://api.anthropic.com/api/oauth/usage                      */
-/* -------------------------------------------------------------------------- */
 
 interface ClaudeLimit {
   kind?: string;
@@ -187,10 +174,6 @@ function claudeLimitKind(kind: string | undefined): UsageWindowKind | null {
   return null;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Codex — account/rateLimits/read                                             */
-/* -------------------------------------------------------------------------- */
-
 interface CodexWindow {
   usedPercent?: number;
   windowDurationMins?: number;
@@ -232,10 +215,6 @@ export function parseCodexRateLimits(payload: unknown): {
   const plan = typeof snapshot.planType === "string" ? snapshot.planType : null;
   return { plan, windows, credits };
 }
-
-/* -------------------------------------------------------------------------- */
-/* Grok — GET /v1/billing?format=credits                                       */
-/* -------------------------------------------------------------------------- */
 
 export function parseGrokCredits(payload: unknown): {
   plan: string | null;
@@ -293,7 +272,6 @@ function durationMinutesBetween(start: string | null, end: string | null): numbe
   return Math.round(ms / 60_000);
 }
 
-/** Grok amounts arrive as `{ val: <cents> }` or a bare number. */
 function grokCents(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record ? asNumber(record.val) : asNumber(value);
@@ -301,15 +279,6 @@ function grokCents(value: unknown): number | null {
   return raw / 100;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Cursor — POST …/DashboardService/GetCurrentPeriodUsage                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Cursor reports a billing-cycle allowance (typically ~30 days), not Claude-
- * style session/weekly caps. Map the cycle length via classifyUsageWindow and
- * never invent a daily/weekly window the API did not provide.
- */
 export function parseCursorPeriodUsage(payload: unknown): {
   windows: ProviderUsageWindow[];
   credits: ProviderUsageCredits | null;
@@ -339,12 +308,6 @@ export function parseCursorPlanName(payload: unknown): string | null {
   return typeof planInfo?.planName === "string" ? planInfo.planName : null;
 }
 
-/**
- * Prefer totalPercentUsed — that is what cursor.com/dashboard/spending
- * ("Included in Pro") renders. includedSpend/limit can diverge sharply
- * (e.g. ~50% vs ~2%) and matches an older/alternate displayMessage, not the
- * spending page bar.
- */
 function cursorIncludedPercent(planUsage: Record<string, unknown>): number | null {
   const total = usedPercent(planUsage.totalPercentUsed);
   if (total !== null) return total;
@@ -364,8 +327,6 @@ function cursorCredits(
   planUsage: Record<string, unknown> | null,
   spendLimit: Record<string, unknown> | null,
 ): ProviderUsageCredits | null {
-  // Only surface on-demand spend-limit dollars. Plan includedSpend/limit cents
-  // disagree with the spending-page percent and confuse the credits line.
   void planUsage;
   const individualLimit = centsToDollars(spendLimit?.individualLimit);
   const individualUsed = centsToDollars(spendLimit?.individualUsed);
@@ -407,18 +368,6 @@ function centsToDollars(value: unknown): number | null {
   return raw / 100;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Copilot — GET api.github.com/copilot_internal/user                          */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Copilot's entitlement is a monthly allowance of requests, not a token budget:
- * `quota_snapshots` reports `percent_remaining` per quota id and the account
- * shares one `quota_reset_date`. Premium interactions are the meter that runs
- * out first on a paid plan; the token-billed `chat` quota is what a free plan
- * has instead. Only the one that actually has a quota is reported — the other
- * ids are omitted rather than shown as 0%.
- */
 export function parseCopilotQuota(payload: unknown): {
   plan: string | null;
   windows: ProviderUsageWindow[];
@@ -431,7 +380,6 @@ export function parseCopilotQuota(payload: unknown): {
   const snapshot =
     pickCopilotQuota(snapshots.premium_interactions) ?? pickCopilotQuota(snapshots.chat);
   if (snapshot !== null) {
-    // A calendar month, not a rolling window: Copilot resets everyone on the 1st.
     const next = windowOf("monthly", snapshot.usedPercent, resetsAt, null);
     if (next) windows.push(next);
   }
@@ -439,7 +387,6 @@ export function parseCopilotQuota(payload: unknown): {
   return { plan: copilotPlanName(root), windows };
 }
 
-/** Null when the account has no allowance of this kind (unlimited, or not sold). */
 function pickCopilotQuota(value: unknown): { usedPercent: number | null } | null {
   const quota = asRecord(value);
   if (quota === null) return null;
@@ -450,7 +397,6 @@ function pickCopilotQuota(value: unknown): { usedPercent: number | null } | null
   return { usedPercent: clampPercent(100 - remaining) };
 }
 
-/** `quota_reset_date` is a bare calendar day (e.g. "2026-10-01"), UTC midnight. */
 function copilotResetIso(value: unknown): string | null {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
     return isoFromUnknown(value);
@@ -461,22 +407,10 @@ function copilotResetIso(value: unknown): string | null {
 function copilotPlanName(root: Record<string, unknown>): string | null {
   const plan = typeof root.copilot_plan === "string" ? root.copilot_plan : null;
   const sku = typeof root.access_type_sku === "string" ? root.access_type_sku : null;
-  // "free_limited_copilot" is the only distinction the plan name itself hides.
   if (plan !== null && sku !== null && sku.includes("free")) return `${plan} · free`;
   return plan ?? sku;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Kilo — api.kilo.ai /api/profile/balance + /api/trpc/kiloPass.getState        */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Kilo Gateway has no rate-limit endpoint: the prepaid gateway balance is one
- * number and the "Kilo Pass" subscription is a monthly credit allowance. The
- * Pass maps to the monthly window (used = usage, limit = base credits, bonus
- * credits stay out — the CLI shows them separately too). The balance maps to
- * the credits line, same slot Grok's prepaid balance uses.
- */
 export function parseKiloBalance(payload: unknown): number | null {
   const root = asRecord(payload) ?? {};
   const balance = asNumber(root.balance);
@@ -490,8 +424,6 @@ export function parseKiloPassState(payload: unknown): {
   usedUsd: number | null;
   nextBillingAt: string | null;
 } | null {
-  // tRPC batch envelope: `[{ result: { data: { json: { subscription } } } }]`,
-  // with older shapes putting `json`/`subscription` one level up.
   const first = Array.isArray(payload) ? (payload[0] as unknown) : payload;
   const result = asRecord(asRecord(first)?.result) ?? null;
   const data = asRecord(result?.data) ?? asRecord(first) ?? {};
@@ -502,7 +434,6 @@ export function parseKiloPassState(payload: unknown): {
   const used = asNumber(subscription.currentPeriodUsageUsd);
   if (base === null && used === null) return null;
   const status = typeof subscription.status === "string" ? subscription.status : null;
-  // Inactive passes carry stale figures; treat them as no pass at all.
   if (status !== null && !["active", "past_due", "trialing"].includes(status)) return null;
   const resetsAt = isoFromUnknown(subscription.nextBillingAt ?? subscription.nextRenewalAt);
   return {
@@ -513,10 +444,6 @@ export function parseKiloPassState(payload: unknown): {
   };
 }
 
-/**
- * Combine the two Kilo responses into one ProviderUsage: the Pass is the
- * monthly window, the prepaid gateway balance is the credits line.
- */
 export function parseKiloUsage(
   balancePayload: unknown,
   passPayload: unknown,

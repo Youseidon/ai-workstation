@@ -1,13 +1,3 @@
-/**
- * Tests for the transport interlocking *as data*.
- *
- * The characterisation test in `web` pins what the table produces for the
- * handful of situations the UI renders. This file pins the properties the
- * table must hold as a structure — totality, ordering, and the invariants a
- * settings screen will rely on — so that adding a row cannot silently shadow
- * an existing one or leave a state with no control at all.
- */
-
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -46,14 +36,10 @@ function context(over: Partial<RuleContext> = {}): RuleContext {
   };
 }
 
-/** Every situation the app can present, as a flat list. */
 const STATION_STATES: Array<PromptOperationalState | null> = [
   null,
   "WORKING",
   "BLOCKED",
-  // The other three statuses the scheduler routes down the same "did not
-  // finish" path as BLOCKED. Leaving them out is what let the parked rows
-  // claim every station "reported blocked" without a test noticing.
   "UNREPORTED",
   "NEEDS_REVIEW",
   "RECOVERY_NEEDED",
@@ -64,16 +50,6 @@ const STATION_STATES: Array<PromptOperationalState | null> = [
   "SKIPPED",
 ];
 
-/**
- * Every reason `park()` is called with, plus `null` for the plain "wait" rule.
- * These are part of the condition now, so a row keyed on one has to be
- * reachable from here — otherwise "every row is reachable" passes while a
- * park-reason row sits dead behind the catch-all.
- *
- * `station_rule_wait` is intentionally omitted from the "named row" assertion
- * below: the table's catch-all already describes the wait rule, so that reason
- * falls through on purpose.
- */
 const WAIT_REASONS: Array<string | null> = [
   null,
   "human_question",
@@ -95,9 +71,6 @@ function everyContext(): RuleContext[] {
       for (const awaitingHuman of [false, true]) {
         for (const agentActive of [false, true]) {
           for (const waitReason of WAIT_REASONS) {
-            // Policy is part of the condition, so a row a setting unlocks has to
-            // be reachable here too — otherwise "every row is reachable" would
-            // pass while a policy-gated row was quietly dead.
             for (const onRestart of RESTART_POLICIES) {
               out.push(context({
                 runState,
@@ -115,10 +88,6 @@ function everyContext(): RuleContext[] {
   }
   return out;
 }
-
-/* ------------------------------------------------------------------ */
-/* Structure                                                           */
-/* ------------------------------------------------------------------ */
 
 test("row ids are unique", () => {
   const ids = TRANSITIONS.map((row) => row.id);
@@ -161,10 +130,6 @@ test("a setting-backed row names the key that governs it", () => {
   for (const key of keys) assert.match(key, /^pipeline\./);
 });
 
-/* ------------------------------------------------------------------ */
-/* Totality and ordering                                               */
-/* ------------------------------------------------------------------ */
-
 test("every reachable situation matches a row", () => {
   for (const ctx of everyContext()) {
     const row = matchTransition(ctx);
@@ -199,8 +164,6 @@ test("every pipeline state is covered by a row", () => {
 });
 
 test("a narrower row always precedes the broader row it must pre-empt", () => {
-  // First match wins, so a row with extra conditions is only ever reachable if
-  // it sits above the row that shares its runState and has fewer conditions.
   const width = (row: (typeof TRANSITIONS)[number]) => Object.keys(row.when).length;
   for (let i = 0; i < TRANSITIONS.length; i += 1) {
     for (let j = i + 1; j < TRANSITIONS.length; j += 1) {
@@ -215,12 +178,6 @@ test("a narrower row always precedes the broader row it must pre-empt", () => {
   }
 });
 
-/*
- * The invariant that killed D2. A row no context can reach is dead code that
- * still reads as policy, which is exactly how the old `resumable ? ... : ...`
- * branches survived unnoticed. There is no exemption flag: a row that cannot
- * match must be deleted, not annotated.
- */
 test("every row is reachable by some context", () => {
   const matched = new Set(everyContext().map((ctx) => matchTransition(ctx).id));
   for (const row of TRANSITIONS) {
@@ -228,27 +185,12 @@ test("every row is reachable by some context", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Resumability is derived, never passed in                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * D2: the table used to take a `resumable` boolean whose invariant nobody had
- * written down — a STOPPED or INTERRUPTED run is never active, so it was never
- * resumable, and the branches keyed on it could not render. Resumability is a
- * function of `runState`, so the table derives it and the contradiction is
- * unwritable.
- */
-
 test("terminal runs offer a fresh run, never a resume", () => {
   for (const runState of ["STOPPED", "COMPLETE"] as const) {
     const row = matchTransition(context({ runState }));
     assert.equal(row.primary, "newRun", `${runState} should offer a new run`);
     assert.ok(!row.secondary.includes("resume"), `${runState} offers resume as a secondary`);
   }
-  // INTERRUPTED is the one of the three a policy may continue, so what it
-  // offers is pinned per policy rather than once against whatever the default
-  // happens to be. Under `newRun` it belongs with the terminal states.
   const fresh = matchTransition(context({
     runState: "INTERRUPTED",
     policy: { ...DEFAULT_PIPELINE_POLICY, onRestart: "newRun" },
@@ -273,15 +215,10 @@ test("onRestart flips what an interrupted run offers, and only that", () => {
     matchTransition(context({ runState: "INTERRUPTED", policy: { ...DEFAULT_PIPELINE_POLICY, onRestart } }));
   assert.equal(offered("newRun").primary, "newRun");
   assert.equal(offered("resumeSameRun").primary, "resume");
-  // Nothing to press under `autoResume`: the rail is already picking the run
-  // back up, so the only control it offers is the one that calls that off.
   assert.equal(offered("autoResume").primary, "stop");
   assert.equal(offered("autoResume").label, "Resuming");
-  // The shipped default is the one that needs no operator at all — the whole
-  // point of the policy is that an overnight suite survives a restart.
   assert.equal(matchTransition(context({ runState: "INTERRUPTED" })).id, "interrupted-auto-resume");
   const adopt = offered("resumeSameRun");
-  // Recovery still wins: a dead station has to be cleared either way.
   const dead = matchTransition(context({
     runState: "INTERRUPTED",
     stationState: "RECOVERY_NEEDED",
@@ -311,10 +248,6 @@ test("recovery does not hijack a station that is merely blocked", () => {
   assert.equal(row.id, "waiting-human-rule");
 });
 
-/* ------------------------------------------------------------------ */
-/* Prose                                                               */
-/* ------------------------------------------------------------------ */
-
 test("every row explains itself without leaking a placeholder", () => {
   for (const ctx of everyContext()) {
     const row = matchTransition(ctx);
@@ -334,12 +267,6 @@ test("a missing station reads as a phrase rather than a hole", () => {
   assert.match(row.headline(ctx), /the current station/);
 });
 
-/*
- * Continuations running out parks the run rather than ending it, so the reason
- * lives in `waitReason`. It used to be written to `stopReason`, which the status
- * bar only reads on a STOPPED run — the explanation was dropped exactly where it
- * would have helped most.
- */
 test("a parked run explains what parked it", () => {
   const plain = matchTransition(context({ runState: "WAITING_HUMAN" }));
   const exhausted = context({ runState: "WAITING_HUMAN", waitReason: "continuations_exhausted" });
@@ -347,18 +274,9 @@ test("a parked run explains what parked it", () => {
   assert.match(matchTransition(exhausted).because(exhausted), /continued|continuations/i);
 });
 
-/*
- * The bug this table shipped with: every park reason fell through to the
- * "wait" row, whose headline states the rule as a fact. A station whose rule
- * was `continue` and whose continuations were spent was told its rule was
- * `wait` — the operator's own configuration, misreported, with no way to tell
- * from the UI.
- */
 test('only the "wait" rule is described as the "wait" rule', () => {
   for (const ctx of everyContext()) {
     if (ctx.runState !== "WAITING_HUMAN" || ctx.waitReason === null) continue;
-    // station_rule_wait is the wait rule, stated explicitly — its catch-all
-    // sentence is allowed to say so.
     if (ctx.waitReason === "station_rule_wait") continue;
     const row = matchTransition(ctx);
     for (const [name, text] of [
@@ -375,8 +293,6 @@ test('only the "wait" rule is described as the "wait" rule', () => {
 });
 
 test("every park reason the scheduler writes reaches a row that names it", () => {
-  // `null` and `station_rule_wait` are the plain "wait" rule and fall through
-  // to the catch-all on purpose.
   for (const waitReason of WAIT_REASONS.filter(
     (reason) => reason !== null && reason !== "station_rule_wait",
   )) {
@@ -390,12 +306,6 @@ test("every park reason the scheduler writes reaches a row that names it", () =>
   }
 });
 
-/*
- * BLOCKED, UNREPORTED, FAILED and NEEDS_REVIEW all used to reach these rows
- * through one `applyOnBlocked` path. Only the first of them actually reported
- * anything, and the stored status exists precisely so "the agent asked a
- * question" and "the run said nothing" can be told apart.
- */
 test("a station that never posted a status is not said to have reported blocked", () => {
   for (const ctx of everyContext()) {
     if (ctx.runState !== "WAITING_HUMAN") continue;
@@ -429,7 +339,6 @@ test("stop reasons: known translated, unknown passed through, null omitted", () 
     STOP_REASON.continuations_exhausted,
   );
   assert.equal(describeStopReason("unexpected_status:WEIRD"), "unexpected_status:WEIRD");
-  // A refused start names what refused it; an unlisted code is shown, not dropped.
   assert.match(describeStopReason("start_refused:git_repository_busy")!, /still writing in this Git repository/);
   assert.equal(describeStopReason("start_refused:odd_code"), `${STOP_REASON.start_refused} (odd_code)`);
   assert.equal(describeStopReason(null), null);
@@ -446,10 +355,6 @@ test("an exhausted execution allowance offers no Resume or recovery reset",()=>{
   }
 });
 
-/*
- * Every reason `terminate()` and its callers persist. A new reason added to the
- * scheduler without a sentence here shows the operator a raw snake_case token.
- */
 test("every stopReason the scheduler writes has a human sentence", () => {
   const written = [
     "operator_stop",
@@ -472,10 +377,6 @@ test("every stopReason the scheduler writes has a human sentence", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Rule consequences                                                   */
-/* ------------------------------------------------------------------ */
-
 test("every rule choice explains where it lands, naming real controls", () => {
   const done: OnDoneAction[] = ["continue", "stop", "skip_rest"];
   const unfinished: OnUnfinishedAction[] = ["continue", "skip", "wait"];
@@ -490,7 +391,6 @@ test("every rule choice explains where it lands, naming real controls", () => {
     assert.ok(text.length > 0, `${onUnfinished} has no consequence`);
     assert.doesNotMatch(text, /\bnull\b|\bundefined\b/, `${onUnfinished} leaked a placeholder`);
   }
-  // A spent continuation allowance still parks, and names the controls that move it.
   const parked = onUnfinishedConsequence({ onUnfinished: "continue" }, DEFAULT_PIPELINE_POLICY);
   for (const named of ["Resume", "Stop"]) {
     assert.ok(labels.has(named) && parked.includes(named), `a spent allowance should name ${named}`);

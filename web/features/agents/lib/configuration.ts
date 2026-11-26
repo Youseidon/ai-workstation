@@ -16,7 +16,6 @@ export function sharedSettingsGroups(groups: string[]): string[] {
   );
 }
 
-// Detection includes enablement and tier eligibility; it does not expose a separate auth flag.
 export function providerAvailability(
   info: ProviderInfo,
   enabled: boolean | null,
@@ -57,7 +56,6 @@ export function usageState(
     )
   )
     return { label: "Quota reached", tone: "warning" } as const;
-  // Never merge a session allowance with a billing-cycle or weekly allowance.
   const reported = usage.windows.filter(
     (window) => window.usedPercent !== null,
   );
@@ -78,4 +76,8 @@ export function usageState(
     label: usage.credits !== null ? "Plan credits" : "Usage not reported",
     tone: "muted",
   } as const;
+}
+
+export function providerInstalled(info: ProviderInfo): boolean {
+  return info.installed ?? (info.transport === "sdk" ? info.version !== null : info.binary !== null);
 }

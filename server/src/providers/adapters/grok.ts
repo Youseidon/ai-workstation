@@ -20,22 +20,6 @@ import {
 import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
 import type { RunOptions } from "../../contracts/agentAdapter.ts";
 
-/*
- * `grok -p --output-format streaming-json` emits NDJSON derived from ACP session
- * updates. Verified against grok 1.0.5; see README for how to re-check flags.
- *
- *   {"type":"thought","data":"..."}
- *   {"type":"tool_call","toolCallId":"call_1","toolName":"list_dir","status":"pending",...}
- *   {"type":"tool_call_update","toolCallId":"call_1","status":null}   // progress, ignore
- *   {"type":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{...}}
- *   {"type":"text","data":"..."}
- *   {"type":"usage","usage":{"input_tokens":812,"output_tokens":45,...}}
- *   {"type":"end","stopReason":"end_turn","usage":{...}}
- *
- * `--output-format json` is a single final object (`text`, `stopReason`, `usage`)
- * and is accepted as a fallback. Unknown event types are ignored.
- */
-
 interface GrokUsage {
   input_tokens?: number;
   inputTokens?: number;
@@ -74,7 +58,6 @@ interface GrokEvent {
   sessionId?: string;
 }
 
-// grok 1.0.5 emits `pending` on tool_call and `status: null` on in-flight updates.
 const TERMINAL_TOOL_STATUS = new Set(["completed", "failed", "cancelled", "error", "success"]);
 
 function toUsage(raw: GrokUsage | null | undefined): TokenUsage | null {
@@ -85,7 +68,6 @@ function toUsage(raw: GrokUsage | null | undefined): TokenUsage | null {
   const outputTokens = raw.output_tokens ?? raw.outputTokens ?? 0;
   const reasoning = raw.reasoning_tokens ?? raw.reasoningOutputTokens ?? 0;
   if (uncached === 0 && cacheRead === 0 && cacheCreate === 0 && outputTokens === 0) return null;
-  // Match Claude: inputTokens is all prompt tokens processed, cached share kept separate.
   const inputTokens = uncached + cacheRead + cacheCreate;
   return {
     inputTokens,
@@ -150,7 +132,6 @@ function summarizeToolInput(name: string, input: unknown): string {
   }
 }
 
-/** Headless Grok does not reliably discover root instruction files. */
 export function grokInstructionArgs(cwd: string, extraArgs: readonly string[]): string[] {
   const args: string[] = [];
   const rules: string[] = [];
@@ -215,7 +196,6 @@ export class GrokMapper implements StreamMapper {
       case "error":
         return this.mapError(event, true);
       case "result":
-        // streaming-messages-json terminal line; treat like `end`.
         return this.finishRun(event);
       case "system":
         return [{
@@ -227,7 +207,6 @@ export class GrokMapper implements StreamMapper {
         }];
       case undefined:
       case "":
-        // `--output-format json` is one object with `text` / `stopReason` / `usage`.
         if (event.text !== undefined || event.stopReason !== undefined || event.sessionId !== undefined) {
           return this.finishRun(event);
         }
@@ -369,7 +348,6 @@ export class GrokAdapter extends SpawnAdapter {
   readonly id = "grok" as const;
   readonly label = "Grok CLI";
   readonly reportsTokens = true;
-  // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(
       `${effectiveGrokPermissionMode()} · sandbox: ${effectiveGrokSandboxMode()}`,
@@ -424,8 +402,6 @@ export class GrokAdapter extends SpawnAdapter {
       return providerUsageUnavailable("grok", `Grok billing request failed (HTTP ${response.status})`);
     }
     const parsed = parseGrokCredits(response.body);
-    // Grok's credits API is weekly (or legacy monthly). It does not report a
-    // daily window; skip rather than invent one from local session logs.
     parsed.windows = parsed.windows.filter((window) => window.kind !== "daily");
     if (parsed.plan === null) {
       const settingsResponse = await fetchJson("https://cli-chat-proxy.grok.com/v1/settings", {
@@ -439,12 +415,6 @@ export class GrokAdapter extends SpawnAdapter {
 
   protected buildSpec(prompt: string, opts: RunOptions): SpawnSpec {
     const consult = opts.permissionOverride !== "inherit";
-    // grok only names its session in the terminal `end`/`result` line, which is
-    // exactly the line a budget-stopped run never emits. `--session-id` lets us
-    // name it ourselves instead, so the id exists before the first tool call.
-    // Verified against grok 1.0.13 (`grok --help`): `-s, --session-id` sets the
-    // UUID of a *new* conversation, `-r, --resume` continues an existing one,
-    // and the two must not be combined without `--fork-session`.
     const resumeSessionId = opts.resumeSessionId ?? null;
     const sessionId = resumeSessionId ?? randomUUID();
     const args = [
@@ -452,19 +422,13 @@ export class GrokAdapter extends SpawnAdapter {
       "--cwd", opts.cwd,
       "--permission-mode", consult ? "plan" : effectiveGrokPermissionMode(),
       "--sandbox", consult ? "workspace" : effectiveGrokSandboxMode(),
-      // An optional-value flag, so the id has to be attached with `=`.
       ...(resumeSessionId === null ? ["--session-id", sessionId] : [`--resume=${resumeSessionId}`]),
     ];
     const model = opts.model ?? settings.grok.model;
     if (model !== null) args.push("-m", model);
     if (settings.grok.maxTurns !== null) args.push("--max-turns", String(settings.grok.maxTurns));
-    // Projected files alone are insufficient: headless sessions have reported
-    // agents_md_files:[] despite a populated root file. --rules also applies
-    // when resuming and leaves Grok's built-in system prompt in place.
     args.push(...grokInstructionArgs(opts.cwd, settings.grok.extraArgs));
     args.push("--reasoning-effort", settings.reasoningEffortFor("grok"));
-    // `-p` takes the prompt as its argument. Headless grok does not read stdin
-    // into the prompt (unlike `codex exec -`).
     args.push("-p", prompt);
     const env: NodeJS.ProcessEnv = {};
     if (settings.grok.apiKey !== null) env.XAI_API_KEY = settings.grok.apiKey;
@@ -573,6 +537,5 @@ function persistGrokAuth(file: Record<string, unknown>, slot: string, patch: Rec
   try {
     writeJsonAtomic(grokAuthPath(), file);
   } catch {
-    // Keep the in-memory token for this request even if the write fails.
   }
 }

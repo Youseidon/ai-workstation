@@ -12,7 +12,6 @@ import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
-// The brand display face: page titles and brand moments only (brand/README.md).
 const unbounded = Unbounded({ variable: "--font-unbounded", subsets: ["latin"] });
 
 export const metadata: Metadata = {
@@ -22,8 +21,6 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  // Matches the darkest theme's floor so mobile browser chrome does not flash
-  // white around the app.
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#f5f7fb" },
     { media: "(prefers-color-scheme: dark)", color: "#12151c" },
@@ -37,23 +34,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${geistSans.variable} ${geistMono.variable} ${unbounded.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      {/*
-       * Browser extensions (Grammarly, password managers, dark-mode add-ons)
-       * stamp attributes onto <html> and <body> before React hydrates, which
-       * React reports as a hydration mismatch. suppressHydrationWarning applies
-       * to these two elements only — one level deep, never to the app tree — so
-       * a real mismatch anywhere inside still surfaces. ThemeScript writes
-       * data-theme/data-effects onto <html> for the same reason.
-       */}
+      { }
       <body className="min-h-full" suppressHydrationWarning>
         <ThemeScript />
         <ToastProvider>
           <DialogProvider>
-            {/*
-             * One socket for the whole app, owned above the router so that
-             * navigating between pages does not tear it down and lose the
-             * transcript of a run that is still going.
-             */}
+            { }
             <IdentityGate>
             <HydraProvider>
               <WorkspaceProvider>

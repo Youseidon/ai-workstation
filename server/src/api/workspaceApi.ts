@@ -15,15 +15,10 @@ import { startConsult, startInstructionAuthor, startProgramAuthor } from "../ser
 import { scheduleCompletionAudit, type AuditBlock } from "../services/verification/completionAudit.ts";
 import { runChangeDetail, runFileDiff } from "../services/workspaces/gitChanges.ts";
 import { workspaceGitContext } from "../services/workspaces/workspaceGit.ts";
+import { createDirectory, listDirectories } from "../services/workspaces/directoryBrowser.ts";
 
 const MAX_BODY_BYTES = 128 * 1024;
-/** A whole instruction file, as a proposal edit PATCHes it. Two 64k fields' worth with headroom for escaping. */
 const MAX_PROPOSAL_BODY_BYTES = 512 * 1024;
-/*
- * An operator editing a drafted program PATCHes the whole body back: every
- * suite, every work item, every page of instructions. That is legitimately
- * larger than any other request this API takes.
- */
 const MAX_DRAFT_BODY_BYTES = 4 * 1024 * 1024;
 
 const AUDIT_BLOCK_CODE: Record<AuditBlock, string> = {
@@ -79,14 +74,6 @@ function failure(res: ServerResponse, error: unknown): void {
   json(res, 500, { error: { code: "internal_error", message: "Workspace operation failed" } });
 }
 
-/**
- * Whether this path belongs to the workspace API.
- *
- * Exported because `index.ts` has to decide the same thing before it delegates,
- * and this list used to be written out in both places. It drifted the moment a
- * route was added: `/api/program-drafts` was routed here and rejected there, so
- * the endpoint returned the outer 404 and looked unimplemented. One copy.
- */
 export function isWorkspaceApiPath(pathname: string): boolean {
   return pathname === "/api/sessions"
     || pathname.startsWith("/api/sessions/")
@@ -110,11 +97,6 @@ export type AgentRequestResult =
   | { kind: "program-draft"; draft: ReturnType<typeof workspaces.programDraft>; preview: ReturnType<typeof programDraftPreview>; runId: string | null }
   | { kind: "instruction-proposal"; proposal: ReturnType<typeof workspaces.instructionProposal>; runId: string | null };
 
-/**
- * "Regarding suite S2 — Endpoints", for a request narrowed inside a program, so
- * "this" in the operator's text means what they had selected. Also checks that
- * every id belongs where the request says it does.
- */
 function programFocus(workspaceId:number,target:{programId:number;suiteId?:number|null;promptId?:number|null}):string|null {
   const program=workspaces.tree(workspaceId).programs.find(entry=>entry.id===target.programId);
   if(program===undefined)throw new WorkspaceError(404,"not_found","Program not found in this workspace");
@@ -221,9 +203,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       json(res,200,{execution:executionStore.status(contract.id)});return true;
     }
 
-    // The status catalog: what each state is called, what it means, and what
-    // entering it sets in motion. Locked fields are refused with the reason
-    // rather than silently dropped — see workspaces.updateStatusDefinition.
     if(url.pathname==="/api/statuses"){
       if(method==="GET")json(res,200,{statuses:workspaces.statusCatalog(),triggers:workspaces.triggerSentences()});
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
@@ -252,8 +231,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else {const value=url.searchParams.get("workspace");const workspaceId=value===null?undefined:id(value);json(res,200,workspaces.operations(workspaceId));}
       return true;
     }
-    // The record audit. A POST records a new one; GET reads the latest without
-    // creating another, so polling a suite cannot spam its history.
     const verificationMatch=url.pathname.match(/^\/api\/suites\/(\d+)\/verification$/);
     if(verificationMatch){
       const suiteId=id(verificationMatch[1]!);
@@ -360,8 +337,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       const promptId=id(namedPipelineStepMatch[2]!);
       const incompleteOnly=url.searchParams.get("incompleteOnly")==="1";
       if(method==="DELETE"){
-        // Only the delete reply rebuilds the stage flowchart, so only it needs
-        // the suite; a rule patch is addressed by prompt id alone.
         const suiteIdValue=url.searchParams.get("suiteId");
         if(suiteIdValue===null) throw new WorkspaceError(400,"validation_error","suiteId is required");
         const suiteId=id(suiteIdValue);
@@ -385,10 +360,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
-    // What a work item is judged against, and how each criterion currently
-    // stands. `?run=1` runs the command criteria first, which is the operator's
-    // "check it now" — the same execution the closing gate depends on, so what
-    // they see here is exactly what a close would be decided on.
     const dodPromptMatch=url.pathname.match(/^\/api\/prompts\/(\d+)\/definition-of-done$/);
     if(dodPromptMatch){
       const promptId=id(dodPromptMatch[1]!);
@@ -402,9 +373,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
-    // The definition of done at one scope, on its own — what an editor for that
-    // scope shows and writes. Separate from the resolved view above because
-    // "this suite says nothing and inherits" has to be editable as itself.
     {
       const match=url.pathname.match(/^\/api\/definition-of-done\/([a-z]+)\/(\d+)$/);
       if(match){
@@ -439,9 +407,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
         const input=await body(req);
         const written=workspaces.completePrompt(promptId,"USER",{reason:input.reason,verificationSummary:input.verificationSummary});
         await pipelineScheduler.onPromptCompleted(promptId);
-        // `status` rather than a bare `completed:true`: an operator override is
-        // always honoured, but saying so is not the same as saying nothing was
-        // outstanding, and the caller shows what was closed over.
         json(res,200,{completed:written==="DONE",status:written});
       }
       return true;
@@ -514,6 +479,12 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
+    if (url.pathname === "/api/workspaces/directories") {
+      if (method === "GET") json(res, 200, { listing: listDirectories(url.searchParams.get("path") ?? undefined) });
+      else if (method === "POST") json(res, 201, { listing: createDirectory(await body(req)) });
+      else json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed" } });
+      return true;
+    }
     if (url.pathname === "/api/workspaces") {
       if (method === "GET") json(res, 200, { workspaces: workspaces.list() });
       else if (method === "POST") json(res, 201, { workspace: workspaces.create(await body(req)) });
@@ -529,15 +500,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       }
       return true;
     }
-    /*
-     * Agent-authored programs.
-     *
-     * A draft is the whole point of these routes: an agent may fill one in, and
-     * only the operator turns one into a program. So the writes here are split
-     * accordingly — POST starts an agent, PATCH is the operator's own edit, and
-     * `apply` is the single place a draft becomes rows in `program`, `suite` and
-     * `prompt`.
-     */
     const draftsMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/program-drafts$/);
     if(draftsMatch){
       const workspaceId=id(draftsMatch[1]!);
@@ -546,7 +508,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       } else if(method==="POST"){
         const input=await body(req);
         const goal=typeof input.goal==="string"?input.goal:"";
-        // No provider means "open an empty draft and let me write it myself".
         if(input.provider===undefined){
           const draft=workspaces.createProgramDraft({workspaceId,goal});
           json(res,201,{draft,preview:programDraftPreview(draft.body),runId:null});
@@ -561,14 +522,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       } else json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});
       return true;
     }
-    /*
-     * Talking to an agent about a program that already exists.
-     *
-     * `ask` is a consult: read-only, no writer lock, the answer is its
-     * transcript. `revisions` opens a revision draft — a copy of the program an
-     * agent edits — and, like a new-program draft, changes nothing until the
-     * operator applies it.
-     */
     const programAgentMatch=url.pathname.match(/^\/api\/programs\/(\d+)\/(ask|revisions)$/);
     if(programAgentMatch){
       if(method!=="POST"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}
@@ -595,14 +548,6 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
       json(res,201,{draft:started.draft,preview:programDraftPreview(started.draft.body),runId:started.runId});
       return true;
     }
-    /*
-     * The request bar: one door for asking an agent anything about a workspace.
-     *
-     * Every request is a target and a mode (see `shared/src/agentRequest.ts`),
-     * and this only routes it to the run or proposal that already exists for
-     * that pair. Nothing here changes the workspace: `ask` is a read-only
-     * consult, and the other modes open a proposal the operator applies.
-     */
     const agentRequestMatch=url.pathname.match(/^\/api\/workspaces\/(\d+)\/agent-requests$/);
     if(agentRequestMatch){
       if(method!=="POST"){json(res,405,{error:{code:"method_not_allowed",message:"Method not allowed"}});return true;}

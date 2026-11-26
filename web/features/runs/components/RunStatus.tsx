@@ -14,12 +14,6 @@ import { StatusDot } from "../../../components/ui/Badge";
 import { AgentAvatar } from "../../providers/components/AgentAvatar";
 import { agentState, ACTIVITY_LABEL, consultQuestion } from "@/features/runs/lib/agentState";
 
-/**
- * Run presentation shared by the attention drawer and the Agents page: one row
- * per working run, and a quieter chip for read-only consults.
- */
-
-/** Where a run's conversation lives: its Chat thread, otherwise its Activity entry. */
 export function runOwnerHref(run: RunStatus, runTabIds: Record<string, string>): string {
   const thread = runTabIds[run.runId] ?? (run.source.type === "custom" ? run.source.threadId : undefined);
   if (thread !== undefined) return `/?workspace=${run.workspace.id}&thread=${encodeURIComponent(thread)}`;
@@ -44,7 +38,6 @@ export function RunRow({
   onStop(): void;
   stale: boolean;
   waiting: boolean;
-  /** The record that owns this run: its Chat conversation or Activity entry. */
   ownerHref: string;
   onOpen?(): void;
 }) {
@@ -59,7 +52,7 @@ export function RunRow({
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
-      {/* Identity. The pulsing core is the seat of the agent avatar. */}
+      { }
       <span className={cn("flex items-center gap-2.5", theme.text)}>
         <AgentAvatar
           provider={run.provider}
@@ -72,7 +65,7 @@ export function RunRow({
 
       {model !== null && <span className="text-xs text-fg-dim">{model}</span>}
 
-      {/* What it is doing right now, in words. */}
+      { }
       <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-muted">
         <StatusDot tone={stale || waiting ? "warning" : "accent"} pulse={!stale && !waiting} />
         <span className="truncate" title={activity}>
@@ -110,10 +103,6 @@ export function RunRow({
   );
 }
 
-/**
- * Quieter than a working row: a consult is reading, not occupying the writer
- * seat. Stop still names this run so it cannot interrupt the writer by accident.
- */
 export function AskChip({
   run,
   onStop,
@@ -125,7 +114,6 @@ export function AskChip({
   onStop(): void;
   stale?: boolean;
   waiting?: boolean;
-  /** Called when the chip opens the consult's conversation, e.g. to close a drawer. */
   onOpen?(): void;
 }) {
   const theme = providerTheme[run.provider];
@@ -155,12 +143,6 @@ export function AskChip({
   );
 }
 
-/**
- * Turns the tail of the event stream into one human sentence.
- *
- * A tool call still waiting on a result is the most informative thing a run can
- * be doing, so it wins over streamed prose.
- */
 function describeActivity(items: LogItem[], run: RunStatus): string {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;

@@ -12,7 +12,6 @@ import { useFleetConsole } from "@/contexts/fleetContext";
 import { useStopCenter } from "@/features/stop/components/StopCenter";
 import type { RunStatus } from "@/models/runs";
 
-/** Shared identity, resolved model, activity and server clock for each run. */
 export function FleetRunCard({ run, origin: suppliedOrigin, selected, onSelect, compact = false }: {
   run: RunStatus; origin?: RunOrigin; selected?: boolean; onSelect?(): void; compact?: boolean;
 }) {
@@ -62,7 +61,6 @@ export function FleetRunCard({ run, origin: suppliedOrigin, selected, onSelect, 
   </article>;
 }
 
-/** Pipeline › suite › (station ›) step, with keys as chips so the place reads at a glance. */
 function PipelineCrumbs({ place, workspace, className }: { place: PipelinePlace; workspace: string; className: string }) {
   const suite = place.suiteKey !== null ? `${place.suiteKey} · ${place.suiteName}` : place.suiteName;
   const step = place.stepKey !== null ? `${place.stepKey} · ${place.stepTitle}` : place.stepTitle;

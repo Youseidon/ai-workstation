@@ -9,26 +9,17 @@ import { cn } from "@/lib/cn";
 import { providerTheme } from "@/features/providers/lib/providerTheme";
 import { useModelSelection } from "@/features/providers/hooks/useModelSelection";
 
-/** The agent and model a request runs with. */
 export interface AgentChoice {
   provider: ProviderId | "";
-  /** The model to send; `null` lets the provider use its own default. */
   model: string | null;
 }
 
-/**
- * Holds an agent + model choice. Until the operator picks, it follows the
- * first available provider and the model that provider would run with
- * anywhere else (the pin from Agents/chat, else settings) — the same default
- * a new pipeline station gets.
- */
 export function useAgentChoice(providers: ProviderInfo[]) {
   const models = useModelSelection(providers);
   const [picked, setPicked] = useState<{ provider: ProviderId; model?: string | null } | null>(null);
   const firstAvailable = providers.find((entry) => entry.available)?.id ?? "";
   const provider: ProviderId | "" = picked?.provider ?? firstAvailable;
   const info = providers.find((entry) => entry.id === provider);
-  // A server-selected ("auto") model always wins, as it does for pipelines.
   const model =
     provider === ""
       ? null
@@ -38,7 +29,6 @@ export function useAgentChoice(providers: ProviderInfo[]) {
   const choice: AgentChoice = { provider, model };
   return {
     choice,
-    /** True when the model was picked here rather than inherited. */
     pinned: picked?.model !== undefined && info?.modelSelectionMode !== "auto",
     pickProvider: (id: ProviderId) => setPicked((current) => (current?.provider === id ? current : { provider: id })),
     pickModel: (id: ProviderId, value: string | null | undefined) => setPicked({ provider: id, model: value }),
@@ -49,16 +39,11 @@ interface Props {
   providers: ProviderInfo[];
   state: ReturnType<typeof useAgentChoice>;
   label?: string;
-  /** Why a provider cannot take this request, or null. */
   blockedReason?(provider: ProviderId): string | null;
   placement?: "below" | "above";
   className?: string;
 }
 
-/**
- * Provider pills with a model menu behind the active one — the picker the
- * pipeline uses for a station, for one-off agent requests.
- */
 export function ProviderModelPicker({ providers, state, label = "Agent", blockedReason, placement = "below", className }: Props) {
   const [menuFor, setMenuFor] = useState<ProviderId | null>(null);
   const { choice, pinned, pickProvider, pickModel } = state;
@@ -79,8 +64,6 @@ export function ProviderModelPicker({ providers, state, label = "Agent", blocked
               <div
                 key={id}
                 className="relative"
-                // The menu listens for Escape on the document, which would also
-                // close the surrounding modal. Close just the menu here instead.
                 onKeyDown={(event) => {
                   if (event.key === "Escape" && menuFor === id) {
                     event.stopPropagation();
@@ -95,8 +78,6 @@ export function ProviderModelPicker({ providers, state, label = "Agent", blocked
                   aria-pressed={active}
                   aria-haspopup="listbox"
                   aria-expanded={menuFor === id}
-                  // The open menu closes itself on any outside mousedown; keep
-                  // that from firing here so this click toggles it shut.
                   onMouseDown={(event) => {
                     if (menuFor === id) event.stopPropagation();
                   }}

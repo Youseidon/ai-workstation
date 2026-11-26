@@ -10,18 +10,10 @@ const BOTTOM_THRESHOLD_PX = 48;
 export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string | null }) {
   const { runs } = useHydra();
   const containerRef = useRef<HTMLDivElement>(null);
-  // The final line of a run that is still going is the one being typed. A
-  // persisted transcript has no live run, so nothing blinks there.
   const last = items[items.length - 1];
   const streamingId =
     last !== undefined && runs.some((run) => run.runId === last.runId) ? last.id : null;
-  // Auto-scroll is "pinned to bottom": scrolling up detaches, scrolling back
-  // down re-attaches. Nothing yanks the view while the user is reading.
   const [pinned, setPinned] = useState(true);
-  // Isolating the app's own database traffic answers a question the full
-  // transcript buries: did this agent report what it did, and was it accepted?
-  // Offered only when there is traffic to isolate, so it is never a dead
-  // control on a run that never called.
   const [dbOnly, setDbOnly] = useState(false);
   const dbCount = items.filter((item) => item.kind === "db").length;
   const dbRefused = items.filter((item) => item.kind === "db" && item.outcome === "rejected").length;
@@ -47,8 +39,7 @@ export function LogPanel({ items, workdir }: { items: LogItem[]; workdir: string
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden">
-      {/* A live run gets a moving hairline, so an idle-looking transcript that
-          is actually still receiving events cannot be mistaken for finished. */}
+      { }
       {streamingId !== null && (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 z-10 h-px overflow-hidden">
           <div className="h-px w-1/3 animate-[ac-sweep_1.8s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-accent to-transparent" />

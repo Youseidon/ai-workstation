@@ -20,22 +20,15 @@ import {
 interface Props {
   serverUrl: string;
   program: ProgramRecord;
-  /** Pending proposals that target this program. */
   pendingProposals: number;
   refresh(): Promise<unknown>;
   onClose(): void;
-  /** Ask an agent about, or for changes to, the selected part of the program. */
   onPropose(target: AgentRequestTarget): void;
   onReviewProposals(): void;
 }
 
 type Selection = { suiteId: number | null; promptId: number | null };
 
-/**
- * One program, opened: its suites and work items on the left, the selected
- * one on the right. Edits save in place; changes an agent should make go
- * through "Propose changes with AI", which opens a reviewable proposal.
- */
 export function ProgramModal({ serverUrl, program, pendingProposals, refresh, onClose, onPropose, onReviewProposals }: Props) {
   const dialogs = useDialogs();
   const { act, busy } = useAct(refresh);

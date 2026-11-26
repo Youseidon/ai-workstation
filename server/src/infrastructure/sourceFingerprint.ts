@@ -5,13 +5,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import type { DodCriterion } from "@hydra/shared";
 import { executionHash } from "../repositories/executionStore.ts";
 
-/** Broad by design: tracked and nonignored untracked inputs, not just HEAD. */
 export function sourceFingerprint(directory: string): string {
   const root = realpathSync(directory);
   let paths: string[];
   try {
     paths = execFileSync("git",["-C",root,"ls-files","--cached","--others","--exclude-standard","-z"],{encoding:"utf8",maxBuffer:32*1024*1024,stdio:["ignore","pipe","ignore"]}).split("\0").filter(Boolean);
-    // A subdirectory must include its repository's transitive inputs too.
     const top = execFileSync("git",["-C",root,"rev-parse","--show-toplevel"],{encoding:"utf8",stdio:["ignore","pipe","ignore"]}).trim();
     if(realpathSync(top)!==root) return sourceFingerprint(top);
   } catch {
@@ -51,7 +49,6 @@ export function sourceFingerprint(directory: string): string {
   return hash.digest("hex");
 }
 
-/** Values stay hashed; secret environment contents never enter an artifact. */
 export function environmentFingerprint(directory=process.cwd()): string {
   const installed:Record<string,string>={};
   let ancestor=realpathSync(directory);
@@ -68,8 +65,6 @@ export function environmentFingerprint(directory=process.cwd()): string {
     if(result.status!==0 || !result.stdout?.trim()) throw new Error("Cannot establish the effective .NET toolchain fingerprint");
     const stat=statSync(realpathSync(binary));dotnet={info:result.stdout,size:stat.size,modified:stat.mtimeMs};
   }
-  // The Claude SDK sets this marker when query() starts. It describes the
-  // provider transport, not the environment of a named verification command.
   return executionHash({platform:process.platform,arch:process.arch,versions:process.versions,installed,dotnet,env:Object.entries(process.env).filter(([key])=>!key.startsWith("HYDRA_")&&key!=="SETTINGS_FILE"&&key!=="CLAUDE_AGENT_SDK_VERSION").sort(([a],[b])=>a.localeCompare(b))});
 }
 

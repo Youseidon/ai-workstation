@@ -14,17 +14,12 @@ import { Badge, type Tone } from "./Badge";
 
 export interface ComboboxItem<T> {
   value: T;
-  /** The text shown when this item is selected, and what search matches on. */
   label: string;
-  /** Secondary line in the list — path, context, whatever disambiguates. */
   description?: string;
-  /** A short prefix, such as an external key. */
   prefix?: string;
   badge?: { text: string; tone: Tone };
-  /** Extra note shown after the badge, e.g. what a blocked item waits on. */
   note?: string;
   disabled?: boolean;
-  /** Additional text that should match a search but is not displayed. */
   keywords?: string;
 }
 
@@ -36,20 +31,11 @@ interface Props<T> {
   placeholder?: string;
   disabled?: boolean;
   emptyText?: string;
-  /** Rendered above the list, e.g. a "custom prompt" reset row. */
   leading?: ReactNode;
   className?: string;
   widthClass?: string;
 }
 
-/**
- * A searchable select.
- *
- * The native `<select>` this replaces had to cram an external key, a program, a
- * suite, a title, a status and a blocker list into one `<option>` string, which
- * the browser then truncated — and gave no way to search among hundreds of work
- * items. Here each row is structured, and typing filters.
- */
 export function Combobox<T extends string | number>({
   label,
   value,
@@ -82,7 +68,6 @@ export function Combobox<T extends string | number>({
     );
   }, [items, query]);
 
-  // Keep the highlight inside the list as it shrinks while typing.
   const safeHighlight = Math.min(highlight, Math.max(filtered.length - 1, 0));
 
   const close = useCallback(() => {

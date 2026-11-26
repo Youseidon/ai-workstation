@@ -32,7 +32,6 @@ function BranchIcon() {
   return <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="4.5" cy="3.5" r="1.75"/><circle cx="4.5" cy="12.5" r="1.75"/><circle cx="11.5" cy="5.5" r="1.75"/><path d="M4.5 5.25v5.5M11.5 7.25c0 2.5-3 2.25-7 3.5"/></svg>;
 }
 
-/** The branch the run was on when capture began — where its commits landed. */
 function BranchChip({branch,className}:{branch:string|null;className?:string}) {
   return <span title={branch===null?"The run committed on a detached HEAD, not a branch":`Commits were made to ${branch}`} className={cn("inline-flex min-w-0 max-w-full items-center gap-1 rounded-md bg-surface-3 px-1.5 py-0.5 font-mono text-xs ring-1 ring-inset ring-line",branch===null?"text-warning":"text-fg",className)}><BranchIcon/><span className="truncate">{branch??"detached HEAD"}</span></span>;
 }
@@ -41,9 +40,14 @@ function DiffStat({change}:{change:Pick<RunChangeSummary,"filesChanged"|"additio
   return <span className="numeric whitespace-nowrap text-xs text-fg-muted">{fileCount(change.filesChanged)} <span className="text-success">+{change.additions}</span> <span className="text-danger">−{change.deletions}</span></span>;
 }
 
+const NO_ITEMS:RunChangeSummary[]=[];
+
 export function ChangesIndex() {
-  const {workspaceId}=useWorkspace();const [items,setItems]=useState<RunChangeSummary[]|null>(null);const [error,setError]=useState<string|null>(null);const [query,setQuery]=useState("");
-  useEffect(()=>{if(workspaceId===null){setItems([]);return;}let cancelled=false;void workspaceApi.changes(SERVER_URL,workspaceId).then(value=>{if(!cancelled){setItems(value);setError(null);}}).catch((reason:unknown)=>{if(!cancelled)setError(reason instanceof Error?reason.message:"Changes could not be loaded.");});return()=>{cancelled=true;};},[workspaceId]);
+  const {workspaceId}=useWorkspace();
+  const [loaded,setLoaded]=useState<{workspaceId:number;items:RunChangeSummary[]|null;error:string|null}|null>(null);
+  const current=workspaceId!==null&&loaded?.workspaceId===workspaceId?loaded:null;
+  const items=workspaceId===null?NO_ITEMS:current?.items??null;const error=current?.error??null;const [query,setQuery]=useState("");
+  useEffect(()=>{if(workspaceId===null)return;let cancelled=false;void workspaceApi.changes(SERVER_URL,workspaceId).then(value=>{if(!cancelled)setLoaded({workspaceId,items:value,error:null});}).catch((reason:unknown)=>{if(!cancelled)setLoaded({workspaceId,items:null,error:reason instanceof Error?reason.message:"Changes could not be loaded."});});return()=>{cancelled=true;};},[workspaceId]);
   const visible=useMemo(()=>{
     const needle=query.trim().toLowerCase();if(items===null||needle==="")return items??[];
     return items.filter(item=>[item.promptTitle,item.message,item.branch,item.pipeline?.name,item.headCommit].some(value=>value?.toLowerCase().includes(needle)));
@@ -62,7 +66,7 @@ export function ChangesIndex() {
         const detailHref=`/changes/${encodeURIComponent(item.runId)}`;
         return <li key={item.runId} className="group relative rounded-panel border border-line bg-surface-1 p-4 transition-colors hover:border-line-strong hover:bg-surface-2 focus-within:border-accent/60">
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            {/* The title link is stretched over the whole card; the actions below sit above it. */}
+            { }
             <Link href={detailHref} className="min-w-0 flex-1 text-sm font-medium text-fg outline-none after:absolute after:inset-0 after:rounded-panel group-hover:text-accent">{item.promptTitle}</Link>
             <Badge tone={stateTone(item.state)}>{stateLabel(item.state)}</Badge>
             <time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString()} className="whitespace-nowrap text-xs text-fg-dim">{timeAgo(item.updatedAt)}</time>
@@ -88,12 +92,13 @@ export function ChangesIndex() {
 
 export function ChangeReview({runId}:{runId:string}) {
   const params=useSearchParams();const requestedFile=params.get("file");
-  const [detail,setDetail]=useState<RunChangeDetail|null>(null);const [error,setError]=useState<string|null>(null);const [diff,setDiff]=useState<RunFileDiff|null>(null);const [diffError,setDiffError]=useState<string|null>(null);const [mode,setMode]=useState<"unified"|"split">("unified");
+  const [detail,setDetail]=useState<RunChangeDetail|null>(null);const [error,setError]=useState<string|null>(null);const [loadedDiff,setLoadedDiff]=useState<{runId:string;path:string;diff:RunFileDiff|null;error:string|null}|null>(null);const [mode,setMode]=useState<"unified"|"split">("unified");
   useEffect(()=>{let cancelled=false;void workspaceApi.runChanges(SERVER_URL,runId).then(value=>{if(cancelled)return;setDetail(value);}).catch((reason:unknown)=>{if(!cancelled)setError(reason instanceof Error?reason.message:"Changes could not be loaded.");});return()=>{cancelled=true;};},[runId]);
-  // The URL owns the selected file; an unknown or absent ?file= shows the first file.
   const selected=detail===null?null:(detail.files.find(file=>file.path===requestedFile)??detail.files[0])?.path??null;
   const fileHref=(path:string)=>`/changes/${encodeURIComponent(runId)}?file=${encodeURIComponent(path)}`;
-  useEffect(()=>{if(selected===null){setDiff(null);return;}let cancelled=false;setDiff(null);setDiffError(null);void workspaceApi.runFileDiff(SERVER_URL,runId,selected).then(value=>{if(!cancelled)setDiff(value);}).catch((reason:unknown)=>{if(!cancelled)setDiffError(reason instanceof Error?reason.message:"Diff could not be loaded.");});return()=>{cancelled=true;};},[runId,selected]);
+  useEffect(()=>{if(selected===null)return;let cancelled=false;void workspaceApi.runFileDiff(SERVER_URL,runId,selected).then(value=>{if(!cancelled)setLoadedDiff({runId,path:selected,diff:value,error:null});}).catch((reason:unknown)=>{if(!cancelled)setLoadedDiff({runId,path:selected,diff:null,error:reason instanceof Error?reason.message:"Diff could not be loaded."});});return()=>{cancelled=true;};},[runId,selected]);
+  const currentDiff=loadedDiff!==null&&loadedDiff.runId===runId&&loadedDiff.path===selected?loadedDiff:null;
+  const diff=currentDiff?.diff??null;const diffError=currentDiff?.error??null;
   const selectedFile=detail?.files.find(file=>file.path===selected)??null;
   const files=<SidebarCollection label="Changed files">
     <SidebarBack href="/changes">All change sets</SidebarBack>

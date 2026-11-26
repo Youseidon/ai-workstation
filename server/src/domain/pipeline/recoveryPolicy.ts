@@ -1,7 +1,6 @@
 import { executionHash } from "../../repositories/executionStore.ts";
 export type RecoveryAction = "continue" | "fresh_context" | "diagnose" | "replan" | "change_provider" | "external_input" | "exhausted";
 export interface RecoveryDecision { action:RecoveryAction; signature:string; reason:string }
-/** A normalized signature preserves failure history across sessions/providers. */
 export function failureSignature(facts:string):string {
   return executionHash(facts.toLowerCase().replace(/run_[a-z0-9_-]+/g,"<run>").replace(/\b\d{4}-\d\d-\d\d[^\s]*/g,"<time>").replace(/\b\d+ms\b/g,"<duration>").replace(/\s+/g," ").trim());
 }

@@ -1,12 +1,7 @@
 import type { ReactNode } from "react";
 
-/**
- * The one navigation registry. Destination labels, route matching and data
- * scope live here; the shell renders it and nothing else defines sections.
- */
 export type SectionId = "chat" | "pipeline" | "activity" | "changes" | "report" | "agents" | "workspaces";
 
-/** `workspace`: scoped to the selected workspace. `app`: applies everywhere. `library`: the workspace catalog itself. */
 export type SectionScope = "workspace" | "app" | "library";
 
 export interface AppSection {
@@ -41,7 +36,6 @@ export const APP_SECTIONS: AppSection[] = [
     scope: "workspace",
     href: "/pipeline",
     label: "Pipeline",
-    // Tasks merged into Pipeline; its old addresses redirect here.
     match: (pathname) =>
       pathname.startsWith("/pipeline") || pathname.startsWith("/tasks") || pathname.startsWith("/operations") || pathname.startsWith("/input"),
     icon: (

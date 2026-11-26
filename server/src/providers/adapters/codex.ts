@@ -1,14 +1,12 @@
 import { spawn } from "node:child_process";
 import type { ProviderUsage } from "@hydra/shared";
 import { LineSplitter, tryParseJson } from "../../utils/lines.ts";
-import { resolveBinary } from "../../infrastructure/process.ts";
 import { describeEffectiveAccess, effectiveCodexSandboxMode, settings } from "../../config/settings.ts";
 import { parseCodexRateLimits, providerUsageOk, providerUsageUnavailable } from "../accountUsage.ts";
 import { CodexStreamMapper } from "../streams/codexStream.ts";
 import { SpawnAdapter, type SpawnSpec } from "./spawnAdapter.ts";
 import type { RunOptions } from "../../contracts/agentAdapter.ts";
 
-/** Codex App Server supplies native text/reasoning deltas over JSON-RPC stdio. */
 export function codexServerArgs(extra: string[], apiKey = false): string[] {
   for (let index = 0; index < extra.length; index++) {
     const flag = extra[index]!;
@@ -18,7 +16,6 @@ export function codexServerArgs(extra: string[], apiKey = false): string[] {
       throw new Error(`Codex streaming uses App Server. Replace unsupported exec-only extra argument ${flag} with a -c configuration override.`);
     }
   }
-  // API-key login is connection-local. Never replace a stored ChatGPT login.
   return ["app-server", ...extra, ...(apiKey ? ["-c", 'cli_auth_credentials_store="ephemeral"'] : [])];
 }
 
@@ -26,7 +23,6 @@ export class CodexAdapter extends SpawnAdapter {
   readonly id = "codex" as const;
   readonly label = "Codex CLI";
   readonly reportsTokens = true;
-  // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(`sandbox: ${effectiveCodexSandboxMode()}`);
   }
@@ -43,7 +39,6 @@ export class CodexAdapter extends SpawnAdapter {
 
   protected async checkAuth(): Promise<string | null> {
     if (settings.codex.apiKey !== null) return null;
-    // `codex login` stores credentials under $CODEX_HOME (default ~/.codex).
     const { existsSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { homedir } = await import("node:os");
@@ -53,7 +48,7 @@ export class CodexAdapter extends SpawnAdapter {
   }
 
   override async getAccountUsage(): Promise<ProviderUsage> {
-    const binary = await resolveBinary(this.binaryName);
+    const binary = await this.resolveBinary();
     if (binary === null) {
       return providerUsageUnavailable("codex", this.missingBinaryReason());
     }
@@ -67,7 +62,6 @@ export class CodexAdapter extends SpawnAdapter {
     }
   }
 
-  /** `/btw`: App Server takes input into the active turn (`turn/steer`). */
   sendUserMessage(runId: string, text: string): Promise<boolean> {
     return this.steerRun(runId, text);
   }
@@ -89,10 +83,6 @@ export class CodexAdapter extends SpawnAdapter {
 
 const CODEX_APP_SERVER_TIMEOUT_MS = 25_000;
 
-/**
- * Drive Codex's own app-server over stdio. Codex owns the ChatGPT login and
- * token refresh; we never read `auth.json`.
- */
 function readCodexRateLimits(binary: string): Promise<unknown> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(binary, ["app-server"], {

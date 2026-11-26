@@ -136,7 +136,6 @@ export function filterBreakdown(groups: ReportGroup[], query: string, sort: Brea
   const needle = query.trim().toLowerCase();
   return groups.filter((group) => `${group.name} ${group.context}`.toLowerCase().includes(needle))
     .sort((a, b) => {
-      // Missing telemetry belongs after measured values, including measured zero.
       const av = sort === "recent" ? (Number.isFinite(Date.parse(a.latest)) ? Date.parse(a.latest) : null) : sort === "cost" ? metricValue(a.measure, "cost") : tokensValue(a.measure);
       const bv = sort === "recent" ? (Number.isFinite(Date.parse(b.latest)) ? Date.parse(b.latest) : null) : sort === "cost" ? metricValue(b.measure, "cost") : tokensValue(b.measure);
       if (av === null) return bv === null ? a.name.localeCompare(b.name) : 1;
@@ -145,7 +144,6 @@ export function filterBreakdown(groups: ReportGroup[], query: string, sort: Brea
     });
 }
 
-/** Export exact recorded fields; protect spreadsheet cells containing user-authored titles. */
 export function reportCsv(sessions: SessionUsageRow[]): string {
   const headers = ["session_id", "provider", "model", "role", "state", "started_at", "ended_at", "suite", "task", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens", "api_estimate_usd", "rate_source", "input_rate_usd_per_mtok", "cached_input_rate_usd_per_mtok", "output_rate_usd_per_mtok"];
   const cell = (value: string | number | null | undefined): string => {

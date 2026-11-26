@@ -11,6 +11,7 @@ export async function toProviderInfo(adapter: AgentAdapter): Promise<ProviderInf
     id: adapter.id,
     commandEnforcement: "cooperative",
     label: adapter.label,
+    installed: report.installed ?? (adapter.transport === "sdk" ? report.version !== null : report.binary !== null),
     available: report.available,
     reason: report.reason,
     version: report.version,

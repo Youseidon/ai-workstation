@@ -20,17 +20,6 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Trim `agent_run_event` so the database stops growing without bound.
- *
- * Per run: keep at most `eventsPerRun` (oldest deleted first), always leaving
- * the last `keepFinalEvents` intact. Runs that ended more than `eventAgeDays`
- * ago are thinned to just those final events. Deletes happen in batches of
- * 5 000 with a short pause — never one long transaction — so a restart mid-
- * sweep cannot hold the lock across the whole transcript.
- *
- * `agent_run`, remarks, status events and commands are not touched.
- */
 export async function sweepRunEvents(options: { pauseMs?: number } = {}): Promise<SweepRunEventsResult> {
   const { eventsPerRun, eventAgeDays, keepFinalEvents } = settings.retention;
   const pauseMs = options.pauseMs ?? BATCH_PAUSE_MS;
@@ -62,8 +51,6 @@ export async function sweepRunEvents(options: { pauseMs?: number } = {}): Promis
     const ids = workspaces.runEventIdsOldestFirst(row.runId);
     const finalIds = ids.slice(-keepFinalEvents);
     const toDelete = ids.slice(0, Math.max(0, ids.length - keep));
-    // The last keepFinalEvents must survive even when eventsPerRun is somehow
-    // smaller — refuse to queue a delete that would eat into that tail.
     const finalSet = new Set(finalIds);
     for (const id of toDelete) {
       if (finalSet.has(id)) {
@@ -97,7 +84,6 @@ export async function sweepRunEvents(options: { pauseMs?: number } = {}): Promis
 
 let scheduled = false;
 
-/** First sweep 60 s after boot, then every 6 h. Idempotent. */
 export function scheduleRetentionSweep(): void {
   if (scheduled) return;
   scheduled = true;

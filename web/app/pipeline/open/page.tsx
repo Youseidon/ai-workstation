@@ -9,12 +9,6 @@ import { SERVER_URL } from "@/api/serverUrl";
 import { workspaceApi } from "@/api/workspacesApi";
 import { resolveOpenTarget } from "@/features/pipeline/lib/station/openTarget";
 
-/**
- * One address for "show me this work item": `/pipeline/open?prompt=…&suite=…`.
- * Finds the pipeline that drives the item's suite and lands on it with the item
- * selected, or the suite view when no pipeline drives it. Old Tasks links
- * redirect here.
- */
 function OpenResolver() {
   const params = useSearchParams();
   const router = useRouter();

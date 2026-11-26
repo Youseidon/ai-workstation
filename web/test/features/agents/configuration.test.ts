@@ -4,6 +4,7 @@ import type { ProviderInfo, ProviderUsage } from "@hydra/shared";
 import {
   sharedSettingsGroups,
   providerAvailability,
+  providerInstalled,
   usageState,
 } from "../../../features/agents/lib/configuration.ts";
 
@@ -113,5 +114,46 @@ test("usage distinguishes missing, unavailable, failed, loading, zero, stale and
       now,
     ).label,
     "2 usage windows",
+  );
+});
+
+test("installation is independent of authentication, enablement and missing version metadata", () => {
+  assert.equal(
+    providerInstalled({
+      installed: true,
+      available: false,
+      binary: null,
+      version: null,
+      transport: "sdk",
+    } as ProviderInfo),
+    true,
+  );
+  assert.equal(
+    providerInstalled({
+      installed: false,
+      available: false,
+      binary: null,
+      version: null,
+      transport: "sdk",
+    } as ProviderInfo),
+    false,
+  );
+  assert.equal(
+    providerInstalled({
+      available: false,
+      binary: "/fixture/codex",
+      version: null,
+      transport: "spawn",
+    } as ProviderInfo),
+    true,
+  );
+  assert.equal(
+    providerInstalled({
+      available: false,
+      binary: null,
+      version: null,
+      transport: "spawn",
+    } as ProviderInfo),
+    false,
   );
 });

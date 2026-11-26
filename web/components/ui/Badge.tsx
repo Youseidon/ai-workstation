@@ -4,13 +4,8 @@ import type { ReactNode } from "react";
 import type { StatusTone } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 
-/* Owned by `shared` so the pipeline rule table can name a tone without the
-   server depending on this component. Aliased rather than re-declared: two
-   copies of this union would drift the moment either side gained a role. */
 export type Tone = StatusTone;
 
-/* Spelled out rather than interpolated, because Tailwind resolves class names
-   at build time. Each entry is token-based, so it re-colours with the theme. */
 const SOFT: Record<Tone, string> = {
   neutral: "bg-surface-3 text-fg-muted ring-line",
   accent: "bg-accent/12 text-accent ring-accent/30",
@@ -35,7 +30,6 @@ const DOT: Record<Tone, string> = {
 
 export interface BadgeProps {
   tone?: Tone;
-  /** Renders a leading dot; `pulse` makes it breathe for live states. */
   dot?: boolean;
   pulse?: boolean;
   uppercase?: boolean;
@@ -69,10 +63,6 @@ export function Badge({
   );
 }
 
-/**
- * A state dot. When `pulse` is set it emits an expanding ring as well as
- * breathing, so "something is happening right now" is legible peripherally.
- */
 export function StatusDot({
   tone = "neutral",
   pulse = false,

@@ -21,16 +21,14 @@ const MOBILE_QUERY = "(max-width: 1023px)";
 function readCollapsed(): boolean {
   try {
     const value = userLocalStorage.getItem(COLLAPSED_KEY);
-    // Chat's former preference carries over once.
     return value === null ? userLocalStorage.getItem("chat-sidebar-collapsed") === "true" : value === "1";
   } catch { return false; }
 }
 
 function writeCollapsed(value: boolean) {
-  try { userLocalStorage.setItem(COLLAPSED_KEY, value ? "1" : "0"); userLocalStorage.removeItem("chat-sidebar-collapsed"); } catch { /* preference only */ }
+  try { userLocalStorage.setItem(COLLAPSED_KEY, value ? "1" : "0"); userLocalStorage.removeItem("chat-sidebar-collapsed"); } catch {  }
 }
 
-/** The sidebar's one desktop collapse preference and mobile drawer state. */
 export function useSidebarState(pathname: string) {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -42,7 +40,6 @@ export function useSidebarState(pathname: string) {
     const timer = setTimeout(() => setCollapsed(readCollapsed()), 0);
     return () => { media.removeEventListener("change", update); clearTimeout(timer); };
   }, []);
-  // A new route closes the mobile drawer.
   // eslint-disable-next-line react-hooks/set-state-in-effect -- navigation is external to this component
   useEffect(() => { setDrawerOpen(false); }, [pathname]);
   const open = useCallback(() => { if (matchMedia(MOBILE_QUERY).matches) setDrawerOpen(true); else { setCollapsed(false); writeCollapsed(false); } }, []);
@@ -53,10 +50,6 @@ export function useSidebarState(pathname: string) {
 
 interface BodyProps { section: AppSection | null; onClose(): void; onNavigate(): void; slot(node: HTMLDivElement | null): void }
 
-/**
- * The brand row. The mark doubles as a fleet glance: one head per provider,
- * lit while that provider has a run in flight.
- */
 function SidebarBrand({ onNavigate }: { onNavigate(): void }) {
   const { runs } = useHydra();
   const live = useMemo(() => [...new Set(runs.map((run) => run.provider))] as ProviderId[], [runs]);
@@ -102,14 +95,9 @@ function trapFocus(event: KeyboardEvent<HTMLDialogElement>) {
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
-/**
- * The one application sidebar: a 272 px column on desktop with one collapse
- * preference, and a modal drawer below 1024 px. Its body is the same in both.
- */
 export function AppSidebar({ section, state, asideSlot, drawerSlot }: {
   section: AppSection | null;
   state: ReturnType<typeof useSidebarState>;
-  /** Ref callbacks for the collection slot in the desktop sidebar and in the mobile drawer. */
   asideSlot(node: HTMLDivElement | null): void;
   drawerSlot(node: HTMLDivElement | null): void;
 }) {

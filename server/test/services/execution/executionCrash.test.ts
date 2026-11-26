@@ -44,7 +44,7 @@ for(const mode of ["before-dispatch","after-claim","registered-spawn","unregiste
         restored.quarantine(pending.id,"Unacknowledged dispatch must be reconciled before replacement");
       }
     } finally {
-      if(identity) {try {process.kill(-identity.pid,"SIGKILL");} catch { /* gone */ }}
+      if(identity) {try {process.kill(-identity.pid,"SIGKILL");} catch {  }}
       db.close();rmSync(dir,{recursive:true,force:true});
     }
   });

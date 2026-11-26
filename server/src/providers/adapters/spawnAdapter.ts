@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { AdapterEvent, ProviderId, ProviderUsage } from "@hydra/shared";
 import { AsyncQueue } from "../../utils/asyncQueue.ts";
 import { LineSplitter, tryParseJson } from "../../utils/lines.ts";
-import { resolveBinary } from "../../infrastructure/process.ts";
+import { resolveProviderBinary } from "../providerBinaries.ts";
 import { providerUsageUnavailable } from "../accountUsage.ts";
 import type { AgentAdapter, AvailabilityReport, RunOptions } from "../../contracts/agentAdapter.ts";
 import { settings } from "../../config/settings.ts";
@@ -19,17 +19,8 @@ import {
 export interface SpawnSpec {
   args: string[];
   env?: NodeJS.ProcessEnv;
-  /** When set, written to the child's stdin and then closed. */
   stdin?: string;
-  /**
-   * The session id this spawn is known to have before a byte of stdout arrives:
-   * either one the adapter assigned itself (`--session-id`) or the one it is
-   * resuming. Announced as a status event straight after spawn, because a
-   * provider that only names its session in a final result event names it for
-   * exactly the runs that do not need it — a budget stop never gets there.
-   */
   sessionId?: string;
-  /** Duplex transports keep stdin open and end when their protocol settles. */
   interactive?: boolean;
   mapper?: StreamMapper;
 }
@@ -40,22 +31,13 @@ export interface StreamChannel {
   fail(error: unknown): void;
 }
 
-/**
- * Turns one provider's JSON stream into normalized events. One instance is
- * created per run so it can hold per-run state (open tool calls, usage, ...).
- */
 export interface StreamMapper {
-  /** Called for each successfully parsed JSON line from stdout. */
   map(value: unknown): AdapterEvent[];
-  /** Called once the child exits. */
   finish(exitCode: number | null, signal: NodeJS.Signals | null): AdapterEvent[];
-  /** True once the mapper has emitted a terminal `result` event. */
   readonly settled: boolean;
   start?(channel: StreamChannel): void;
   line?(line: string): void;
-  /** True when the provider has been asked to stop through its native API. */
   interrupt?(): boolean;
-  /** Adds operator input to the turn in progress (`/btw`); false when there is none to add to. */
   steer?(text: string): Promise<boolean>;
   dispose?(): void;
 }
@@ -63,10 +45,6 @@ export interface StreamMapper {
 const KILL_GRACE_MS = 2000;
 const MAX_STDERR_CAPTURE = 4000;
 
-/**
- * Shared machinery for CLI-backed providers: process spawn, JSONL framing,
- * stderr-to-log, clean interrupt, and non-zero-exit handling.
- */
 export abstract class SpawnAdapter implements AgentAdapter {
   abstract readonly id: ProviderId;
   abstract readonly label: string;
@@ -76,17 +54,19 @@ export abstract class SpawnAdapter implements AgentAdapter {
   readonly transport = "spawn" as const;
 
   protected abstract readonly binaryName: string;
-  /** Reason shown when the binary is not on PATH. */
   protected abstract missingBinaryReason(): string;
-  /** Extra availability checks (auth, keys) once the binary is present. */
   protected abstract checkAuth(): Promise<string | null>;
   protected abstract buildSpec(prompt: string, opts: RunOptions): SpawnSpec;
   protected createMapper(): StreamMapper { throw new Error("Provider did not configure a stream mapper"); }
 
   private readonly children = new Map<string, { child: ChildProcess; plan: SpawnPlan; mapper: StreamMapper }>();
 
+  protected resolveBinary(): Promise<string | null> {
+    return resolveProviderBinary(this.id, this.binaryName);
+  }
+
   async checkAvailability(): Promise<AvailabilityReport> {
-    const binary = await resolveBinary(this.binaryName);
+    const binary = await this.resolveBinary();
     if (binary === null) {
       return { available: false, reason: this.missingBinaryReason(), version: null, binary: null };
     }
@@ -100,7 +80,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
   }
 
   async getVersion(): Promise<string | null> {
-    const binary = await resolveBinary(this.binaryName);
+    const binary = await this.resolveBinary();
     if (binary === null) return null;
     const { readVersion } = await import("../../infrastructure/process.ts");
     return readVersion(binary);
@@ -111,7 +91,7 @@ export abstract class SpawnAdapter implements AgentAdapter {
   }
 
   async *run(prompt: string, opts: RunOptions): AsyncGenerator<AdapterEvent, void> {
-    const binary = await resolveBinary(this.binaryName);
+    const binary = await this.resolveBinary();
     if (binary === null) {
       yield { type: "error", payload: { message: this.missingBinaryReason(), fatal: true } };
       return;
@@ -140,14 +120,9 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
     let child: ChildProcess;
     try {
-      // Persistence belongs exclusively to the server process. Never pass a
-      // database/data-directory capability to a spawned agent, even if one is
-      // added to the service environment later.
       child = spawn(plan.command, plan.args, {
         cwd: opts.cwd,
         env: childEnv,
-        // With no stdin payload the handle is closed outright: these CLIs
-        // otherwise sit waiting for piped input.
         stdio: [spec.stdin === undefined && !spec.interactive ? "ignore" : "pipe", "pipe", "pipe"],
         detached: plan.detached,
       });
@@ -179,7 +154,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
     };
     child.stdin?.on("error", error => { if (!mapper.settled) fail(error); });
 
-    // Before any provider output, so the id survives an interrupt.
     if (spec.sessionId !== undefined) {
       queue.push({ type: "status", payload: { state: "running", detail: `session ${spec.sessionId}`, sessionId: spec.sessionId } });
     }
@@ -203,7 +177,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
           if (spec.interactive && !mapper.line) fail(new Error("Provider returned invalid JSON on its protocol stream"));
           else mapper.line?.(line);
         } catch (error) { fail(error); }
-        // Not JSON: banner/progress noise. Server log only.
         opts.log.debug(`non-json stdout: ${line.slice(0, 400)}`);
         return;
       }
@@ -294,8 +267,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
       mapper.dispose?.();
       opts.signal.removeEventListener("abort", onAbort);
       if (spec.interactive && child.exitCode === null && child.signalCode === null) {
-        // App Server flushes its durable thread on stdio EOF. Give a completed
-        // protocol a brief shutdown window before enforcing tree cleanup.
         child.stdin?.end();
         await new Promise<void>(resolve => {
           const timer = setTimeout(resolve, 250);
@@ -311,10 +282,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
   private readonly interrupted = new Set<string>();
 
-  /**
-   * Hands `/btw` text to a live run's mapper. Not `sendUserMessage` itself: a
-   * provider opts in by defining that method, so this base class must not.
-   */
   protected async steerRun(runId: string, text: string): Promise<boolean> {
     const tracked = this.children.get(runId);
     if (!tracked || tracked.child.exitCode !== null || tracked.mapper.steer === undefined) return false;
@@ -334,8 +301,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
       })(); }, KILL_GRACE_MS);
       child.once("close", () => {
         clearTimeout(timer);
-        // The group leader can exit while a compiler/test worker ignores the
-        // interrupt. Do not mistake that for the complete tree being gone.
         if (tracked.plan.containment === "process-group") signalProcessTree(child.pid, "SIGKILL");
         resolvePromise();
       });
@@ -349,8 +314,6 @@ export abstract class SpawnAdapter implements AgentAdapter {
 
   private async forceKill(runId: string, child: ChildProcess, plan: SpawnPlan): Promise<void> {
     await this.signalTree(child, plan, "SIGKILL");
-    // The wrapper can outlive a unit it was waiting for; make sure its pipe and
-    // run record cannot remain open after the cgroup has been killed.
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     this.interrupted.add(runId);
   }
@@ -361,7 +324,6 @@ export function describeError(error: unknown): string {
   return String(error);
 }
 
-/** Prompts can be long/sensitive; keep the server log readable. */
 function redactArg(arg: string): string {
   return arg.length > 80 ? `${arg.slice(0, 77)}…` : arg;
 }

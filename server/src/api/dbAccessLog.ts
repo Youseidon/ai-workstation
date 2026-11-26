@@ -1,30 +1,9 @@
-/**
- * How a trip to the app's database is described in the log.
- *
- * Pure, so the wording and the read/write classification can be tested without
- * standing up an HTTP server. `index.ts` keeps only the wiring.
- *
- * The operator's question this answers is narrow and specific: *did this agent
- * talk to the app, and what did it change?* Before these lines existed, a run
- * that silently never posted looked exactly like a run that posted and was
- * ignored — and which of those happened decides whether to distrust the agent
- * or the app.
- */
-
 import type { DbAccessPayload } from "@hydra/shared";
 
 export type DbOperation = "execution" | "check" | "plan" | "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
 
-/** The endpoints that change state. Everything else is a read. */
 const WRITES = new Set<DbOperation>(["check", "plan", "remarks", "status", "checkpoint", "decompose", "repair-verify", "propose-program", "propose-suite", "revise-program", "input", "reply"]);
 
-/**
- * What an accepted call touched.
- *
- * Listed rather than inferred so a write is never merely implied: the operator
- * sees the tables by name, and a change to what an endpoint writes has to be
- * reflected here deliberately.
- */
 const TABLES: Record<DbOperation, string[]> = {
   execution: [],
   check: ["command_task", "execution_lease", "dod_result"],
@@ -36,14 +15,10 @@ const TABLES: Record<DbOperation, string[]> = {
   checkpoint: ["git", "run_change_set"],
   decompose: ["prompt", "prompt_status_event"],
   "repair-verify": ["prompt", "prompt_revision", "definition_of_done", "dod_criterion", "dod_result", "prompt_remark"],
-  // A proposal touches the draft and nothing else. That is the whole point of
-  // it, and naming the table is how the operator can see that it is true.
   "propose-program": ["program_draft"],
   "propose-suite": ["program_draft"],
   "revise-program": ["program_draft"],
   input: ["agent_run_event"],
-  // `/btw`: reading the inbox marks notes delivered, but that is the agent
-  // receiving mail, not changing the work — it is logged as a read.
   inbox: [],
   reply: ["run_message", "agent_run_event"],
 };
@@ -58,7 +33,6 @@ export function tablesTouched(operation: DbOperation): string[] {
 
 export interface AcceptedWrite {
   operation: DbOperation;
-  /** The work item's status before and after, for a status post. */
   before: string | null;
   after: string | null;
   remarkKind?: string | null;
@@ -67,9 +41,6 @@ export interface AcceptedWrite {
 }
 
 export function describeAcceptedWrite(args: AcceptedWrite): DbAccessPayload {
-  // A status post that left the status where it was is the idempotency ledger
-  // replaying an earlier call. Reporting "IN_PROGRESS → DONE" twice would have
-  // the operator hunting a transition that only ever happened once.
   const replayed = args.operation === "status" || args.operation === "decompose"
     ? args.before === args.after
     : false;
@@ -124,8 +95,6 @@ export function describeRejectedWrite(args: {
     durationMs: args.durationMs,
     requestId: args.requestId,
     summary: args.message,
-    // A refusal changed nothing. Naming tables here would be a lie in the one
-    // place the operator is least able to check it.
     changed: [],
     errorCode: args.errorCode,
   };

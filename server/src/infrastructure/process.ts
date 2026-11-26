@@ -2,10 +2,6 @@ import { spawn } from "node:child_process";
 import { delimiter, isAbsolute, join } from "node:path";
 import { access, constants } from "node:fs/promises";
 
-/**
- * Resolves a command to an executable path using $PATH — no hardcoded install
- * locations. Returns null when the binary is not on PATH.
- */
 export async function resolveBinary(command: string): Promise<string | null> {
   if (command.includes("/") || isAbsolute(command)) {
     return (await isExecutable(command)) ? command : null;
@@ -38,7 +34,6 @@ export interface CommandResult {
   stderr: string;
 }
 
-/** Runs a short-lived command (e.g. `--version`) and captures its output. */
 export function runCommand(
   command: string,
   args: string[],
@@ -72,7 +67,6 @@ export function runCommand(
   });
 }
 
-/** First non-empty line of `<bin> --version`, or null. */
 export async function readVersion(binary: string): Promise<string | null> {
   const result = await runCommand(binary, ["--version"]);
   const text = (result.stdout || result.stderr).trim();

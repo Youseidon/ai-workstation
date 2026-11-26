@@ -8,13 +8,6 @@ import type { LogItem } from "@/features/runs/lib/log";
 import { LogPanel } from "../../runs/components/LogPanel";
 import { Button } from "../../../components/ui/Button";
 
-/**
- * Transcript for consult runs. The writer LogPanel never renders these events.
- *
- * Collapses to a one-line strip when docked above the composer; expands to show
- * tabs and the consult LogPanel. Opens while a consult is live, or with the
- * last consult in this workspace after it ends.
- */
 export function ConsultBriefing({
   consults,
   lastConsult,

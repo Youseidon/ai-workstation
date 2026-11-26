@@ -22,7 +22,6 @@ import {
   formatDate, lineCount, programProgress, useAct,
 } from "./shared";
 
-/** At most one modal is open; opening another replaces it. */
 type Sheet =
   | { kind: "create" }
   | { kind: "settings" }
@@ -31,12 +30,6 @@ type Sheet =
   | { kind: "request"; target: AgentRequestTarget; mode?: AgentRequestMode }
   | { kind: "proposals"; openKey: string | null };
 
-/**
- * The workspaces page: pick or create a workspace, point it at a project, and
- * see what is in it. Everything that is read or written in depth — a program,
- * an instruction file, a request to an agent, a proposal — opens in a modal,
- * so the page itself stays an overview.
- */
 export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
   const toast = useToast();
   const dialogs = useDialogs();
@@ -80,7 +73,6 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
 
   const { act, busy } = useAct(refresh);
 
-  /** One selected workspace, shared with the sidebar's workspace switcher and every other section. */
   const choose = (id: number) => {
     setSheet(null);
     setWorkspaceId(id);
@@ -110,7 +102,6 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
         "Every program, suite, work item, session and verification inside it is deleted with it. Files in the project directory are not touched.",
       confirmLabel: "Delete workspace",
       tone: "danger",
-      // A cascade this large should not hang on a reflexive Enter.
       confirmPhrase: tree.name,
     });
     if (!confirmed) return;
@@ -311,6 +302,7 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
 
       {sheet?.kind === "create" && (
         <WorkspaceSettingsModal
+          serverUrl={serverUrl}
           open
           workspace={null}
           busy={busy}
@@ -333,6 +325,7 @@ export function WorkspaceManager({ serverUrl }: { serverUrl: string }) {
 
       {tree !== null && sheet?.kind === "settings" && (
         <WorkspaceSettingsModal
+          serverUrl={serverUrl}
           key={`${tree.id}:${tree.updatedAt}`}
           open
           workspace={tree}

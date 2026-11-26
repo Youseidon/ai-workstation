@@ -10,7 +10,6 @@ export function setBrowserIdentity(user: UserIdentity | null): void {
   for (const storage of [window.localStorage, window.sessionStorage]) {
     const marker = privateKey("storage-migrated.v1");
     if (storage.getItem(marker)) continue;
-    // Only the original operator inherits pre-login drafts and preferences.
     for (const key of Object.keys(storage)) {
       if (!legacyKey(key) || key === "hydra.theme" || key === "hydra.effects") continue;
       const value = storage.getItem(key);

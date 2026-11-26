@@ -11,10 +11,6 @@ const quote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
 const hookScript = fileURLToPath(new URL("../../bin/cursor-policy.mjs", import.meta.url));
 const validatedCli = new Set<string>();
 
-/** CLI plugin rules load, but this CLI does not execute plugin hooks. Register
- * the gate at project scope, retaining user hooks and restoring it after exit.
- * Tracked hook files are refused rather than changed behind the operator.
- */
 export function installCursorHooks(root: string, manifest: string): () => void {
   const commandPrefix = `${quote(process.execPath)} ${quote(hookScript)} `;
   const hookCommand = commandPrefix + quote(manifest);
@@ -39,8 +35,6 @@ export function installCursorHooks(root: string, manifest: string): () => void {
       if (config.hooks[event].length === 0) delete config.hooks[event];
     }
   }
-  // A process crash can leave the previous registration behind. Retire that
-  // registration instead of restoring a hook pointing at an expired manifest.
   if (stale) before = Object.keys(config.hooks).length === 0 && Object.keys(config).every(key => ["version", "hooks"].includes(key))
     ? null : JSON.stringify(config, null, 2) + "\n";
   for (const event of ["beforeShellExecution", "preToolUse"]) {
@@ -69,7 +63,6 @@ export function installCursorHooks(root: string, manifest: string): () => void {
   catch (error) { removeExclude(); throw error; }
   return () => {
     try {
-      // Never overwrite a concurrent operator edit. Remove only our own entry.
       if (readFileSync(path, "utf8") === body) {
         if (before === null) rmSync(path); else writeFileSync(path, before);
       } else {
@@ -78,11 +71,10 @@ export function installCursorHooks(root: string, manifest: string): () => void {
           current.hooks[event] = current.hooks[event].filter((h: { command?: string }) => h.command !== hookCommand);
         writeFileSync(path, JSON.stringify(current, null, 2) + "\n");
       }
-    } finally { removeExclude(); try { rmdirSync(directory); } catch { /* User files remain. */ } }
+    } finally { removeExclude(); try { rmdirSync(directory); } catch {  } }
   };
 }
 
-/** Per-run plugin: never overwrite the user's project or global Cursor config. */
 export function createCursorPolicy(input: { policy: StationPolicy; root: string; launcher?: string | null }) {
   const directory = mkdtempSync(join(tmpdir(), "hydra-cursor-policy-"));
   const audit = join(directory, "decisions.jsonl");
@@ -106,17 +98,13 @@ export function createCursorPolicy(input: { policy: StationPolicy; root: string;
   }
 }
 
-/** Prove this CLI loaded and denied our hook with --force before exposing a repo. */
 export async function probeCursorPolicy(binary: string, plugin: ReturnType<typeof createCursorPolicy>, model: string, signal: AbortSignal): Promise<void> {
   if (signal.aborted) throw new Error("Cursor policy probe cancelled");
-  // One model-backed conformance check per installed CLI/model/hook revision,
-  // rather than adding a billed diagnostic turn to every station and wrap-up.
   const key = `${realpathSync(binary)}:${model}:${createHash("sha256").update(readFileSync(hookScript)).digest("hex")}`;
   if (validatedCli.has(key)) return;
   const probeEnv = { ...process.env, HYDRA_CURSOR_POLICY: plugin.manifest } as NodeJS.ProcessEnv;
   for (const key of ["HYDRA_DATA_DIR", "HYDRA_DATABASE_PATH", "HYDRA_DB", "DATABASE_URL", "SETTINGS_FILE"]) delete probeEnv[key];
   const cwd = mkdtempSync(join(tmpdir(), "hydra-cursor-probe-"));
-  // Project hooks are loaded only for a repository in the installed CLI.
   const git = spawnSync("git", ["init", "-q", cwd], { stdio: "ignore" });
   if (git.status !== 0) { rmSync(cwd, { recursive: true, force: true }); throw new Error("Cannot initialize Cursor hook probe repository"); }
   const restoreHooks = installCursorHooks(cwd, plugin.manifest);
@@ -135,7 +123,7 @@ export async function probeCursorPolicy(binary: string, plugin: ReturnType<typeo
     });
     if (signal.aborted) throw new Error("Cursor policy probe cancelled");
     let decisions: Array<{ probe?: boolean; permission?: string; event?: string }> = [];
-    try { decisions = readFileSync(plugin.audit, "utf8").trim().split("\n").map(line => JSON.parse(line)); } catch { /* Missing receipt must fail closed. */ }
+    try { decisions = readFileSync(plugin.audit, "utf8").trim().split("\n").map(line => JSON.parse(line)); } catch {  }
     if (!decisions.some(d => d.probe && d.permission === "deny" && ["beforeShellExecution", "preToolUse"].includes(d.event ?? ""))) {
       throw new Error("Cursor did not demonstrate a working command-policy hook. Refusing to expose the workspace. Check CLI hook/plugin support and authentication.");
     }

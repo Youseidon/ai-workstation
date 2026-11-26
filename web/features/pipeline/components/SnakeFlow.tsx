@@ -3,7 +3,6 @@
 import type { ReactNode } from "react";
 import styles from "./workspace.module.css";
 
-/** Row-major execution order keeps reading, keyboard and DOM order identical at every width. */
 export function SnakeFlow<T>({ items, getKey, renderCard, isLiveIndex, wrapItem, renderGate }: {
   items: T[];
   getKey(item: T, index: number): string | number;

@@ -10,7 +10,6 @@ import { workspaceApi } from "@/api/workspacesApi";
 
 type Loaded = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; content: string; status: string };
 
-/** Read-only markdown preview of a work item's current text, fetched on open. */
 export function WorkItemPreview({ item, open, onClose }: { item: PromptWorkItem; open: boolean; onClose(): void }) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   useEffect(() => {

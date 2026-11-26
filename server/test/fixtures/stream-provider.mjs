@@ -11,7 +11,6 @@ let timer;
 if(mode==='codex'){
  const send=value=>{
   const line=JSON.stringify(value)+'\n';
-  // Multiple writes exercise the real child stdout framing path.
   process.stdout.write(line.slice(0,11));process.stdout.write(line.slice(11));
  };
  const notify=(method,params)=>send({method,params:{threadId:'thread',turnId:'turn',...params}});

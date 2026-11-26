@@ -35,35 +35,20 @@ interface ConsoleState {
   connection: ConnectionState;
   providers: ProviderInfo[];
   items: LogItem[];
-  /** Every run in flight, oldest first. Empty when nothing is running. */
   runs: RunStatus[];
-  /** Frozen fleet display until an authoritative hello arrives after a disconnect. */
   disconnectedRuns: RunStatus[];
-  /** Kept after a run ends so the status bar can show the final numbers. */
   lastRun: RunStatus | null;
-  /** Last consult that ended, so the briefing pane can stay open. */
   lastConsult: RunStatus | null;
-  /** Last completed consult per workspace, so another tab finishing cannot erase this tab's briefing. */
   lastConsults: Record<number, RunStatus>;
-  /** Every consult runId seen this session — writer LogPanel excludes these. */
   consultIds: string[];
-  /** Stable run ownership used to keep workspace transcripts isolated after a run ends. */
   runWorkspaceIds: Record<string, number>;
-  /** Browser-local work tab that launched or adopted each run. */
   runTabIds: Record<string, string>;
-  /** Provider session announced by each run, retained across reconnect replay. */
   runSessionIds: Record<string, string>;
-  /** Provider-native conversations retained independently in each work tab. */
   tabSessions: Record<string, Partial<Record<ProviderId, { sessionId: string; workspaceId: number; startedAt?: string }>>>;
-  /** Last completed research run in each browser-local work tab. */
   lastConsultsByTab: Record<string, RunStatus>;
-  /** Requests accepted by the socket that have not produced a run yet. */
   pendingLaunches: PendingLaunch[];
-  /** Launch failures keyed by the browser-local tab that submitted them. */
   launchFailuresByTab: Record<string, string>;
-  /** Unanswered decision decks, keyed by run id. */
   inputRequests: Record<string, PendingAgentInput>;
-  /** Advances whenever durable operations/prompt data should be re-read. */
   operationsRevision: number;
 }
 
@@ -123,8 +108,6 @@ function replayInputRequests(base: Record<string, PendingAgentInput>, events: No
   return next;
 }
 
-/** The transcript line that stands in for a run's instruction. */
-/** Runs given a saved work item link to it, so its markdown can be previewed. */
 function sourceWorkItem(source: RunSource): PromptWorkItem | undefined {
   return source.type === "saved" || source.type === "wrapup"
     ? { id: source.promptId, key: source.promptKey, title: source.title }
@@ -209,9 +192,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
     }
 
     case "connection":
-      // A dropped socket must not leave the UI asserting a run is live — but it
-      // is not evidence the run stopped, either. The next `hello` is what
-      // settles which runs still exist.
       if (action.value === "disconnected" && state.runs.length > 0) {
         const lastExecute = [...state.runs].reverse().find((run) => run.role === "execute");
         const lastConsultLive = [...state.runs].reverse().find((run) => run.role === "consult");
@@ -250,8 +230,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       };
 
     case "clear":
-      // Only drops transcript lines from runs that have finished; clearing the
-      // log must not erase the run you are currently watching.
       const lastConsultsByTab = { ...state.lastConsultsByTab };
       if (action.tabId !== undefined) delete lastConsultsByTab[action.tabId];
       return {
@@ -265,9 +243,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       };
 
     case "claim_run": {
-      // "Open in Chat" from the pipeline: the run's own tab takes it even if
-      // another tab adopted it first, so the conversation lands where the link
-      // pointed.
       if (state.runTabIds[action.runId] === action.tabId) return state;
       return { ...state, runTabIds: { ...state.runTabIds, [action.runId]: action.tabId } };
     }
@@ -351,10 +326,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
       const message = action.message;
       switch (message.kind) {
         case "hello": {
-          // Rebuild the transcript of everything still running, and keep lines
-          // from runs that have already finished. Doing it this way makes
-          // `hello` idempotent, so a reconnect mid-run repairs the log rather
-          // than duplicating it.
           const liveIds = new Set(message.activeRuns.map((run) => run.runId));
           const finished = state.items.filter((item) => !liveIds.has(item.runId));
           let replayed: LogItem[] = [];
@@ -369,8 +340,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
             });
             for (const event of snapshot.events) replayed = applyEvent(replayed, event);
           }
-          // A hello is authoritative for live runs. Requests whose process
-          // vanished while the socket was down cannot still be answered.
           let inputRequests = Object.fromEntries(Object.entries(state.inputRequests).filter(([runId]) => liveIds.has(runId)));
           for (const snapshot of message.activeRuns) inputRequests = replayInputRequests(inputRequests, snapshot.events);
           return {
@@ -411,8 +380,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           return { ...state, providers: message.providers };
 
         case "settings_updated":
-          // Another tab (or this one) changed provider settings: re-detected
-          // providers without a reload.
           return { ...state, providers: message.providers };
 
         case "operations_changed":
@@ -426,7 +393,6 @@ function reducer(state: ConsoleState, action: Action): ConsoleState {
           const pendingLaunches = settleAcceptedRequest(state.pendingLaunches, acceptedRequestId);
           const launchFailuresByTab = { ...state.launchFailuresByTab };
           if (action.tabId !== undefined) delete launchFailuresByTab[action.tabId];
-          // `hello` may already have replayed this run; still settle its pending request.
           if (state.runs.some((run) => run.runId === message.runId)) {
             return { ...state, pendingLaunches, launchFailuresByTab };
           }
@@ -567,16 +533,9 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 5000;
 
 interface HydraApi extends ConsoleState {
-  /**
-   * The execute writer for single-run UI. Prefer execute so a consult cannot
-   * hide a writer; the shell attention summary counts consult-only runs.
-   */
   run: RunStatus | null;
-  /** Transcript lines belonging to one run. */
   itemsFor(runId: string): LogItem[];
-  /** Transcript lines belonging to one workspace, including completed runs. */
   itemsForWorkspace(workspaceId: number): LogItem[];
-  /** Transcript lines launched from one browser-local work tab. */
   itemsForTab(tabId: string): LogItem[];
   startRun(
     workspaceId: number,
@@ -601,18 +560,14 @@ interface HydraApi extends ConsoleState {
     question: string,
     model: string | null,
   ): boolean;
-  /** Starts a server-side agent verification of a suite, or one work item inside it. */
   verifySuite(suiteId: number, provider: ProviderId, model: string | null, promptId?: number | null): boolean;
-  /** Stops a run by id, or the primary run when called with no argument. */
   interrupt(runId?: string): boolean;
   answerInput(runId: string, requestId: string, answers: Record<string, AgentInputAnswer>): boolean;
   clearLog(): void;
   clearWorkspaceLog(workspaceId: number): void;
   clearTabLog(tabId: string): void;
-  /** Rebuild a persisted custom conversation in its original Chat tab. */
   restoreThread(tabId: string, sessions: AgentSession[]): void;
   claimWorkspaceRuns(tabId: string, workspaceId: number): void;
-  /** Moves one run into a tab (a pipeline run opened from its "Open in Chat" link). */
   claimRun(tabId: string, runId: string): void;
   dismissLaunchFailure(tabId: string): void;
   refreshProviders(): Promise<void>;
@@ -620,15 +575,6 @@ interface HydraApi extends ConsoleState {
 
 const HydraContext = createContext<HydraApi | null>(null);
 
-/**
- * Holds the single WebSocket for the whole app.
- *
- * This lives in the root layout, which the App Router preserves across
- * navigation, so moving between Console, Operations and Workspaces no longer
- * tears down the socket and throws away the transcript. Previously each page
- * called this hook itself: every navigation opened a new connection that
- * started with an empty log and reported "idle" while an agent was mid-run.
- */
 export function HydraProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const socketRef = useRef<WebSocket | null>(null);
@@ -646,7 +592,6 @@ export function HydraProvider({ children }: { children: ReactNode }) {
     return url.toString();
   }, []);
 
-  // Populate the switcher even if the socket never comes up.
   const refreshProviders = useCallback(async () => {
     try {
       const response = await apiFetch(new URL("/api/providers?refresh=1", SERVER_URL), {
@@ -656,7 +601,6 @@ export function HydraProvider({ children }: { children: ReactNode }) {
       const body = (await response.json()) as { providers: ProviderInfo[] };
       dispatch({ type: "providers", providers: body.providers });
     } catch {
-      // The socket's `hello` is the other path to this data.
     }
   }, []);
 
@@ -701,7 +645,6 @@ export function HydraProvider({ children }: { children: ReactNode }) {
           if (message.kind === "settings_updated") window.dispatchEvent(new Event("hydra.settings-updated"));
           dispatch({ type: "server", message, tabId, requestId });
         } catch {
-          // Ignore frames we cannot parse rather than tearing down the socket.
         }
       };
 

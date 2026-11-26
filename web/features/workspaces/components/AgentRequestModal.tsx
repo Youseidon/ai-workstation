@@ -12,14 +12,9 @@ interface Props {
   mode?: AgentRequestMode;
   onClose(): void;
   onProposalOpened(key: string): void;
-  /** Shown for a new program: skip the agent and start from an empty program. */
   onCreateEmptyProgram?(): void;
 }
 
-/**
- * Asking an agent for anything in the workspace: an answer (shown here), or a
- * proposal (handed off to the proposals modal for review).
- */
 export function AgentRequestModal({ serverUrl, tree, target, mode, onClose, onProposalOpened, onCreateEmptyProgram }: Props) {
   const newProgram = target.kind === "new-program";
   return (

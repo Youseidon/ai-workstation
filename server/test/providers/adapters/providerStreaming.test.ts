@@ -55,8 +55,6 @@ function fixture(provider: ProviderId): Fixture {
     const mapper = new GrokMapper();
     return { thinking: () => mapper.map({ type: "thought", data: "Considering" }), first: () => mapper.map({ type: "text", data: head }), second: () => mapper.map({ type: "text", data: tail }), final: () => mapper.map({ type: "end", text: answer }) };
   }
-  // These routed delta envelopes come from KiloStreamMapper's native SSE
-  // consumer, exercised separately by the subprocess integration suite.
   const mapper = new KiloMapper();
   const chunk = (type: string, text: string, id = "m") => mapper.map({ type, sessionID: "ses", part: { id, text } });
   return { thinking: () => chunk("reasoning_delta", "Considering", "reason"), first: () => chunk("text_delta", head), second: () => chunk("text_delta", tail), final: () => [...chunk("text", answer), ...mapper.finish(0)] };

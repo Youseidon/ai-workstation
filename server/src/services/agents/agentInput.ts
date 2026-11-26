@@ -22,7 +22,6 @@ function pruneCompleted(): void {
 const clean = (value: unknown, max: number): string =>
   typeof value === "string" ? value.trim().slice(0, max) : "";
 
-/** Validates the deliberately small format accepted from every provider. */
 export function normalizeAgentInputRequest(input: Record<string, unknown>): AgentInputRequestPayload {
   const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
   if (rawQuestions.length === 0 || rawQuestions.length > 8) {

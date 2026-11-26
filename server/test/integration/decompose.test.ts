@@ -1,7 +1,3 @@
-/**
- * Re-decompose appends children; title collisions refuse without inserting.
- * Claims from docs/pipeline-redesign/prompts/07-decompose.md.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +84,6 @@ test("re-decompose appends .8 and .9; existing children stay put", () => {
       ["S6-08.1", "S6-08.2", "S6-08.3", "S6-08.4", "S6-08.5", "S6-08.6", "S6-08.7"],
     );
 
-    // Mix DONE and SKIPPED so openChildren treats them as closed.
     for (let i = 0; i < firstBatch.length; i += 1) {
       const child = firstBatch[i]!;
       if (i % 2 === 0) {
@@ -126,7 +121,6 @@ test("re-decompose appends .8 and .9; existing children stay put", () => {
 
     const all = childrenOf(ctx.workspace.id, ctx.prompt.id);
     assert.equal(all.length, 9);
-    // First seven untouched: same ids, keys, titles, and closed statuses.
     for (let i = 0; i < 7; i += 1) {
       assert.equal(all[i]!.id, firstBatch[i]!.id);
       assert.equal(all[i]!.externalKey, firstBatch[i]!.externalKey);
@@ -192,7 +186,6 @@ test("title conflict refuses with decompose_title_conflict and inserts nothing",
     assert.match(conflicts[0]!.existing, new RegExp(`${existingTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(`));
     assert.match(conflicts[0]!.existing, /S6-08\.1/);
 
-    // Nothing inserted; parent stays IN_PROGRESS.
     assert.equal(childrenOf(ctx.workspace.id, ctx.prompt.id).length, 3);
     assert.equal(workspaces.promptOutcome(ctx.prompt.id).status, "IN_PROGRESS");
   } finally {

@@ -18,6 +18,10 @@ import {
   SidebarRow,
 } from "@/components/layout/SidebarCollection";
 import { Button } from "@/components/ui/Button";
+import { useIdentity } from "@/contexts/identity";
+import { useProviderSetup } from "../hooks/useProviderSetup";
+import { ProviderSetupDialog } from "./ProviderSetupDialog";
+import { providerInstalled } from "../lib/configuration";
 import { useHydra } from "@/hooks/useHydra";
 import { useModelSelection } from "@/features/providers/hooks/useModelSelection";
 import { useProviderUsage } from "@/features/providers/hooks/useProviderUsage";
@@ -45,7 +49,6 @@ import {
 } from "./ProviderConfigurationDialog";
 import styles from "./configuration.module.css";
 
-/** Configuration owns settings; detailed live monitoring stays in Live fleet. */
 export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
   const {
     providers,
@@ -56,6 +59,14 @@ export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
     runTabIds,
     refreshProviders,
   } = useHydra();
+  const { user } = useIdentity();
+  const setup = useProviderSetup(refreshProviders);
+  const [settingUp, setSettingUp] = useState<ProviderId | null>(null);
+  const setupProvider = providers.find((provider) => provider.id === settingUp);
+  const openSetup = (id: ProviderId) => {
+    setSettingUp(id);
+    void setup.load(id);
+  };
   const stopCenter = useStopCenter();
   const settings = useSettings(SERVER_URL);
   const credits = useProviderUsage(true);
@@ -113,8 +124,6 @@ export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
       await refreshProviders();
       setNotice(message);
     }
-    // Native disabled controls lose focus during a save. Keep keyboard users at
-    // their control (or the newly selected radio) unless they have moved elsewhere.
     requestAnimationFrame(() => {
       if (document.activeElement !== document.body) return;
       const target =
@@ -127,8 +136,6 @@ export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
     setDetecting(true);
     setDetectError(null);
     try {
-      // The shared refresher intentionally swallows errors. Check this explicit operator action
-      // first, so failed detection cannot be presented as a healthy empty fleet.
       const response = await apiFetch(
         new URL("/api/providers?refresh=1", SERVER_URL),
         { cache: "no-store" },
@@ -368,6 +375,17 @@ export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
                   <ProviderConfigurationRow
                     key={info.id}
                     info={info}
+                    onSetup={() => openSetup(info.id)}
+                    canMaintain={user.ownsLegacyData}
+                    maintenanceBusy={
+                      updating.includes(info.id) ||
+                      setup.sessions[info.id]?.state === "installing"
+                    }
+                    onMaintain={() => {
+                      if (providerInstalled(info))
+                        void update(info.id, info.label);
+                      else openSetup(info.id);
+                    }}
                     enabled={enabledFor(info.id)}
                     connected={connected && detectError === null}
                     disabled={disabled}
@@ -493,11 +511,34 @@ export function AgentsView({ draftState }: { draftState: SettingsDraftState }) {
           checkedAt={credits.checkedAt}
           onRefreshUsage={() => void credits.refresh(true)}
           updating={updating.includes(selected.id)}
+          canMaintain={user.ownsLegacyData}
+          onInstall={() => {
+            setConfiguring(null);
+            openSetup(selected.id);
+          }}
           onUpdate={() => void update(selected.id, selected.label)}
           agent={agentState(selected, runs, items, lastRun)}
           runTabIds={runTabIds}
           onStop={(runId) => stopCenter.open({ runId })}
           notice={notice}
+        />
+      )}
+      {setupProvider && (
+        <ProviderSetupDialog
+          provider={setupProvider}
+          session={setup.sessions[setupProvider.id]}
+          canInstall={user.ownsLegacyData}
+          connected={connected}
+          draftState={draftState}
+          onInstall={() => void setup.install(setupProvider.id)}
+          onRetry={() => void setup.load(setupProvider.id)}
+          onCheck={refreshProviders}
+          onConfigure={() => {
+            setConfiguring(setupProvider.id);
+            setTab("settings");
+            setSettingUp(null);
+          }}
+          onClose={() => setSettingUp(null)}
         />
       )}
     </div>

@@ -3,14 +3,6 @@
 import type { HumanInterventionStep } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 
-/**
- * An approval point, drawn on the arrow between two stations rather than as a
- * card of its own. It is a fixed-size marker, so neither the question nor the
- * answer can stretch the flowchart; both live in the item's Conversation tab.
- *
- * Amber and pulsing while it waits, green once answered. Hover shows the first
- * lines of what it asks; click opens the conversation to answer it.
- */
 export function HumanGate({
   step,
   selected,
@@ -43,7 +35,7 @@ export function HumanGate({
         </span>
       </button>
 
-      {/* Hover preview: three lines at most, so it can never become a wall of text. */}
+      { }
       <div
         role="tooltip"
         className={cn(

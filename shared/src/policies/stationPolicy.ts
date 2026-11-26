@@ -1,4 +1,3 @@
-/** Capabilities belong to the station, independently of provider and model. */
 export interface StationPolicy {
   version: 1;
   editFiles: boolean;
@@ -21,7 +20,6 @@ export function validateStationPolicy(value: unknown): StationPolicy {
     verification: p.verification as StationPolicy["verification"], verifier: p.verifier as string | null };
 }
 
-/** Narrow compatibility bridge for existing stations; explicit capabilities win. */
 export function resolveStationPolicy(content: string, explicit?: StationPolicy | null): StationPolicy {
   if (explicit) return validateStationPolicy(explicit);
   const deferred = /\bNo verification execution in this station\b/i.test(content);

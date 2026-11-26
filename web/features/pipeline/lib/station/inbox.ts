@@ -5,11 +5,9 @@ import { needsYou } from "./tree";
 export interface InboxEntry {
   suite: OperationsSuite;
   item: OperationsPrompt;
-  /** What it is waiting for, one line. */
   ask: string;
 }
 
-/** Every item across these suites that is waiting on the operator, oldest first. */
 export function collectInbox(suites: OperationsSuite[]): InboxEntry[] {
   const entries: InboxEntry[] = [];
   const walk = (suite: OperationsSuite, list: OperationsPrompt[]) => {

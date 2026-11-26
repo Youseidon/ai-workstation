@@ -35,7 +35,6 @@ function writeExpanded(ids: Iterable<number>): void {
   try {
     userLocalStorage.setItem(EXPANDED_KEY, JSON.stringify([...ids]));
   } catch {
-    // Storage is a convenience; the list still works without it.
   }
   window.dispatchEvent(new Event(EXPANDED_EVENT));
 }
@@ -49,10 +48,6 @@ function subscribeExpanded(onChange: () => void): () => void {
   };
 }
 
-/**
- * The dense view of the same items the flowchart draws: one row each, nested
- * sub-steps, filterable. Rows only select; actions live in the item panel.
- */
 export function WorkList({
   items,
   filter,
@@ -65,11 +60,9 @@ export function WorkList({
   items: OperationsPrompt[];
   filter: WorkFilter;
   selectedId: number | null;
-  /** The item the live run is on. */
   currentId: number | null;
   onFilterChange(filter: WorkFilter): void;
   onSelect(promptId: number): void;
-  /** Opens an item's settings in the studio; no pencil without it. */
   onConfigure?(promptId: number): void;
 }) {
   const raw = useSyncExternalStore(subscribeExpanded, readExpandedRaw, () => "[]");
@@ -77,7 +70,6 @@ export function WorkList({
   const visible = useMemo(() => filterPromptTree(items, filter), [items, filter]);
   const counts = useMemo(() => countFilters(items), [items]);
 
-  // Open the ancestors of a selected sub-step so the selection is visible.
   useEffect(() => {
     if (selectedId === null) return;
     const ancestors = ancestorIdsForPrompt(items, selectedId);

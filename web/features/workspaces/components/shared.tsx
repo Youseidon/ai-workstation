@@ -5,10 +5,6 @@ import type { ProgramRecord, PromptRecord } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 import { useToast } from "../../../components/ui/Toast";
 
-/**
- * Runs a mutation with a busy flag, a toast on failure, and a refresh after.
- * Every workspace modal mutates the same tree, so they share this.
- */
 export function useAct(refresh: () => Promise<unknown>) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -32,7 +28,6 @@ export function useAct(refresh: () => Promise<unknown>) {
   return { act, busy };
 }
 
-/** Work items in a program, and how many are done or blocked. */
 export function programProgress(program: ProgramRecord) {
   const prompts = program.suites.flatMap((suite) => suite.prompts);
   return {

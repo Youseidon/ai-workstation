@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * What "done" means here, and how each criterion currently stands.
- *
- * The panel is the same in two places on purpose. On a work item it shows the
- * live results and can run the commands; on a scope (a suite, a workspace) it
- * edits the criteria that everything underneath inherits. Two panels would have
- * drifted into disagreeing about what a criterion is, which is the failure the
- * status catalog already had once.
- *
- * The distinction it works hardest to keep visible is between FAILED and
- * UNVERIFIED. "It was checked and it did not pass" and "nothing has checked it"
- * send an operator to completely different places, and collapsing them is what
- * makes a verdict untrustworthy — the same reason UNREPORTED exists as a status
- * separate from FAILED.
- */
-
 import { useCallback, useEffect, useState } from "react";
 import {
   DOD_COMMAND_TIMEOUT_DEFAULT_MS,
@@ -42,7 +26,6 @@ import { cn } from "@/lib/cn";
 const RESULT_TONE = { PASSED: "success", FAILED: "danger", UNVERIFIED: "caution" } as const;
 const RESULT_LABEL = { PASSED: "passed", FAILED: "failed", UNVERIFIED: "not checked" } as const;
 
-/** Who said so. A recorded exit code and a model's opinion are not the same claim. */
 const SOURCE_LABEL: Record<string, string> = {
   RUNNER: "this server ran it",
   REVIEWER: "a reviewer judged it",
@@ -167,7 +150,6 @@ function CriterionRow({
   onRemove,
 }: {
   criterion: DodCriterion;
-  /** Absent on a scope editor, where there is no work item to have results. */
   result: DodCriterionResult | null;
   editable: boolean;
   onSave: (patch: Record<string, unknown>) => Promise<void>;
@@ -177,7 +159,8 @@ function CriterionRow({
   const [draft, setDraft] = useState<Draft>(() => draftOf(criterion));
   const [busy, setBusy] = useState(false);
   const [showOutput, setShowOutput] = useState(false);
-  useEffect(() => setDraft(draftOf(criterion)), [criterion]);
+  const [draftSource, setDraftSource] = useState(criterion);
+  if (draftSource !== criterion) { setDraftSource(criterion); setDraft(draftOf(criterion)); }
 
   if (editing) {
     return (
@@ -233,8 +216,7 @@ function CriterionRow({
           {result.evidence}
           {result.source !== null && <span> · {SOURCE_LABEL[result.source] ?? result.source}</span>}
           {result.createdAt !== null && <span> · {new Date(result.createdAt).toLocaleString("en-GB", { hour12: false })}</span>}
-          {/* The command's own output, not a summary of it. An operator
-              debugging a refused close needs the compiler's words. */}
+          { }
           {result.output !== "" && (
             <button type="button" className="ml-2 text-accent underline decoration-accent/40 underline-offset-2" onClick={() => setShowOutput(!showOutput)}>
               {showOutput ? "hide output" : "show output"}
@@ -249,11 +231,6 @@ function CriterionRow({
   );
 }
 
-/**
- * `promptId` turns the panel into the live view for one work item: results,
- * inheritance, and a button that runs the commands. Without it, the panel edits
- * one scope's criteria and nothing else.
- */
 export function DefinitionOfDonePanel({
   scope,
   scopeId,
@@ -296,18 +273,12 @@ export function DefinitionOfDonePanel({
       onChanged?.();
       toast.success(done);
     } catch (error) {
-      // The server refuses a criterion it could not run, by field. Saying which
-      // beats "something went wrong" — that is the whole point of validating at
-      // the moment the criterion is written rather than at 3am.
       toast.error("That change was refused", error instanceof Error ? error.message : undefined);
     }
   };
 
   if (definition === null) return <p className="text-xs text-fg-dim">Loading the definition of done…</p>;
 
-  // Criteria are inherited whole from the nearest scope that has any, so
-  // editing is only ever offered where they actually live. Anything else would
-  // be a form that edits a different work item's rules without saying so.
   const editingScope = promptId === undefined ? { scope, scopeId } : (definition.inheritedFrom ?? { scope: "prompt" as const, scopeId: promptId });
   const inherited = promptId !== undefined && definition.inheritedFrom !== null && definition.inheritedFrom.scope !== "prompt";
   const resultFor = (criterion: DodCriterion): DodCriterionResult | null =>
@@ -370,9 +341,6 @@ export function DefinitionOfDonePanel({
               result={resultFor(criterion)}
               editable={!inherited || own !== null}
               onSave={(patch) => act(
-                // An inherited criterion is edited where it lives, not copied
-                // down: silently forking it would leave two rules that look the
-                // same and diverge the moment either is changed.
                 workspaceApi.patchDodCriterion(SERVER_URL, definition.inheritedFrom?.scope ?? editingScope.scope, definition.inheritedFrom?.scopeId ?? editingScope.scopeId, criterion.id, patch),
                 "Criterion updated",
               )}

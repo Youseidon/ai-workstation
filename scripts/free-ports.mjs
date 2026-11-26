@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Free TCP ports so `npm run serve` can bind 4000 (server) and 3000 (web).
- * Uses `ss` / `fuser` — `lsof` misses some Node listeners (e.g. next-server).
- */
 import { execSync } from "node:child_process";
 
 const ports = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n) && n > 0);
@@ -26,7 +22,6 @@ function pidsFromSs(port) {
 
 function pidsFromFuser(port) {
   try {
-    // PIDs go to stdout; the "N/tcp:" label goes to stderr.
     const out = execSync(`fuser ${port}/tcp`, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],

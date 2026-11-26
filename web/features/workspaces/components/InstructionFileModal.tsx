@@ -22,7 +22,6 @@ interface Props {
   value: string;
   updatedAt: string;
   busy: boolean;
-  /** Pending proposals against this file. */
   pendingProposals: number;
   onClose(): void;
   onSave(content: string): Promise<boolean>;
@@ -30,7 +29,6 @@ interface Props {
   onReviewProposals(): void;
 }
 
-/** One instruction file, read rendered and edited as source. */
 export function InstructionFileModal({ field, value, updatedAt, busy, pendingProposals, onClose, onSave, onPropose, onReviewProposals }: Props) {
   const dialogs = useDialogs();
   const name = INSTRUCTION_FILE_NAMES[field];
@@ -38,7 +36,6 @@ export function InstructionFileModal({ field, value, updatedAt, busy, pendingPro
   const [mode, setMode] = useState<"view" | "edit">(value.trim() === "" ? "edit" : "view");
   const dirty = draft !== value;
 
-  /** Leaving with unsaved text asks first; everything else just closes. */
   const leave = async (then: () => void) => {
     if (dirty) {
       const confirmed = await dialogs.confirm({

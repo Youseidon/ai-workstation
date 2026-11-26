@@ -11,20 +11,10 @@ import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { StatusCatalogPanel } from "./StatusCatalogPanel";
 import { CONTROL_LABEL, TRANSITIONS, type PipelineStatusView } from "../lib/status";
 
-/**
- * Where a chip or link wants to take the operator. "station" means the
- * selected step's own settings; the rest are pipeline-wide studio sections.
- */
 export type InspectorTab = "station" | "history" | "verification" | "policy" | "budgets" | "statuses" | "definition";
 
-/** The pipeline-wide rule sections of the Pipeline studio. */
 export type RulesSection = "policy" | "budgets" | "statuses" | "definition";
 
-/**
- * The rules half of the Pipeline studio: house policy, budgets, the status
- * catalog and the suite's definition of done. One section at a time, each
- * with room to breathe instead of a tab strip squeezed into the side panel.
- */
 export function PipelineInspector({
   section,
   status,
@@ -43,9 +33,7 @@ export function PipelineInspector({
   suiteId?: number | null;
   onStatusesChanged?(): void;
   onSettingsSaved?(): void;
-  /** Jump from the transitions table into the station editor. */
   onEditStationFromSummary?(): void;
-  /** Suite fallbacks live with the suite's agents. */
   onEditAgents?(): void;
 }) {
   const [showTransitions, setShowTransitions] = useState(false);

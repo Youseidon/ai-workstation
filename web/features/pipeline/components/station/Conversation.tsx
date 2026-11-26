@@ -23,7 +23,6 @@ export function Conversation({
   item: OperationsPrompt;
   activity: PromptActivity | null;
   busy: boolean;
-  /** Bump to move keyboard focus into the composer. */
   focusSignal: number;
   onAnswer(text: string): Promise<boolean>;
   onNote(text: string): Promise<boolean>;
@@ -35,7 +34,6 @@ export function Conversation({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  // A draft belongs to the item it was written for.
   const [draftFor, setDraftFor] = useState(item.prompt.id);
   if (draftFor !== item.prompt.id) {
     setDraftFor(item.prompt.id);
@@ -50,7 +48,6 @@ export function Conversation({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [thread.length, item.prompt.id]);
 
-  // Grow with the text up to a cap, then scroll inside. Never pushes the layout.
   useLayoutEffect(() => {
     const element = textareaRef.current;
     if (element === null) return;

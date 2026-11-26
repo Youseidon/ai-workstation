@@ -9,16 +9,11 @@ import { useWorkspace } from "@/contexts/workspaceContext";
 import { workspaceApi } from "@/api/workspacesApi";
 
 function shortenPath(path: string): string {
-  // Prefer a tidy trailing segment; full path stays in the title attribute.
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   if (parts.length <= 2) return path;
   return `…/${parts.slice(-2).join("/")}`;
 }
 
-/**
- * Sidebar identity plate for the current workspace. Click to switch projects;
- * every page scopes itself to whatever is selected here.
- */
 export function WorkspaceBeacon({ collapsed }: { collapsed: boolean }) {
   const { workspaces, workspace, workspaceId, status, setWorkspaceId } = useWorkspace();
   const [open, setOpen] = useState(false);

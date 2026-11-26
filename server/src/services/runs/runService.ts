@@ -36,7 +36,6 @@ export class ProviderUnavailableError extends WorkspaceError {
   }
 }
 
-/** Saved, custom, or clarification execute. */
 export async function startExecute(args: StartExecuteArgs): Promise<{ runId: string }> {
   const workspaceId = args.workspaceId;
   const providerId = args.provider;
@@ -46,8 +45,6 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   const question = args.question;
   const history = args.threadId && !args.freshContext ? workspaces.conversationHistory(args.workspaceId, args.threadId) : [];
   const latest = history.at(-1);
-  // A native writable session is reusable only for the immediately preceding
-  // turn with the same provider and permission class. Otherwise hand off history.
   let resumeSessionId = !args.threadId ? args.resumeSessionId?.trim() || null : latest?.provider === args.provider && latest.role === "execute" && latest.sessionId === args.resumeSessionId
     ? args.resumeSessionId?.trim() || null : null;
   const threadId = args.threadId?.trim() || null;
@@ -120,16 +117,8 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
   if (!workspace.workDirectoryExists) {
     throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
   }
-  // Saved work-item runs claim a clean repository before the run row exists,
-  // whether an operator starts them directly or a pipeline starts them. A tree
-  // that cannot take a managed writer is refusing the start, not a run failure:
-  // done the other way round, the refusal was recorded as a crashed run, the
-  // work item went FAILED, and the scheduler blamed whichever provider it had
-  // just picked.
   let capture: PreparedChangeCapture | null = null;
   const openCapture = (): PreparedChangeCapture => {
-    // The provider CLI reads these off disk before it reads anything we send,
-    // so they are in place — and ignored — before the tree is inspected.
     materialize(workspace);
     return prepareChangeCapture(workspace.workDirectory, plannedRunId);
   };
@@ -171,19 +160,7 @@ export async function startExecute(args: StartExecuteArgs): Promise<{ runId: str
       activeContextRunId = plannedRunId;
       workspaces.recordExecutionManifest(plannedRunId,instructionHash,permissionKey);
       const depth = workspaces.decomposeDepth(promptId);
-      // One command with this run's credentials already in it, rather than a
-      // curl the model has to assemble. Per-run rather than per-process: the
-      // Claude adapter runs in this process, so credentials on process.env
-      // would be shared by every concurrent run.
       executeShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port,...(managedEffect?{generation:managedEffect.generation,planRevision:managedEffect.revision}:{}) });
-      // The context is inlined rather than fetched. Handing it over as a tool
-      // result cost a turn before any work started, put it where it could not
-      // serve as a cached prompt prefix, and led agents to fetch it more than
-      // once and re-read a saved copy — three copies of the same text in one
-      // transcript. The endpoint stays for refreshes and for the Progress API.
-      // A resumed session already holds the work item; what it lacks is the
-      // note and this run's credentials (the old launcher was revoked with
-      // the old run).
       if (redirect !== null) resolvedPrompt = [
         "# Message from the operator",
         "",
@@ -262,12 +239,7 @@ ${resolvedPrompt}`;
 ${conversationContext(history)}`;
   let clarificationAnswer = "";
   let executionAnswer = "";
-  // A clarification writes nothing, so it claims no repository — but its
-  // provider still reads the instruction files off disk.
   if (capture === null) materialize(workspace);
-  // The run row exists from here on, so a start that fails has to close it:
-  // left STARTING, it holds the work item IN_PROGRESS and the repository claim
-  // until the server restarts.
   const abandonStart = (): void => {
     releaseChangeCapture(plannedRunId);
     if (activeContextRunId === null) return;
@@ -323,14 +295,6 @@ ${conversationContext(history)}`;
           try { changesNeedCommit=refreshChangeCapture(activeContextRunId).state==="NEEDS_COMMIT"; }
           catch(error){log.warn(`could not finalize changes for ${activeContextRunId}`,error);}
         }
-        // A budget stop is not a verdict on the work, and the agent that just hit
-        // it is the only cheap source of "what is done and what remains". Before
-        // anything concludes anything, it gets a short turn to say so — on the
-        // same provider session, so it does not pay to re-read what it just read.
-        //
-        // The status transition is held back for exactly as long as that takes:
-        // applying it here would move the item out of IN_PROGRESS and the wrap-up
-        // run's own post would be refused as an invalid transition.
         if (managedEffect && changesNeedCommit && capture) {
           try { checkpointRun(runId,"Preserve supervised worker checkpoint",provider,model); changesNeedCommit=false; }
           catch(error) { log.warn(`supervised checkpoint failed for ${runId}`,error); }
@@ -346,9 +310,6 @@ ${conversationContext(history)}`;
         if (activeContextRunId !== null) {
           workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null });
           runContexts.complete(activeContextRunId);
-          // The launcher holds this run's token. The credential is collapsed to a
-          // short TTL above, but a live-looking token sitting in tmp after its run
-          // is over is not something to leave lying around.
           removeAgentShim(activeContextRunId);
           activeContextRunId = null;
         }
@@ -364,26 +325,15 @@ ${conversationContext(history)}`;
         if (mode === "execute") proposeFromWorkingTree(endedWorkspaceId, runId);
         const tellPipeline = () => {
           if (mode !== "execute" || endedPromptId === undefined) return;
-          // Always the *source* run id: the scheduler's `currentRunId` guard keys
-          // on the run it started, and the wrap-up's own end must not fire this a
-          // second time.
           void pipelineScheduler
             .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
             .catch((error:unknown)=>log.error(`pipeline advance failed after run ${runId}`,error));
         };
         if (wrapUp === null) { tellPipeline(); return; }
         void (async () => {
-          // A cooling source provider cannot resume its session; pick another
-          // available provider for a fresh short turn, or skip the wrap-up and
-          // continue without notes (prompt 05).
           let wrapProvider = provider;
           let wrapModel = model;
           let wrapSession = wrapUp.sessionId;
-          // A run its provider cut off — out of allowance, rate-limited, signed
-          // out — cannot be resumed for a wrap-up either: the turn dies on the
-          // same error two seconds in and the tree stays uncommitted. The
-          // scheduler cools the provider when it hears about this run; that is
-          // after the wrap-up, so it is said here first.
           if (state === "error") {
             const failure = classifyFailure({ errorText: workspaces.runFailureFacts(runId).errorText, toolCalls: metrics.toolCalls, startFailed: false });
             if (failure.class === "transient_provider") markCooling(provider, failure.id ?? "died_before_work", undefined, failure.because);
@@ -397,9 +347,6 @@ ${conversationContext(history)}`;
               return;
             }
             wrapProvider = next.id;
-            // The model detection resolved for this provider, not null: under
-            // a restricted model tier with no model configured, null resolves
-            // to nothing and the wrap-up dies before it launches.
             wrapModel = next.model;
             wrapSession = null;
             log.info(`wrap-up fallback after run ${runId}: ${provider}→${wrapProvider}`);
@@ -416,17 +363,10 @@ ${conversationContext(history)}`;
           await started.done;
         })()
           .catch((error: unknown) => {
-            // The provider is gone, or the run could not be recorded. The item
-            // must land exactly where it would have without this feature rather
-            // than sitting IN_PROGRESS forever waiting for a turn that is not
-            // coming.
             log.error(`wrap-up could not start after run ${runId}`, error);
             workspaces.applyDeferredRunEnd(runId);
           })
           .finally(() => {
-            // A wrap-up that ran released this itself. One that was skipped or
-            // never started did not, and the claim would refuse every later
-            // writer in this repository as `git_repository_busy`.
             releaseChangeCapture(runId);
             tellPipeline();
           });
@@ -436,8 +376,6 @@ ${conversationContext(history)}`;
     abandonStart();
     throw error;
   }
-  // Marked RUNNING before the announcement, so a client that reacts to
-  // run_started by refetching never reads a stale STARTING row.
   if (activeContextRunId !== null) workspaces.markAgentRunRunning(handle.runId);
   runHub.start({
     clientRequestId: args.clientRequestId,
@@ -456,22 +394,14 @@ ${conversationContext(history)}`;
   return { runId: handle.runId };
 }
 
-/* -------------------------------------------------------------------------- */
-/* The wrap-up turn                                                           */
-/* -------------------------------------------------------------------------- */
-
-/** What a wrap-up turn is allowed to spend. Long enough to write, not to work. */
 const WRAP_UP_BUDGET = {
   maxToolCalls: 12,
   maxWallClockMs: 4 * 60_000,
-  // Never metered: the run this speaks for already spent the money, and a
-  // wrap-up refused for cost is the one thing worse than no wrap-up at all.
   maxInputTokens: null,
   maxToolOutputBytes: null,
   noProgressToolCalls: null,
 } as const;
 
-/** How much `git status`/`git diff --stat` a fresh-session brief may carry. */
 const WRAP_UP_TREE_BUDGET_BYTES = 8192;
 
 export interface StartWrapUpArgs {
@@ -480,32 +410,14 @@ export interface StartWrapUpArgs {
   sourceRunId: string;
   provider: ProviderId;
   model: string | null;
-  /** The provider session to resume, or null to run a fresh short session. */
   sessionId: string | null;
-  /** The source run's stop reason, quoted to the agent verbatim. */
   stopReason: string;
 }
 
-/**
- * The turn a run gets after its budget stopped it, whose only job is to write
- * down what it learned.
- *
- * 23 execute runs on this install were killed mid-work by a budget. Every one
- * of them was interrupted with no wrap-up, no notes and no status, and the
- * station landed UNREPORTED with the stop reason as its only record — one work
- * item died that way four times in twenty minutes with nothing written to disk.
- * The reviewer and handoff runs sent afterwards to reconstruct what happened
- * have cost ~30 M input tokens. The agent that did the work is the cheapest and
- * best source of "what is done and what remains": it already has the context,
- * and on a resumed session it does not even have to re-read a file.
- */
 export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: string; done: Promise<unknown> }> {
   const workspace = workspaces.get(args.workspaceId);
   const record = workspaces.resolvePrompt(args.workspaceId, args.promptId);
   const plannedRunId = newId("run");
-  // The prompt's own credential scope, on a new run id: the wrap-up posts
-  // against the same work item, and `requireActiveExecuteRun` admits it because
-  // it is a live execute run on that prompt.
   const credential = runContexts.create(plannedRunId, args.workspaceId, args.promptId);
   try {
     workspaces.beginWrapUpRun({
@@ -525,12 +437,6 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
   }
   let answer = "";
   let handle: ReturnType<typeof startRun>;
-  // The run row exists from here on, so a launch that fails has to close it.
-  // Left STARTING it is an active run nothing will ever end: every later start
-  // on this work item was refused `prompt_run_active`, and Resume re-parked the
-  // pipeline on that refusal until the server was restarted. The status is
-  // deferred so the caller's `applyDeferredRunEnd` concludes the item on the
-  // source run, exactly as if this turn had never been attempted.
   try {
     const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
     const resumable = args.sessionId !== null && providerCanResume(args.provider);
@@ -558,9 +464,6 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
       model: args.model,
       preserveModel: true,
       role: "execute",
-      // Same as an execute run. `agent-step` is a shell command talking to
-      // 127.0.0.1, and a read-only sandbox blocks that outright on Codex — a
-      // wrap-up that cannot reach the door has nothing to write with.
       permissionOverride: "inherit",
       stationPolicy: { ...workspaces.stationPolicy(args.promptId), editFiles:false, build:false, generateContracts:false, verification:"deferred" },
       launcherPath: shimPath,
@@ -573,10 +476,6 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
         runHub.event(plannedRunId, event);
       },
       onEnd: (runId, state, metrics) => {
-        // No wrap-up of a wrap-up: if this one trips its own budget it simply
-        // ends, and `finishAgentRun` applies the transition the source run's end
-        // deferred — attributing the *source* run's stop reason, because that is
-        // what stopped the work.
         workspaces.finishAgentRun(runId, state, answer, metrics);
         runContexts.complete(runId);
         removeAgentShim(runId);
@@ -605,33 +504,13 @@ export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: strin
     role: "execute",
     permissionMode: handle.permissionMode,
   });
-  // Handed back rather than only logged: the pipeline is not told about the
-  // source run until this turn has had its say.
   return { runId: handle.runId, done: handle.done.catch((error: unknown) => log.error("wrap-up failed", error)) };
 }
 
-/**
- * Whether this provider can be told to continue its own session.
- *
- * All six installed CLIs can (`cursor-agent --resume=`, `codex exec resume`,
- * the Claude SDK's `resume`, `grok --resume=`, `copilot --resume=`,
- * `kilo run --session`), so this is a list rather than a check — but it is a
- * list so that a provider whose resume flag disappears in an upgrade can be
- * demoted to the fresh-session form in one place instead of failing every
- * wrap-up turn it is given.
- */
 function providerCanResume(provider: ProviderId): boolean {
   return provider === "cursor" || provider === "codex" || provider === "claude" || provider === "grok" || provider === "copilot" || provider === "kilocode";
 }
 
-/**
- * What the working tree looks like right now, for a wrap-up that could not
- * resume the session and therefore has to be told.
- *
- * Captured by the server rather than asked of the agent: a wrap-up turn has 12
- * tool calls, and spending two of them re-discovering what the server already
- * knows is two it cannot spend writing.
- */
 function workingTreeSummary(cwd: string): string {
   const read = (args: string[]): string => {
     try {
@@ -654,15 +533,6 @@ function workingTreeSummary(cwd: string): string {
     : `${text.slice(0, WRAP_UP_TREE_BUDGET_BYTES)}\n… [truncated by the orchestrator]`;
 }
 
-/**
- * The turn itself, in as few words as it can be said.
- *
- * On a resumed session the agent already holds everything: the prompt's whole
- * job is to change what it is doing, not to tell it what it was doing. The
- * fresh-session form adds only what a new session cannot know, and says plainly
- * that it is new so the agent does not claim to have verified something it is
- * reading about for the first time.
- */
 function wrapUpPrompt(args: {
   stopReason: string;
   shimPath: string | null;
@@ -743,7 +613,6 @@ function wrapUpPrompt(args: {
   ].join("\n");
 }
 
-/** Research consult: forced sandbox, no writer lock, no prompt status mutation. */
 export async function startConsult(args: StartConsultArgs): Promise<{ runId: string }> {
   if (args.provider === "cursor") {
     throw new WorkspaceError(422, "consult_not_supported", "Cursor read-only consult isolation is not supported by this adapter.");
@@ -875,24 +744,6 @@ export async function startConsult(args: StartConsultArgs): Promise<{ runId: str
   return { runId: handle.runId };
 }
 
-/**
- * Drafts a program: suites and the work items inside them, for this workspace.
- *
- * The one run in this console that writes work items rather than doing them.
- * It is an ordinary agent run in every other respect — same providers, same
- * budget, same transcript — with two differences that matter:
- *
- *  - It has no work item, so it cannot post a status, a remark or a decompose;
- *    `requireActiveAuthorRun` is a separate door from `requireActiveExecuteRun`
- *    and neither can reach the other's operations.
- *  - Everything it writes lands in `program_draft`, which nothing reads until an
- *    operator applies it. That is the guarantee — not the paragraph in the
- *    prompt asking it not to edit the tree, which is an instruction a model may
- *    drop. It does start with normal permissions, because `agent-step` is a
- *    shell command talking to 127.0.0.1 and a read-only sandbox blocks that
- *    outright on Codex, so it holds the workspace's writer lock for its
- *    duration like any execute run.
- */
 export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<{ runId: string; draft: ProgramDraftRecord }> {
   const workspace = workspaces.get(args.workspaceId);
   if (!workspace.workDirectoryExists) {
@@ -914,9 +765,6 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
   const provider = providerInfo.id;
   const model = resolveProviderModel(providerInfo, args.model);
 
-  // The draft exists before the run does, so a run that dies in its first
-  // second still leaves the operator something to re-run or delete, and so the
-  // agent has somewhere to post from its very first call.
   const existing = args.draftId === undefined ? null : workspaces.programDraft(args.draftId);
   if (existing !== null && existing.workspaceId !== args.workspaceId) {
     throw new WorkspaceError(404, "not_found", "That draft belongs to another workspace");
@@ -948,9 +796,6 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
   try {
     workspaces.attachDraftRun(draft.id, plannedRunId);
   } catch (error) {
-    // The run row exists but nothing will ever write through it. Close it here
-    // rather than leaving a STARTING row that the next boot would report as an
-    // abandoned run.
     workspaces.finishAgentRun(plannedRunId, "error");
     runContexts.revoke(plannedRunId);
     throw error;
@@ -988,9 +833,6 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
       runHub.event(plannedRunId, event);
     },
     onEnd: (runId, state, metrics) => {
-      // Nothing concludes anything here. A draft is not a work item: an author
-      // run that ends without posting leaves a PENDING draft exactly as it
-      // found it, which is the honest record of what happened.
       workspaces.finishAgentRun(runId, state, "", metrics);
       runContexts.complete(runId);
       removeAgentShim(runId);
@@ -1009,19 +851,6 @@ export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<
   return { runId: handle.runId, draft: workspaces.programDraft(draft.id) };
 }
 
-/**
- * Has an agent rewrite CLAUDE.md or AGENTS.md into a proposal.
- *
- * The agent edits the real file in the working tree — that is the copy it can
- * read in context and change with its ordinary tools — and when the run ends
- * the file's contents are stored as the proposal and the file is put back as
- * it was. So, like a program draft, the guarantee is structural: the workspace
- * record, which every later run is written from, only changes on apply.
- *
- * It holds the workspace's writer lock like an author run, and for the same
- * reason: it needs normal permissions to edit a file, and a second writer in
- * the tree could see the half-edited file or have its own edit captured here.
- */
 export async function startInstructionAuthor(args: StartInstructionAuthorArgs): Promise<{ runId: string; proposal: InstructionProposalRecord }> {
   const workspace = workspaces.get(args.workspaceId);
   if (!workspace.workDirectoryExists) {
@@ -1076,9 +905,6 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
     throw error;
   }
 
-  // The file as the tree has it once the stored text is projected, which is
-  // what the run's end puts back. Reworking a proposal starts the agent from
-  // the proposal, not from the stored text it already moved away from.
   materialize(workspace);
   const before = readInstructionFile(workspace.workDirectory, proposal.field);
   const reworking = existing !== null && existing.content !== existing.baseline;
@@ -1137,13 +963,6 @@ export async function startInstructionAuthor(args: StartInstructionAuthorArgs): 
   return { runId: handle.runId, proposal: workspaces.instructionProposal(proposal.id) };
 }
 
-/**
- * Runs an agent verification of a suite, or of one work item inside it.
- *
- * The dossier is built here rather than in the browser, and the run is
- * recorded before it starts, so its events persist and its report survives
- * the page that launched it.
- */
 export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ runId: string }> {
   const providerInfo = await requireAvailableProvider(args.provider);
   const provider = providerInfo.id;
@@ -1169,7 +988,6 @@ export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ ru
     scopePromptId: context.scopePromptId,
   });
 
-  // The agent's closing message is the report; keep the last full one.
   let report = "";
   materialize(workspace);
   const handle = startRun({

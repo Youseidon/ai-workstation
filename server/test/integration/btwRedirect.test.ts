@@ -1,8 +1,3 @@
-/**
- * "Interrupt & deliver now": a `/btw` that stops the pipeline's current run and
- * continues the same provider session with the operator's note, without
- * spending the station's unfinished-continuation allowance.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,8 +27,6 @@ function fixture() {
   workspaces.addNamedPipelineStep(pipeline.id, prompt.id, { provider: "cursor" });
 
   const started: StartExecuteArgs[] = [];
-  // Each started station is a live run whose interrupt ends it the way a real
-  // one does: the process stops, the run row closes, the scheduler is told.
   setPipelineStationStarter(async (args) => {
     started.push({ ...args });
     const runId = newId("run");

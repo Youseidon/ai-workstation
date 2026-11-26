@@ -114,8 +114,6 @@ test("startExecute lock, persist, launch, and finish happen in order", () => {
   const hubStart = firstIndex(body, "runHub.start");
   assert.ok(pipelineLock < lock && lock < begin && begin < launch && launch < running && running < hubStart);
   assert.ok(lock < customBegin && customBegin < launch);
-  // A saved-prompt repository (direct or pipeline-managed) is claimed before
-  // its run row is written; pipeline-managed custom runs do the same.
   const claims = [...body.matchAll(/capture = openCapture\(\)/g)].map((match) => match.index);
   assert.equal(claims.length, 2);
   assert.ok(lock < claims[0]! && claims[0]! < begin && claims[1]! < customBegin && begin < claims[1]!);

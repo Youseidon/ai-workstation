@@ -1,10 +1,3 @@
-/**
- * Agent-authored programs, end to end without a provider.
- *
- * The claim under test is the one the design rests on: an author run can fill
- * in a draft and cannot touch the library, and only an operator's apply turns a
- * draft into rows in `program`, `suite` and `prompt`.
- */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -33,7 +26,6 @@ function fixture() {
   };
 }
 
-/** An author run, without starting a provider. */
 function beginAuthor(workspaceId: number, draftId: number): string {
   const runId = newId("run");
   const credential = runContexts.create(runId, workspaceId, null);
@@ -79,7 +71,6 @@ test("an author run fills in a draft and the library is untouched until it is ap
     const runId = beginAuthor(f.workspace.id, draft.id);
     proposeWholeProgram(runId);
 
-    // Nothing has been created yet. This is the whole guarantee.
     assert.deepEqual(workspaces.tree(f.workspace.id).programs, []);
 
     const filled = workspaces.programDraft(draft.id);
@@ -97,15 +88,12 @@ test("an author run fills in a draft and the library is untouched until it is ap
     assert.deepEqual(program.suites[0]!.prompts.map((prompt) => prompt.externalKey), ["S1-01", "S1-02"]);
     assert.deepEqual(program.suites.flatMap((suite) => suite.prompts).map((prompt) => prompt.status), ["TODO", "TODO", "TODO"]);
 
-    // The dependency edges came with it: S1-02 is not ready until S1-01 is done.
     const options = workspaces.promptOptions(f.workspace.id);
     const second = options.find((option) => option.externalKey === "S1-02")!;
     assert.deepEqual(second.blockedBy, ["S1-01"]);
     assert.equal(options.find((option) => option.externalKey === "S1-01")!.ready, true);
     assert.equal(second.ready, false);
 
-    // And a `## Verify` block became the item's command criteria, exactly as it
-    // does on the import path.
     const first = options.find((option) => option.externalKey === "S1-01")!;
     const definition = workspaces.resolvedDefinitionOfDone(first.id);
     assert.deepEqual(definition.criteria.filter((entry) => entry.kind === "COMMAND").map((entry) => entry.command), ["npm test"]);
@@ -277,7 +265,6 @@ test("a revise run may take over a draft once the earlier run has ended", () => 
     workspaces.proposeProgram(first, { requestId: unique("req"), name: "P", suites: [{ name: "A" }] });
     workspaces.finishAgentRun(first, "done");
     const second = beginAuthor(f.workspace.id, draft.id);
-    // The second run sees what the first wrote rather than starting over.
     assert.deepEqual(workspaces.programDraftForRun(second)!.body.suites.map((suite) => suite.name), ["A"]);
     assert.equal(workspaces.programDraftForRun(first), null);
   } finally {
@@ -306,10 +293,6 @@ test("applying with a pipeline stages every suite and every work item", () => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* The REST surface                                                    */
-/* ------------------------------------------------------------------ */
-
 async function call(method: string, path: string, payload?: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
   const req = Readable.from(payload === undefined ? [] : [JSON.stringify(payload)]) as unknown as IncomingMessage;
   req.method = method;
@@ -330,7 +313,6 @@ async function call(method: string, path: string, payload?: unknown): Promise<{ 
 test("the draft routes open, edit, preview, apply and discard a program", async () => {
   const f = fixture();
   try {
-    // No provider: open an empty draft to write by hand.
     const opened = await call("POST", `/api/workspaces/${f.workspace.id}/program-drafts`, { goal: "Plan it." });
     assert.equal(opened.status, 201);
     assert.equal((opened.body.runId as string | null), null);

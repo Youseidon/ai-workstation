@@ -36,14 +36,6 @@ function stringifyInput(input: unknown): string {
   }
 }
 
-/**
- * The database icon, drawn rather than typed.
- *
- * A glyph would inherit whatever the terminal font decided, and this mark has
- * to be recognisable at a glance in a fast-scrolling log — it is the one thing
- * that tells the operator an agent reached the app's own records rather than
- * the repository.
- */
 function DatabaseIcon({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden className={`shrink-0 ${className}`}>
@@ -54,7 +46,6 @@ function DatabaseIcon({ className = "" }: { className?: string }) {
   );
 }
 
-/** What happened to a `/btw` note, in the operator's terms. */
 export function btwDeliveryLabel(delivery: string | null, state: string): string {
   if (state === "SUPERSEDED") return "not delivered — the run ended first";
   if (state === "QUEUED") return delivery === "resume" ? "interrupting to deliver…" : "waiting for the agent to check in";
@@ -184,16 +175,12 @@ export function LogEntry({ item, streaming = false }: { item: LogItem; streaming
   }
 
   if (item.kind === "db") {
-    // Tone follows the outcome, not the direction: a refused write is the one
-    // an operator has to see, and a read that succeeded should stay quiet.
     const tone =
       item.outcome === "rejected"
         ? "text-danger"
         : item.direction === "write"
           ? "text-success"
           : "text-fg-dim";
-    // Arrows point the way the data moved, so a write is distinguishable from a
-    // read without reading the words.
     const arrow = item.direction === "write" ? "↑" : "↓";
     return (
       <div className="mt-1 flex gap-3">

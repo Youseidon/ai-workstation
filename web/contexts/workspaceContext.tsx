@@ -57,11 +57,9 @@ function persistId(id: number | null) {
     if (id === null) userLocalStorage.removeItem(WORKSPACE_STORAGE_KEY);
     else userLocalStorage.setItem(WORKSPACE_STORAGE_KEY, String(id));
   } catch {
-    /* preference only */
   }
 }
 
-/** Keep the selected workspace in the URL so hard refreshes preserve it. */
 function syncUrlWorkspace(id: number | null) {
   try {
     const url = new URL(window.location.href);
@@ -69,7 +67,6 @@ function syncUrlWorkspace(id: number | null) {
     else url.searchParams.set("workspace", String(id));
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   } catch {
-    /* navigation only */
   }
 }
 
@@ -78,14 +75,8 @@ function pickId(list: WorkspaceRecord[], preferred: number | null): number | nul
   return list[0]?.id ?? null;
 }
 
-/**
- * App-wide current workspace. Pages scope their data to `workspaceId`; the
- * sidebar beacon is the only place users switch projects.
- */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  // Keep the server render and the browser's first render identical. The
-  // initial refresh selects the URL/stored workspace after hydration.
   const [workspaceId, setWorkspaceIdState] = useState<number | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus>("loading");
   const [error, setError] = useState<string | null>(null);
@@ -114,13 +105,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Initial catalog load for the app-wide workspace beacon.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async list fetch on mount
     void refresh();
   }, [refresh]);
 
-  // Honor deep-link `?workspace=` when the user navigates client-side with a
-  // new query (Tasks → Chat, Activity → Chat, etc.).
   useEffect(() => {
     const onUrlChange = () => {
       const urlId = readUrlId();
@@ -175,18 +163,11 @@ export function useWorkspace(): WorkspaceContextValue {
   return value;
 }
 
-/**
- * Picks up `?workspace=` on client navigations (Link clicks). Render inside a
- * Suspense boundary — `useSearchParams` requires it in the App Router.
- */
 export function WorkspaceUrlSync() {
   const params = useSearchParams();
   const { workspaces, workspaceId, setWorkspaceId } = useWorkspace();
   const raw = params.get("workspace");
   const urlId = raw !== null ? Number(raw) : null;
-  // Apply a URL value once per change. Re-applying it whenever the selection
-  // changed would revert a click in the workspace switcher to the stale
-  // `?workspace=` before the router observed the replaced URL.
   const applied = useRef<number | null>(null);
 
   useEffect(() => {

@@ -1,31 +1,19 @@
 import type { AgentInputAnswer, AgentQuestion, NormalizedEvent, ProviderId, RunMessageDelivery, RunMessageState, RunState, TokenUsage } from "@hydra/shared";
 
-/**
- * The log is a projection of the normalized event stream: text deltas collapse
- * into one block per blockId, and tool results fold into the tool call that
- * produced them, so the panel reads like a transcript rather than a firehose.
- */
 interface LogItemBase {
   id: string;
   eventIds?: string[];
   provider: ProviderId;
-  /**
-   * The model this entry came from, captured at the time it arrived. Held per
-   * item rather than read from the current selection so scrolling back through
-   * a mixed transcript still shows which model actually said what.
-   */
   model: string | null;
   runId: string;
   timestamp: string;
 }
 
-/** A saved work item a run was given, so its text can be previewed on demand. */
 export interface PromptWorkItem { id: number; key: string | null; title: string }
 
 export type LogItem =
   | (LogItemBase & { kind: "context"; context: string; permissionKey: string; nativeSessionId?: string | null })
   | (LogItemBase & { kind: "prompt"; text: string; workItem?: PromptWorkItem })
-  /** `/btw` traffic with a run already working: the operator's note, or the agent's reply. */
   | (LogItemBase & {
       kind: "btw";
       messageId: number;
@@ -94,9 +82,7 @@ export function appendPrompt(
     provider: ProviderId;
     model: string | null;
     text: string;
-    /** When replaying a run that started earlier, its real start time. */
     timestamp?: string;
-    /** Set when the prompt was a saved work item rather than typed text. */
     workItem?: PromptWorkItem;
   },
 ): LogItem[] {
@@ -172,8 +158,6 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
       );
       const result = { isError, summary, output, exitCode };
       if (index === -1) {
-        // A result with no matching call (provider restarted mid-stream, or a
-        // tool we never saw start): show it as a standalone entry.
         return [
           ...items,
           {
@@ -231,10 +215,6 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
       ];
 
     case "db_access":
-      // Deliberately its own line rather than folded into the tool call that
-      // made it. The operator's question is "did this agent talk to the app,
-      // and what did it change" — an answer buried inside a curl's output is
-      // one they would have to go looking for.
       return [
         ...items,
         {
@@ -258,7 +238,6 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
 
     case "status":
       if (event.payload.conversation) return [...items, { id: event.id, runId: event.runId, provider: event.provider, model: event.model, timestamp: event.timestamp, kind: "context", ...event.payload.conversation }];
-      // Status drives the status bar only; it would drown the transcript.
       return items;
 
     case "input_request":
@@ -280,8 +259,6 @@ export function applyEvent(items: LogItem[], event: NormalizedEvent): LogItem[] 
       ];
 
     case "operator_message": {
-      // The same message is announced again when its state changes (queued →
-      // delivered); update the bubble rather than adding a second one.
       const index = findLastIndex(
         items,
         (item) => item.kind === "btw" && item.runId === event.runId && item.direction === "OPERATOR" && item.messageId === event.payload.messageId,

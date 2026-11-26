@@ -93,13 +93,6 @@ export function PipelineBoard({
 } = {}) {
   const router = useRouter();
   const workbench = workbenchPipelineId !== undefined || isNew;
-
-  useEffect(() => {
-    if (workbenchPipelineId !== undefined) {
-      setPipelineId(workbenchPipelineId);
-      appliedPipelineId.current = null;
-    }
-  }, [workbenchPipelineId]);
   const console_ = useHydra();
   const toast = useToast();
   const stopCenter = useStopCenter();
@@ -114,7 +107,7 @@ export function PipelineBoard({
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [runs, setRuns] = useState<PipelineRunDetail[]>([]);
   const [storedView, setView] = useState<PipelineFlowchartView | null>(null);
-  const [viewSuiteId, setViewSuiteId] = useState<number | null>(null);
+  const [loadedViewSuiteId, setViewSuiteId] = useState<number | null>(null);
   const [flowError, setFlowError] = useState<{ pipelineId: number; suiteId: number } | null>(null);
   const [hideCompleted, setHideCompleted] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -122,7 +115,6 @@ export function PipelineBoard({
   const [dragId, setDragId] = useState<number | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
-  /** The item shown in the side panel. Deep links seed it with ?prompt=. */
   const [selectedId, setSelectedId] = useState<number | null>(() => positiveInt(params.get("prompt")));
   const [panelOpen, setPanelOpen] = useState(() => positiveInt(params.get("prompt")) !== null);
   const [panelMode, setPanelMode] = useState<"item" | "pipeline">(() => (positiveInt(params.get("prompt")) !== null ? "item" : "pipeline"));
@@ -142,7 +134,6 @@ export function PipelineBoard({
   const [saveName, setSaveName] = useState("");
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
   const [railQuery, setRailQuery] = useState("");
-  /** Drill-down into the sub-steps a station spawned: station id first, deepest last. */
   const [subPath, setSubPath] = useState<number[]>([]);
 
   const [pipelineId, setPipelineId] = useState<number | null>(() => {
@@ -162,15 +153,24 @@ export function PipelineBoard({
   const appliedPipelineId = useRef<number | null>(null);
   const suiteBootstrapped = useRef(false);
 
+  const [workbenchSource, setWorkbenchSource] = useState(workbenchPipelineId);
+  if (workbenchSource !== workbenchPipelineId) {
+    setWorkbenchSource(workbenchPipelineId);
+    if (workbenchPipelineId !== undefined) setPipelineId(workbenchPipelineId);
+  }
+  useEffect(() => {
+    if (workbenchPipelineId !== undefined) appliedPipelineId.current = null;
+  }, [workbenchPipelineId]);
+
   const expandedForWorkspace = useRef<number | null>(null);
   const lastWorkspaceId = useRef<number | null>(workspaceId);
   const currentWorkspaceId = useRef<number | null>(workspaceId);
-  currentWorkspaceId.current = workspaceId;
+  useEffect(() => { currentWorkspaceId.current = workspaceId; }, [workspaceId]);
   const currentPipelineId = useRef<number | null>(pipelineId);
   useEffect(() => { currentPipelineId.current = pipelineId; }, [pipelineId]);
   const catalogRequestId = useRef(0);
   const [catalogWorkspaceId, setCatalogWorkspaceId] = useState<number | null>(null);
-  const view = storedView?.pipelineId === pipelineId && catalogWorkspaceId === workspaceId ? storedView : null;
+  const loadedView = storedView?.pipelineId === pipelineId && catalogWorkspaceId === workspaceId ? storedView : null;
 
   const refreshCatalog = useCallback(async () => {
     const requestId = ++catalogRequestId.current;
@@ -186,7 +186,6 @@ export function PipelineBoard({
       workspaceApi.operations(SERVER_URL, target),
       workspaceApi.listPipelines(SERVER_URL, target),
     ]);
-    // A slower refresh must not restore another pipeline's draft or older outcomes.
     if (currentWorkspaceId.current !== target || currentPipelineId.current !== pipelineId || requestId !== catalogRequestId.current) return target;
     setTree(nextTree);
     setSnapshot(operations);
@@ -224,7 +223,6 @@ export function PipelineBoard({
   }, [workspaceId, pipelineId, suiteId]);
 
   useEffect(() => {
-    // Server catalog: refresh on mount and when the socket says operations changed.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async catalog fetch, same pattern as TasksView
     void refreshCatalog()
       .then(() => setLoadError(null))
@@ -271,7 +269,7 @@ export function PipelineBoard({
         suiteName: home?.suite.name ?? ops?.name ?? saved?.suiteName ?? "Suite",
         suiteKey: home?.suite.externalKey ?? ops?.key ?? saved?.suiteKey ?? null,
         operations: ops,
-        progress: projectSuiteProgress(loadError === null ? ops : null, view?.suiteId === id ? view : stageFlows?.get(id) ?? null, snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG, saved?.stepCount ?? 0),
+        progress: projectSuiteProgress(loadError === null ? ops : null, loadedView?.suiteId === id ? loadedView : stageFlows?.get(id) ?? null, snapshot?.statusCatalog ?? DEFAULT_STATUS_CATALOG, saved?.stepCount ?? 0),
       },
     ];
   });
@@ -283,18 +281,14 @@ export function PipelineBoard({
       : (stages[0]?.suiteId ?? null);
 
   const showEditor = isNew || editing;
+  const view = activeSuiteId === null || pipelineId === null ? null : loadedView;
+  const viewSuiteId = activeSuiteId === null || pipelineId === null ? null : loadedViewSuiteId;
 
-  /*
-   * Unsaved edits survive leaving the editor by any route the leave dialog
-   * cannot intercept (browser back/forward, a workspace switch, a crashed tab):
-   * they are kept per pipeline in session storage and offered back on return.
-   */
   const draftKey = workspaceId === null ? null : `hydra.pipeline-draft:${workspaceId}:${pipelineId ?? "new"}`;
   const [recovered, setRecovered] = useState<{ name: string; suiteIds: number[] } | null>(null);
   const recoveryChecked = useRef<string | null>(null);
   const recoveryPending = useRef(false);
   useEffect(() => {
-    // Check once the saved pipeline (or, for a new one, the catalog) is applied to the draft.
     const ready = pipelineId === null ? tree !== null : pipeline !== null && appliedPipelineId.current === pipelineId;
     if (!ready || draftKey === null || recoveryChecked.current === draftKey) return;
     recoveryChecked.current = draftKey;
@@ -305,34 +299,25 @@ export function PipelineBoard({
         // eslint-disable-next-line react-hooks/set-state-in-effect -- session storage is read after the pipeline loads
         setRecovered({ name: stored.name, suiteIds: stored.suiteIds as number[] });
       }
-    } catch { /* recovery is best-effort */ }
+    } catch {  }
   }, [draftKey, pipelineId, tree, pipeline, draftName, draftSuiteIds]);
   useEffect(() => {
     if (draftKey === null || recoveryChecked.current !== draftKey || recoveryPending.current) return;
     try {
       if (showEditor && dirty) userSessionStorage.setItem(draftKey, JSON.stringify({ name: draftName, suiteIds: draftSuiteIds }));
       else if (!dirty) userSessionStorage.removeItem(draftKey);
-    } catch { /* recovery is best-effort */ }
+    } catch {  }
   }, [draftKey, showEditor, dirty, draftName, draftSuiteIds, recovered]);
   const discardStoredDraft = () => {
     recoveryPending.current = false;
     setRecovered(null);
-    try { if (draftKey !== null) userSessionStorage.removeItem(draftKey); } catch { /* best-effort */ }
+    try { if (draftKey !== null) userSessionStorage.removeItem(draftKey); } catch {  }
   };
 
   useEffect(() => {
-    if (activeSuiteId === null || pipelineId === null) {
-      setView(null);
-      setViewSuiteId(null);
-      return;
-    }
+    if (activeSuiteId === null || pipelineId === null) return;
     const requestedSuite = activeSuiteId;
     const requestedPipeline = pipelineId;
-    // Keep the current flowchart mounted while a same-suite refresh is in
-    // flight. Clearing it here unmounted the station inspector on every rule
-    // save (the WebSocket revision triggers this effect), which also destroyed
-    // transient controls such as an open model picker. `viewSuiteId` already
-    // prevents a previous suite's data from rendering after navigation.
     let disposed = false;
     void workspaceApi
       .pipelineFlowchart(SERVER_URL, requestedPipeline, requestedSuite, showEditor)
@@ -408,8 +393,6 @@ export function PipelineBoard({
   });
   const displayedSteps = flowSteps;
 
-  // Every prompt of the selected suite, stations and descendants alike, so a
-  // drill-down can address a node at any depth by id.
   const promptsByIdDeep = useMemo(() => {
     const map = new Map<number, OperationsPrompt>();
     const walk = (list: OperationsPrompt[]): void => {
@@ -432,8 +415,6 @@ export function PipelineBoard({
     (promptId: number): SubStepRuleView => {
       const entry = subStepRules.get(promptId);
       if (entry !== undefined) return { rule: entry.rule, inherited: entry.inherited };
-      // The flowchart has not landed yet — fall back to the parent's own rule
-      // so the card still says something truthful while it loads.
       const node = promptsByIdDeep.get(promptId) ?? null;
       const parentId = node?.prompt.parentPromptId ?? null;
       const fallback = (parentId === null ? null : promptsByIdDeep.get(parentId)?.pipelineRule) ?? node?.pipelineRule ?? null;
@@ -445,7 +426,6 @@ export function PipelineBoard({
     [subStepRules, promptsByIdDeep],
   );
 
-  // A drill-down only means anything inside the suite it was opened from.
   const openSubNode = subPath.length === 0 ? null : (promptsByIdDeep.get(subPath[subPath.length - 1]!) ?? null);
   const subTrail: SubTrailEntry[] =
     openSubNode === null
@@ -456,9 +436,6 @@ export function PipelineBoard({
         });
 
 
-  // Mirror the scheduler's depth-first walk. The suite run may still point at
-  // a parent that ran earlier even though its next unstarted child is the item
-  // a fresh run will actually launch.
   const stuckSuiteId = (resumeSuiteOps ?? suiteOps)?.id ?? null;
   const pendingPrompt = useMemo(() => {
     const suite = resumeSuiteOps ?? suiteOps;
@@ -467,10 +444,6 @@ export function PipelineBoard({
     if (flow === undefined || flow === null) return null;
     return nextPipelineLeaf(enabledPipelineItems(suite, flow));
   }, [resumeSuiteOps, suiteOps, view, stageFlows]);
-  // `recoverable` is broader than the RECOVERY_NEEDED label — it also covers a
-  // run that ended UNREPORTED or FAILED, which display under their own status
-  // but hold up the pipeline (and the scheduler's own play-blocked check) the
-  // same way a crashed run does.
   const stuckPrompt = pendingPrompt !== null && (pendingPrompt.operationalState === "BLOCKED" || pendingPrompt.prompt.recoverable)
     ? pendingPrompt
     : null;
@@ -489,9 +462,6 @@ export function PipelineBoard({
       const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
       return `${label} is blocked and needs a human response first`;
     }
-    // Surfaced here too, not just as a failed Play attempt: without this the
-    // operator's only sign of trouble was a toast after Play round-tripped to
-    // the backend and back, with nothing left to click.
     if (stuckPrompt?.prompt.recoverable === true) {
       const label = stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title;
       return `${label} needs recovery — its last run stopped without posting a status`;
@@ -499,7 +469,6 @@ export function PipelineBoard({
     return null;
   }, [console_.connection, pipelineId, draftSuiteIds.length, dirty, stages, occupancy, live, resumeItem, stuckPrompt]);
 
-  // Where the live run actually sits: stage → station → deepest sub-step.
   const runPosition = useMemo<PipelinePosition | null>(() => {
     if (live === null || pipeline === null) return null;
     const stageCount = pipeline.stages.length;
@@ -533,7 +502,6 @@ export function PipelineBoard({
     };
   }, [live, pipeline, resumeSuiteOps, resumeSuiteRun, occupancy]);
 
-  // The selected item is also the one whose step settings the Config tab edits.
   const configId = selectedId;
   const configNode = configId === null ? null : (promptsByIdDeep.get(configId) ?? null);
   const configIsSubStep = configNode !== null && configNode.prompt.parentPromptId !== null;
@@ -544,12 +512,7 @@ export function PipelineBoard({
       : (steps.find((step) => step.promptId === configId) ?? null);
   const configInherited = configId !== null && configIsSubStep && subRuleFor(configId).inherited;
 
-  // Prefer the deepest stuck descendant: a station whose sub-step lost its agent
-  // is the item that actually needs recovering, and it never appears in the
-  // top-level station list.
   const stationState = stuckPrompt?.operationalState ?? resumeItem?.operationalState ?? null;
-  // Resolved server-side from the Pipeline policy settings; the built-in
-  // defaults stand in for the moment before the first snapshot arrives.
   const policy = snapshot?.policy ?? DEFAULT_PIPELINE_POLICY;
 
   const status = pipelineStatus({
@@ -562,9 +525,6 @@ export function PipelineBoard({
   });
   const statusBlocked = status.primary === "pause" || status.primary === "stop" ? null : playBlocked;
 
-  // An operation that returns a sentence did not do what its button promised;
-  // the sentence is shown in place of the success toast, after the refresh so
-  // the board already shows the state it describes.
   const act = async (operation: () => Promise<string | void>, success?: string) => {
     setBusy(true);
     try {
@@ -583,8 +543,6 @@ export function PipelineBoard({
     }
   };
 
-  // A direct way to clear the blocker without hunting for it: the stuck item
-  // is often a sub-step several drill-downs below the station list.
   const recoveryActions = stuckPrompt === null || stuckSuiteId === null ? null : {
     onRetry:
       stuckPrompt.prompt.recoverable
@@ -612,35 +570,20 @@ export function PipelineBoard({
     label: stuckPrompt.prompt.externalKey ?? stuckPrompt.prompt.title,
   };
 
-  /**
-   * Every transport button funnels through here, so the header, the status bar
-   * and the state machine in `pipelineStatus` can never disagree about which
-   * action a state actually allows.
-   */
   const runControl = (control: PipelineControl) => {
     if (pipelineId === null) return;
-    // Pause and Stop go through the app's one stop center, so the pipeline
-    // page, the fleet rail and the agents page offer the same choices with
-    // the same words and the same "stopping…" feedback.
     if (control === "pause" || control === "stop") {
       stopCenter.open({ pipelineId });
       return;
     }
-    // Resume resumes: the continuation loop carries prior-run notes itself, so
-    // there is no handoff dialog between the operator and the next station start.
     void act(async () => {
       const run = await workspaceApi.playPipeline(SERVER_URL, pipelineId);
-      // Play answers 200 even when the station could not be started and the
-      // run parked again on the way in. Announcing "running" over that is the
-      // Resume button that says it resumed and then does nothing.
       if (run.state === "WAITING_HUMAN") {
         return describeStopReason(run.waitReason) ?? "It parked again before any agent started.";
       }
     }, control === "newRun" ? "New run started" : "Pipeline is running");
   };
 
-  // Global beacon switched projects — drop local draft/selection for the old one.
-  // Skip the first assignment from boot/URL so deep links keep pipeline/suite.
   useEffect(() => {
     if (lastWorkspaceId.current === workspaceId) return;
     const previous = lastWorkspaceId.current;
@@ -710,10 +653,6 @@ export function PipelineBoard({
     return saved;
   };
 
-  /* ---------------------------------------------------------------------- */
-  /* Selection and the side panel                                            */
-  /* ---------------------------------------------------------------------- */
-
   const selectItem = (promptId: number, tab?: StationTab) => {
     setSelectedId(promptId);
     setPanelMode("item");
@@ -724,18 +663,15 @@ export function PipelineBoard({
     selectItem(promptId, "conversation");
     setFocusSignal((value) => value + 1);
   };
-  /** Step settings: select the step, then open its section of the studio. */
   const configureItem = (promptId: number) => {
     selectItem(promptId);
     setStudio("step");
   };
-  /** A suite's pencil: point the board at it, then open its agents in the studio. */
   const editSuite = (id: number) => {
     setSuiteId(id);
     setSubPath([]);
     setStudio("agents");
   };
-  /** Chips and links name a concern; the studio holds every concern. */
   const openPipelinePanel = (tab: InspectorTab) => {
     if (tab === "station") {
       const target = resumeItem ?? stuckPrompt;
@@ -766,10 +702,8 @@ export function PipelineBoard({
   const selectedParent =
     selectedItem?.prompt.parentPromptId == null ? null : (promptsByIdDeep.get(selectedItem.prompt.parentPromptId) ?? null);
 
-  // Agent assignments need the saved flowchart of the suite on screen.
   const agentsReady = pipeline !== null && activeSuiteId !== null && viewSuiteId === activeSuiteId && view !== null
     && pipeline.stages.some((stage) => stage.suiteId === activeSuiteId);
-  // Who runs the selected item, and where that choice comes from.
   const selectedAgent = (() => {
     if (configRule === null) return null;
     const suiteProvider = view?.defaults.defaultProvider ?? null;
@@ -808,8 +742,6 @@ export function PipelineBoard({
     [stages, stageFlows, view],
   );
 
-  // Items the list view shows: the flowchart's stations (with their sub-steps)
-  // on a saved pipeline; the whole suite while composing a draft.
   const listItems = useMemo(() => {
     const prompts = suiteOps?.prompts ?? [];
     if (pipelineId === null) return prompts;
@@ -820,7 +752,6 @@ export function PipelineBoard({
       .sort((a, b) => (order.get(a.prompt.id) ?? 0) - (order.get(b.prompt.id) ?? 0));
   }, [suiteOps, pipelineId, viewSuiteId, activeSuiteId, steps, view]);
 
-  // j / k walk the items in the order they are drawn.
   const navOrder = useMemo(() => {
     if (openSubNode !== null) return openSubNode.children.map((item) => item.prompt.id);
     if (layout === "list") {
@@ -837,7 +768,6 @@ export function PipelineBoard({
     return displayedSteps.map((step) => step.promptId);
   }, [openSubNode, layout, listItems, filter, displayedSteps]);
 
-  // Remember the layout per pipeline, unless the link asked for one.
   const layoutKey = `hydra.pipeline-layout.${pipelineId ?? "draft"}`;
   useEffect(() => {
     if (params.get("view") !== null) return;
@@ -846,7 +776,6 @@ export function PipelineBoard({
       // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is unavailable during SSR
       if (saved === "list" || saved === "flow") setLayout(saved);
     } catch {
-      // Storage is a convenience only.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per pipeline
   }, [layoutKey]);
@@ -855,11 +784,9 @@ export function PipelineBoard({
     try {
       userLocalStorage.setItem(layoutKey, next);
     } catch {
-      // Storage is a convenience only.
     }
   };
 
-  // Below xl the panel is a sheet over the board; start it closed there.
   useEffect(() => {
     if (positiveInt(params.get("prompt")) !== null) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- viewport is unknown during SSR
@@ -867,7 +794,6 @@ export function PipelineBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- first paint only
   }, []);
 
-  // Keep the address bar shareable without driving state from it.
   useEffect(() => {
     if (!workbench || pipelineId === null) return;
     const next = new URLSearchParams();
@@ -881,7 +807,6 @@ export function PipelineBoard({
     window.history.replaceState(window.history.state, "", `/pipeline/${pipelineId}${query === "" ? "" : `?${query}`}`);
   }, [workbench, pipelineId, editing, activeSuiteId, selectedId, panelMode, layout, filter, studio]);
 
-  // ⌘K / Ctrl+K / "/" find anything; "," opens the studio. Typing is left alone.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -913,10 +838,6 @@ export function PipelineBoard({
     },
   });
 
-  /* ---------------------------------------------------------------------- */
-  /* Header                                                                  */
-  /* ---------------------------------------------------------------------- */
-
   const deletePipeline = () =>
     void act(async () => {
       if (pipelineId === null) return;
@@ -944,7 +865,6 @@ export function PipelineBoard({
   };
 
   const headerMenu: MenuItem[] = [
-    // The layout switch is hidden on phones; it lives here there.
     { id: "layout", label: layout === "flow" ? "Show as list" : "Show as flow", onSelect: () => changeLayout(layout === "flow" ? "list" : "flow"), className: "sm:hidden" },
     { id: "find", label: "Find anything…  ⌘K", onSelect: () => setPaletteOpen(true) },
     { id: "agents", label: "Assign agents", onSelect: () => setStudio("agents") },
@@ -993,7 +913,6 @@ export function PipelineBoard({
       : [{ id: "delete", label: "Delete pipeline…", onSelect: deletePipeline, disabled: anyBusy || resumable, title: resumable ? "Stop the pipeline before deleting it" : undefined, tone: "danger" as const, separated: true }]),
   ];
 
-  /* Everything the palette can find: actions, studio sections, suites, steps. */
   const buildPaletteEntries = (): PaletteEntry[] => {
     const entries: PaletteEntry[] = [];
     const busyReason = anyBusy ? "Busy — wait for the current action" : undefined;
@@ -1130,7 +1049,7 @@ export function PipelineBoard({
         }
       />
 
-      {/* Transport stays visible while the execution workspace scrolls. */}
+      { }
       {pipelineId !== null && (
         <div className="shrink-0 px-3 pb-2 sm:px-5">
           <PipelineStatusBar
@@ -1411,8 +1330,6 @@ export function PipelineBoard({
 
 
             {(() => {
-              // `/btw` to the station that is working right now. The
-              // conversation continues in Chat, in a tab named after the run.
               const stationRun = live?.state === "PLAYING"
                 ? console_.runs.find((run) => run.role === "execute" && run.workspace.id === workspaceId && run.source.type === "saved") ?? null
                 : null;
@@ -1648,8 +1565,7 @@ export function PipelineBoard({
           </div>
         </section>
 
-        {/* One side panel, two modes: the selected item, or the pipeline.
-            Docked on xl; a sheet over the board below that. */}
+        { }
         <DetailDrawer
           open={panelOpen}
           onClose={closePanel}

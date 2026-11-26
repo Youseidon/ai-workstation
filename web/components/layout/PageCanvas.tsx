@@ -1,12 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 
-/**
- * The shared content canvas. The shell owns the `main` landmark; routes render
- * a canvas inside it. `reading` keeps Chat's 880 px measure; `wide` lets dense
- * tables and diagrams use the available width. The canvas is the route's one
- * vertical scroll owner unless `scroll` is false (the route manages panes).
- */
 export function PageCanvas({
   children,
   width = "wide",
@@ -25,10 +19,6 @@ export function PageCanvas({
   );
 }
 
-/**
- * The content-level title and action group. It sits in the document flow
- * beside the content it describes; it is not a header bar.
- */
 export function ContentTitle({
   title,
   titleEditor,
@@ -37,9 +27,7 @@ export function ContentTitle({
   className,
 }: {
   title: ReactNode;
-  /** An editable title (e.g. a name input). The heading stays for assistive tech. */
   titleEditor?: ReactNode;
-  /** A back link or a quiet line of context above the title. */
   meta?: ReactNode;
   actions?: ReactNode;
   className?: string;
@@ -62,10 +50,6 @@ export function ContentTitle({
   );
 }
 
-/**
- * Loading, empty, missing-record and error states for a whole page: the same
- * title placement and type as any other page, with the message in the flow.
- */
 export function PageState({
   title,
   tone = "info",

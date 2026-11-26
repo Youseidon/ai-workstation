@@ -5,19 +5,8 @@ import { createContext, useContext, useId, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 
-/**
- * A section's collection inside the one shared sidebar.
- *
- * The shell owns the sidebar's geometry and exposes a single slot below the
- * section switcher. A route renders its collection through `SidebarCollection`
- * from inside its own tree, so the collection and the content share one state
- * owner and one data subscription. The portal only decides where the rows
- * appear; it cannot add a second sidebar, header or viewport.
- */
 interface SlotValue {
-  /** The visible slot: the drawer's while the mobile drawer is open, otherwise the desktop sidebar's. */
   target: HTMLElement | null;
-  /** Closes the mobile drawer after a selection. */
   onNavigate(): void;
 }
 
@@ -37,13 +26,11 @@ export function SidebarCollection({ label, tools, children }: { label: string; t
   </>, target);
 }
 
-/** One selectable record. A link when the selection is addressable, otherwise a button. */
 export function SidebarRow({ href, onSelect, selected = false, title, detail, status, statusTone, trailing, depth = 0 }: {
   href?: string;
   onSelect?(): void;
   selected?: boolean;
   title: ReactNode;
-  /** A quiet second line: path, provider, time. */
   detail?: ReactNode;
   status?: ReactNode;
   statusTone?: "accent" | "danger" | "warning" | "muted";
@@ -83,7 +70,6 @@ export function SidebarBack({ href, children }: { href: string; children: ReactN
   return <Link href={href} className="app-sidebar-back" onClick={navigate}><span aria-hidden>←</span> {children}</Link>;
 }
 
-/** A compact disclosure of filters for the current collection. */
 export function FilterControl({ active, children, className }: { active: number; children: ReactNode; className?: string }) {
   return <details className={cn("app-sidebar-filters", className)}>
     <summary>Filters{active > 0 ? ` · ${active} active` : ""}</summary>

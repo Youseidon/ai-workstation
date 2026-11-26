@@ -7,23 +7,6 @@ import { workspaces } from "../../repositories/workspaces.ts";
 
 const log = createLogger("instructions");
 
-/**
- * Repo-level instruction files are owned by the workspace, but they have to
- * exist on disk to do their job.
- *
- * Claude Code resolves CLAUDE.md through `--setting-sources`; Codex and Cursor
- * discover AGENTS.md. Headless Grok does not reliably discover the root file,
- * so its adapter also passes the projected AGENTS.md explicitly as --rules.
- * Real files remain necessary for tools, nested instruction loading, and
- * agents that discover their own workspace instructions.
- *
- * So the database stays the source of truth and these files are its projection,
- * rewritten before every run. An edit a run makes to one is not read back into
- * the workspace: it becomes a proposal the operator applies.
- *
- * Claude Code reads CLAUDE.md; Codex, Cursor and the Grok adapter use AGENTS.md.
- * Neither file substitutes for the other, which is why both are kept.
- */
 const FILES = [
   { field: "claudeMd", name: "CLAUDE.md" },
   { field: "agentsMd", name: "AGENTS.md" },
@@ -31,12 +14,6 @@ const FILES = [
 
 const GITIGNORE_MARKER = "# Written by the Hydra from the workspace record";
 
-/**
- * Keeps the projected files out of `git status`.
- *
- * R4 makes git the user's: a run that leaves two untracked files behind would
- * show up in every `git status` an agent runs and read as uncommitted work.
- */
 function ensureIgnored(workDirectory: string): void {
   const path = join(workDirectory, ".gitignore");
   try {
@@ -54,17 +31,8 @@ function ensureIgnored(workDirectory: string): void {
   }
 }
 
-/** Warned-about paths, so a per-run check does not become a per-run log line. */
 const warnedTracked = new Set<string>();
 
-/**
- * `.gitignore` has no effect on a file git already tracks, so a projected file
- * that is still in the index shows up as a modification in every `git status`
- * an agent runs — the exact noise the ignore entry exists to prevent.
- *
- * Untracking it is a change to the user's index, and R4 makes git theirs, so
- * this reports the problem and the command rather than fixing it.
- */
 function warnIfTracked(workDirectory: string, name: string): void {
   const key = join(workDirectory, name);
   if (warnedTracked.has(key)) return;
@@ -74,12 +42,6 @@ function warnIfTracked(workDirectory: string, name: string): void {
   log.warn(`${name} is tracked by git in ${workDirectory}, so .gitignore cannot hide it and every git status will show it as modified. Untrack it with: git rm --cached ${name}`);
 }
 
-/**
- * Writes the workspace's instruction files into its working tree.
- *
- * An empty field writes nothing and never deletes: removing a file the user or
- * another tool put there is not this function's call to make.
- */
 export function materialize(workspace: Pick<WorkspaceRecord, "workDirectory" | "claudeMd" | "agentsMd">): void {
   if (!existsSync(workspace.workDirectory)) return;
   let wrote = false;
@@ -101,12 +63,10 @@ export function materialize(workspace: Pick<WorkspaceRecord, "workDirectory" | "
   if (wrote) ensureIgnored(workspace.workDirectory);
 }
 
-/** Where a workspace's instruction file lives in its working tree. */
 export function instructionFilePath(workDirectory: string, field: WorkspaceInstructionField): string {
   return join(workDirectory, INSTRUCTION_FILE_NAMES[field]);
 }
 
-/** The file as it is on disk, or null when there is none. */
 export function readInstructionFile(workDirectory: string, field: WorkspaceInstructionField): string | null {
   const path = instructionFilePath(workDirectory, field);
   try {
@@ -117,7 +77,6 @@ export function readInstructionFile(workDirectory: string, field: WorkspaceInstr
   }
 }
 
-/** Puts the file back the way it was: rewritten, or removed if there was none. */
 function restoreInstructionFile(workDirectory: string, field: WorkspaceInstructionField, before: string | null): void {
   const path = instructionFilePath(workDirectory, field);
   try {
@@ -131,19 +90,6 @@ function restoreInstructionFile(workDirectory: string, field: WorkspaceInstructi
   }
 }
 
-/**
- * Turns a run's edits to the instruction files into proposals.
- *
- * A run that rewrites CLAUDE.md changes what every later run is told, so the
- * edit is held for the operator the way any other proposal is, and the stored
- * text goes back on disk. Two cases leave the file alone rather than restore it:
- * a field with no stored text (the file may be the user's own, and materialize
- * never deletes one), and a file that was deleted or emptied (see below).
- *
- * The same text is not proposed twice: a proposal with identical content, in
- * any state, means the operator has already seen it — including one they
- * discarded.
- */
 export function proposeFromWorkingTree(workspaceId: number, runId: string | null): InstructionProposalRecord[] {
   let workspace: WorkspaceRecord;
   try {
@@ -155,9 +101,6 @@ export function proposeFromWorkingTree(workspaceId: number, runId: string | null
   const proposed: InstructionProposalRecord[] = [];
   for (const file of FILES) {
     const onDisk = readInstructionFile(workspace.workDirectory, file.field);
-    // A deleted or blanked file is not a proposal to empty the workspace's
-    // instructions: an agent that removes CLAUDE.md has almost certainly not
-    // decided every later run should go without it.
     if (onDisk === null || onDisk.trim() === "") continue;
     const content = onDisk.trim();
     const stored = workspace[file.field];
@@ -183,14 +126,6 @@ export function proposeFromWorkingTree(workspaceId: number, runId: string | null
   return proposed;
 }
 
-/**
- * Stores what an instruction run left in its file, then puts the file back.
- *
- * `before` is the file as it was just before the run started. The run edits the
- * real file because that is the one it can read in context and edit with its
- * ordinary tools; the working tree is not where the proposal lives, so it is
- * returned to exactly what it was.
- */
 export function captureInstructionRun(proposalId: number, workDirectory: string, field: WorkspaceInstructionField, before: string | null): void {
   const after = readInstructionFile(workDirectory, field);
   if (after !== null && after.trim() !== "" && after !== before) {

@@ -1,12 +1,3 @@
-/**
- * A setting the UI cannot reach is a setting that does not exist.
- *
- * These read the panels as text rather than rendering them, the same way
- * `settingsCoverage.test.ts` reads AgentsView. That is enough to catch a
- * vocabulary growing a member that no control offers, or a panel quietly
- * losing its mount point — without a DOM.
- */
-
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

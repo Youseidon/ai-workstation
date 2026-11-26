@@ -1,6 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-/** `programId`: a consult about a whole program rather than one work item. */
 interface Entry { runId:string; workspaceId:number; promptId:number|null; question:string; tokenHash:string; expiresAt:number; programId:number|null }
 const entries=new Map<string,Entry>();
 const ACTIVE_TTL_MS=12*60*60*1000;

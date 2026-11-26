@@ -1,5 +1,3 @@
-// Run with HYDRA_PLAYWRIGHT_MODULE pointing to playwright-core if it is not installed locally.
-// This builds the real page components against in-memory services; no Hydra server is started.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +22,7 @@ const playwright = await import(
 );
 const serviceExports = {
   "@/hooks/useHydra": "useFixtureHydra as useHydra",
+  "@/contexts/identity": "useFixtureIdentity as useIdentity",
   "@/contexts/hydra": "useFixtureHydra as useHydra",
   "@/contexts/fleetContext":
     "useFixtureFleet as useFleetConsole, useFixtureMetadata as useFleetMetadata",
@@ -170,6 +169,220 @@ try {
   );
   assert.equal(await page.locator('li[id^="agent-"]').count(), 6);
   console.log("Initial geometry", first);
+  for (const id of [
+    "claude",
+    "codex",
+    "cursor",
+    "grok",
+    "copilot",
+    "kilocode",
+  ]) {
+    const preview = row(id).getByRole("button", {
+      name: /Usage & maintenance/,
+    });
+    await shown(preview.getByText("0%", { exact: true }));
+    await shown(preview.getByText("72%", { exact: true }));
+    assert.equal(await preview.getByRole("progressbar").count(), 2);
+    assert.equal(
+      await preview
+        .getByRole("progressbar")
+        .first()
+        .getAttribute("aria-valuenow"),
+      "0",
+    );
+    assert.equal(
+      await preview
+        .getByRole("progressbar")
+        .last()
+        .getAttribute("aria-valuenow"),
+      "72",
+    );
+    await preview.click();
+    await shown(page.getByRole("dialog", { name: /configuration/ }));
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Usage & maintenance", exact: true })
+        .getAttribute("aria-current"),
+      "page",
+    );
+    await close();
+  }
+  for (const [id, label] of [
+    ["claude", "Claude Code"],
+    ["codex", "Codex CLI"],
+    ["cursor", "Cursor CLI"],
+    ["grok", "Grok CLI"],
+    ["copilot", "GitHub Copilot"],
+    ["kilocode", "Kilo Code"],
+  ]) {
+    assert.equal(
+      await row(id).getByText("Enabled", { exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await row(id).getByText("Configure", { exact: true }).count(),
+      0,
+    );
+    const gear = row(id).getByRole("button", {
+      name: `Configure ${label}`,
+      exact: true,
+    });
+    assert.equal(await gear.locator("svg").count(), 1);
+    const updateButton = row(id).getByRole("button", {
+      name: `Update ${label}`,
+      exact: true,
+    });
+    await shown(updateButton);
+    const gearBox = await gear.boundingBox();
+    const switchBox = await row(id).getByRole("switch").boundingBox();
+    assert(
+      gearBox.x > switchBox.x + switchBox.width,
+      "configuration owns a separate column",
+    );
+    await page.evaluate(
+      (id) => window.hydraFixture.setState(id, "unavailable"),
+      id,
+    );
+    await shown(updateButton);
+    assert.equal(
+      await row(id)
+        .getByRole("button", { name: `Install ${label}`, exact: true })
+        .count(),
+      0,
+      "signed out is not missing",
+    );
+    await page.evaluate(
+      (id) => window.hydraFixture.setState(id, "missing"),
+      id,
+    );
+    const installButton = row(id).getByRole("button", {
+      name: `Install ${label}`,
+      exact: true,
+    });
+    const beforeInstall = await page.evaluate(
+      () =>
+        window.hydraFixture.requests.filter(
+          (request) =>
+            request.url.endsWith("/install") && request.method === "POST",
+        ).length,
+    );
+    await installButton.click();
+    await shown(
+      page.getByRole("dialog", { name: `Set up ${label}`, exact: true }),
+    );
+    await shown(
+      page.getByText(`Official fixture installer for ${id}`, { exact: true }),
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.hydraFixture.requests.filter(
+            (request) =>
+              request.url.endsWith("/install") && request.method === "POST",
+          ).length,
+      ),
+      beforeInstall,
+    );
+    if (id === "codex") {
+      await call("fail", "install");
+      await page
+        .getByRole("button", { name: /Install CLI on this machine/ })
+        .click();
+      await shown(
+        page
+          .getByRole("alert")
+          .filter({ hasText: "Fixture installation failed" }),
+      );
+      await page
+        .getByRole("button", { name: "Check setup again", exact: true })
+        .click();
+    }
+    await page
+      .getByRole("button", { name: /Install (SDK|CLI) on this machine/ })
+      .click();
+    await shown(
+      page.getByRole("heading", { name: "Connect your account", exact: true }),
+    );
+    assert.equal(
+      await page
+        .getByRole("link", {
+          name: "Open provider account / keys ↗",
+          exact: true,
+        })
+        .getAttribute("href"),
+      "https://vendor.fixture/account",
+    );
+    await page
+      .getByRole("button", { name: "Check connection", exact: true })
+      .click();
+    await shown(
+      page
+        .getByRole("dialog")
+        .getByText("API key not configured or login unavailable", {
+          exact: true,
+        }),
+    );
+    if (id === "codex") {
+      const secret = page.getByLabel("API key", { exact: true });
+      await secret.fill("fixture-new-key");
+      await close();
+      await row(id)
+        .getByRole("button", { name: "Check setup ›", exact: true })
+        .click();
+      assert.equal(await secret.inputValue(), "fixture-new-key");
+      await page
+        .getByRole("button", { name: "Save credential", exact: true })
+        .click();
+      await page.waitForFunction(
+        () => document.getElementById("codex.apiKey").value === "",
+      );
+      await call("fail", "detect");
+      await page
+        .getByRole("button", { name: "Check connection", exact: true })
+        .click();
+      await shown(
+        page
+          .getByRole("alert")
+          .filter({ hasText: "Provider detection failed" }),
+      );
+    }
+    await page.evaluate(
+      (id) => window.hydraFixture.setState(id, "available"),
+      id,
+    );
+    await page
+      .getByRole("button", { name: "Check connection", exact: true })
+      .click();
+    await shown(
+      page.getByText(`${label} is ready for new runs.`, { exact: true }),
+    );
+    await close();
+    await shown(
+      row(id).getByRole("button", { name: `Update ${label}`, exact: true }),
+    );
+  }
+  await call("setOwner", false);
+  assert(
+    await row("claude")
+      .getByRole("button", { name: "Update Claude Code", exact: true })
+      .isDisabled(),
+  );
+  await page.evaluate(() => window.hydraFixture.setState("codex", "missing"));
+  assert(
+    await row("codex")
+      .getByRole("button", { name: "Install Codex CLI", exact: true })
+      .isDisabled(),
+  );
+  await call("setOwner", true);
+  await page.evaluate(() => window.hydraFixture.setState("codex", "available"));
+  const usageButton = row("codex").getByRole("button", {
+    name: /Usage & maintenance/,
+  });
+  await usageButton.focus();
+  await page.keyboard.press("Enter");
+  await shown(page.getByRole("dialog"));
+  await close();
+
   for (const label of [
     "Runtime",
     "Run budgets",
@@ -190,6 +403,10 @@ try {
     animations: "disabled",
   });
 
+  await row("claude")
+    .getByRole("button", { name: "Update Claude Code", exact: true })
+    .click();
+  await shown(page.getByText(/Claude Code updated:/).last());
   const ids = ["claude", "codex", "cursor", "grok", "copilot", "kilocode"];
   for (const id of ids)
     for (const state of ["available", "unavailable", "disabled", "busy"]) {
@@ -220,7 +437,6 @@ try {
       id,
     );
 
-  // Active work keeps its server clock, transcript destination and mocked stop entry points.
   await page.evaluate(() => window.hydraFixture.setState("codex", "busy"));
   await configure("Codex CLI");
   await page
@@ -246,6 +462,7 @@ try {
     .click();
   assert(
     await page
+      .getByRole("dialog")
       .getByRole("button", { name: "Update CLI", exact: true })
       .isDisabled(),
   );
@@ -355,7 +572,6 @@ try {
     () => document.getElementById("codex.apiKey").value === "",
   );
 
-  // A save response cannot erase a newer draft entered after closing and reopening.
   await call("delayMutation", 700);
   await model.fill("codex-race-saved");
   await page.getByRole("button", { name: "Save 1", exact: true }).click();
@@ -460,21 +676,24 @@ try {
   await row("codex")
     .getByRole("button", { name: /usage windows/ })
     .click();
-  await shown(page.getByText("5h", { exact: true }));
-  await shown(page.getByText("weekly", { exact: true }));
-  await shown(page.getByText("0%", { exact: true }));
-  await shown(page.getByText("72%", { exact: true }));
+  await shown(page.getByRole("dialog").getByText("5h", { exact: true }));
+  await shown(page.getByRole("dialog").getByText("weekly", { exact: true }));
+  await shown(page.getByRole("dialog").getByText("0%", { exact: true }));
+  await shown(page.getByRole("dialog").getByText("72%", { exact: true }));
   await shown(page.getByText(/credits · \$0.00 left/));
   await call("fail", "usage");
   await page
     .getByRole("button", { name: "Refresh usage", exact: true })
     .click();
-  await shown(page.getByText("Usage stale · refresh failed", { exact: true }));
+  await shown(
+    page
+      .getByRole("dialog")
+      .getByText("Usage stale · refresh failed", { exact: true }),
+  );
   await page
     .getByRole("button", { name: "Refresh usage", exact: true })
     .click();
   await shown(page.getByText("2 usage windows", { exact: true }).last());
-  // Samples remain separate; unknown or stale telemetry never becomes reported zero.
   const refreshUsage = () =>
     page.getByRole("button", { name: "Refresh usage", exact: true }).click();
   await page.evaluate(() => window.hydraFixture.setUsage([]));
@@ -482,6 +701,8 @@ try {
   await shown(
     page.getByRole("dialog").getByText("Usage not reported", { exact: true }),
   );
+  assert.equal(await row("codex").getByRole("progressbar").count(), 0);
+  assert.equal(await row("codex").getByText("0%", { exact: true }).count(), 0);
   await page.evaluate(() =>
     window.hydraFixture.setUsage([
       {
@@ -524,6 +745,11 @@ try {
   await shown(
     page.getByRole("dialog").getByText("Usage stale", { exact: true }),
   );
+  await shown(row("codex").getByText("Usage stale ›", { exact: true }));
+  assert.equal(
+    await row("codex").getByRole("progressbar").getAttribute("aria-valuenow"),
+    "0",
+  );
   await page.evaluate(() =>
     window.hydraFixture.setUsage([
       {
@@ -548,6 +774,10 @@ try {
   await shown(
     page.getByRole("dialog").getByText("Quota reached", { exact: true }),
   );
+  assert.equal(
+    await row("codex").getByRole("progressbar").getAttribute("aria-valuenow"),
+    "100",
+  );
   await call("delayUsage", 350);
   await refreshUsage();
   await shown(
@@ -557,7 +787,10 @@ try {
     page.getByRole("dialog").getByText("Quota reached", { exact: true }),
   );
   await call("delayUsage", 0);
-  await page.getByRole("button", { name: "Update CLI", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Update CLI", exact: true })
+    .click();
   await shown(page.getByText(/Codex CLI updated/).last());
   await close();
 
@@ -589,7 +822,6 @@ try {
   await close();
   await call("setConnection", "open");
 
-  // Live deep links still land on the requested provider row.
   await page.goto(url + "#agent-codex");
   await shown(row("codex"));
   await configure("Codex CLI");
@@ -730,6 +962,16 @@ try {
     fullPage: true,
     animations: "disabled",
   });
+  await row("codex")
+    .getByRole("button", { name: /Usage & maintenance/ })
+    .click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Usage & maintenance", exact: true })
+      .getAttribute("aria-current"),
+    "page",
+  );
+  await close();
   await configure("Codex CLI");
   assert(
     await page.evaluate(

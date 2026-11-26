@@ -131,7 +131,6 @@ test("Codex /btw steers the active turn and survives a refused steer", async () 
   assert.equal(await accepted, true);
 
   const refused = mapper.steer("Too late?");
-  // A refused steer is the operator's note going to the inbox, not a failed run.
   assert.deepEqual(mapper.map({ id: sent.at(-1)!.id, error: { message: "turn mismatch" } }), []);
   assert.equal(await refused, false);
   assert.equal(mapper.settled, false);

@@ -8,14 +8,6 @@ import { APP_SECTIONS, type AppSection } from "@/lib/navigation";
 
 const DISCOVERED_KEY = "hydra.section-switcher-discovered";
 
-/**
- * The section switcher: the current section stays visible by name, and all
- * destinations open from the same place on every page.
- *
- * It must read as a menu at a glance, so the closed trigger previews the other
- * destinations as a fanned icon stack, and a soft pulse invites the first open
- * until the person has used it once.
- */
 export function SectionSwitcher({ current, onNavigate }: { current: AppSection | null; onNavigate(): void }) {
   const [open, setOpen] = useState(false);
   const [discovered, setDiscovered] = useState(true);
@@ -26,7 +18,7 @@ export function SectionSwitcher({ current, onNavigate }: { current: AppSection |
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      try { setDiscovered(userLocalStorage.getItem(DISCOVERED_KEY) === "1"); } catch { /* preference only */ }
+      try { setDiscovered(userLocalStorage.getItem(DISCOVERED_KEY) === "1"); } catch {  }
     }, 0);
     return () => clearTimeout(timer);
   }, []);
@@ -50,7 +42,7 @@ export function SectionSwitcher({ current, onNavigate }: { current: AppSection |
     setOpen((value) => !value);
     if (!discovered) {
       setDiscovered(true);
-      try { userLocalStorage.setItem(DISCOVERED_KEY, "1"); } catch { /* preference only */ }
+      try { userLocalStorage.setItem(DISCOVERED_KEY, "1"); } catch {  }
     }
   };
 

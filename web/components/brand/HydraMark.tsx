@@ -3,22 +3,10 @@ import { PROVIDER_IDS, type ProviderId } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 import { MARK, MARK_SMALL, WORDMARK } from "./geometry";
 
-/** Below this rendered size the eyes blur into noise and the heavy cut reads better. */
 const SMALL_AT = 24;
 
 export type MarkTone = "brand" | "spectrum" | "mono";
 
-/**
- * The Hydra mark, inline, so it follows the theme's tokens with no image request.
- *
- * - `brand`: the Hydra Cyan → Venom Violet gradient (`--brand-from/to`).
- * - `spectrum`: one head per provider in `PROVIDER_IDS` order, in its agent hue.
- * - `mono`: `currentColor`.
- *
- * `live` turns it into a fleet indicator. The heads of providers with a run in
- * flight take their agent colour and breathe; the others go quiet. Which runs
- * are live is the server's truth, passed in; the mark only renders it.
- */
 export function HydraMark({
   size = 32,
   tone = "brand",
@@ -68,7 +56,6 @@ export function HydraMark({
           <stop offset="1" style={{ stopColor: "var(--brand-to)" }} />
         </linearGradient>
         {!small && (
-          // The eye is a hole, not a dot, so the mark sits on any surface.
           <mask id={`${id}-m`} maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
             <rect width="64" height="64" fill="#fff" />
             {g.heads.map((head, index) => <circle key={index} cx={head.ex} cy={head.ey} r={g.eye} fill="#000" />)}
@@ -97,7 +84,6 @@ export function HydraMark({
   );
 }
 
-/** "hydra" in Unbounded SemiBold, outlined, in `currentColor`. `height` is the x-height-to-descender box. */
 export function HydraWordmark({ height = 16, className }: { height?: number; className?: string }) {
   return (
     <svg

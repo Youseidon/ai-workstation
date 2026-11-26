@@ -101,7 +101,6 @@ export class ExecutionError extends Error {
 
 const fail = (code: string, message: string): never => { throw new ExecutionError(code, message); };
 
-/** All mutation methods are short synchronous transactions, with no OS effects. */
 export function createExecutionStore(db: Database.Database, clock = Date.now) {
   const event = (contractId: string, kind: string, payload: unknown, attemptId: string | null = null, actor = "SUPERVISOR") => {
     db.prepare("INSERT INTO execution_event(event_id,contract_id,attempt_id,actor,kind,payload_json,payload_hash,created_at) VALUES(?,?,?,?,?,?,?,?)")
@@ -204,8 +203,6 @@ export function createExecutionStore(db: Database.Database, clock = Date.now) {
         const c=contract(id);
         if(!args.reason.trim()) fail("amendment_reason_required","An operator requirement amendment needs a reason");
         if(store.pending().some(e=>e.contractId===id)) fail("execution_active","Drain and reconcile effects before amending requirements");
-        // Operator changes invalidate all units conservatively; budget and
-        // attempt history remain attached to the same contract identity.
         const reopened=plan(id).units.map(u=>u.promptId);
         if(args.criteria.length===0 || new Set(args.criteria.map(cr=>cr.id)).size!==args.criteria.length) fail("invalid_manifest","Requirement amendment needs a nonempty unique manifest");
         for(const cr of args.criteria) if(!cr.text.trim() || cr.sourceStart<0 || cr.sourceEnd>args.originalPrompt.length || cr.sourceStart>=cr.sourceEnd) fail("invalid_manifest","Amended criteria need source spans");
@@ -229,7 +226,6 @@ export function createExecutionStore(db: Database.Database, clock = Date.now) {
         if (db.prepare("SELECT 1 FROM dispatch_outbox WHERE contract_id=? AND state IN ('PENDING','CLAIMED','RUNNING','QUARANTINED')").get(id)) fail("execution_active", "Drain and reconcile current effects before replanning");
         validateExecutionPlan(c.criteria,proposal,previous,accepted(id),157,!operatorAmendment);
         db.prepare("INSERT INTO execution_plan(contract_id,revision,plan_json,created_at) VALUES(?,?,?,?)").run(id,proposal.revision,JSON.stringify(proposal),clock());
-        // Accepted rows survive; only unaccepted ownership can move.
         db.prepare("DELETE FROM work_unit_meta WHERE contract_id=? AND accepted_at IS NULL").run(id);
         db.prepare("DELETE FROM shared_verification WHERE contract_id=? AND accepted_at IS NULL").run(id);
         for (const unit of proposal.units) {
@@ -308,7 +304,6 @@ export function createExecutionStore(db: Database.Database, clock = Date.now) {
         if (!args.recovery && (((args.actor ?? "worker")==="worker" && unitUsage.n >= c.policy.unitAttempts) || usage.attempts-recoveryUsed.n >= c.policy.maxAttempts - c.policy.recoveryAttempts)) fail("recovery_required", "Local worker allowance exhausted; use reserved recovery");
         if (args.recovery && recoveryUsed.n >= c.policy.recoveryAttempts) fail("budget_exhausted", "Recovery reserve exhausted");
         const lease = db.prepare("SELECT effect_id,fencing_token FROM execution_lease WHERE resource=?").get(args.resource) as {effect_id:string|null;fencing_token:number}|undefined;
-        // An expiry is a reason to reconcile, never proof that a writer died.
         if (lease?.effect_id) fail("resource_busy", "Previous writer must be confirmed dead before transferring ownership");
         if (db.prepare("SELECT 1 FROM dispatch_outbox WHERE contract_id=? AND state IN ('PENDING','CLAIMED','RUNNING','QUARANTINED')").get(c.id)) fail("execution_active", "Contract already has an unsettled effect");
         const id = randomUUID(), runId = `run_${randomUUID()}`, generation = c.generation + 1;
@@ -363,7 +358,6 @@ export function createExecutionStore(db: Database.Database, clock = Date.now) {
         if (!["CLAIMED","RUNNING","QUARANTINED"].includes(e.state)) fail("invalid_transition", "Effect was never dispatched");
         const reservation = db.prepare("SELECT reserved_ms,reserved_tokens FROM budget_ledger WHERE effect_id=?").get(id) as {reserved_ms:number;reserved_tokens:number};
         for (const value of [args.actualMs,args.actualTokens]) if (value !== null && (!Number.isSafeInteger(value) || value < 0)) fail("invalid_usage", "Usage must be finite and nonnegative");
-        // Unknown usage consumes its reservation. Observed overages are never clipped.
         db.prepare("UPDATE budget_ledger SET actual_ms=?,actual_tokens=?,unknown_usage=? WHERE effect_id=?")
           .run(args.actualMs ?? reservation.reserved_ms,args.actualTokens ?? reservation.reserved_tokens,Number(args.actualMs === null || args.actualTokens === null),id);
         db.prepare("UPDATE dispatch_outbox SET state='SETTLED',result_json=? WHERE id=?").run(JSON.stringify(args.result),id);

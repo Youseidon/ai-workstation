@@ -1,7 +1,3 @@
-/**
- * Operator briefings: per-work-item context rendered first in the execute
- * prompt, cleared by DONE, never visible to another work item.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,8 +43,6 @@ test("briefings are cleared by DONE and refused on a finished item", () => {
   workspaces.completePrompt(first.id, "USER", { verificationSummary: "checked by hand" });
   assert.throws(() => workspaces.addPromptBriefing(first.id, { content: "Too late." }), (error: unknown) => error instanceof WorkspaceError && error.code === "already_terminal");
 
-  // Notes written before the DONE are no longer in force; if the item is ever
-  // reopened, its next run starts without them.
   assert.deepEqual(workspaces.promptBriefings(first.id), []);
   assert.doesNotMatch(contextMarkdown(workspaces.agentContext(workspace.id, first.id), "execute"), /Old note\./);
 });

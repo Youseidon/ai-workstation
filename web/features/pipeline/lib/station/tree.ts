@@ -1,14 +1,12 @@
 import { DEFAULT_STATUS_CATALOG, isTerminalDisplayStatus, type OperationsPrompt, type OperationsSuite, type StatusDefinition } from "@hydra/shared";
 
 export type WorkFilter = "all" | "attention" | "working";
-/** @deprecated use WorkFilter */
 export type TasksFilter = WorkFilter;
 
 export function isTerminal(item: OperationsPrompt, catalog: readonly StatusDefinition[] = DEFAULT_STATUS_CATALOG): boolean {
   return isTerminalDisplayStatus(catalog, item.operationalState);
 }
 
-/** Walk station roots and their children (nesting is at most two levels). */
 export function findOperationsPromptInTree(
   items: OperationsPrompt[],
   promptId: number,
@@ -28,7 +26,6 @@ export function findOperationsPromptInSuite(
   return findOperationsPromptInTree(suite.prompts, promptId);
 }
 
-/** Immediate parent of a nested prompt, or null for a station root / unknown id. */
 export function findParentPrompt(
   items: OperationsPrompt[],
   promptId: number,
@@ -46,7 +43,6 @@ export function suiteContainsPrompt(suite: OperationsSuite, promptId: number): b
   return findOperationsPromptInSuite(suite, promptId) !== null;
 }
 
-/** Waiting on the operator: a blocker, a recovery, or an unanswered approval point. */
 export function needsYou(item: OperationsPrompt): boolean {
   return item.attention || item.humanIntervention?.status === "PENDING";
 }
@@ -72,7 +68,6 @@ function filterNode(item: OperationsPrompt, filter: TasksFilter): OperationsProm
   return children.length === item.children.length ? item : { ...item, children };
 }
 
-/** Keep roots that match the filter, trimming non-matching descendants. */
 export function filterPromptTree(items: OperationsPrompt[], filter: TasksFilter): OperationsPrompt[] {
   if (filter === "all") return items;
   return items

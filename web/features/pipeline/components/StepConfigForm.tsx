@@ -9,11 +9,6 @@ import { useModelSelection } from "@/features/providers/hooks/useModelSelection"
 import { ExecutionPanel } from "./ExecutionPanel";
 import { onDoneChip } from "../lib/status";
 
-/**
- * Station / sub-step rule editor body, shown in the Pipeline studio. The agent
- * row is the same picker the suite uses; its leading chip is "follow the level
- * above" (suite agent for a station, the station for a sub-step).
- */
 export function StepConfigForm({
   rule,
   item,

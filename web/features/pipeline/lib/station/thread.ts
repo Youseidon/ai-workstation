@@ -6,19 +6,11 @@ export interface ThreadEntry {
   id: string;
   at: string;
   speaker: Speaker;
-  /** Short label above the bubble: "Asked", "Blocked", "Your answer", "Note"… */
   label: string;
   text: string;
-  /** Bubble is waiting on the operator. */
   open?: boolean;
 }
 
-/**
- * Everything said about one item between the agent and the operator, in order:
- * blockers and decisions it asked for, approval points, your answers, the notes
- * you attached, and what it replied. Read-only history; the composer below is
- * the only place to write.
- */
 export function buildThread(item: OperationsPrompt, activity: PromptActivity | null): ThreadEntry[] {
   const entries: ThreadEntry[] = [];
   const remarks = activity !== null && activity.item.prompt.id === item.prompt.id ? activity.remarks : [];
@@ -66,13 +58,11 @@ export function buildThread(item: OperationsPrompt, activity: PromptActivity | n
       text: gate.requiredAction,
       open: gate.status === "PENDING",
     });
-    // The answer is normally also a HUMAN_RESPONSE remark; only add it when it is not.
     if (gate.response !== null && !entries.some((entry) => entry.speaker === "you" && entry.text === gate.response)) {
       entries.push({ id: `ga${gate.id}`, at: gate.completedAt ?? gate.requestedAt, speaker: "you", label: "Your answer", text: gate.response });
     }
   }
   entries.sort((a, b) => a.at.localeCompare(b.at));
-  // The newest unanswered agent question is the one the composer answers.
   if (item.operationalState === "BLOCKED") {
     const lastAsk = [...entries].reverse().find((entry) => entry.speaker === "agent");
     const answeredAfter = lastAsk !== undefined && entries.some((entry) => entry.speaker === "you" && entry.at > lastAsk.at);

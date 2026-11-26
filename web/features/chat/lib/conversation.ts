@@ -20,7 +20,6 @@ export interface ConversationTurn {
   attribution: Pick<LogItem, "provider" | "model">;
 }
 
-/** Activity is described only when the provider actually reports it. */
 export function conversationProgress(turn: ConversationTurn, live?: LiveConversationRun): ConversationProgress {
   if (turn.result) {
     const phase = turn.result.state === "done" ? "done" : turn.result.state === "interrupted" ? "stopped" : "error";
@@ -41,7 +40,6 @@ export function conversationProgress(turn: ConversationTurn, live?: LiveConversa
     : { phase: "working", label: "Working", active: true };
 }
 
-/** A presentation projection only. Source items and normalized events remain intact. */
 export function conversationTurns(items: LogItem[]): ConversationTurn[] {
   const turns = new Map<string, ConversationTurn>();
   for (const item of items) {
@@ -55,8 +53,6 @@ export function conversationTurns(items: LogItem[]): ConversationTurn[] {
     else turn.blocks.push(item);
   }
   for (const turn of turns.values()) {
-    // Providers may repeat their last block or aggregate every message in result.
-    // Compare exact text only: never guess that commentary is disposable.
     const text = turn.result?.text;
     const messages = turn.blocks.filter((b) => b.kind === "text" && b.textKind === "message");
     if (text && !messages.some((b) => b.kind === "text" && b.text === text)
@@ -65,8 +61,6 @@ export function conversationTurns(items: LogItem[]): ConversationTurn[] {
     }
     turn.attribution = turn.blocks.find((b) => b.kind === "text") ?? turn.result ?? turn.prompt ?? turn.attribution;
   }
-  // Older pages can arrive after the live transcript. Preserve chronology
-  // independently of the order in which those pages entered the store.
   const time = (turn: ConversationTurn) => turn.prompt?.timestamp || turn.blocks[0]?.timestamp || turn.result?.timestamp || "";
   return [...turns.values()].sort((left,right) => time(left).localeCompare(time(right)));
 }

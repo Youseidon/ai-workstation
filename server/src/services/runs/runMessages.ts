@@ -1,19 +1,3 @@
-/**
- * `/btw`: talking to a run that is already working.
- *
- * Three ways a note reaches the agent, tried in this order:
- *
- * - **native**: the provider keeps an input channel open for the whole run
- *   (Claude's streaming input, Codex's app-server), so the note goes in mid-turn.
- * - **inbox**: every other provider runs headless with stdin closed. The note
- *   waits here and is handed over on the agent's next `agent-step` call, which
- *   the prompt tells it to make between major steps and before long commands.
- * - **resume**: the operator chose not to wait. The run is interrupted and its
- *   provider session continued with the note (see `pipelineScheduler`).
- *
- * The agent answers with `agent-step reply`, which never blocks the run.
- */
-
 import type { NormalizedEvent, RunMessage } from "@hydra/shared";
 import { getAdapter } from "../../providers/registry.ts";
 import { newId } from "../../utils/ids.ts";
@@ -43,10 +27,6 @@ function requireText(value: unknown): string {
   return text;
 }
 
-/**
- * Does this run's provider take a message mid-run? Asked of the adapter, not a
- * list here, so a provider that gains an input channel needs no change in this file.
- */
 export function supportsLiveDelivery(runId: string): boolean {
   const live = runHub.get(runId);
   return live !== undefined && typeof getAdapter(live.provider).sendUserMessage === "function";
@@ -54,7 +34,6 @@ export function supportsLiveDelivery(runId: string): boolean {
 
 export type ResumeRequester = (runId: string, message: RunMessage) => Promise<void>;
 let requestResume: ResumeRequester | null = null;
-/** Installed by the scheduler, which owns stopping a run and continuing its session. */
 export function setResumeRequester(requester: ResumeRequester | null): void { requestResume = requester; }
 
 export async function sendBtw(runId: string, input: { text?: unknown; interrupt?: unknown }): Promise<RunMessage> {
@@ -93,7 +72,6 @@ export async function sendBtw(runId: string, input: { text?: unknown; interrupt?
   return message;
 }
 
-/** Hands the agent every waiting note, and tells the operator each one landed. */
 export function drainInbox(runId: string): RunMessage[] {
   const delivered = workspaces.drainRunInbox(runId);
   for (const message of delivered) emit(message);
@@ -107,11 +85,6 @@ export function agentReply(runId: string, input: { text?: unknown }): RunMessage
   return message;
 }
 
-/**
- * The run ended with notes the agent never picked up. Marked so the operator
- * sees they were not read, rather than "waiting" forever. Must run before the
- * run leaves the hub, or the state change has nowhere to be shown.
- */
 export function supersedeUndelivered(runId: string): RunMessage[] {
   const settled: RunMessage[] = [];
   for (const message of workspaces.runMessages(runId)) {
@@ -122,7 +95,6 @@ export function supersedeUndelivered(runId: string): RunMessage[] {
   return settled;
 }
 
-/** Formats waiting notes for the shim to print ahead of whatever it was asked. */
 export function inboxPayload(runId: string): Array<{ id: number; text: string; sentAt: string }> {
   return drainInbox(runId).map((message) => ({ id: message.id, text: message.text, sentAt: message.createdAt }));
 }

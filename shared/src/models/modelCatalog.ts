@@ -1,32 +1,13 @@
 import { PROVIDER_IDS } from "../contracts/providers.ts";
 import type { ProviderId } from "../contracts/providers.ts";
 
-/* -------------------------------------------------------------------------- */
-/* Model catalog                                                               */
-/* -------------------------------------------------------------------------- */
-
 export interface ModelOption {
-  /**
-   * Exactly what gets handed to the provider (`options.model` for the Agent
-   * SDK, `-m <id>` for the CLIs). `null` means "send nothing and let the
-   * provider pick", which is what an unset CLAUDE_MODEL/CODEX_MODEL/... does.
-   */
   id: string | null;
-  /** Short name for the chip that sits next to the provider label. */
   label: string;
-  /** One-phrase positioning, shown in the dropdown. */
   hint: string;
-  /**
-   * Which pool the model is billed and served from, when the provider has more
-   * than one. `cursor` is Cursor's own pool (Composer, Cursor-hosted Grok, and
-   * the `auto` router); `vendor` is a frontier model billed against Anthropic,
-   * OpenAI, Google, Moonshot or Zhipu. Absent for providers that only ever
-   * serve their own models.
-   */
   pool?: ModelPool;
 }
 
-/** Global ceiling controlling which models may be used by any new run. */
 export const MODEL_ACCESS_TIERS = ["free", "efficient", "professional", "frontier", "all"] as const;
 export type ModelAccessTier = (typeof MODEL_ACCESS_TIERS)[number];
 export type ClassifiedModelTier = Exclude<ModelAccessTier, "all">;
@@ -34,7 +15,6 @@ export type ClassifiedModelTier = Exclude<ModelAccessTier, "all">;
 export const MODEL_SELECTION_MODES = ["manual", "auto"] as const;
 export type ModelSelectionMode = (typeof MODEL_SELECTION_MODES)[number];
 
-/** Provider-neutral reasoning levels supported by every adapter. */
 export const REASONING_EFFORTS = ["low", "medium", "high"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
@@ -97,16 +77,9 @@ const MODEL_TIER_RANK: Record<ClassifiedModelTier, number> = {
   frontier: 3,
 };
 
-/**
- * Conservative model classification used by both server enforcement and the
- * UI. A model has to be recognised to enter a restricted tier; new/unknown
- * ids remain reachable through All models without silently escaping a cap.
- */
 export function classifyModel(provider: ProviderId, modelId: string | null): ClassifiedModelTier | null {
   if (modelId === null) return null;
   const id = modelId.toLowerCase();
-  // Kilo's tier routers are models in the CLI catalog, but their tier is
-  // carried by the path rather than a model-family name.
   if (provider === "kilocode") {
     if (id === "kilo-auto/free") return "free";
     if (id === "kilo-auto/efficient") return "efficient";
@@ -114,8 +87,6 @@ export function classifyModel(provider: ProviderId, modelId: string | null): Cla
   }
   if (/(?:^|[-_/:.])free(?:$|[-_/:.])|zero[-_ ]?credit/.test(id)) return "free";
 
-  // Family comes before effort suffix: opus-low is still a frontier-priced
-  // family, not an efficient model merely because its reasoning is low.
   if (/opus|fable|gpt[-_.]?sol|\bsol\b/.test(id)) return "frontier";
   if (/haiku|gpt[-_.]?luna|\bluna\b|mini|flash|deepseek|\bglm\b|\bkimi\b|small|lite/.test(id)) {
     return "efficient";
@@ -125,14 +96,10 @@ export function classifyModel(provider: ProviderId, modelId: string | null): Cla
     return "professional";
   }
 
-  // Provider-native ids with no family marker are intentionally conservative.
-  // A maintainer can classify them by extending the rules; until then All
-  // models is the explicit escape hatch.
   void provider;
   return null;
 }
 
-/** Stable family label for grouping very large provider catalogs. */
 export function modelFamily(modelId: string | null): string {
   if (modelId === null) return "Provider default";
   const id = modelId.toLowerCase();
@@ -153,11 +120,6 @@ export function modelAllowedInTier(provider: ProviderId, modelId: string | null,
   return classified !== null && MODEL_TIER_RANK[classified] <= MODEL_TIER_RANK[tier];
 }
 
-/**
- * Effort Cursor already baked into a model id (`claude-sonnet-5-medium-fast`
- * → medium). `null` means the id has no effort token, so the spawn-time
- * `[effort=…]` override still applies.
- */
 export type BakedModelEffort = ReasoningEffort | "xhigh" | "max" | "none";
 
 export function bakedModelEffort(modelId: string | null): BakedModelEffort | null {
@@ -174,11 +136,6 @@ export function bakedModelEffort(modelId: string | null): BakedModelEffort | nul
   return token as BakedModelEffort;
 }
 
-/**
- * Cursor lists a separate id per effort. Other providers take effort as a
- * flag, so their catalogs are not filtered. High also matches Cursor's
- * xhigh/max ids because the Agents page only has three effort buttons.
- */
 export function modelMatchesEffort(
   provider: ProviderId,
   modelId: string | null,
@@ -233,7 +190,6 @@ const MODEL_DEFAULT_PREFERENCES: Record<ClassifiedModelTier, Record<ProviderId, 
   },
 };
 
-/** Best discovered model for a provider under the selected ceiling. */
 export function recommendedModel(
   provider: ProviderId,
   models: readonly ModelOption[],
@@ -242,10 +198,6 @@ export function recommendedModel(
   if (tier === "all") return null;
   const allowed = eligibleModels(provider, models, tier).filter((model): model is ModelOption & { id: string } => model.id !== null);
   if (allowed.length === 0) return null;
-  // A default nobody picked must not bill a separate allowance. Cursor's own
-  // pool (auto, Composer, Cursor-hosted Grok) is covered by the plan; its
-  // vendor pool (Opus, GPT, …) draws on the limited API budget. Pipeline
-  // fallbacks start Cursor with no model, so this is what they run on.
   const ownPool = allowed.filter((model) => model.pool === "cursor");
   if (ownPool.length > 0) return pickRecommended(provider, ownPool, tier);
   return pickRecommended(provider, allowed, tier);
@@ -256,9 +208,6 @@ function pickRecommended(
   allowed: ReadonlyArray<ModelOption & { id: string }>,
   tier: ModelAccessTier,
 ): string | null {
-  // Prefer the highest band the ceiling permits, then a provider-specific
-  // family. This makes Professional default to Sonnet/Terra rather than the
-  // first cheap entry while still falling back safely if an account lacks it.
   const targetBands: ClassifiedModelTier[] = tier === "frontier"
     ? ["frontier", "professional", "efficient", "free"]
     : tier === "professional"
@@ -278,14 +227,6 @@ function pickRecommended(
   return null;
 }
 
-/**
- * Resolve the model used by the global Auto Select policy. Providers that
- * expose a native router (`auto` for Cursor, `kilo-auto/*` for Kilo) keep
- * that router: the operator cannot override the pick, so a guessed vendor
- * slug that the CLI then rejects is worse than letting the provider choose.
- * Everyone else gets the best concrete account model. "All" has no spending
- * ceiling, so automatic selection targets the frontier band.
- */
 export function automaticModel(
   provider: ProviderId,
   models: readonly ModelOption[],
@@ -309,18 +250,11 @@ export function automaticModel(
 export const MODEL_POOLS = ["cursor", "vendor"] as const;
 export type ModelPool = (typeof MODEL_POOLS)[number];
 
-/** Section heading for a pool in the model picker. */
 export const MODEL_POOL_LABEL: Record<ModelPool, string> = {
   cursor: "Cursor pool",
   vendor: "Vendor pool",
 };
 
-/**
- * Bundled fallback used when runtime provider discovery is unavailable. The
- * server refreshes account-scoped catalogs during provider detection; this
- * snapshot keeps startup and model selection working while offline. Anything
- * missing here can still be typed in as a custom id.
- */
 export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
   claude: [
     { id: null, label: "default", hint: "whatever the Agent SDK picks" },
@@ -330,7 +264,6 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: "claude-opus-4-8", label: "opus 4.8", hint: "previous flagship" },
     { id: "claude-fable-5", label: "fable 5", hint: "most capable, priciest" },
   ],
-  // Slugs taken from the codex CLI's own model cache (~/.codex/models_cache.json).
   codex: [
     { id: null, label: "default", hint: "whatever `codex exec` picks" },
     { id: "gpt-5.6-sol", label: "5.6 sol", hint: "frontier agentic coding" },
@@ -340,15 +273,8 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: "gpt-5.4", label: "5.4", hint: "strong everyday coding" },
     { id: "gpt-5.4-mini", label: "5.4 mini", hint: "small, cheap, simple tasks" },
   ],
-  // The one provider whose list is machine-readable: `cursor-agent
-  // --list-models` is authoritative and account-scoped. Everything below the
-  // marker mirrors that output — refresh it from `cursor-agent --list-models`
-  // after a Cursor upgrade. Cursor retires ids between releases,
-  // and a stale id fails the run outright.
   cursor: [
     { id: null, label: "default", hint: "whatever cursor-agent picks" },
-    // <cursor-models:start> — mirrors `cursor-agent --list-models`
-    // Cursor's own pool (17)
     { id: "auto", label: "auto", hint: "Auto (default)", pool: "cursor" },
     { id: "composer-2.5", label: "composer 2.5", hint: "Composer 2.5", pool: "cursor" },
     { id: "cursor-grok-4.5-high", label: "grok 4.5 high", hint: "Grok 4.5", pool: "cursor" },
@@ -366,7 +292,6 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: "cursor-grok-4.5-low-fast", label: "grok 4.5 low fast", hint: "Grok 4.5 Low Fast", pool: "cursor" },
     { id: "cursor-grok-4.5-medium", label: "grok 4.5 medium", hint: "Grok 4.5 Medium", pool: "cursor" },
     { id: "cursor-grok-4.5-medium-fast", label: "grok 4.5 medium fast", hint: "Grok 4.5 Medium Fast", pool: "cursor" },
-    // Frontier vendor models (239)
     { id: "gpt-5.3-codex-low", label: "5.3 codex low", hint: "Codex 5.3 Low", pool: "vendor" },
     { id: "gpt-5.3-codex-low-fast", label: "5.3 codex low fast", hint: "Codex 5.3 Low Fast", pool: "vendor" },
     { id: "gpt-5.3-codex", label: "5.3 codex", hint: "Codex 5.3", pool: "vendor" },
@@ -606,26 +531,16 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
     { id: "kimi-k2.7-code", label: "kimi k2.7 code", hint: "Kimi K2.7 Code", pool: "vendor" },
     { id: "glm-5.2-high", label: "glm 5.2 high", hint: "GLM 5.2", pool: "vendor" },
     { id: "glm-5.2-max", label: "glm 5.2 max", hint: "GLM 5.2 Max", pool: "vendor" },
-    // <cursor-models:end>
   ],
-  // Reported by `grok models` on a logged-in CLI.
   grok: [
     { id: null, label: "default", hint: "whatever the grok CLI picks" },
     { id: "grok-4.6", label: "grok 4.6", hint: "current default" },
     { id: "grok-4.5", label: "grok 4.5", hint: "previous generation" },
   ],
-  // Copilot's model list is per-account: `--model` rejects anything the plan's
-  // picker does not expose, and a free plan exposes nothing but `auto`. Only the
-  // two entries every account has are listed; the ids a paid plan adds (and the
-  // routed model changes between releases) go through the custom field.
   copilot: [
     { id: null, label: "default", hint: "whatever the copilot CLI picks" },
     { id: "auto", label: "auto", hint: "Copilot routes the request" },
   ],
-  // Ids are the Kilo CLI's own `-m` values, `provider/model` with the model id
-  // itself carrying a vendor path. `~`-prefixed ids are the Kilo Gateway's
-  // pooled aliases — stable across gateway churn, which is why they (and not
-  // the ~300 concrete ids `kilo models` lists) are the offline fallback.
   kilocode: [
     { id: null, label: "default", hint: "whatever the kilo CLI picks" },
     { id: "kilo-auto/free", label: "Auto Free", hint: "Kilo routes to the best available free model" },
@@ -646,10 +561,6 @@ export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
   ],
 };
 
-/**
- * Display name for a model id: the catalog label when we know it, otherwise the
- * raw id (a custom entry the user typed in), and `null` when nothing is set.
- */
 export function modelLabel(
   provider: ProviderId,
   modelId: string | null,
@@ -660,16 +571,11 @@ export function modelLabel(
   return known?.label ?? modelId;
 }
 
-/**
- * Which pool a model is served from, or `null` when the provider has only one
- * (or the id is custom/unset, in which case the pool is unknowable offline).
- */
 export function modelPool(provider: ProviderId, modelId: string | null): ModelPool | null {
   if (modelId === null) return null;
   return MODEL_CATALOG[provider].find((option) => option.id === modelId)?.pool ?? null;
 }
 
-/** True when `modelId` is not one of the catalog entries for that provider. */
 export function isCustomModel(provider: ProviderId, modelId: string | null): boolean {
   if (modelId === null) return false;
   return !MODEL_CATALOG[provider].some((option) => option.id === modelId);

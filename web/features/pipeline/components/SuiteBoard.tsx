@@ -37,11 +37,6 @@ function positiveInt(raw: string | null): number | null {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-/**
- * A suite that no pipeline drives. Same layout, panel and action footer as the
- * pipeline board; there is no Play/Pause because there is no rail — each item
- * runs on its own from the panel.
- */
 export function SuiteBoard({ suiteId }: { suiteId: number }) {
   const console_ = useHydra();
   const router = useRouter();
@@ -257,7 +252,7 @@ export function SuiteBoard({ suiteId }: { suiteId: number }) {
                   </div>
                 </div>
 
-                {/* Same bar as a pipeline's, without the transport. */}
+                { }
                 <div className="sticky top-0 z-20 -mx-5 bg-surface-0 px-5 py-2">
                   <div className="flex flex-wrap items-center gap-3 rounded-panel border border-line bg-surface-1 px-4 py-2.5">
                     <p className="min-w-0 flex-1 text-xs leading-5 text-fg-muted">

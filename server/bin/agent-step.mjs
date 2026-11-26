@@ -1,22 +1,4 @@
 #!/usr/bin/env node
-/**
- * The one door an agent has to this app's records.
- *
- * The contract used to be a Markdown block telling the agent to compose `curl`
- * calls with a bearer token and a hand-made requestId. That put four things a
- * model can get wrong between it and a status post — the URL, the header, the
- * JSON, and the uniqueness of the id — and a run that got any of them wrong
- * looked exactly like a run that never tried. The completion-audit subsystem
- * exists largely to clean up after that.
- *
- * This is deliberately boring: no dependencies, no imports from the server, one
- * file, so it works under whatever a provider's sandbox allows. It reads its
- * credentials from the environment, generates its own requestId, retries the
- * failures worth retrying, and exits non-zero with something the agent can act
- * on rather than a stack trace.
- *
- * Usage is printed by `agent-step` with no arguments.
- */
 
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -83,7 +65,6 @@ function fail(message, code = 1) {
   process.exit(code);
 }
 
-/** Flags as --key value, which is all this needs and the least a model gets wrong. */
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -98,11 +79,6 @@ function parseArgs(argv) {
   return args;
 }
 
-/**
- * Retries only what is worth retrying: a connection refused because the server
- * is restarting, or a 5xx. A 4xx is the server saying the request itself is
- * wrong, and sending it again unchanged would just waste the run's budget.
- */
 async function send(path, init, attempt = 0) {
   let response;
   try {
@@ -122,7 +98,6 @@ async function send(path, init, attempt = 0) {
   return response;
 }
 
-/** Turns the server's own error code into something to do about it. */
 const ADVICE = {
   stale_status: "Someone else moved this work item. Run 'agent-step state' to see where it is now.",
   invalid_transition: "Only IN_PROGRESS may become DONE, BLOCKED or CONTINUE, and only once.",
@@ -147,7 +122,6 @@ const ADVICE = {
   input_already_pending: "Wait for the existing question set to be answered.",
 };
 
-/** One readable block per failing Verify command (409 verification_failed). */
 function formatVerificationFailures(failures) {
   if (!Array.isArray(failures) || failures.length === 0) return "";
   return failures.map((failure) => {
@@ -160,7 +134,6 @@ function formatVerificationFailures(failures) {
   }).join("") + "\n---";
 }
 
-/** Title collisions from a refused decompose (422 decompose_title_conflict). */
 function formatDecomposeConflicts(conflicts) {
   if (!Array.isArray(conflicts) || conflicts.length === 0) return "";
   return "\n" + conflicts.map((conflict) => {
@@ -171,13 +144,6 @@ function formatDecomposeConflicts(conflicts) {
   }).join("\n");
 }
 
-/**
- * Field-level refusals, one per line.
- *
- * A proposal is refused per field — `suites[2].name`, `prompts[0].content` —
- * and a model that is only told "Some of that proposal was refused" re-posts
- * the same body. Naming the field is what makes the next attempt different.
- */
 function formatFields(fields) {
   if (fields === null || typeof fields !== "object") return "";
   const entries = Object.entries(fields);
@@ -185,11 +151,6 @@ function formatFields(fields) {
   return "\n" + entries.map(([field, message]) => `  ${field}: ${message}`).join("\n");
 }
 
-/**
- * `/btw` notes from the operator ride on any response. Printed ahead of
- * everything else, because a note that says "stop, I already did that" is
- * worth nothing if it is read after the agent has acted on the old plan.
- */
 function printOperatorMessages(parsed) {
   const messages = parsed?.operatorMessages;
   if (!Array.isArray(messages) || messages.length === 0) return;
@@ -214,7 +175,7 @@ async function checkInbox({ quietWhenEmpty }) {
     fail(`agent-step: ${response.status} ${text}`, 2);
   }
   let parsed = null;
-  try { parsed = JSON.parse(text); } catch { /* ignore */ }
+  try { parsed = JSON.parse(text); } catch {  }
   const count = Array.isArray(parsed?.operatorMessages) ? parsed.operatorMessages.length : 0;
   printOperatorMessages(parsed);
   if (count === 0 && !quietWhenEmpty) process.stdout.write("No messages from the operator.\n");
@@ -227,7 +188,7 @@ async function post(path, body) {
   });
   const text = await response.text();
   let parsed = null;
-  try { parsed = JSON.parse(text); } catch { /* not JSON; the raw body is the message */ }
+  try { parsed = JSON.parse(text); } catch {  }
   printOperatorMessages(parsed);
   if (!response.ok) {
     const code = parsed?.error?.code ?? String(response.status);
@@ -238,12 +199,8 @@ async function post(path, body) {
       : code === "decompose_title_conflict"
         ? formatDecomposeConflicts(parsed?.error?.conflicts)
         : formatFields(parsed?.error?.fields);
-    // Non-zero and specific. A silently swallowed refusal is how a run ends
-    // believing it reported when it did not.
     fail(`agent-step: refused (${code}): ${message}${detail}${advice === undefined ? "" : `\n  ${advice}`}`, 2);
   }
-  // What a revision did, line by line: the keys of added items are in here,
-  // and a later post needs them.
   if (Array.isArray(parsed?.applied)) {
     for (const line of parsed.applied) process.stdout.write(`  ${line}\n`);
     if (typeof parsed.next === "string") process.stdout.write(`  ${parsed.next}\n`);
@@ -263,7 +220,6 @@ async function get(path) {
   const text = await response.text();
   if (!response.ok) fail(`agent-step: ${response.status} ${text}`, 2);
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
-  // Text responses cannot carry the notes inline; ask for them separately.
   await checkInbox({ quietWhenEmpty: true });
 }
 
@@ -325,10 +281,6 @@ switch (command) {
     if (payload === null || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.questions)) {
       fail("The file must be a JSON object with a questions array.");
     }
-    // A provider may kill a foreground tool after a few minutes even though
-    // the operator is still answering. A content-derived id lets the next
-    // invocation reattach to the same wait (or collect its completed answer)
-    // instead of opening a second question set.
     if (typeof payload.requestId !== "string" || payload.requestId.trim() === "") {
       payload.requestId = `input_${createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 24)}`;
     }
@@ -410,8 +362,6 @@ switch (command) {
     if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
       fail("The file must be a JSON object: {suite: \"S1\", prompts: [{title, content, dependsOn, gate}]}.");
     }
-    // --suite overrides the file, so one file can be re-posted against another
-    // suite without editing it.
     const suite = typeof args.suite === "string" ? args.suite : payload.suite;
     if (typeof suite !== "string" || suite.trim() === "") fail("agent-step propose-suite needs a suite key: --suite S1, or \"suite\" in the file.");
     await post("/propose-suite", { ...payload, suite });
@@ -421,7 +371,6 @@ switch (command) {
     if (typeof args.file !== "string") fail("agent-step revise needs --file changes.json");
     let payload;
     try { payload = JSON.parse(readFileSync(args.file, "utf8")); } catch (error) { fail(`Could not read ${args.file}: ${error.message}`); }
-    // A bare array is the list of changes; anything else must carry one.
     const changes = Array.isArray(payload) ? payload : payload?.changes;
     if (!Array.isArray(changes)) fail("The file must be {\"changes\": [{\"op\": \"update-item\", ...}]} or a JSON array of changes.");
     await post("/revise-program", { changes });

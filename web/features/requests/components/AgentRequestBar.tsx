@@ -16,17 +16,11 @@ import { ProviderModelPicker, useAgentChoice } from "../../programs/components/P
 interface Props {
   serverUrl: string;
   tree: WorkspaceTree;
-  /** What the request is about when it opens. It can be changed from the "About" menu. */
   initialTarget: AgentRequestTarget;
   initialMode?: AgentRequestMode;
-  /** A proposal was opened: `program:<id>` or `instructions:<id>`. */
   onProposalOpened(key: string): void | Promise<void>;
 }
 
-/*
- * Targets travel through the <select> as strings:
- *   workspace · new-program · instructions:claudeMd · program:3 · program:3:suite:7 · program:3:prompt:12
- */
 function encodeTarget(target: AgentRequestTarget): string {
   switch (target.kind) {
     case "workspace":
@@ -76,15 +70,6 @@ const PLACEHOLDERS: Record<AgentRequestTarget["kind"], Partial<Record<AgentReque
   },
 };
 
-/**
- * One place to ask an agent for anything in this workspace.
- *
- * Two choices frame every request: the target, which starts at whatever the
- * request was opened from but can be changed, and the mode, which says what
- * the agent may do. Modes that make no sense for a target are disabled with
- * the reason, using the same table the server enforces. `Ask` answers here;
- * every other mode opens a proposal, and nothing changes until it is applied.
- */
 export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = "ask", onProposalOpened }: Props) {
   const toast = useToast();
   const console_ = useHydra();
@@ -104,8 +89,6 @@ export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = 
 
   const [askedRunId, setAskedRunId] = useState<string | null>(null);
   const [ended, setEnded] = useState<RunStatus | null>(null);
-  // Live while the socket lists the run, then its closed record — kept here the
-  // moment it is seen, because `lastConsult` moves on when any other consult ends.
   const live = askedRunId === null ? undefined : console_.runs.find((run) => run.runId === askedRunId);
   const closed = askedRunId !== null && console_.lastConsult?.runId === askedRunId ? console_.lastConsult : null;
   if (closed !== null && closed !== ended) setEnded(closed);
@@ -143,7 +126,6 @@ export function AgentRequestBar({ serverUrl, tree, initialTarget, initialMode = 
     }
   };
 
-  // The suite or work item the request was opened from stays in the menu.
   const selectedProgram = initialTarget.kind === "program" ? tree.programs.find((program) => program.id === initialTarget.programId) ?? null : null;
   const selectedSuite = initialTarget.kind === "program"
     ? selectedProgram?.suites.find((suite) => suite.id === initialTarget.suiteId || suite.prompts.some((prompt) => prompt.id === initialTarget.promptId)) ?? null

@@ -2,11 +2,6 @@ import type { ProviderId } from "@hydra/shared";
 import { modelLabel } from "@hydra/shared";
 import { providerTheme } from "@/features/providers/lib/providerTheme";
 
-/**
- * The provider tag on every log row. When the run pinned a model, the chip
- * carries it too — so a transcript that mixes providers and models stays
- * readable without cross-referencing the header.
- */
 export function ProviderChip({
   provider,
   model = null,

@@ -35,7 +35,6 @@ import { sessionEndReason } from "@/features/runs/lib/sessionEndReason";
 
 const SESSION_STATES = ["STARTING", "RUNNING", "DONE", "INTERRUPTED", "ERROR"] as const;
 
-/** One row in the activity browser — a persisted session and/or a live run. */
 interface ActivityRow {
   id: string;
   threadId: string | null;
@@ -224,7 +223,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
-  // The URL owns the selection: a deep link or browser navigation reselects.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the route's ?run= is external state
     if (initialRunId !== null) setSelectedId(initialRunId);
@@ -317,10 +315,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
     ?? null;
   const activeId = selected?.id ?? null;
 
-  // List responses omit transcripts so a 30s poll cannot OOM the server. Load
-  // the shown thread's events only when it is opened (and not live). A detail
-  // fetched before a run finished (e.g. while it was still spawning) is stale:
-  // refetch it once the session list reports a different state or end time.
   const selectedRunIds = selected?.runIds ?? [];
   const selectedRunKey = selectedRunIds.join(":");
   useEffect(() => {
@@ -364,8 +358,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
       if (liveItems !== null) return [...items, ...liveItems];
       const detail = detailById[summary.id];
       const base = { runId: summary.id, provider: summary.provider as ProviderId, model: summary.model, timestamp: summary.startedAt };
-      // Pipeline and saved work-item runs carry no typed text: show the work
-      // item instead, with its markdown available on demand.
       const seeded = summary.displayText !== null && summary.displayText !== ""
         ? appendPrompt(items, { ...base, text: summary.displayText })
         : summary.promptId !== null
@@ -377,8 +369,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
           : items;
       return (detail?.events ?? []).reduce<LogItem[]>((next, event) => applyEvent(next, event), seeded);
     }, []);
-    // A socket run can arrive before the next session-list response. Show its
-    // stream immediately instead of waiting for the history poll to catch up.
     const listed = new Set(summaries.map(session => session.id));
     return [...captured, ...selected.runIds.filter(runId => !listed.has(runId)).flatMap(runId => itemsFor(runId))];
   }, [selected, sessions, runs, detailById, itemsFor]);
@@ -565,7 +555,6 @@ export function ActivityView({ initialRunId = null }: { initialRunId?: string | 
 }
 
 function usageForRow(row: ActivityRow): TokenUsage | null {
-  // Live runs keep the freshest counters on the snapshot; fall back to events.
   return mergeUsage(usageFromEvents(row.events), row.run?.usage ?? null);
 }
 

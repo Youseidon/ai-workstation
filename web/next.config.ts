@@ -1,19 +1,11 @@
 import { config as loadEnv } from "dotenv";
 import type { NextConfig } from "next";
 
-// One .env at the repo root configures both processes; Next would otherwise
-// only look inside web/.
 loadEnv({ path: "../.env", quiet: true });
 
 const nextConfig: NextConfig = {
-  // The event schema lives in a workspace package of raw TypeScript, shared
-  // verbatim with the server so the two can never drift.
   transpilePackages: ["@hydra/shared"],
-  // Hide the Next.js "N" route/bundler indicator in the bottom-left corner.
-  // Compile and runtime errors still surface; this only removes the badge.
   devIndicators: false,
-  // Agent instructions live in the repo-root AGENTS.md / CLAUDE.md. Without
-  // this, `next dev` recreates web/AGENTS.md and web/CLAUDE.md.
   agentRules: false,
   env: {
     NEXT_PUBLIC_AGENT_SERVER_URL:

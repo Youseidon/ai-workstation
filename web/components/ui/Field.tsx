@@ -10,12 +10,6 @@ import {
 } from "react";
 import { cn } from "@/lib/cn";
 
-/* --------------------------------------------------------------------------
-   Every input in the app is labelled, describable and able to show an error.
-   The old forms used bare placeholder-only inputs, which left screen readers
-   with nothing and sighted users with no label once they had typed.
-   -------------------------------------------------------------------------- */
-
 interface FieldShellProps {
   id: string;
   label?: ReactNode;
@@ -67,7 +61,6 @@ function FieldShell({
   );
 }
 
-/** Shared look for every text-like control. */
 const CONTROL = [
   "w-full min-w-0 rounded-md bg-surface-2 px-3 text-sm text-fg",
   "ring-1 ring-inset ring-line transition-shadow duration-150",

@@ -20,7 +20,6 @@ const sampleUsage: TokenUsage = {
 
 describe("billableInputTokens", () => {
   it("discounts cache reads to their cache-read rate", () => {
-    // Sonnet reads cache at a tenth of base input: 800k + 200k/10.
     assert.equal(billableInputTokens(sampleUsage, "claude", "claude-sonnet-5"), 820_000);
   });
 
@@ -30,12 +29,9 @@ describe("billableInputTokens", () => {
   });
 
   it("uses each provider's own cache ratio", () => {
-    // Grok reads cache at a quarter of base input, not a tenth.
     assert.equal(billableInputTokens(sampleUsage, "grok", "grok-4.6"), 850_000);
   });
 
-  // A transcript-heavy agentic run is almost entirely cache reads. Charging
-  // those in full is what stopped runs that had barely spent anything.
   it("keeps a mostly-cached run far below its raw input count", () => {
     const usage: TokenUsage = {
       inputTokens: 4_151_627,
@@ -64,7 +60,6 @@ describe("estimateCost", () => {
   });
 
   it("prices uncached + cached input and output at list rates", () => {
-    // Sonnet: $3 / $15 / $0.30 cache → (800k*3 + 200k*0.3 + 500k*15) / 1e6
     const cost = estimateCost(sampleUsage, "claude", "claude-sonnet-5");
     assert.equal(cost.rateSource, "model");
     assert.ok(cost.usd !== null);

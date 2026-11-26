@@ -93,7 +93,6 @@ describe("instruction edits made during a run", () => {
       assert.equal(proposed[0]!.runId, "run-1");
       assert.equal(proposed[0]!.baseline, "# original");
       assert.equal(proposed[0]!.content, "# rewritten by the agent");
-      // Nothing a run writes reaches the workspace until someone applies it.
       assert.equal(ctx.reload().claudeMd, "# original");
       assert.equal(readFileSync(ctx.claude, "utf8"), "# original\n");
     } finally { ctx.cleanup(); }
@@ -126,8 +125,6 @@ describe("instruction edits made during a run", () => {
       materialize(ctx.workspace);
       unlinkSync(ctx.claude);
       writeFileSync(ctx.agents, "   \n");
-      // Proposing an empty file would invite the operator to disarm every later
-      // run in this workspace, which is never what deleting one file meant.
       assert.equal(proposeFromWorkingTree(ctx.workspace.id, null).length, 0);
       assert.equal(ctx.reload().claudeMd, "# original");
     } finally { ctx.cleanup(); }
@@ -233,8 +230,6 @@ describe("git-tracked projections", () => {
       execFileSync("git", ["add", "CLAUDE.md"], { cwd: ctx.dir });
       console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
       materialize(ctx.workspace);
-      // .gitignore cannot hide a tracked file, so the only honest move is to
-      // say so and name the command — untracking is a change to the user's index.
       assert.ok(warnings.some((line) => /tracked by git/.test(line) && /git rm --cached CLAUDE\.md/.test(line)), warnings.join("\n"));
     } finally { console.error = original; ctx.cleanup(); }
   });

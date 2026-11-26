@@ -14,13 +14,6 @@ import { SERVER_URL } from "@/api/serverUrl";
 import type { RunStatus } from "@/models/runs";
 import { actionSettled, type PipelineTarget, type StopAction } from "../lib/stopTargets";
 
-/**
- * The one place the app stops things. Every Stop and Pause control opens this
- * rather than acting on its own, so the operator always sees the same three
- * choices worded the same way, and a second click lands on a spinner instead
- * of a second request.
- */
-
 interface Focus { runId?: string; pipelineId?: number }
 interface Pending { id: number; action: StopAction; runId: string | null; resolvedAt: number | null }
 
@@ -41,7 +34,6 @@ const BUSY_LABEL: Record<StopAction, string> = {
   stopAgent: "Stopping…",
 };
 
-/** A stop the server accepted but that never showed up is dropped after this, so a spinner cannot stick. */
 const SETTLE_TIMEOUT_MS = 20_000;
 
 export function StopCenterProvider({ children }: { children: ReactNode }) {
@@ -50,13 +42,9 @@ export function StopCenterProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
   const [focus, setFocus] = useState<Focus | null>(null);
   const [pending, setPending] = useState<Record<string, Pending>>({});
-  // State updates are async; refs are what actually stop the second click.
   const inFlight = useRef(new Set<string>());
   const nextId = useRef(0);
 
-  // A spinner stays until the server's own state shows the action took effect:
-  // a stop is done when the agent leaves the live run list, not when the HTTP
-  // call returns. Derived here rather than deleted in an effect.
   const live = useMemo(() => Object.fromEntries(Object.entries(pending).filter(([key, entry]) => entry.resolvedAt === null
     || !actionSettled(entry.action, { pipeline: targets.pipelines.find((target) => target.key === key), runId: entry.runId }, runs))), [pending, targets, runs]);
   const liveRef = useRef(live);
@@ -78,7 +66,6 @@ export function StopCenterProvider({ children }: { children: ReactNode }) {
       const shortfall = await call();
       if (typeof shortfall === "string") toast.warning("Resumed, but no agent started", shortfall);
       setPending((current) => current[key]?.id === id ? { ...current, [key]: { ...current[key], resolvedAt: Date.now() } } : current);
-      // The server accepted it; never let a missed update leave a spinner up.
       setTimeout(() => drop(key, id), SETTLE_TIMEOUT_MS);
     } catch (error) {
       drop(key, id);
@@ -89,8 +76,6 @@ export function StopCenterProvider({ children }: { children: ReactNode }) {
     refresh();
   }, [drop, refresh, toast]);
 
-  // The socket announces run endings; pipeline state arrives with the next
-  // operations read, so poll gently while something is still settling.
   const settling = Object.values(live).some((entry) => entry.resolvedAt !== null);
   useEffect(() => {
     if (!settling) return;
@@ -125,8 +110,6 @@ function StopCenterModal({ focus, onClose, pending, perform }: { focus: Focus | 
     body.current?.querySelector(`[data-stop-key="${CSS.escape(focusKey)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [focusKey]);
 
-  // Stop from a pipeline page can name a run with nothing live here, such as
-  // one interrupted by a restart and waiting to resume on its own.
   const orphan = focus?.pipelineId !== undefined && !targets.pipelines.some((target) => target.pipelineId === focus.pipelineId) ? focus.pipelineId : null;
   const nothing = targets.pipelines.length === 0 && targets.agents.length === 0 && orphan === null;
   return (
@@ -243,7 +226,6 @@ function Option({ action, label, hint, variant, onClick, pending, disabled }: Op
   );
 }
 
-/** The single stop icon. Lives in the top rail, so it is on every page. */
 export function StopCenterButton() {
   const { open } = useStopCenter();
   const pending = useContext(PendingContext);
@@ -260,10 +242,6 @@ export function StopCenterButton() {
   );
 }
 
-/**
- * A quiet line under the rail saying what is about to happen, so a pause the
- * operator asked for is visibly in progress rather than looking ignored.
- */
 export function StopNotices() {
   const pending = useContext(PendingContext);
   const { targets } = useFleetMetadata();

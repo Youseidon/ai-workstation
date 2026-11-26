@@ -5,11 +5,6 @@ import { apiFetch } from "@/api/http";
 import { useEffect, useState } from "react";
 import type { ProviderId, ProviderInfo } from "@hydra/shared";
 
-/**
- * The providers this server can start, and the first available one as a
- * default. Panels that start an agent still work by hand without one, so a
- * failed detection is an empty list rather than an error.
- */
 export function useProviders(serverUrl: string): { providers: ProviderInfo[]; firstAvailable: ProviderId | "" } {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   useEffect(() => {
@@ -21,7 +16,6 @@ export function useProviders(serverUrl: string): { providers: ProviderInfo[]; fi
         const body = (await response.json()) as { providers: ProviderInfo[] };
         if (!cancelled) setProviders(body.providers);
       } catch {
-        /* no provider detected; the caller shows that */
       }
     })();
     return () => { cancelled = true; };

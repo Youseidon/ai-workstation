@@ -113,8 +113,6 @@ test("Cursor probe accepts an observed denial, independent of the model's final 
   const root = mkdtempSync(join(tmpdir(), "cursor-policy-probe-pass-"));
   const binary = join(root, "fake-cursor");
   const plugin = createCursorPolicy({ root, policy });
-  // The fake transport actually invokes the installed hook, rather than merely
-  // claiming in its final text that a command was blocked.
   writeFileSync(binary, `#!/bin/sh\nprintf '%s' '{"hook_event_name":"beforeShellExecution","command":"printf HYDRA_POLICY_PROBE_test"}' | '${process.execPath}' '${hook}' '${plugin.manifest}'\n`, { mode: 0o700 });
   try { await probeCursorPolicy(binary, plugin, "auto", new AbortController().signal); }
   finally { plugin.dispose(); rmSync(root, { recursive: true, force: true }); }

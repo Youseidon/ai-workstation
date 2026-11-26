@@ -7,10 +7,6 @@ import { RightNowSummary } from "./PipelineInspector";
 import { STUDIO_ICONS, STUDIO_SECTIONS, type StudioSection } from "./PipelineStudio";
 import type { PipelineStatusView } from "../lib/status";
 
-/**
- * The drawer's pipeline view: what is happening, the last few runs, and a
- * launcher into the studio for everything else. No tab strip — one scroll.
- */
 export function PipelineOverviewPanel({
   saved,
   status,

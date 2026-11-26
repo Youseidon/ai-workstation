@@ -3,11 +3,6 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
 
-/**
- * Static ownership checks for the one application layout. The shell owns the sidebar, the main
- * landmark, the viewport and the overlay layer; routes and features own
- * content only. Each rule names what it protects.
- */
 const root = new URL("../../..", import.meta.url).pathname;
 function files(dir: string): string[] {
   return readdirSync(join(root, dir)).flatMap((name) => {

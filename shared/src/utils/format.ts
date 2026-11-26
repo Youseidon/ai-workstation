@@ -1,7 +1,3 @@
-/* -------------------------------------------------------------------------- */
-/* Small shared helpers                                                        */
-/* -------------------------------------------------------------------------- */
-
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -12,10 +8,6 @@ export function formatElapsed(ms: number): string {
   return `${seconds}s`;
 }
 
-/**
- * Compact countdown to a reset instant. Null when the timestamp is missing
- * or unparseable. Omits seconds: "3h 12m", "4d 8h", or "soon".
- */
 export function formatResetIn(iso: string | null, now = Date.now()): string | null {
   if (iso === null) return null;
   const target = Date.parse(iso);
@@ -36,7 +28,6 @@ export function formatTokens(count: number): string {
   return `${(count / 1_000_000).toFixed(2)}M`;
 }
 
-/** Collapse arbitrary text to a single line suitable for a collapsed log row. */
 export function oneLine(value: string, max = 160): string {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;

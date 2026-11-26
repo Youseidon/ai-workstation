@@ -55,7 +55,6 @@ test("verdict is derived when the agent states none, and never over-reports a pa
 | B | UNVERIFIED |
 `);
   assert.equal(items.length, 2);
-  // An unverified item is not a passing suite.
   assert.equal(deriveVerdict("no verdict line here", items), "WARNING");
   assert.equal(deriveVerdict("no verdict line", parseReportItems("| Item | Status |\n|---|---|\n| A | PASS |")), "PASS");
 });
@@ -75,6 +74,5 @@ test("a report with no parsable table yields no items and never throws", () => {
   const prose = "I checked everything and it all looks fine to me.";
   const items = parseReportItems(prose);
   assert.deepEqual(items, []);
-  // No items is not evidence of success.
   assert.equal(deriveVerdict(prose, items), "WARNING");
 });

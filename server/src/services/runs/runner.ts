@@ -26,20 +26,11 @@ import { newId } from "../../utils/ids.ts";
 import { createLogger } from "../../utils/logger.ts";
 import type { PermissionOverride } from "../../contracts/agentAdapter.ts";
 
-/** How long a provider gets to stop cleanly before the run is hard-aborted. */
 const INTERRUPT_GRACE_MS = 2000;
-/** Fraction of any budget at which the run is warned to bank its work. */
 const BUDGET_WARN_FRACTION = 0.8;
 const redactRunCredentials=(value:string)=>value.replace(/Bearer\s+[A-Za-z0-9_-]{20,}/g,"Bearer [REDACTED_RUN_TOKEN]");
 function redactValue(value:unknown):unknown { if(typeof value==="string")return redactRunCredentials(value);if(Array.isArray(value))return value.map(redactValue);if(value!==null&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,redactValue(item)]));return value; }
 
-/**
- * Keeps a tool result readable while stopping one command from flooding the
- * context. Head and tail both survive because the interesting parts of a long
- * output are the first lines (what ran) and the last (how it ended); the middle
- * of a 60 KB build log is what nobody needs and everybody pays for on every
- * subsequent turn.
- */
 export function truncateToolOutput(output: string, limit: number): { output: string; truncated: boolean } {
   if (limit <= 0 || output.length <= limit) return { output, truncated: false };
   const head = Math.max(0, Math.floor(limit * 0.6));
@@ -49,7 +40,6 @@ export function truncateToolOutput(output: string, limit: number): { output: str
   return { output: `${output.slice(0, head)}${marker}${output.slice(output.length - tail)}`, truncated: true };
 }
 
-/** A snapshot with every budget disabled, for tests and unmetered roles. */
 export function emptyBudgetSnapshot(): BudgetSnapshot {
   const none = { used: 0, limit: null };
   return { toolCalls: none, wallClockMs: none, inputTokens: none, toolOutputBytes: none, openToolCallMs: none, pressure: 0, warning: null, exhausted: false };
@@ -60,28 +50,18 @@ export function runRoleStartError(role: RunRole, provider: string): string | nul
   return null;
 }
 
-/**
- * Owns everything that is true of a run regardless of provider: the run id,
- * server-side elapsed clock, periodic status heartbeat, cumulative token usage,
- * and terminal state. Adapters only describe what the agent did.
- */
 export function startRun(args: StartRunArgs): RunHandle {
   const { adapter, prompt } = args;
   const runId = args.runId ?? newId("run");
   const provider = adapter.id;
   const log = createLogger(`${provider}:${runId.slice(4, 12)}`);
   const cwd = args.cwd;
-  // Resolved once: settings could change mid-run, but a run reports the model
-  // it actually started with from its first event to its last.
   const requestedModel = args.model ?? adapter.model;
   const tier = settings.modelAccessTier;
   const effort = settings.reasoningEffortFor(provider);
   const allowed = modelAllowedInTier(provider, requestedModel, tier)
     && modelMatchesEffort(provider, requestedModel, effort);
   const fallbackTier = tier === "all" ? "frontier" : tier;
-  // Auto Select already resolved the model through the live account catalog.
-  // Replacing it from the bundled snapshot can swap in a retired Cursor id
-  // the operator cannot override.
   const model = args.preserveModel || allowed || settings.modelSelectionMode === "auto"
     ? requestedModel
     : recommendedModel(
@@ -106,15 +86,11 @@ export function startRun(args: StartRunArgs): RunHandle {
   let interruptRequested = false;
   let completionRequested = false;
 
-  // One allowance for every run, whatever the work item's depth: see
-  // `settings.budgetFor`. A sub-step used to get half of it, which is what
-  // killed runs three minutes in while they were still reading.
   const base = settings.budgetFor();
   const budget: RunBudget = {
     maxTotalTokens:args.budget?.maxTotalTokens ?? null,
     maxToolCalls: args.budget?.maxToolCalls !== undefined ? args.budget.maxToolCalls : base.maxToolCalls,
     maxWallClockMs: args.budget?.maxWallClockMs !== undefined ? args.budget.maxWallClockMs : base.maxWallClockMs,
-    // The spend cap, priced for this run's own provider and model.
     maxInputTokens: args.budget?.maxInputTokens !== undefined
       ? args.budget.maxInputTokens
       : inputTokenAllowance(base.maxSpendUsd, provider, model),
@@ -138,7 +114,6 @@ export function startRun(args: StartRunArgs): RunHandle {
   const ratio = (used: number, limit: number | null): number =>
     limit === null || limit <= 0 ? 0 : used / limit;
 
-  // What the input budget meters: cache reads discounted to their real cost.
   const spentInputTokens = (): number => billableInputTokens(usage, provider, model);
 
   const budgetSnapshot = (): BudgetSnapshot => {
@@ -165,7 +140,6 @@ export function startRun(args: StartRunArgs): RunHandle {
     };
   };
 
-  /** Returns a stop reason once any budget is spent, otherwise null. */
   const breachedBudget = (): string | null => {
     if(budget.maxTotalTokens!==null && budget.maxTotalTokens!==undefined && usage && Math.max(usage.totalTokens,usage.inputTokens+usage.outputTokens)>=budget.maxTotalTokens) return `budget_total_tokens:${budget.maxTotalTokens}`;
 
@@ -189,9 +163,6 @@ export function startRun(args: StartRunArgs): RunHandle {
           elapsedMs: event.payload.elapsedMs ?? elapsed(),
           usage: stampUsage(event.payload.usage),
           detail: event.payload.detail ?? null,
-          // Carried through rather than defaulted: this payload is rebuilt
-          // field by field, so anything not named here is dropped, and a
-          // dropped session id is a wrap-up turn that cannot resume.
           ...(event.payload.sessionId === undefined ? {} : { sessionId: event.payload.sessionId }),
         };
         return { ...base, type: "status", payload };
@@ -235,17 +206,12 @@ export function startRun(args: StartRunArgs): RunHandle {
     if (normalized.type === "status" || normalized.type === "result") {
       usage = mergeUsage(usage, normalized.payload.usage);
     }
-    // First one wins: a provider that renames its session mid-run would leave
-    // the wrap-up turn resuming something the source run did not have.
     if (normalized.type === "status" && sessionId === null) {
       const announced = normalized.payload.sessionId;
       if (typeof announced === "string" && announced !== "") sessionId = announced;
     }
     if (normalized.type === "tool_use") {
       toolCalls += 1;
-      // A thrash loop repeats the same call with the same input. Hashing the
-      // head of the input rather than all of it keeps a long file write from
-      // looking unique on a trailing byte.
       const signature = `${normalized.payload.name}:${createHash("sha256").update(JSON.stringify(normalized.payload.input)).digest("hex")}`;
       if (signature === repeatSignature) repeatCount += 1;
       else { repeatSignature = signature; repeatCount = 1; }
@@ -273,8 +239,6 @@ export function startRun(args: StartRunArgs): RunHandle {
       if (open?.timer !== null && open?.timer !== undefined) clearTimeout(open.timer);
       openTools.delete(normalized.payload.toolUseId);
       toolOutputBytes += Buffer.byteLength(normalized.payload.output);
-      // A successful response establishes liveness, not advancement. In
-      // particular, identical status polls must still trip the repeat bound.
     }
     if (normalized.type === "result") {
       if (normalized.payload.stopReason !== null && normalized.payload.stopReason !== undefined) {
@@ -298,11 +262,6 @@ export function startRun(args: StartRunArgs): RunHandle {
     }
   };
 
-  /**
-   * Ends the run the same way a posted terminal status does, rather than
-   * aborting. An abort loses everything the run has done; the caller records
-   * BLOCKED with whatever was banked, so the work is resumable.
-   */
   const stopForBudget = async (): Promise<void> => {
     completionRequested = true;
     void adapter.interrupt(runId).catch((error: unknown) => log.warn("budget stop failed", error));
@@ -315,8 +274,6 @@ export function startRun(args: StartRunArgs): RunHandle {
     payload: { state: "starting", detail: model === null ? `cwd ${cwd}` : `${model} · cwd ${cwd}` },
   });
 
-  // Server-side clock: the browser renders what the server reports rather than
-  // running its own timer that drifts from the real run.
   const ticker = setInterval(() => {
     if (finished) return;
     emit({ type: "status", payload: { state: "running" } });
@@ -346,7 +303,6 @@ export function startRun(args: StartRunArgs): RunHandle {
         if (event.type === "result") {
           sawResult = true;
           finalState = event.payload.state ?? "done";
-          // No more heartbeats once the provider has reported a terminal state.
           clearInterval(ticker);
         }
         if (event.type === "error" && event.payload.fatal === true) sawFatalError = true;
@@ -395,8 +351,6 @@ export function startRun(args: StartRunArgs): RunHandle {
       if (finished) return;
       interruptRequested = true;
       log.info("interrupt requested");
-      // Ask the adapter to stop gracefully, but never block on it: a provider
-      // whose interrupt hangs must not leave the run un-cancellable.
       void adapter.interrupt(runId).catch((error: unknown) => log.warn("graceful interrupt failed", error));
       await new Promise((resolvePromise) => setTimeout(resolvePromise, INTERRUPT_GRACE_MS));
       if (!finished) {
@@ -408,9 +362,6 @@ export function startRun(args: StartRunArgs): RunHandle {
       if (finished) return;
       completionRequested = true;
       log.info("terminal status posted; stopping provider");
-      // The provider transports only expose cancellation. At this point the
-      // database status is authoritative, so cancellation is translated to a
-      // successful process end by the runner.
       void adapter.interrupt(runId).catch((error: unknown) => log.warn("completion stop failed", error));
       await new Promise((resolvePromise) => setTimeout(resolvePromise, INTERRUPT_GRACE_MS));
       if (!finished) {

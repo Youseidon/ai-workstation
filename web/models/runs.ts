@@ -5,13 +5,11 @@ export type ConnectionState = "connecting" | "open" | "disconnected";
 export interface RunStatus {
   runId: string;
   provider: ProviderId;
-  /** The model this run resolved to on the server, not the current selection. */
   model: string | null;
   role: RunRole;
   permissionMode: string | null;
   state: RunState;
   elapsedMs: number;
-  /** Server timestamp accompanying the last elapsed sample, for waiting clocks. */
   clockAt?: string;
   usage: TokenUsage | null;
   detail: string | null;

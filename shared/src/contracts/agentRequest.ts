@@ -1,15 +1,3 @@
-/**
- * One way to ask an agent for something in a workspace.
- *
- * Every request is a target (what the agent should look at or change) and a
- * mode (what it is allowed to do about it). Which modes make sense depends on
- * the target, and that table lives here so the request bar and the server
- * refuse exactly the same combinations.
- *
- * Nothing a request produces changes the workspace by itself: `ask` is a
- * read-only consult, and every other mode opens a proposal the operator applies.
- */
-
 import type { WorkspaceInstructionField } from "./workspaces.ts";
 
 export const INSTRUCTION_FILE_NAMES: Record<WorkspaceInstructionField, string> = {
@@ -21,23 +9,11 @@ export function isInstructionField(value: unknown): value is WorkspaceInstructio
   return value === "claudeMd" || value === "agentsMd";
 }
 
-/* -------------------------------------------------------------------------- */
-/* Instruction proposals                                                      */
-/* -------------------------------------------------------------------------- */
-
 export const INSTRUCTION_PROPOSAL_STATES = ["PENDING", "APPLIED", "DISCARDED"] as const;
 export type InstructionProposalState = (typeof INSTRUCTION_PROPOSAL_STATES)[number];
 
-/**
- * Where a proposal came from.
- *
- * `request` was asked for from the request bar. `run` was found in the working
- * tree after a run edited the file on its own; it is held for review the same
- * way instead of being written into the workspace silently.
- */
 export type InstructionProposalOrigin = "request" | "run";
 
-/** Same bound the workspace fields have. */
 export const INSTRUCTION_CONTENT_MAX = 64000;
 
 export interface InstructionProposalRecord {
@@ -47,24 +23,16 @@ export interface InstructionProposalRecord {
   state: InstructionProposalState;
   origin: InstructionProposalOrigin;
   goal: string;
-  /** The run writing it (`request`) or the run that made the edit (`run`). */
   runId: string | null;
-  /** The stored text when the proposal was opened. Apply refuses if it has moved. */
   baseline: string;
-  /** The proposed text. Starts equal to `baseline` until an agent or the operator edits it. */
   content: string;
   createdAt: string;
   updatedAt: string;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Requests                                                                   */
-/* -------------------------------------------------------------------------- */
-
 export type AgentRequestTarget =
   | { kind: "workspace" }
   | { kind: "instructions"; field: WorkspaceInstructionField }
-  /** A program, optionally narrowed to one suite or work item inside it. */
   | { kind: "program"; programId: number; suiteId?: number | null; promptId?: number | null }
   | { kind: "new-program" };
 
@@ -78,11 +46,6 @@ export const AGENT_REQUEST_MODE_LABELS: Record<AgentRequestMode, { label: string
   edit: { label: "Edit myself", action: "Open a proposal", hint: "Opens a proposal for you to edit by hand, without an agent." },
 };
 
-/**
- * Why a mode cannot be used on a target, or null when it can.
- *
- * The reason is the tooltip on a disabled mode, so it says what to pick instead.
- */
 export function agentRequestModeBlock(target: AgentRequestTarget, mode: AgentRequestMode): string | null {
   switch (target.kind) {
     case "workspace":
@@ -103,7 +66,6 @@ export interface AgentRequest {
   target: AgentRequestTarget;
   mode: AgentRequestMode;
   text: string;
-  /** Required for every mode except `edit`. */
   provider?: string;
   model?: string | null;
 }
@@ -113,7 +75,6 @@ export const AGENT_REQUEST_TEXT_MAX = 16000;
 const positiveId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const optionalId = (value: unknown): value is number | null | undefined => value === undefined || value === null || positiveId(value);
 
-/** Parses a request body. Checks shape and the mode table; ids are resolved by the server. */
 export function normalizeAgentRequest(input: unknown): { ok: true; value: AgentRequest } | { ok: false; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
   const raw = (input ?? {}) as Record<string, unknown>;
@@ -159,24 +120,13 @@ export function normalizeAgentRequest(input: unknown): { ok: true; value: AgentR
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Line diff                                                                  */
-/* -------------------------------------------------------------------------- */
-
 export interface DiffLine {
   kind: "same" | "added" | "removed";
   text: string;
 }
 
-/** Past this many line pairs the table would be too large; the diff falls back to replace-all. */
 const DIFF_CELL_LIMIT = 4_000_000;
 
-/**
- * A line diff for reviewing a proposed instruction file.
- *
- * Longest common subsequence over lines, after trimming the shared head and
- * tail so the table only covers the region that actually changed.
- */
 export function diffLines(before: string, after: string): DiffLine[] {
   const a = before === "" ? [] : before.replace(/\n$/, "").split("\n");
   const b = after === "" ? [] : after.replace(/\n$/, "").split("\n");

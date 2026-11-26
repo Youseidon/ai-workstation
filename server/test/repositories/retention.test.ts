@@ -1,9 +1,3 @@
-/**
- * Claims from docs/pipeline-redesign/prompts/08-cleanup.md §1:
- * a run with 10 000 events keeps eventsPerRun, with the last keepFinalEvents
- * intact and in order; aged runs thin to the final tail only.
- */
-
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -58,7 +52,6 @@ function event(n: number, runId: string): NormalizedEvent {
   };
 }
 
-/** Tests need an old ended_at; the public API always stamps "now". */
 function backdateEndedAt(runId: string, iso: string): void {
   const side = new Database(workspaces.databasePath);
   try {
@@ -81,7 +74,6 @@ test("a run with 10 000 events keeps eventsPerRun with the last keepFinalEvents 
     assert.equal(before.length, total);
 
     const result = await sweepRunEvents({ pauseMs: 0 });
-    // The shared test database may hold other runs; assert on this run only.
     assert.ok(result.deleted >= total - 4000);
     assert.equal(result.keptFinalIntact, true);
 

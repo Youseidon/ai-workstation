@@ -4,12 +4,6 @@ import { useState, type CSSProperties } from "react";
 import { formatSettingValue, type SettingScale } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 
-/**
- * The values a slider can land on: the field's own ladder, plus whatever is
- * saved or typed, so an off-ladder value is shown where it sits instead of
- * snapping to a neighbour. "No limit" is the far end, not the near one — it is
- * the most a field can allow, even though it is stored as 0.
- */
 export function ladder(scale: SettingScale, ...extra: number[]): number[] {
   const values = [...new Set([...scale.stops, ...extra])].filter((value) => Number.isFinite(value) && value >= 0);
   const sorted = values.filter((value) => value !== 0).sort((a, b) => a - b);
@@ -36,11 +30,6 @@ interface Props {
   onChange(value: number): void;
 }
 
-/**
- * A numeric setting as a track of named stops. Dragging moves between values
- * that mean something ("1h 30m", "$100", "No limit"); the readout turns into a
- * plain number box for the rare value that is not on the ladder.
- */
 export function StopSlider({ id, labelledBy, value, defaultValue, scale, disabled, onChange }: Props) {
   const stops = ladder(scale, value, defaultValue);
   const last = stops.length - 1;
@@ -67,7 +56,7 @@ export function StopSlider({ id, labelledBy, value, defaultValue, scale, disable
         aria-valuetext={formatSettingValue(value, scale)}
         onChange={(event) => onChange(stops[Number(event.target.value)] ?? value)}
       />
-      {/* The thumb's centre travels between 8px insets, so the ticks do too. */}
+      { }
       <div className="relative mx-2 mt-1 h-4" aria-hidden>
         {stops.map((stop, position) => (
           <button
@@ -92,10 +81,6 @@ export function StopSlider({ id, labelledBy, value, defaultValue, scale, disable
   );
 }
 
-/**
- * The current value in words, on the setting's title line. Click it to type an
- * exact number in the field's stored unit.
- */
 export function ValueReadout({
   value,
   scale,
@@ -156,7 +141,6 @@ export function ValueReadout({
   );
 }
 
-/** A bare number with no ladder: step it, or type it. */
 export function NumberStepper({
   id,
   value,

@@ -10,9 +10,7 @@ import { ProviderModelPicker, useAgentChoice } from "../../programs/components/P
 
 interface Props {
   proposal: InstructionProposalRecord;
-  /** The file's stored text right now, to tell whether the proposal is stale. */
   current: string;
-  /** An agent is writing this proposal at the moment. */
   writing: boolean;
   providers: ProviderInfo[];
   busy: boolean;
@@ -23,7 +21,6 @@ interface Props {
   onDelete(): Promise<void>;
 }
 
-/** Unchanged lines kept around each change; longer unchanged runs fold. */
 const CONTEXT = 3;
 
 type Hunk = { kind: "lines"; lines: DiffLine[] } | { kind: "fold"; lines: DiffLine[] };
@@ -44,14 +41,6 @@ function hunks(lines: DiffLine[]): Hunk[] {
   return out;
 }
 
-/**
- * A proposed CLAUDE.md or AGENTS.md, read as a diff and applied by hand.
- *
- * The diff is recomputed from the text on screen, so an edit in the Edit tab
- * shows up in Changes before it is saved. Apply refuses a proposal whose
- * baseline is no longer the stored file; the button then says so, and forcing
- * it is a separate, explicit choice.
- */
 export function InstructionProposalEditor({ proposal, current, writing, providers, busy, onSave, onApply, onRework, onDiscard, onDelete }: Props) {
   const name = INSTRUCTION_FILE_NAMES[proposal.field];
   const [content, setContent] = useState(proposal.content);

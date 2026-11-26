@@ -9,26 +9,17 @@ export interface PaletteEntry {
   id: string;
   group: string;
   label: string;
-  /** Second line: where it is or what it does. */
   hint?: string;
-  /** Extra words to match that are not shown. */
   keywords?: string;
   icon?: ReactNode;
-  /** Right-aligned: a key hint, a status. */
   trailing?: ReactNode;
   disabled?: string;
   run(): void;
 }
 
-/**
- * "Find anything" for a page with too much in it: steps, suites, settings and
- * actions answer the same query, ranked by where the words match. Opened with
- * ⌘K, Ctrl+K or "/", driven entirely from the keyboard.
- */
 export function CommandPalette({ open, onClose, entries, placeholder = "Find a step, setting or action…" }: {
   open: boolean;
   onClose(): void;
-  /** Called when the palette opens, so the page builds its index only on demand. */
   entries(): PaletteEntry[];
   placeholder?: string;
 }) {
@@ -48,7 +39,6 @@ export function CommandPalette({ open, onClose, entries, placeholder = "Find a s
   }, [open]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Snapshot the index when opened; the page does not rebuild it per keystroke.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilt on each open only
   const index = useMemo(() => (open ? entries() : []), [open]);
   const results = useMemo(() => rank(index, query), [index, query]);
@@ -114,7 +104,6 @@ export function CommandPalette({ open, onClose, entries, placeholder = "Find a s
   );
 }
 
-/** Every word must match somewhere; label hits outrank hint and keyword hits. */
 function rank(entries: PaletteEntry[], query: string): Array<{ name: string; items: PaletteEntry[] }> {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const scored = entries.flatMap((entry) => {

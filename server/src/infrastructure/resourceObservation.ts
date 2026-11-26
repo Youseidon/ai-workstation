@@ -21,7 +21,7 @@ export function observeResources(pid:number,outputVersion:string,previous:Resour
       const cpu=counters(join("/sys/fs/cgroup",cgroup,"cpu.stat"));cpuTicks=(cpu.get("usage_usec")??0)/10000;
       const io=readFileSync(join("/sys/fs/cgroup",cgroup,"io.stat"),"utf8");ioBytes=[...io.matchAll(/\b(?:rbytes|wbytes)=(\d+)/g)].reduce((total,match)=>total+Number(match[1]),0);
     }
-  } catch { /* unavailable telemetry is unknown, never a zero charge */ }
+  } catch {  }
   const advancement=!!previous && (previous.outputVersion!==outputVersion || (ioBytes!==null && previous.ioBytes!==null && ioBytes>previous.ioBytes));
   return {at:now,cpuTicks,rssBytes,reclaimEvents,ioBytes,outputVersion,advancement,pressureStalled:!!previous && !advancement && reclaimEvents!==null && previous.reclaimEvents!==null && reclaimEvents>previous.reclaimEvents && now-previous.at>=stallMs};
 }

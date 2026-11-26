@@ -1,19 +1,3 @@
-/**
- * A program an agent has proposed, and nothing has yet accepted.
- *
- * The shape here is deliberately the *same* tree the disk importer produces —
- * program, suites, work items, dependencies, gates — because the apply path is
- * the importer's transaction. What is different is where it lives: a draft is a
- * row in `program_draft`, read by nobody but the operator's preview, until a
- * human applies it. An agent authoring work items is exactly the case where
- * "the pipeline never infers an outcome" has to hold: it may write a proposal,
- * it may not write the library.
- *
- * Pure: no I/O and no database, so the validation an agent's post is refused by
- * is the same validation the preview screen runs, and both are testable on
- * their own.
- */
-
 import { parseVerifyBlock } from "../utils/verifyBlock.ts";
 
 export const PROGRAM_DRAFT_STATES = ["PENDING", "APPLIED", "DISCARDED"] as const;
@@ -23,11 +7,6 @@ export function isProgramDraftState(value: unknown): value is ProgramDraftState 
   return typeof value === "string" && (PROGRAM_DRAFT_STATES as readonly string[]).includes(value);
 }
 
-/*
- * Bounds. These are refusal thresholds, not style advice: a draft is posted by
- * a model in one or more HTTP calls, and an unbounded one is how a single run
- * writes a thousand work items nobody will ever read.
- */
 export const DRAFT_NAME_MAX = 120;
 export const DRAFT_OVERVIEW_MAX = 10_000;
 export const DRAFT_GOAL_MAX = 20_000;
@@ -39,13 +18,6 @@ export const DRAFT_MAX_SUITES = 12;
 export const DRAFT_MAX_PROMPTS_PER_SUITE = 40;
 export const DRAFT_MAX_PROMPTS = 200;
 
-/**
- * A revision copies a program that already exists, and the library was never
- * held to a new draft's caps — a work item may hold 64 KB, and an imported
- * program may have more suites than an agent would be allowed to propose. A
- * revision that refused to open on its own starting point would be useless, so
- * it is bounded by what the library itself accepts, and a little room past it.
- */
 export interface DraftLimits {
   contentMax: number;
   maxSuites: number;
@@ -65,37 +37,26 @@ export interface ProgramDraftGate {
 }
 
 export interface ProgramDraftPrompt {
-  /** Assigned by the server (`S1-01`), never by the agent — the keys are unique indexes. */
   key: string;
   title: string;
   content: string;
-  /** Keys of other work items in this draft. Unknown keys are reported, not silently dropped. */
   dependsOn: string[];
   gate: ProgramDraftGate | null;
-  /**
-   * On a revision draft: the `prompt.id` this entry is a copy of. Absent or
-   * null means a new work item. It is identity, not a hint — apply updates that
-   * row in place, which is what keeps its status and run history attached.
-   */
   sourceId?: number | null;
 }
 
 export interface ProgramDraftSuite {
-  /** Assigned by the server (`S1`). */
   key: string;
   name: string;
   overview: string;
   prompts: ProgramDraftPrompt[];
-  /** True once an agent has posted this suite's work items. */
   filled: boolean;
-  /** On a revision draft: the `suite.id` this entry is a copy of. */
   sourceId?: number | null;
 }
 
 export interface ProgramDraftBody {
   name: string;
   overview: string;
-  /** What the agent read to arrive at this shape. Kept for the operator, not applied. */
   notes: string;
   suites: ProgramDraftSuite[];
 }
@@ -103,24 +64,12 @@ export interface ProgramDraftBody {
 export interface ProgramDraftRecord {
   id: number;
   workspaceId: number;
-  /** The author run that is filling it in, if one is. Provenance, not a foreign key. */
   runId: string | null;
   state: ProgramDraftState;
   goal: string;
   body: ProgramDraftBody;
-  /** Set when the draft was applied: the program it became. */
   appliedProgramId: number | null;
-  /**
-   * Set on a revision draft: the existing program this draft changes. Null is
-   * a proposal for a new program.
-   */
   targetProgramId: number | null;
-  /**
-   * A revision draft's starting point: the program as it was when the draft
-   * was opened. Apply compares against it, so only what the draft actually
-   * changed is written, and an edit made to the program since is a conflict
-   * rather than something silently overwritten.
-   */
   baseline: ProgramDraftBody | null;
   createdAt: string;
   updatedAt: string;
@@ -129,14 +78,11 @@ export interface ProgramDraftRecord {
 export interface ProgramDraftPreview {
   name: string;
   suites: number;
-  /** Suites an agent has actually posted work items for. */
   filledSuites: number;
   prompts: number;
   dependencies: number;
   gates: number;
-  /** Work items whose `## Verify` block will become command criteria on apply. */
   verifiable: number;
-  /** Everything that would make an apply refuse, or that the operator should see first. */
   issues: string[];
 }
 
@@ -195,15 +141,6 @@ function text(
   return trimmed;
 }
 
-/**
- * The opening post: what the program is, and what its suites are called.
- *
- * Work items are deliberately not accepted here. A model asked for a whole
- * program in one JSON body writes a long one and truncates it, and a truncated
- * body is a parse error that costs the run everything it had composed. Suites
- * first, then one post per suite, means a run that is stopped halfway leaves a
- * partial draft the next run continues rather than nothing at all.
- */
 export function normalizeProgramProposal(input: unknown): DraftValidation<ProgramProposal> {
   const errors: Record<string, string> = {};
   const raw = (input ?? {}) as Record<string, unknown>;
@@ -234,7 +171,6 @@ export function normalizeProgramProposal(input: unknown): DraftValidation<Progra
   return { ok: true, value: { name, overview, notes, suites } };
 }
 
-/** One suite's work items. `suite` may be the assigned key (`S2`) or the suite's name. */
 export function normalizeSuiteProposal(input: unknown, body: ProgramDraftBody): DraftValidation<SuiteProposal> {
   const errors: Record<string, string> = {};
   const raw = (input ?? {}) as Record<string, unknown>;
@@ -283,7 +219,6 @@ export function normalizeSuiteProposal(input: unknown, body: ProgramDraftBody): 
   return { ok: true, value: { suiteKey: suite!.key, prompts } };
 }
 
-/** The draft body a program proposal opens. Replaces any earlier proposal wholesale. */
 export function bodyFromProgramProposal(proposal: ProgramProposal): ProgramDraftBody {
   return {
     name: proposal.name,
@@ -299,11 +234,6 @@ export function bodyFromProgramProposal(proposal: ProgramProposal): ProgramDraft
   };
 }
 
-/**
- * A suite's work items, folded in. Re-posting a suite replaces it rather than
- * appending: a run that is asked to revise S2 should be able to say what S2 is
- * now, not what to add to it.
- */
 export function withSuiteProposal(body: ProgramDraftBody, proposal: SuiteProposal): ProgramDraftBody {
   return {
     ...body,
@@ -333,7 +263,6 @@ export function allPrompts(body: ProgramDraftBody): Array<{ suite: ProgramDraftS
   return body.suites.flatMap((suite) => suite.prompts.map((prompt) => ({ suite, prompt })));
 }
 
-/** Dependencies that name a work item this draft actually has. */
 export function resolvedDependencies(body: ProgramDraftBody): Array<{ promptKey: string; dependsOnKey: string }> {
   const known = new Set(allPrompts(body).map((entry) => entry.prompt.key));
   const edges: Array<{ promptKey: string; dependsOnKey: string }> = [];
@@ -345,15 +274,6 @@ export function resolvedDependencies(body: ProgramDraftBody): Array<{ promptKey:
   return edges;
 }
 
-/**
- * What is wrong with this draft, in the operator's words.
- *
- * Two classes are mixed on purpose and told apart by `blocksApply`: a suite
- * with no work items cannot be applied at all, while a dependency naming a key
- * that is not here is applied without that edge and has to be *seen*, because
- * silently dropping an ordering constraint is how a program runs in the wrong
- * order with nothing on screen to explain it.
- */
 export function programDraftIssues(body: ProgramDraftBody): string[] {
   const issues: string[] = [];
   if (body.name.trim() === "") issues.push("The program has no name.");
@@ -378,7 +298,6 @@ export function programDraftIssues(body: ProgramDraftBody): string[] {
   return issues;
 }
 
-/** True when nothing in the draft stops it being applied. */
 export function canApplyProgramDraft(body: ProgramDraftBody): boolean {
   return (
     body.name.trim() !== "" &&
@@ -403,23 +322,6 @@ export function programDraftPreview(body: ProgramDraftBody): ProgramDraftPreview
   };
 }
 
-/**
- * An operator's edit of a draft body.
- *
- * The same bounds as the agent's post, and the same key assignment: the
- * operator may retitle, rewrite, reorder and delete, but keys are positional
- * and the server owns them, so an edit cannot introduce the duplicate that the
- * unique index would refuse hours later at apply time.
- *
- * A revision draft (`revision: true`) is the exception to positional keys.
- * Its keys name rows that already exist and that `dependsOn` points at, so
- * renumbering after a deletion would silently re-point every later
- * dependency. There a key is kept when it is well formed and not already used,
- * and only a missing or clashing one is assigned — the no-duplicates guarantee
- * is the same, reached without moving anything. `sourceId` is kept as given;
- * whether it really names a row of the target program is the server's check at
- * apply time, not something a client can assert here.
- */
 export function normalizeProgramDraftBody(
   input: unknown,
   options: { revision?: boolean } = {},
@@ -496,21 +398,12 @@ export function normalizeProgramDraftBody(
   return { ok: true, value: { name, overview, notes, suites } };
 }
 
-/** What a revision draft's keys may look like: short, upper case, no spaces. */
 export const DRAFT_KEY_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,39}$/;
 
 function sourceIdFrom(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-/**
- * A program key from the program's own name, unique within the workspace.
- *
- * Programs are addressed by key in the tree and in every prompt's context, so
- * one is assigned rather than asked for: a model choosing its own would collide
- * with an existing program's and the insert would fail at the end of a long
- * authoring run, which is the worst possible moment to find out.
- */
 export function programKeyFrom(name: string, taken: Iterable<string>): string {
   const held = new Set([...taken].map((key) => key.toUpperCase()));
   const words = name.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word !== "");

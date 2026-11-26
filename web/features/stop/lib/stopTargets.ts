@@ -1,37 +1,22 @@
 import type { OperationsSnapshot, PipelineRecord, PipelineState } from "@hydra/shared";
 import type { RunStatus } from "@/models/runs";
 
-/**
- * What the stop center shows. The server owns every state here; this only
- * groups it so each pipeline appears once with the agent working for it, and
- * every other live agent appears on its own.
- */
 export interface PipelineTarget {
-  /** The suite run's id: stable for one execution, unlike the named run's stage. */
   key: string;
-  /** The named pipeline, or null for a suite played on its own (no pipeline-level controls). */
   pipelineId: number | null;
   name: string;
   workspaceName: string;
   href: string;
   state: PipelineState;
-  /** The live agent on the current station, if one is running. */
   run: RunStatus | null;
   stepTitle: string | null;
   phase: PipelinePhase;
 }
 
-/**
- * - running: playing with an agent on a step
- * - pausing: paused, but the agent it let finish is still working
- * - paused: held; nothing runs until Resume
- * - waiting: active without an agent (parked for a person, or between steps)
- */
 export type PipelinePhase = "running" | "pausing" | "paused" | "waiting";
 
 export interface StopTargets {
   pipelines: PipelineTarget[];
-  /** Live agents no pipeline owns: chat, consults, verification, audits. */
   agents: RunStatus[];
 }
 
@@ -76,11 +61,6 @@ export function stopTargets(operations: OperationsSnapshot | null, pipelines: Pi
   return { pipelines: targets, agents: runs.filter((run) => !owned.has(run.runId)) };
 }
 
-/**
- * Whether a requested action has visibly happened, so its spinner can go.
- * Judged from the server's state, not from the HTTP reply: a stop is only
- * done once the agent is gone from the live run list.
- */
 export function actionSettled(action: StopAction, target: { pipeline?: PipelineTarget | undefined; runId?: string | null }, runs: RunStatus[]): boolean {
   const runGone = target.runId === undefined || target.runId === null || !runs.some((run) => run.runId === target.runId);
   switch (action) {

@@ -1,6 +1,5 @@
 import { modelMatchesEffort, type ProviderInfo } from "@hydra/shared";
 
-/** A stored browser choice can survive a policy that currently makes it inactive. */
 export function modelChoice(
   provider: ProviderInfo,
   pin: string | null | undefined,

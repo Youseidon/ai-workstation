@@ -20,8 +20,6 @@ import styles from "./dashboard.module.css";
 
 export function PipelineDashboard() {
   const { workspaceId } = useWorkspace();
-  // Switching workspaces also clears filters and prevents the previous request
-  // from putting another workspace's records into this dashboard.
   return <WorkspaceDashboard key={workspaceId ?? "none"} workspaceId={workspaceId} />;
 }
 

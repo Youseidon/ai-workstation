@@ -12,7 +12,6 @@ interface Props {
   serverUrl: string;
   workspaceId: number;
   instructions: { claudeMd: string; agentsMd: string };
-  /** `program:<id>` or `instructions:<id>` to open first. */
   openKey: string | null;
   onApplied(): void | Promise<void>;
   onClose(): void;
@@ -46,11 +45,8 @@ export function ProposalsModal({ serverUrl, workspaceId, instructions, openKey, 
 
 export interface ProposalSummary {
   pending: number;
-  /** Pending instruction proposals per file. */
   byField: { claudeMd: number; agentsMd: number };
-  /** Pending revision drafts per program id. */
   byProgram: Map<number, number>;
-  /** Pending new-program drafts. */
   newPrograms: number;
 }
 
@@ -72,10 +68,6 @@ function summarize(drafts: ProgramDraftRecord[], proposals: InstructionProposalR
   return summary;
 }
 
-/**
- * What waits on the operator in a workspace, for the badges on the page.
- * Reloads when runs start or end, since an agent run is what writes proposals.
- */
 export function useProposalSummary(serverUrl: string, workspaceId: number | null) {
   const console_ = useHydra();
   const [summary, setSummary] = useState<ProposalSummary>(EMPTY);
@@ -92,7 +84,6 @@ export function useProposalSummary(serverUrl: string, workspaceId: number | null
       ]);
       setSummary(summarize(drafts.map((entry) => entry.draft), proposals));
     } catch {
-      // The badges are a hint; a failed load leaves the last known counts.
     }
   }, [serverUrl, workspaceId]);
 

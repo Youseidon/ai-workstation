@@ -11,6 +11,7 @@ import { newId } from "../utils/ids.ts";
 import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { config } from "../config/config.ts";
 import { collectAccountUsage, detectProviders } from "../providers/registry.ts";
+import { describeProviderSetup, installProvider } from "../providers/providerInstall.ts";
 import { ProviderBusyError, updateProvider } from "../providers/providerUpdate.ts";
 import { resetSettings, snapshot, updateSettings } from "../config/settings.ts";
 import { createLogger } from "../utils/logger.ts";
@@ -32,6 +33,8 @@ import { settings } from "../config/settings.ts";
 import { assertRunChangesCommitted, checkpointCommand, checkpointRun } from "../services/workspaces/gitChanges.ts";
 import { answerAgentInput, normalizeAgentInputRequest, waitForAgentInput } from "../services/agents/agentInput.ts";
 import { agentReply, inboxPayload } from "../services/runs/runMessages.ts";
+import { remoteOverview } from "../services/telegram/remoteOverview.ts";
+import { startTelegramNotifier } from "../services/telegram/notifier.ts";
 
 const log = createLogger("server");
 runHub.subscribe(message => {
@@ -39,10 +42,6 @@ runHub.subscribe(message => {
     process.send?.({ activeProviders: [...new Set(runHub.snapshots().map(run => run.provider))] });
   }
 });
-
-/* -------------------------------------------------------------------------- */
-/* HTTP: detection + health                                                    */
-/* -------------------------------------------------------------------------- */
 
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin;
@@ -54,11 +53,6 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Responses to an execute run's own `agent-step` calls. Any of them carries the
- * operator's waiting `/btw` notes, so a headless agent picks a note up on
- * whatever it calls next, not only when it remembers to check its inbox.
- */
 const agentInboxResponses = new WeakMap<ServerResponse, string>();
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -78,19 +72,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const MAX_BODY_BYTES = 64 * 1024;
-/*
- * An author run posts a whole suite of work items in one call, and each item is
- * a page of instructions. 64 KB is the right ceiling for a status post and the
- * wrong one for a proposal — a run whose suite is one item over it would lose
- * everything it had composed, with a dropped socket as the only explanation.
- */
 const MAX_AUTHOR_BODY_BYTES = 1024 * 1024;
 
-/** A model id is a short slug; anything longer is a malformed or hostile frame. */
 const MAX_MODEL_LENGTH = 200;
-/** Provider session ids are opaque but bounded before reaching a CLI argv. */
 const MAX_SESSION_ID_LENGTH = 500;
-/** App-owned thread ids are UUID-like opaque values, not unbounded labels. */
 const MAX_THREAD_ID_LENGTH = 200;
 
 function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
@@ -123,10 +108,6 @@ function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<
   });
 }
 
-/**
- * Settings changes alter what the providers are and where they run, so every
- * open tab is told to re-read both.
- */
 async function broadcastSettingsChange(): Promise<void> {
   const providers = await detectProviders(true);
   const message: ServerMessage = {
@@ -140,18 +121,6 @@ async function broadcastSettingsChange(): Promise<void> {
 }
 
 
-/**
- * Record one trip an agent made to this app's database.
- *
- * Emitted here, at the agent API's single route handler, rather than by each
- * adapter — so a raw curl, the CLI shim and a provider's own tool call all
- * produce the same line, and no adapter has to cooperate for the operator to
- * see it. The event rides the normal transcript channel, so it streams live and
- * is replayed to a tab that opens mid-run like anything else.
- *
- * Failures here are swallowed. Losing a log line is bad; failing an agent's
- * status post because the logging of it broke would be very much worse.
- */
 function recordDbAccess(runId:string,payload:DbAccessPayload):void{
   try{
     const live=runHub.get(runId);
@@ -219,9 +188,6 @@ const httpServer = createServer((req, res) => {
         });return;
       }
 
-      // Two doors, and neither opens the other. An execute run works a work
-      // item and may never write a draft; an author run writes a draft and has
-      // no work item to post about. A consult run has neither.
       if(persisted.role==="execute")agentInboxResponses.set(res,runId);
       if(operation==="inbox"||operation==="reply"){
         const startedAt=Date.now();
@@ -256,8 +222,6 @@ const httpServer = createServer((req, res) => {
           const request=normalizeAgentInputRequest(body);
           const live=runHub.get(runId);
           if(live===undefined)throw new WorkspaceError(409,"run_not_active","The agent process is no longer active.");
-          // Registration is synchronous. Do it before broadcasting so a fast
-          // operator cannot answer in the gap between paint and the waiter.
           const waiting=waitForAgentInput(runId,request);
           if(waiting.registered){
             const event:NormalizedEvent={id:newId("evt"),runId,provider:live.provider,model:live.model,timestamp:new Date().toISOString(),type:"input_request",payload:request};
@@ -332,21 +296,8 @@ const httpServer = createServer((req, res) => {
           const before=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
           executionStore.assertRequest(runId,body as Record<string,unknown>);
           if(operation==="status"||operation==="decompose")assertRunChangesCommitted(runId);
-          // An agent claiming DONE is the moment the definition-of-done commands
-          // are worth running: the gate that reads their results is a synchronous
-          // database read, so the evidence has to exist before it looks. Awaited
-          // here rather than inside the write because a test suite must not be
-          // run with a SQLite transaction held open.
-          // A CONTINUE post is not a claim of completion, so the definition of
-          // done has nothing to check: running a test suite for a run that just
-          // said "here is what still remains" would charge the item for the
-          // evidence it is explicitly not offering.
           if(operation==="status"&&(body as Record<string,unknown>).status==="DONE"&&memory.promptId!==null){
             await runDefinitionOfDoneCommands(memory.promptId,runId);
-            // Under `block`, a failing criterion is not a status change — it is
-            // a refusal the agent can still act on. Writing NEEDS_REVIEW here
-            // would end the run and park the rail; handing the compiler output
-            // back while the provider session is live is the cheaper fix.
             const failures=workspaces.agentDoneVerificationFailures(memory.promptId);
             if(failures!==null){
               workspaces.recordVerificationFailureRemark(memory.promptId,runId,failures);
@@ -371,15 +322,9 @@ const httpServer = createServer((req, res) => {
             await runDefinitionOfDoneCommands(memory.promptId,runId);
             (result as Record<string,unknown>).failures=workspaces.agentDoneVerificationFailures(memory.promptId)??[];
           }
-          // The agent cannot see the runner's counters. Riding the reply it is
-          // already making is the one channel that reaches every provider, so a
-          // run learns to bank its work before the budget stops it.
           const live=runHub.get(runId)?.handle.budget()??null;
           sendJson(res,200,{...result as Record<string,unknown>,...(live?{budget:live}:{}),...(execution?{execution:executionStore.status(execution.id)}:{})});
           const after=memory.promptId===null?null:workspaces.promptOutcome(memory.promptId).status;
-          // An idempotent replay changed nothing; saying "IN_PROGRESS → DONE"
-          // twice would have the operator hunting a transition that only ever
-          // happened once.
           recordDbAccess(runId,describeAcceptedWrite({
             operation:operation as DbOperation,
             before,after,requestId,
@@ -387,21 +332,11 @@ const httpServer = createServer((req, res) => {
             durationMs:Date.now()-startedAt,
           }));
           runHub.operationsChanged();
-          // A status post or a decompose is the agent's authoritative signal
-          // that this run is done with the work item — DONE and BLOCKED because
-          // the item is settled, CONTINUE because the agent has handed over to
-          // the run that resumes it. End the provider after the HTTP response is
-          // flushed so a CLI that waits after its final tool call cannot leave
-          // DONE shown as WORKING.
           if(operation==="status"||operation==="decompose")void runHub.complete(runId);
         }).catch(error=>{
           const status=error instanceof WorkspaceError?error.status:400;
           const code=error instanceof WorkspaceError?error.code:"invalid_request";
           sendJson(res,status,{error:{code,message:error instanceof Error?error.message:String(error),...(error instanceof WorkspaceError&&error.fields?{fields:error.fields}:{}),...(error instanceof WorkspaceError&&error.details?error.details:{})}});
-          // A refusal is the most important line in this log. Without it, an
-          // agent whose status post was rejected — a stale expectedStatus, a
-          // missing verification summary — looks exactly like one that never
-          // tried, and the operator blames the wrong side.
           recordDbAccess(runId,describeRejectedWrite({
             operation:operation as DbOperation,httpStatus:status,errorCode:code,
             message:error instanceof Error?error.message:String(error),
@@ -426,6 +361,12 @@ const httpServer = createServer((req, res) => {
 
   if (url.pathname === "/api/health") {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/api/remote/overview" && req.method === "GET") {
+    try { sendJson(res, 200, remoteOverview()); }
+    catch (error) { log.error("remote overview failed", error); sendJson(res, 500, { error: { message: "Could not read this account's state." } }); }
     return;
   }
 
@@ -459,6 +400,23 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  const providerSetup = /^\/api\/providers\/([a-z]+)\/(setup|install)$/.exec(url.pathname);
+  if (providerSetup !== null) {
+    const id = providerSetup[1];
+    const operation = providerSetup[2];
+    if (!isProviderId(id)) { sendJson(res, 404, { error: "Unknown provider" }); return; }
+    if (req.method !== (operation === "setup" ? "GET" : "POST")) { sendJson(res, 405, { error: "method not allowed" }); return; }
+    const action = operation === "setup" ? describeProviderSetup(id) : installProvider(id);
+    void action.then(async (result) => {
+      if (operation === "install") await broadcastSettingsChange();
+      sendJson(res, 200, result);
+    }).catch((error: unknown) => {
+      log.error(`provider ${operation} failed (${id})`, error);
+      sendJson(res, error instanceof ProviderBusyError ? 409 : 500, { error: error instanceof Error ? error.message : "Provider setup failed" });
+    });
+    return;
+  }
+
   const providerUpdate = /^\/api\/providers\/([a-z]+)\/update$/.exec(url.pathname);
   if (providerUpdate !== null) {
     const id = providerUpdate[1];
@@ -472,7 +430,6 @@ const httpServer = createServer((req, res) => {
     }
     updateProvider(id)
       .then(async (result) => {
-        // Every open tab shows the version, not only the one that clicked.
         await broadcastSettingsChange();
         sendJson(res, 200, result);
       })
@@ -493,7 +450,6 @@ const httpServer = createServer((req, res) => {
     if (req.method === "PUT" || req.method === "POST") {
       readJsonBody(req)
         .then(async (body) => {
-          // Accept both `{ "codex.model": "..." }` and `{ patch: { ... } }`.
           const patch = (body.patch ?? body) as Record<string, never>;
           const result = updateSettings(patch);
           if (!result.ok) {
@@ -535,10 +491,6 @@ const httpServer = createServer((req, res) => {
   sendJson(res, 404, { error: "not found" });
 });
 
-/* -------------------------------------------------------------------------- */
-/* WebSocket: one connection per browser tab, one run at a time                */
-/* -------------------------------------------------------------------------- */
-
 const wss = new WebSocketServer({ noServer: true });
 
 httpServer.on("upgrade", (req, socket, head) => {
@@ -573,9 +525,6 @@ wss.on("connection", (ws: WebSocket) => {
     ws.send(JSON.stringify(message));
   };
 
-  // Every client observes every run, including ones another tab started. This
-  // is what makes navigating between pages — which tears down one socket and
-  // opens another — keep showing a run that is still going.
   const unsubscribe = runHub.subscribe(send);
 
   const sendError = (message: string, detail: string | null = null): void => {
@@ -597,8 +546,6 @@ wss.on("connection", (ws: WebSocket) => {
     send({
       kind: "hello",
       providers,
-      // Whatever is already running, with its transcript, so a page that opens
-      // mid-run repaints it instead of showing an empty log.
       activeRuns: runHub.snapshots(),
     });
   });
@@ -732,8 +679,6 @@ wss.on("connection", (ws: WebSocket) => {
         }
         const roleError = runRoleStartError(role, parsed.provider);
         if (roleError !== null) { sendError(roleError); return; }
-        // An absent/blank model means "fall back to the configured one"; a
-        // non-string is a malformed frame rather than a silent default.
         if (parsed.model !== undefined && parsed.model !== null && typeof parsed.model !== "string") {
           sendError("Model must be a string.");
           return;
@@ -769,10 +714,6 @@ wss.on("connection", (ws: WebSocket) => {
         return;
       }
       case "interrupt": {
-        // Any client may stop any run: the agent dock is on every page, and the
-        // tab that started a run is often not the one watching it finish.
-        // Through the scheduler, so a pipeline station's rail pauses instead
-        // of reading the stop as unfinished work and starting a new agent.
         if (typeof parsed.runId !== "string" || parsed.runId === "") return;
         const runId = parsed.runId;
         void pipelineScheduler.stopAgent(runId).catch((error: unknown) => connLog.warn(`stop agent failed run=${runId}`, error));
@@ -808,18 +749,12 @@ wss.on("connection", (ws: WebSocket) => {
 
   ws.on("close", () => {
     connLog.info("disconnected");
-    // Runs are owned by the hub, so closing a socket only stops the delivery of
-    // events to it. Reconnecting replays whatever is still in flight.
     unsubscribe();
   });
 
   ws.on("error", (error) => connLog.warn("socket error", error));
 });
 
-/* -------------------------------------------------------------------------- */
-
-// A port clash is an ordinary situation for a local dev tool; say so plainly
-// instead of letting an unhandled 'error' event throw a raw stack trace.
 httpServer.on("error", (error: NodeJS.ErrnoException) => {
   if (error.code === "EADDRINUSE") {
     log.error(
@@ -832,12 +767,6 @@ httpServer.on("error", (error: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-/**
- * Claimed once the port is bound, released on shutdown. Two servers sharing a
- * database is the failure this pair of guards exists to prevent: the port rules
- * out a second copy on the same port, the lock rules out one on a different
- * port, and only an owner may reconcile runs.
- */
 let instanceLock: InstanceLock | null = null;
 
 function releaseInstanceLock(): void {
@@ -864,11 +793,6 @@ httpServer.listen(config.port, config.host, () => {
     }
     throw error;
   }
-  // The database must not sit inside a directory an agent is given write access
-  // to. Refused rather than warned about: a warning at boot is a line nobody
-  // reads, and the whole point of routing agents through the API is that a
-  // status change without a recorded cause becomes impossible rather than
-  // merely discouraged.
   try {
     workspaces.assertDatabaseOutOfReach();
   } catch (error) {
@@ -876,8 +800,6 @@ httpServer.listen(config.port, config.host, () => {
     process.exit(1);
   }
 
-  // Safe only here: this process now demonstrably owns the database, so runs
-  // still marked in flight really did die with the last one.
   workspaces.recoverAbandonedRuns();
   executionRecovery = reconcileExecution().then(()=>reconcileCommands());
   const executionWakeTimer=setInterval(()=>{void executionRecovery.then(()=>reconcileExecution()).then(()=>reconcileCommands()).then(()=>pipelineScheduler.resumeInterrupted()).then(()=>dispatchPendingExecution(startExecute)).then(()=>pipelineScheduler.wakeDue()).catch(error=>log.warn("execution wake failed",error));},15000);
@@ -886,9 +808,8 @@ httpServer.listen(config.port, config.host, () => {
   log.info(`http  http://${config.host}:${config.port}`);
   log.info(`ws    ws://${config.host}:${config.port}/ws`);
   log.info(`workspaces ${workspaces.list().length}`);
-  // Transcript events accumulate forever without this. First pass is delayed
-  // so boot (and auto-resume) are not competing with a multi-second DELETE.
   scheduleRetentionSweep();
+  if (process.send) startTelegramNotifier(notice => { process.send?.({ telegramNotice: notice }); });
   process.send?.({ port: config.port });
   void detectProviders(true).then((providers) => {
     for (const provider of providers) {
@@ -899,20 +820,11 @@ httpServer.listen(config.port, config.host, () => {
     }
     scheduleAutoResume();
   }, (error: unknown) => {
-    // Detection failing is not a reason to leave a pipeline stranded; the
-    // adapters report their own unavailability when a run actually starts.
     log.warn("provider detection failed at boot", error);
     scheduleAutoResume();
   });
 });
 
-/**
- * The delay is not a guess about how long anything takes; it is a courtesy.
- * `recoverAbandonedRuns` has already run, so the state is consistent from the
- * first millisecond. The wait lets provider detection settle and a browser tab
- * reconnect, so the operator sees the resume happen rather than finding a run
- * already in progress with no visible cause.
- */
 const AUTO_RESUME_DELAY_MS = 10_000;
 
 let autoResumeScheduled = false;
@@ -929,11 +841,6 @@ function scheduleAutoResume(): void {
   }, AUTO_RESUME_DELAY_MS).unref();
 }
 
-/**
- * Long enough for every provider to take its interrupt (the runner allows a run
- * two seconds to stop gracefully, then the spawn adapter another two before
- * SIGKILL), short enough that a stuck agent cannot hold the terminal.
- */
 const SHUTDOWN_GRACE_MS = 10_000;
 
 let shuttingDown = false;
@@ -948,12 +855,9 @@ const shutdown = () => {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down");
-  // Every run credential this process wrote to tmp goes with it.
   removeAllAgentShims();
   wss.clients.forEach((client) => client.close());
   httpServer.close();
-  // Runs are stopped before the database closes so each one records its own
-  // terminal state. Without this the agents survive the server that owns them.
   void Promise.all([runHub.stopAll(),stopAllManagedCommands()]).then(finish, (error: unknown) => {
     log.error("failed to stop live runs", error);
     finish();
@@ -964,6 +868,4 @@ const shutdown = () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("disconnect", shutdown);
-// A crash or an explicit exit still has to give up the claim, or the next boot
-// finds a lock file whose owner is gone.
 process.on("exit", releaseInstanceLock);

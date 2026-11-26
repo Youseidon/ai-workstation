@@ -1,5 +1,4 @@
-/** Public package boundary. Internal modules import their dependencies directly. */
-export type { UserIdentity, IdentitySession } from "./contracts/identity.ts";
+export type { UserIdentity, IdentitySession, TelegramAccess, TelegramAccountView, TelegramAuditEntry, TelegramBotView, TelegramLinkCode, TelegramLinkView } from "./contracts/identity.ts";
 export {
   PROVIDER_IDS,
   isProviderId,
@@ -12,6 +11,8 @@ export type {
   RunRole,
   ProviderInfo,
   ProviderUpdateResult,
+  ProviderSetupInfo,
+  ProviderInstallResult,
   UsageWindowKind,
   ProviderUsageWindow,
   ProviderUsageCredits,
@@ -106,6 +107,8 @@ export type {
   ProgramRecord,
   WorkspaceRecord,
   WorkspaceGitContext,
+  DirectoryEntry,
+  DirectoryListing,
   WorkspaceInstructionField,
   WorkspaceRevision,
   WorkspaceTree,
@@ -228,11 +231,6 @@ export {
   type StationPolicy,
 } from "./policies/stationPolicy.ts";
 
-/*
- * The transport interlocking. Re-exported by name rather than with `export *`,
- * so the package's public surface is explicit and a new symbol has to be
- * declared here on purpose.
- */
 export {
   CONTROL_LABEL,
   DEFAULT_PIPELINE_POLICY,
@@ -259,15 +257,6 @@ export type { FailureClass } from "./policies/providerFailure.ts";
 
 export { exhaustedUsageWindow, quotaCoolingMinutes } from "./policies/providerFailure.ts";
 
-/*
- * Re-exported by name rather than with `export *`.
- *
- * Node's ESM linker resolves the named exports of a `.ts` barrel before tsx has
- * transpiled the module it stars from, so `export *` links but exposes nothing —
- * every importer fails at runtime with "does not provide an export named …"
- * while `tsc` stays perfectly happy. Every other re-export in this file is
- * explicit for the same reason; keep it that way.
- */
 export {
   DEFAULT_STATUS_CATALOG,
   DEFAULT_TRIGGER_SENTENCES,

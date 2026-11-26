@@ -5,7 +5,6 @@ export class ChatThreadError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
 }
 
-/** Metadata only: listing/searching threads never loads transcript events. */
 export function createChatThreadStore(db: Database.Database) {
   const select = `SELECT thread_id id, workspace_id workspaceId, title, pinned, archived,
     updated_at updatedAt, last_reply_at lastReplyAt, last_read_at lastReadAt,
@@ -33,7 +32,7 @@ export function createChatThreadStore(db: Database.Database) {
       }
       if (options.cursor) {
         let cursor: unknown;
-        try { cursor = JSON.parse(Buffer.from(options.cursor, "base64url").toString()); } catch { /* rejected below */ }
+        try { cursor = JSON.parse(Buffer.from(options.cursor, "base64url").toString()); } catch {  }
         if (!Array.isArray(cursor) || cursor.length !== 3 || ![0, 1].includes(cursor[0]) || typeof cursor[1] !== "string" || typeof cursor[2] !== "string") throw new ChatThreadError(400, "invalid_cursor", "Invalid conversation cursor");
         where += " AND (pinned,updated_at,thread_id)<(?,?,?)";
         params.push(cursor[0], cursor[1], cursor[2]);

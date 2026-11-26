@@ -9,7 +9,6 @@ export interface SuiteProgress {
   complete: boolean;
 }
 
-/** Enabled roots in execution order, with their original descendant trees intact. */
 export function enabledPipelineItems(suite: OperationsSuite | null, flowchart: PipelineFlowchartView | null): OperationsPrompt[] {
   const roots = new Map(suite?.prompts.map((item) => [item.prompt.id, item]) ?? []);
   return (flowchart?.steps ?? []).filter((step) => step.enabled).flatMap((step) => {
@@ -18,7 +17,6 @@ export function enabledPipelineItems(suite: OperationsSuite | null, flowchart: P
   });
 }
 
-/** Named membership comes from the flowchart, never the suite's global rules or counts. */
 export function projectSuiteProgress(
   suite: OperationsSuite | null,
   flowchart: PipelineFlowchartView | null,

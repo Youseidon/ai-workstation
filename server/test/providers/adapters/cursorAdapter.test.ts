@@ -142,7 +142,6 @@ test("Cursor final full-message snapshot after partial deltas is not appended tw
   const snapshot = chunk("From the retained turns in this thread, your prompts were:");
   assert.equal(deltas.length, 2);
   assert.deepEqual(snapshot, []);
-  // A short repeated delta is ordinary streaming, not a snapshot.
   const short = new CursorMapper();
   const ha = (text: string) => short.map({ type: "assistant", session_id: "s", message: { content: [{ type: "text", text }] } });
   assert.equal([...ha("ha"), ...ha("ha")].length, 2);

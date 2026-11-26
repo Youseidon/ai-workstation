@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { resolveBinary } from "../../infrastructure/process.ts";
 import { createCursorPolicy, installCursorHooks, probeCursorPolicy } from "../cursorPolicy.ts";
 import type { AdapterEvent, ProviderUsage, TokenUsage } from "@hydra/shared";
 import { bakedModelEffort, oneLine } from "@hydra/shared";
@@ -21,15 +20,6 @@ import {
 } from "../accountUsage.ts";
 import { SpawnAdapter, type SpawnSpec, type StreamMapper } from "./spawnAdapter.ts";
 import type { RunOptions } from "../../contracts/agentAdapter.ts";
-
-/*
- * `cursor-agent -p --output-format stream-json` emits a Claude-Code-shaped JSON
- * stream. Cursor's flags and payloads move between releases, so this mapper is
- * deliberately tolerant: it understands both the streaming envelope
- * (`{"type":"assistant","message":{...}}`) and a single final object from
- * `--output-format json`, and ignores event types it does not recognise.
- * Verify with `cursor-agent --help` — see README.
- */
 
 interface CursorContentBlock {
   type?: string;
@@ -52,8 +42,6 @@ interface CursorEvent {
   is_error?: boolean;
   error?: { message?: string } | string;
   usage?: Record<string, number> | null;
-  // Current Cursor versions nest calls by tool kind (for example,
-  // `tool_call.readToolCall.args`). Older versions used this flat shape.
   tool_call?: Record<string, unknown>;
   call_id?: string;
   name?: string;
@@ -76,7 +64,6 @@ export function cursorAgentArgs(input: {
   force: boolean;
   model: string | null;
   extraArgs: string[];
-  /** Continue this chat instead of opening a new one. */
   resumeSessionId?: string | null;
   policyPlugin?: string;
   sandbox?: "enabled" | "disabled";
@@ -86,9 +73,6 @@ export function cursorAgentArgs(input: {
   }
   const args = ["-p", "--output-format", input.outputFormat];
   if (input.outputFormat === "stream-json") args.push("--stream-partial-output");
-  // `--resume [chatId]` takes an *optional* value, so the id has to be attached
-  // with `=`; passed as a separate argv entry it is read as the prompt and a
-  // session picker opens instead. Verified against cursor-agent 2026.09.02.
   if (typeof input.resumeSessionId === "string" && input.resumeSessionId !== "") {
     args.push(`--resume=${input.resumeSessionId}`);
   }
@@ -101,16 +85,11 @@ export function cursorAgentArgs(input: {
   return args;
 }
 
-/** Add or replace Cursor's bracketed model effort override. */
 export function cursorModelWithEffort(model: string | null, effort: "low" | "medium" | "high"): string {
   const selected = model ?? "auto";
   const open = selected.lastIndexOf("[");
   const base = open < 0 || !selected.endsWith("]") ? selected : selected.slice(0, open);
 
-  // Cursor-native routing/model ids, and every catalog id that already bakes
-  // effort into the slug (`claude-opus-5-medium`, `gpt-5.6-sol-high`, …),
-  // reject `[effort=…]`. Passing it makes `cursor-agent` exit 1 with the
-  // whole model list on stderr before a session starts.
   if (
     base === "auto"
     || base.startsWith("composer-")
@@ -160,7 +139,6 @@ function stringifyContent(content: unknown): string {
   return JSON.stringify(content, null, 2);
 }
 
-/** Real deltas are token-sized; a chunk repeating this much streamed text is a snapshot. */
 const SNAPSHOT_MIN_LENGTH = 16;
 
 export class CursorMapper implements StreamMapper {
@@ -177,9 +155,6 @@ export class CursorMapper implements StreamMapper {
     const event = value as CursorEvent;
     switch (event.type) {
       case "system":
-        // `session_id` is Cursor's chat id, and it arrives on the first line —
-        // which is what makes a wrap-up turn possible after a budget stop kills
-        // the process long before any result event.
         return [{
           type: "status",
           payload: {
@@ -270,10 +245,6 @@ export class CursorMapper implements StreamMapper {
   ): AdapterEvent[] {
     const blockId = `${event.message?.id ?? event.session_id ?? "cursor"}:${this.textSegment}:${index}:${kind}`;
     const previous = this.textBlocks.get(blockId) ?? "";
-    // With --stream-partial-output, cursor-agent streams token deltas and then
-    // repeats the whole message as a final assistant event. A chunk that starts
-    // with everything streamed so far is that snapshot, not another delta:
-    // emit only what it adds, or nothing, so the text is not doubled.
     if (previous.length >= SNAPSHOT_MIN_LENGTH && text.startsWith(previous)) text = text.slice(previous.length);
     if (text === "") return [];
     const accumulated = previous + text;
@@ -281,8 +252,6 @@ export class CursorMapper implements StreamMapper {
     if (kind === "message") this.lastText = accumulated;
     return [{
       type: "assistant_text",
-      // stream-json assistant events are incremental chunks. They share a
-      // session block id and must be concatenated to reconstruct the response.
       payload: { blockId, delta: true, text, kind },
     }];
   }
@@ -351,7 +320,6 @@ export class CursorMapper implements StreamMapper {
   }
 }
 
-/** Normalize both Cursor's nested stream-json envelope and its legacy flat one. */
 function parseToolCall(value: Record<string, unknown> | undefined): ParsedToolCall | null {
   if (!value) return null;
 
@@ -388,9 +356,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class CursorAdapter extends SpawnAdapter {
   readonly id = "cursor" as const;
   readonly label = "Cursor CLI";
-  /** Headless cursor-agent does not reliably report usage; never invent it. */
   readonly reportsTokens = false;
-  // Getters, not fields: settings can change between runs without a restart.
   get permissionMode(): string {
     return describeEffectiveAccess(
       effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
@@ -453,8 +419,6 @@ export class CursorAdapter extends SpawnAdapter {
     }
 
     const parsed = parseCursorPeriodUsage(response.body);
-    // Cursor's dashboard API is billing-cycle only — parseCursorPeriodUsage
-    // already maps that single cycle and does not invent extra windows.
 
     let plan: string | null = null;
     const planResponse = await fetchCursorDashboard("GetPlanInfo", accessToken);
@@ -471,12 +435,11 @@ export class CursorAdapter extends SpawnAdapter {
     const plugin = createCursorPolicy({ policy: opts.stationPolicy, root: opts.cwd, launcher: opts.launcherPath });
     let restoreHooks = (): void => {};
     try {
-      const binary = await resolveBinary(this.binaryName);
+      const binary = await this.resolveBinary();
       if (!binary) throw new Error(this.missingBinaryReason());
       yield { type: "status", payload: { state: "running", detail: "Validating Cursor policy hooks before workspace access" } };
       await probeCursorPolicy(binary, plugin, cursorModelWithEffort(opts.model ?? settings.cursor.model, settings.reasoningEffortFor("cursor")), opts.signal);
       restoreHooks = installCursorHooks(opts.cwd, plugin.manifest);
-      // A plugin per adapter invocation avoids shared mutable state across runs.
       yield* super.run(prompt, { ...opts, cursorPolicyPlugin: plugin.directory } as RunOptions);
     } finally { restoreHooks(); plugin.dispose(); }
   }

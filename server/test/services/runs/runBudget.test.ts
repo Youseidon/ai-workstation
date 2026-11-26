@@ -8,12 +8,6 @@ import { startRun, truncateToolOutput } from "../../../src/services/runs/runner.
 import type { RunMetrics } from "../../../src/contracts/runs.ts";
 import { resetSettings, settings, snapshot, updateSettings } from "../../../src/config/settings.ts";
 
-/**
- * Emits whatever the test asks for. A script ending in a `result` event returns
- * like a provider that finished on its own; anything else idles until it is
- * interrupted, which is what makes a budget stop observable — a run that ends
- * because the adapter ran out of events proves nothing.
- */
 function scriptedAdapter(events: AdapterEvent[]): AgentAdapter {
   let stop: (() => void) | null = null;
   let interrupted = false;
@@ -32,18 +26,12 @@ function scriptedAdapter(events: AdapterEvent[]): AgentAdapter {
       for (const event of events) {
         if (interrupted) return;
         yield event;
-        // Yield to the microtask queue so a stop decided in response to this
-        // event is seen before the next one, the way a real transport does.
         await Promise.resolve();
       }
       if (interrupted || events.some((event) => event.type === "result")) return;
       await new Promise<void>((resolve) => { stop = resolve; });
     },
     async interrupt(): Promise<void> {
-      // A real provider can be told to stop at any moment, including before it
-      // has reached the point where it waits. Latching it is what makes that
-      // true here too; without the latch a stop raced ahead of the idle and
-      // was silently dropped.
       interrupted = true;
       stop?.();
     },
@@ -183,29 +171,13 @@ describe("run budgets", () => {
     await handle.done;
     assert.ok(seen.length > 0, "a warning is raised before the budget is spent");
     assert.match(seen[0]!, /Bank your work now/);
-    // The first warning lands with allowance still left, which is the whole
-    // point: a warning delivered at 100% is an obituary, not a warning.
     assert.ok(seen.length > 1, "the warning precedes the stop by more than one call");
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* The allowance itself                                               */
-/* ------------------------------------------------------------------ */
-
-/*
- * These budgets used to be halved for a decomposed sub-step. That is what
- * killed 23 execute runs on the owner's install: 50 % of 250 tool calls is 125,
- * Cursor spends about 30 a minute, and a sub-step died three or four minutes in
- * while it was still reading files. The ceilings below are safety ceilings, and
- * reaching one now earns a wrap-up turn rather than a silent kill.
- */
 describe("the shipped allowance", () => {
   const field = (key: string) => snapshot().fields.find((entry) => entry.key === key);
 
-  // The effective allowance, not the table entry: the suite runs against an
-  // isolated settings store (see `server/package.json`'s test script), so this
-  // is what a run on a fresh install is actually given.
   test("the ceilings are ceilings, not working limits", () => {
     const budget = settings.budgetFor();
     assert.equal(budget.maxToolCalls, 1000);
@@ -214,16 +186,12 @@ describe("the shipped allowance", () => {
   });
 
   test("the two budgets that are not ceilings are untouched", () => {
-    // Input tokens is the money, and no-progress is the thrash detector. Both
-    // mean something the tool-call cap never did, so neither was relaxed.
     const budget = settings.budgetFor();
     assert.equal(budget.maxSpendUsd, 100);
     assert.equal(budget.noProgressToolCalls, 25);
   });
 
   test("one spend cap is a different token allowance on each provider", () => {
-    // The cap is money, so the tokens it buys follow the model's price: the
-    // same $100 has to stop an Opus run long before it stops a mid-tier one.
     assert.equal(inputTokenAllowance(100, "claude", "claude-opus-5-5"), 6_666_667);
     assert.equal(inputTokenAllowance(100, "claude", "claude-sonnet-5-5"), 33_333_333);
     assert.equal(inputTokenAllowance(100, "codex", "gpt-5.5"), 40_000_000);
@@ -245,16 +213,11 @@ describe("the shipped allowance", () => {
   });
 
   test("a sub-step's allowance is a station's — there is no depth to differ on", () => {
-    // Stated as arity rather than as two equal numbers: the claim is that no
-    // input exists which could make a sub-step's budget smaller, not that two
-    // particular calls happen to agree today.
     assert.equal(settings.budgetFor.length, 0, "budgetFor still takes an argument to scale by");
     assert.deepEqual(settings.budgetFor(), settings.budgetFor());
   });
 
   test("the sub-step share is gone from the settings, not merely defaulted to 100 %", () => {
-    // A switch that changes nothing is worse than no switch: it reads as a
-    // supported way to bring the old behaviour back.
     assert.equal(field("budget.subStepFraction"), undefined);
     const sources = ["../../../src", "../../../../shared/src"].flatMap((directory) => {
       const base = new URL(`${directory}/`, import.meta.url).pathname;

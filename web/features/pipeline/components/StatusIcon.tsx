@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * The glyph for a status, drawn from a key rather than typed as text.
- *
- * The server stores an icon *key*, never markup, so an operator picking an icon
- * cannot inject anything into the page and a theme change can restyle every
- * glyph at once. Unicode would have been simpler and worse: these have to stay
- * legible at 12px next to a badge in whatever font the terminal-styled log
- * happens to resolve, and emoji in particular render at wildly different
- * weights across platforms.
- */
-
 import type { StatusIcon as StatusIconKey } from "@hydra/shared";
 
 const PATHS: Record<StatusIconKey, { d: string; fill?: boolean }[]> = {

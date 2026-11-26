@@ -61,7 +61,6 @@ export function ExecutionPanel({promptId,onChanged,reviewAllocation=false}:{prom
   </section>;
 }
 
-/** Every limit is cumulative: approving more work never clears usage or remedies. */
 function AllocationForm({status,promptId,onSaved,initiallyOpen=false}:{status:ExecutionStatus;promptId:number;onSaved():Promise<void>;initiallyOpen?:boolean}) {
   const [open,setOpen]=useState(initiallyOpen || status.exception?.code === "budget_exhausted");
   const [policy,setPolicy]=useState<ExecutionPolicy>(()=>({...status.policy,

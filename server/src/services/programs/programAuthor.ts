@@ -1,17 +1,3 @@
-/**
- * What an author run is told.
- *
- * An author run is the one run in this console that produces work items instead
- * of doing them, so the brief has a different job from an execute context: it
- * has to teach the shape of a program (suites of work items, each one session's
- * worth, each with its own verification) and then get out of the way. The rest
- * of the guarantee is not in this text — it is that the only thing this run can
- * write is a draft nobody reads until an operator applies it.
- *
- * Kept beside nothing else so it can be read on its own, and so the JSON shapes
- * here and the validators in `shared/src/programDraft.ts` can be diffed by eye.
- */
-
 import type { ProgramDraftBody, ProgramDraftRecord } from "@hydra/shared";
 import {
   DRAFT_MAX_PROMPTS_PER_SUITE,
@@ -22,14 +8,6 @@ import {
 } from "@hydra/shared";
 import { draftKeysById, programBriefMarkdown, type ProgramBrief } from "../../domain/programs/programBrief.ts";
 
-/**
- * The draft as it stands, for `agent-step context` during an author run.
- *
- * An author run's "context" is not a work item — it is the proposal it is
- * composing. Re-reading it is how a run that posted three suites and then lost
- * track finds out which one is still missing, without guessing from its own
- * transcript.
- */
 export function programDraftStateMarkdown(draft: ProgramDraftRecord): string {
   const remaining = draft.body.suites.filter((suite) => suite.prompts.length === 0).map((suite) => suite.key);
   return [
@@ -53,16 +31,13 @@ export function programDraftStateMarkdown(draft: ProgramDraftRecord): string {
 export interface ProgramAuthorPromptArgs {
   workspace: { name: string; workDirectory: string; description: string };
   draft: ProgramDraftRecord;
-  /** The launcher, when the provider can exec one. Null falls back to curl. */
   shimPath: string | null;
   runId: string;
   token: string;
   port: number;
-  /** An operator's note on a revise run: what to change about the draft below. */
   feedback: string | null;
 }
 
-/** What the draft already holds, so a revise run edits rather than restarts. */
 function existingDraftMarkdown(body: ProgramDraftBody): string {
   if (body.suites.length === 0) return "";
   const suites = body.suites.map((suite) => {
@@ -203,22 +178,10 @@ export function programAuthorPrompt(args: ProgramAuthorPromptArgs): string {
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* Revising a program that already exists                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * A revision run's `context`: the program as the draft now has it, in the
- * draft's keys, with what it has changed so far. The brief carries live facts
- * (status, runs, pipelines) from the library; the item text and order come from
- * the draft, because that is what the run is editing.
- */
 export function programRevisionStateMarkdown(draft: ProgramDraftRecord, brief: ProgramBrief, options: { item?: string | null } = {}): string {
   const keys = draftKeysById(draft.body);
   const draftItems = new Map(draft.body.suites.flatMap((suite) => suite.prompts.map((prompt) => [prompt.key, prompt] as const)));
   const statusByKey = new Map(brief.suites.flatMap((suite) => suite.items).map((item) => [keys.get(item.id) ?? "", item] as const));
-  // The library brief, re-pointed at the draft: same suites and items as the
-  // draft holds now, so an added item is visible and a removed one is not.
   const view: ProgramBrief = {
     ...brief,
     program: { ...brief.program, name: draft.body.name, overview: draft.body.overview },

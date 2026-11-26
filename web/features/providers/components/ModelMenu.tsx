@@ -8,30 +8,20 @@ import { providerTheme } from "@/features/providers/lib/providerTheme";
 interface Props {
   boundaryRef?: RefObject<HTMLElement | null>;
   provider: ProviderId;
-  /** Runtime catalog refreshed by the server for this provider. */
   options: ModelOption[];
   accessTier: ModelAccessTier;
   selectionMode: ModelSelectionMode;
   recommended: string | null;
   totalModels: number;
-  /** Currently selected model id; `null` is the provider's own default. */
   selected: string | null;
-  /** The model configured in settings, shown as the inherited value. */
   configured: string | null;
-  /** False when the selection is inherited from settings rather than pinned. */
   pinned: boolean;
   onSelect(model: string | null): void;
-  /** Drop the pin so this provider tracks its settings value again. */
   onClear(): void;
   onClose(): void;
-  /** Open above the trigger, for pickers near the bottom of a scrolling pane. */
   placement?: "below" | "above";
 }
 
-/**
- * Small catalogs stay flat. Large runtime catalogs are grouped by model family
- * so hundreds of provider-specific reasoning variants do not read as one wall.
- */
 function groupByFamily(options: ModelOption[]): Array<{ family: string | null; options: ModelOption[] }> {
   if (options.length <= 12) return [{ family: null, options }];
   const sections: Array<{ family: string | null; options: ModelOption[] }> = [];
@@ -44,14 +34,6 @@ function groupByFamily(options: ModelOption[]): Array<{ family: string | null; o
   return sections;
 }
 
-/**
- * The dropdown behind a provider pill's model half. Catalog entries first, then
- * a free-text row so a model newer than the catalog is still reachable.
- *
- * Cursor's catalog is generated from the CLI and runs to a couple of hundred
- * entries, so the list is filtered and split by pool. The other providers have
- * a handful each and fall through to the same code as one unlabelled section.
- */
 export function ModelMenu({
   boundaryRef,
   provider,
@@ -74,8 +56,6 @@ export function ModelMenu({
   const containerRef = useRef<HTMLDivElement>(null);
   const theme = providerTheme[provider];
 
-  // Matched against id, label and hint together: "opus thinking" and "1M" and
-  // "grok" all have to find the same row.
   const sections = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     const matched = needle === ""
@@ -89,7 +69,6 @@ export function ModelMenu({
   const matchCount = sections.reduce((total, section) => total + section.options.length, 0);
   const filterable = options.length > 12;
 
-  // Click-away and Escape both close, so the menu never strands the header.
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
       if (!containerRef.current?.contains(event.target as Node) && !boundaryRef?.current?.contains(event.target as Node)) onClose();

@@ -3,18 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { resolveBinary, runCommand } from "../infrastructure/process.ts";
-
-/*
- * The Claude Agent SDK can be replaced while the server is running.
- *
- * A static `import { query } from "@anthropic-ai/claude-agent-sdk"` is bound
- * for the life of the process, and the copy in node_modules is whatever
- * `npm install` last resolved. An update therefore installs each new version
- * into its own directory under the state dir and imports it by absolute path:
- * a path Node has never loaded is a fresh module, so the next run gets the new
- * SDK while runs already in flight keep the one they started with.
- */
+import { resolveBinary } from "../infrastructure/process.ts";
+import { runMaintenanceCommand as runCommand } from "./maintenanceProcess.ts";
 
 const PACKAGE = "@anthropic-ai/claude-agent-sdk";
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
@@ -24,12 +14,7 @@ type SdkModule = typeof import("@anthropic-ai/claude-agent-sdk");
 export interface LoadedClaudeSdk {
   query: SdkModule["query"];
   version: string | null;
-  /** False for the copy in node_modules, true for one installed by an update. */
   managed: boolean;
-  /**
-   * Whether the Claude Code this SDK launches knows `--effort`. Old SDKs bundle
-   * a `cli.js` that rejects the flag before a session is created.
-   */
   supportsEffort: boolean;
 }
 
@@ -59,8 +44,6 @@ function describePackage(packageDir: string): { version: string | null; entry: s
   return {
     version: typeof pkg.version === "string" ? pkg.version : null,
     entry: join(packageDir, pkg.main ?? "sdk.mjs"),
-    // No cli.js means the SDK ships the native Claude Code binary, which is
-    // newer than the flag.
     supportsEffort: existsSync(cli) ? readFileSync(cli, "utf8").includes("--effort") : true,
   };
 }
@@ -72,10 +55,14 @@ async function importPackage(packageDir: string, managed: boolean): Promise<Load
   return { query: module.query, version: info.version, managed, supportsEffort: info.supportsEffort };
 }
 
+export function validClaudeSdkVersion(value: string): boolean {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+}
+
 function readActiveVersion(): string | null {
   try {
     const parsed = JSON.parse(readFileSync(join(managedRoot(), "active.json"), "utf8")) as { version?: unknown };
-    return typeof parsed.version === "string" && /^[\w.-]+$/.test(parsed.version) ? parsed.version : null;
+    return typeof parsed.version === "string" && validClaudeSdkVersion(parsed.version) ? parsed.version : null;
   } catch {
     return null;
   }
@@ -87,7 +74,6 @@ async function loadInitial(): Promise<LoadedClaudeSdk> {
     try {
       return await importPackage(packageDirIn(join(managedRoot(), active)), true);
     } catch {
-      // A half-removed or broken update must not take Claude down with it.
     }
   }
   const require = createRequire(import.meta.url);
@@ -96,7 +82,6 @@ async function loadInitial(): Promise<LoadedClaudeSdk> {
 
 let current: Promise<LoadedClaudeSdk> | null = null;
 
-/** The SDK the next Claude run should use. */
 export function loadClaudeSdk(): Promise<LoadedClaudeSdk> {
   current ??= loadInitial().catch((error: unknown) => {
     current = null;
@@ -105,20 +90,15 @@ export function loadClaudeSdk(): Promise<LoadedClaudeSdk> {
   return current;
 }
 
-function tail(text: string): string {
-  return text.trim().split(/\r?\n/).slice(-6).join("\n");
-}
-
-/** Installs the newest published SDK and makes it the one new runs load. */
 export async function installLatestClaudeSdk(): Promise<ClaudeSdkUpdate> {
-  const before = (await loadClaudeSdk()).version;
+  const before = await loadClaudeSdk().then((sdk) => sdk.version, () => null);
   const npm = await resolveBinary("npm");
   if (npm === null) throw new Error("npm is not on PATH, so the SDK cannot be installed");
 
   const view = await runCommand(npm, ["view", PACKAGE, "version"], 60_000);
   const latest = view.stdout.trim();
-  if (view.code !== 0 || !/^[\w.-]+$/.test(latest)) {
-    throw new Error(`Could not read the latest ${PACKAGE} version from npm: ${tail(view.stderr) || "no output"}`);
+  if (view.code !== 0 || !validClaudeSdkVersion(latest)) {
+    throw new Error(`Could not read the latest ${PACKAGE} version from npm: check npm registry connectivity`);
   }
   if (latest === before) return { updated: false, before, after: before };
 
@@ -134,10 +114,8 @@ export async function installLatestClaudeSdk(): Promise<ClaudeSdkUpdate> {
       INSTALL_TIMEOUT_MS,
     );
     if (install.code !== 0) {
-      throw new Error(`npm install ${PACKAGE}@${latest} failed: ${tail(install.stderr) || `exit ${install.code ?? "timeout"}`}`);
+      throw new Error(`npm install ${PACKAGE}@${latest} failed: exit ${install.code ?? "timeout"}`);
     }
-    // Rename before importing: the module is identified by its path, and the
-    // SDK finds its Claude Code binary relative to where it was loaded from.
     rmSync(target, { recursive: true, force: true });
     renameSync(staging, target);
   } catch (error) {
@@ -158,7 +136,6 @@ export async function installLatestClaudeSdk(): Promise<ClaudeSdkUpdate> {
   renameSync(`${pointer}.tmp`, pointer);
   current = Promise.resolve(loaded);
 
-  // Runs in flight still hold the previous version; anything older is unused.
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === latest || entry.name === before) continue;
     rmSync(join(root, entry.name), { recursive: true, force: true });

@@ -17,12 +17,10 @@ import { cn } from "@/lib/cn";
 
 interface Props {
   field: Field;
-  /** Pending (unsaved) value, or undefined when untouched. */
   draft: SettingValue | undefined;
   onChange(key: string, value: SettingValue): void;
   onRevert(key: string): void;
   disabled: boolean;
-  /** Extra context under the control, e.g. what a spend cap buys per agent. */
   footer?: ReactNode;
   compact?: boolean;
 }
@@ -30,10 +28,6 @@ interface Props {
 const inputClass =
   "mt-2 w-full rounded-md border border-line bg-surface-0 px-2.5 py-1.5 text-xs text-fg placeholder:text-fg-dim focus:border-line-strong focus:outline-none disabled:opacity-50";
 
-/**
- * One setting: its name and current value on a single line, the control under
- * it, and the long explanation folded behind "?" for the times it is wanted.
- */
 export function SettingRow({
   field,
   draft,

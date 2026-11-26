@@ -16,12 +16,6 @@ import { cancelAgentInput } from "../agents/agentInput.ts";
 
 const log = createLogger("runhub");
 
-/**
- * How much of a run's transcript is kept for replay. A long run can emit tens
- * of thousands of events; this bounds memory while still covering far more than
- * a reader will scroll back through. Overflow is reported as `truncated` rather
- * than silently hidden.
- */
 const MAX_REPLAY_EVENTS = 2000;
 
 type Subscriber = (message: ServerMessage) => void;
@@ -50,19 +44,9 @@ function snapshot(run: LiveRun): RunSnapshot {
   };
 }
 
-/**
- * Owns every run in flight, and fans their events out to all connected clients.
- *
- * Runs used to live in the WebSocket connection closure that started them,
- * which meant their events reached exactly one socket: opening a second tab, or
- * navigating to another page in the app, produced a fresh socket that received
- * nothing and reported "idle" while the agent was still working. The run is a
- * property of the server, so it is owned here and every subscriber sees it.
- */
 const endHooks: Array<(runId: string) => void> = [];
 
 export const runHub = {
-  /** Registers a client. Returns an unsubscribe function. */
   subscribe(subscriber: Subscriber): () => void {
     subscribers.add(subscriber);
     return () => subscribers.delete(subscriber);
@@ -70,7 +54,6 @@ export const runHub = {
 
   broadcast(message: ServerMessage): void {
     for (const subscriber of subscribers) {
-      // One bad socket must not stop the others from being told.
       try {
         subscriber(message);
       } catch (error) {
@@ -83,7 +66,6 @@ export const runHub = {
     this.broadcast({ kind: "operations_changed" });
   },
 
-  /** Every live run, newest last, with replay buffers. */
   snapshots(): RunSnapshot[] {
     return [...runs.values()]
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
@@ -98,16 +80,6 @@ export const runHub = {
     return runs.get(runId);
   },
 
-  /**
-   * The run currently holding a workspace's working directory, if any.
-   *
-   * A workspace is one working directory, and two agents editing the same tree
-   * at once corrupt each other's work. An author run counts: it is told to read
-   * rather than write, but it starts with the same permissions an execute run
-   * does (it has to be able to reach `agent-step`, and a read-only sandbox
-   * blocks that outright on Codex), so treating it as a reader would be trusting
-   * an instruction where a lock belongs.
-   */
   activeForWorkspace(workspaceId: number): LiveRun | undefined {
     for (const run of runs.values()) {
       if (run.workspace.id === workspaceId && (run.role === "execute" || run.role === "author")) return run;
@@ -128,7 +100,6 @@ export const runHub = {
     );
   },
 
-  /** Registers a started run and announces it to every client. */
   start(input: {
     handle: RunHandle;
     workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
@@ -169,7 +140,6 @@ export const runHub = {
     this.operationsChanged();
   },
 
-  /** Buffers an event, folds it into the run's live state, and fans it out. */
   event(runId: string, event: NormalizedEvent): void {
     const run = runs.get(runId);
     if (run !== undefined) {
@@ -178,8 +148,6 @@ export const runHub = {
         run.events.splice(0, run.events.length - MAX_REPLAY_EVENTS);
         run.truncated = true;
       }
-      // Status carries the server-side clock and cumulative usage, so a client
-      // that joins late gets real numbers rather than starting from zero.
       if (event.type === "status") {
         run.state = event.payload.state;
         run.elapsedMs = event.payload.elapsedMs;
@@ -190,16 +158,10 @@ export const runHub = {
     this.broadcast({ kind: "event", event });
   },
 
-  /**
-   * Called just before a run leaves the hub, while its events can still be
-   * shown. Hooks rather than imports keep this module free of the things that
-   * clean up after a run (`/btw` notes, for one) and their dependencies.
-   */
   onBeforeEnd(hook: (runId: string) => void): void {
     endHooks.push(hook);
   },
 
-  /** Removes a finished run and announces its terminal state. */
   end(runId: string, state: Extract<RunState, "done" | "interrupted" | "error">): void {
     cancelAgentInput(runId);
     for (const hook of endHooks) {
@@ -210,7 +172,6 @@ export const runHub = {
     this.operationsChanged();
   },
 
-  /** Interrupts a run from anywhere — any tab, or the REST endpoint. */
   async stop(runId: string): Promise<boolean> {
     const run = runs.get(runId);
     if (run === undefined) return false;
@@ -219,23 +180,10 @@ export const runHub = {
     return true;
   },
 
-  /**
-   * True once shutdown has begun, so callers that would start new work — the
-   * pipeline scheduler advancing to the next station — can stand down instead
-   * of spawning an agent into a process that is on its way out.
-   */
   isClosing(): boolean {
     return closing;
   },
 
-  /**
-   * Interrupts every live run and waits for each to record its terminal state.
-   *
-   * Agents are children of this server, not of the shell that started it, so
-   * nothing else signals them: left alone they outlive the server, keep writing
-   * to a database no live process owns, and surface on the next boot as runs
-   * that were abandoned mid-flight.
-   */
   async stopAll(): Promise<void> {
     closing = true;
     const live = [...runs.keys()];
@@ -247,7 +195,6 @@ export const runHub = {
     }
   },
 
-  /** Stops a provider that has already posted DONE/BLOCKED, without recording a false interruption. */
   async complete(runId: string): Promise<boolean> {
     const run = runs.get(runId);
     if (run === undefined) return false;

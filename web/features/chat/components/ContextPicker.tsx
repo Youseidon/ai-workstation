@@ -7,7 +7,6 @@ import { Badge, type Tone } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Combobox, type ComboboxItem } from "../../../components/ui/Combobox";
 
-/** How a saved prompt reads at a glance. */
 export function promptState(prompt: PromptOption): { text: string; tone: Tone } {
   if (prompt.currentRun?.processActive === true) return { text: "agent working", tone: "info" };
   if (prompt.recoverable) return { text: "recovery needed", tone: "caution" };
@@ -31,10 +30,6 @@ interface Props {
   onRecover(): void;
 }
 
-/**
- * Work-item chip for the composer's header. Workspace is chosen in the sidebar
- * beacon — only the prompt within that project is picked here.
- */
 export function ContextPicker({
   workspaceId,
   prompts,

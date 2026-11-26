@@ -17,7 +17,6 @@ function unique(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${seq}`;
 }
 
-/** Drives a route the way the HTTP server would, without opening a socket. */
 async function call(method: string, path: string, payload?: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
   const req = Readable.from(payload === undefined ? [] : [JSON.stringify(payload)]) as unknown as IncomingMessage;
   req.method = method;
@@ -113,14 +112,11 @@ test("Chat library routes persist metadata, page history and enforce workspace o
 test("patching a step rule needs no suiteId, but deleting one still does", async () => {
   const ctx = fixture();
   try {
-    // A rule patch is addressed by prompt id alone — the client never sends a
-    // suite, and requiring one broke every model change on the board.
     const patched = await call("PATCH", `/api/pipelines/${ctx.pipeline.id}/flowchart/steps/${ctx.prompt.id}`, { provider: "codex", model: "gpt-x" });
     assert.equal(patched.status, 200);
     assert.deepEqual((patched.body.rule as Record<string, unknown>).provider, "codex");
     assert.equal(workspaces.pipelineRule(ctx.prompt.id, ctx.pipeline.id).model, "gpt-x");
 
-    // The delete reply carries a rebuilt stage flowchart, so it keeps the guard.
     const missing = await call("DELETE", `/api/pipelines/${ctx.pipeline.id}/flowchart/steps/${ctx.prompt.id}`);
     assert.equal(missing.status, 400);
     assert.equal(workspaces.pipelineRule(ctx.prompt.id, ctx.pipeline.id).enabled, true);
@@ -164,7 +160,6 @@ test("a sub-step is patched and reset over the same routes as a station", async 
     const reset = await call("DELETE", `/api/pipelines/${ctx.pipeline.id}/flowchart/steps/${child}?suiteId=${ctx.suite.id}`);
     assert.equal(reset.status, 200);
     assert.equal(workspaces.pipelineRule(child, ctx.pipeline.id).provider, "claude");
-    // Resetting a sub-step must not unseat the station it hangs off.
     assert.deepEqual(
       workspaces.enabledNamedPipelineSteps(ctx.pipeline.id, ctx.suite.id).map((step) => step.promptId),
       [ctx.prompt.id],
@@ -179,12 +174,6 @@ test("a sub-step is patched and reset over the same routes as a station", async 
   }
 });
 
-/*
- * The scenario this route exists for: a run is interrupted between finishing
- * the work and reporting it, boot-time recovery parks the station BLOCKED, and
- * the operator has the agent's own evidence in hand. Re-running the agent just
- * to re-report finished work is the expensive way out.
- */
 function seedInterruptedRun(workspaceId: number, promptId: number): string {
   const runId = `run_${randomUUID()}`;
   workspaces.beginAgentRun({
@@ -198,8 +187,6 @@ function seedInterruptedRun(workspaceId: number, promptId: number): string {
     role: "execute",
   });
   workspaces.markAgentRunRunning(runId);
-  // How the real one arises: the server restarts while the agent is still
-  // working, and boot-time recovery parks the station it can no longer see.
   workspaces.recoverAbandonedRuns();
   return runId;
 }
@@ -209,32 +196,23 @@ test("a blocked station whose work is done can be completed without another run"
   try {
     const runId = seedInterruptedRun(ctx.workspace.id, ctx.prompt.id);
     const before = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
-    // The server restarted mid-run, so nothing ever recorded how it ended.
     assert.equal(before.status, "UNREPORTED");
     assert.equal(before.recoverable, true, "recovery is offered, but it would re-run the work");
 
     const summary = "Build 0 warnings; 25/25 route replay green; burndown +6.";
     const response = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: summary });
     assert.equal(response.status, 200);
-    // `status` says what was actually stored. An override is always honoured,
-    // but with a definition of done in play a close can land short of DONE, and
-    // the caller has to be able to tell those apart.
     assert.deepEqual(response.body, { completed: true, status: "DONE" });
 
     const after = workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id);
     assert.equal(after.status, "DONE");
     assert.equal(after.recoverable, false, "a completed station must stop offering recovery");
 
-    // The audit reads the status event, so the evidence has to land there too,
-    // attributed to the run that actually did the work.
     const history = workspaces.promptHistory(ctx.prompt.id);
     const done = (history.events as Array<{ newStatus: string; runId: string | null; actorType: string }>)
       .find((event) => event.newStatus === "DONE");
     assert.equal(done?.runId, runId, "provenance of the run that did the work is kept");
     assert.equal(done?.actorType, "USER");
-    // WARNING, not VERIFIED, and deliberately so: the evidence is recorded, but
-    // the run behind it ended interrupted and the audit must keep saying so.
-    // An operator override is not a way to launder a station into looking clean.
     const audited = workspaces.recordSuiteAudit(ctx.suite.id).items[0];
     assert.equal(audited?.check, "WARNING");
     assert.match(audited?.evidence ?? "", /25\/25 route replay green/);
@@ -248,8 +226,6 @@ test("completing a station requires evidence and refuses terminal or live statio
   const ctx = fixture();
   try {
     seedInterruptedRun(ctx.workspace.id, ctx.prompt.id);
-    // An empty summary would audit as "Marked DONE with no recorded
-    // verification summary" — the same hole the agent's DONE path refuses.
     const blank = await call("POST", `/api/prompts/${ctx.prompt.id}/complete`, { verificationSummary: "  " });
     assert.equal(blank.status, 422);
     assert.equal(workspaces.resolvePrompt(ctx.workspace.id, ctx.prompt.id).status, "UNREPORTED");
@@ -433,10 +409,6 @@ test("a persisted Chat thread cannot merge runs from different workspaces", () =
 });
 
 test("every route this module answers is one the HTTP server will hand it", () => {
-  // These were two lists in two files. `/api/program-drafts` was added to one of
-  // them and the endpoint answered a 404 from the other — routed here, rejected
-  // there. The predicate is now shared, and `index.ts` must use it rather than
-  // spelling the prefixes out again.
   for (const path of [
     "/api/sessions", "/api/sessions/run_1", "/api/operations", "/api/report",
     "/api/statuses", "/api/statuses/DONE", "/api/triggers/run_started",

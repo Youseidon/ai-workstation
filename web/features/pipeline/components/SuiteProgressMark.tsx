@@ -1,7 +1,6 @@
 import { cn } from "@/lib/cn";
 import { progressLabel, type SuiteProgress } from "../lib/progress";
 
-/** Read-only outcome; intentionally a circle, distinct from square membership checkboxes. */
 export function SuiteProgressMark({ progress, running, index }: { progress: SuiteProgress; running: boolean; index: number }) {
   const attention = progress.attention > 0 ? `${progress.attention} need attention` : null;
   const label = running ? `Running${attention === null ? "" : ` · ${attention}`}` : attention ?? (progress.complete ? "Complete" : progressLabel(progress));

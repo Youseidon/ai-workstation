@@ -5,7 +5,6 @@ import type { OperationsSnapshot, PipelineFlowchartView } from "@hydra/shared";
 import { workspaceApi } from "@/api/workspacesApi";
 import { SERVER_URL } from "@/api/serverUrl";
 
-/** A scoped membership snapshot for every stage, including suites never opened in this browser. */
 export function usePipelineProgress({ workspaceId, pipelineId, suiteIds, snapshot }: {
   workspaceId: number | null;
   pipelineId: number | null;
@@ -24,7 +23,6 @@ export function usePipelineProgress({ workspaceId, pipelineId, suiteIds, snapsho
         if (!current) return;
         const flows = new Map<number, PipelineFlowchartView>();
         for (const result of results) if (result.status === "fulfilled") flows.set(result.value.suiteId, result.value);
-        // Failed telemetry replaces an old success tick with an explicit unknown.
         setLoaded({ scope, flows });
       });
     return () => { current = false; };

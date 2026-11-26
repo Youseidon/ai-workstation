@@ -13,12 +13,6 @@ function positiveInt(raw: string | null): number | null {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-/**
- * Where a link to a work item (or suite) should land. Prefers the pipeline that
- * is running the suite, then any pipeline that includes it, then the suite view.
- * Returns null when the item is not in these suites. With nothing to resolve,
- * lands on the pipelines overview.
- */
 export function resolveOpenTarget(
   request: OpenRequest,
   suites: OperationsSuite[],

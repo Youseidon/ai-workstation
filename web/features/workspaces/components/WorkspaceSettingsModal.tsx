@@ -5,12 +5,13 @@ import type { WorkspaceRecord } from "@hydra/shared";
 import { Button } from "../../../components/ui/Button";
 import { TextArea, TextInput } from "../../../components/ui/Field";
 import { Modal } from "../../../components/ui/Modal";
+import { DirectoryPicker } from "./DirectoryPicker";
 
 export type WorkspaceDraft = { name: string; workDirectory: string; description: string };
 
 interface Props {
+  serverUrl: string;
   open: boolean;
-  /** The workspace being configured, or null to create one. */
   workspace: WorkspaceRecord | null;
   busy: boolean;
   onClose(): void;
@@ -18,11 +19,7 @@ interface Props {
   onDelete?(): void;
 }
 
-/**
- * Creating a workspace and configuring one are the same three fields, so they
- * share a form. Mount it with a `key` per workspace so the draft resets.
- */
-export function WorkspaceSettingsModal({ open, workspace, busy, onClose, onSubmit, onDelete }: Props) {
+export function WorkspaceSettingsModal({ serverUrl, open, workspace, busy, onClose, onSubmit, onDelete }: Props) {
   const creating = workspace === null;
   const [draft, setDraft] = useState<WorkspaceDraft>({
     name: workspace?.name ?? "",
@@ -30,6 +27,8 @@ export function WorkspaceSettingsModal({ open, workspace, busy, onClose, onSubmi
     description: workspace?.description ?? "",
   });
   const [touched, setTouched] = useState(false);
+  // Open by default when creating: picking a folder is the usual first step.
+  const [browsing, setBrowsing] = useState(creating);
   const nameError = touched && draft.name.trim() === "" ? "A name is required." : null;
   const pathError =
     touched && !draft.workDirectory.trim().startsWith("/")
@@ -88,16 +87,42 @@ export function WorkspaceSettingsModal({ open, workspace, busy, onClose, onSubmi
           placeholder="my-project"
           onChange={(event) => setDraft({ ...draft, name: event.target.value })}
         />
-        <TextInput
-          label="Project directory"
-          required
-          className="font-mono"
-          value={draft.workDirectory}
-          error={pathError}
-          hint="Absolute path to the project agents should work on."
-          placeholder="/home/you/projects/my-project"
-          onChange={(event) => setDraft({ ...draft, workDirectory: event.target.value })}
-        />
+        <div className="space-y-2">
+          <div className="flex items-start gap-2">
+            <TextInput
+              label="Project directory"
+              required
+              fieldClassName="flex-1"
+              className="font-mono"
+              value={draft.workDirectory}
+              error={pathError}
+              hint="Absolute path on the machine running Hydra. Browse, or type it."
+              placeholder="/home/you/projects/my-project"
+              onChange={(event) => setDraft({ ...draft, workDirectory: event.target.value })}
+            />
+            {!browsing && (
+              <Button variant="secondary" className="mt-[1.375rem]" onClick={() => setBrowsing(true)}>
+                Browse…
+              </Button>
+            )}
+          </div>
+          {browsing && (
+            <DirectoryPicker
+              serverUrl={serverUrl}
+              initialPath={draft.workDirectory}
+              onClose={() => setBrowsing(false)}
+              onSelect={(path) => {
+                setDraft((current) => ({
+                  ...current,
+                  workDirectory: path,
+                  // Offer the folder name as the workspace name when none was typed.
+                  name: current.name.trim() === "" ? (path.split("/").filter(Boolean).at(-1) ?? "") : current.name,
+                }));
+                setBrowsing(false);
+              }}
+            />
+          )}
+        </div>
         <TextArea
           label="Standing instructions"
           rows={4}
@@ -105,7 +130,7 @@ export function WorkspaceSettingsModal({ open, workspace, busy, onClose, onSubmi
           hint="Optional. Given to every work-item run in this workspace."
           onChange={(event) => setDraft({ ...draft, description: event.target.value })}
         />
-        {/* Lets Enter in a single-line field submit. */}
+        { }
         <button type="submit" hidden />
       </form>
     </Modal>

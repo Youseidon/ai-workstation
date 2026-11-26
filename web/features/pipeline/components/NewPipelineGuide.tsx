@@ -23,10 +23,6 @@ const STEPS = [
 
 export type NewPipelineGuideStep = (typeof STEPS)[number]["id"];
 
-/**
- * Lightweight first-run coach for `/pipeline/new`. Dismissible; does not block
- * the board — experts can skip straight to editing.
- */
 export function NewPipelineGuide({
   step,
   onStepChange,

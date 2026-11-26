@@ -15,7 +15,11 @@ import type { SettingsDraftState } from "@/features/settings/lib/drafts";
 import { modelChoice } from "@/features/providers/lib/modelChoice";
 import type { AgentState } from "@/features/runs/lib/agentState";
 import { AskChip, runOwnerHref } from "@/features/runs/components/RunStatus";
-import { PROVIDER_SETTINGS_GROUP, usageState } from "../lib/configuration";
+import {
+  PROVIDER_SETTINGS_GROUP,
+  usageState,
+  providerInstalled,
+} from "../lib/configuration";
 import { BrowserModelPicker } from "./BrowserModelPicker";
 import { UsageBlock } from "./usage";
 import styles from "./configuration.module.css";
@@ -41,6 +45,8 @@ export function ProviderConfigurationDialog({
   checkedAt,
   onRefreshUsage,
   updating,
+  canMaintain,
+  onInstall,
   onUpdate,
   agent,
   runTabIds,
@@ -65,6 +71,8 @@ export function ProviderConfigurationDialog({
   checkedAt: number;
   onRefreshUsage(): void;
   updating: boolean;
+  canMaintain: boolean;
+  onInstall(): void;
   onUpdate(): void;
   agent: AgentState;
   runTabIds: Record<string, string>;
@@ -308,15 +316,21 @@ export function ProviderConfigurationDialog({
               size="sm"
               variant="secondary"
               loading={updating}
-              onClick={onUpdate}
+              onClick={providerInstalled(info) ? onUpdate : onInstall}
               disabled={
                 disabled ||
+                !canMaintain ||
                 updating ||
-                (info.transport === "spawn" && (busy || info.binary === null))
+                (providerInstalled(info) && info.transport === "spawn" && busy)
               }
             >
-              {info.transport === "sdk" ? "Update SDK" : "Update CLI"}
+              {`${providerInstalled(info) ? "Update" : "Install"} ${info.transport === "sdk" ? "SDK" : "CLI"}`}
             </Button>
+            {providerInstalled(info) && (
+              <Button size="sm" variant="ghost" onClick={onInstall}>
+                Connect account
+              </Button>
+            )}
             <p className="mt-2 text-xs text-fg-dim">
               {busy && info.transport === "spawn"
                 ? "CLI updates require this provider to be idle."

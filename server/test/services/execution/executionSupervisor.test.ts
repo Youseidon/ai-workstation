@@ -47,8 +47,6 @@ function fixture(deferred=false,content="Repair the implementation and compile; 
     const credential=runContexts.create(effect.runId,workspace.id,args.promptId!);
     workspaces.beginAgentRun({runId:effect.runId,workspaceId:workspace.id,promptId:args.promptId!,provider:args.provider,model:args.model,tokenHash:credential.tokenHash,expiresAt:credential.expiresAt});
     workspaces.markAgentRunRunning(effect.runId);
-    // A real OS process exercises registration and death confirmation. No
-    // provider or live repository is involved in this fault fixture.
     const child=spawn(process.execPath,["-e","setTimeout(()=>{},20)"],{detached:true,stdio:"ignore"});
     executionStore.attachProcess(effect.id,processIdentity(child.pid!));
     await once(child,"close");
@@ -239,8 +237,7 @@ test("a crash after result persistence accepts the unit on reconciliation and ne
     f.review(f.prompt.id);
     workspaces.updateAgentStatus(runId,{requestId:randomUUID(),expectedStatus:"IN_PROGRESS",status:"DONE",reason:"Implemented",verificationSummary:"Fresh managed check"});
     workspaces.finishAgentRun(runId,"done");
-    // Crash here: no onExecuteEnded callback or accepted-unit write yet.
-    releaseRuntimeEffect(executionStore.byRun(runId)!.id); // process-local registration is lost on restart
+    releaseRuntimeEffect(executionStore.byRun(runId)!.id);
     workspaces.recoverAbandonedRuns();
     await reconcileExecution();
     assert.deepEqual(executionStore.accepted(f.contractId),[f.prompt.id]);
@@ -266,8 +263,6 @@ test("periodic reconciliation leaves active finalization and live worker claims 
     await reconcileExecution();
     assert.deepEqual(executionStore.accepted(f.contractId),[]);
     assert.ok(executionStore.pending().some(effect=>effect.runId===runId));
-    // A restart discards the active callback registration, leaving durable
-    // settlement and ownership to complete acceptance before lease release.
     releaseRuntimeEffect(executionStore.byRun(runId)!.id);
     await reconcileExecution();
     assert.deepEqual(executionStore.accepted(f.contractId),[f.prompt.id]);
@@ -352,7 +347,7 @@ test("remaining plans derive named deferred obligations without dropping origina
     assert.ok(activated.units.find(unit=>unit.promptId===verifier.id)!.recipeIds.includes(finalCheck.id));
     for(const criterion of contract.criteria)assert.ok(manifest.some(c=>c.id===criterion.id && c.text===criterion.text));
     assert.equal(executionStore.status(f.contractId).attempts,2);
-    assert.equal(executionStore.status(f.contractId).tokens,1015); // first actual + second reservation
+    assert.equal(executionStore.status(f.contractId).tokens,1015);
   } finally {f.cleanup();}
 });
 

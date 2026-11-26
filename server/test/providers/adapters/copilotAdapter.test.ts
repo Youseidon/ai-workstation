@@ -27,7 +27,6 @@ test("Copilot streams a message once, and its terminal envelope adds nothing", (
   }]);
   assert.deepEqual(terminal, []);
 
-  // The streamed text is still the run's final answer.
   const [result] = mapper.map({ type: "result", exitCode: 0 });
   assert.equal(result?.type, "result");
   assert.equal(result?.payload.text, "Ran the tests.");
@@ -50,7 +49,6 @@ test("Copilot tool calls correlate start and completion", () => {
     type: "tool.execution_start",
     data: { toolCallId: "call-1", toolName: "bash", arguments: { command: "echo hi" } },
   });
-  // Only the start event names the tool; the completion is correlated by id.
   const completed = mapper.map({
     type: "tool.execution_complete",
     data: { toolCallId: "call-1", success: true, result: { content: "hi\n" } },
@@ -170,6 +168,5 @@ test("Copilot's flat result envelope ends the run and settles the mapper", () =>
     type: "result",
     payload: { state: "error", usage: null, text: null, exitCode: 2 },
   });
-  // A second terminal envelope must not produce a second result.
   assert.deepEqual(mapper.map({ type: "result", exitCode: 0 }), []);
 });

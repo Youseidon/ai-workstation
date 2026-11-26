@@ -5,11 +5,6 @@ import { ChatWorkspace } from "@/features/chat/components/ChatWorkspace";
 import { useChat } from "@/features/chat/hooks/useChatController";
 import { useWorkspace } from "@/contexts/workspaceContext";
 
-/**
- * Chat's conversations. Mounted by the shell, not the route, so open
- * conversations keep their drafts, queued messages and reading position while
- * another section is on screen. `visible` hides it without unmounting.
- */
 export function ChatStage({ visible }: { visible: boolean }) {
   const chat = useChat();
   const { workspaces, status, error, refresh } = useWorkspace();

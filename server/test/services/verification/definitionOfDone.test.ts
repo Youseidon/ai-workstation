@@ -1,18 +1,3 @@
-/**
- * What "done" is allowed to mean.
- *
- * Every test here corresponds to a promise the app now makes on screen: that a
- * work item does not close until the things the operator said had to be true
- * are true, that the check was done by running something rather than by asking
- * an agent whether it was happy with its own work, and that a refusal says
- * exactly which criterion failed and shows its real output.
- *
- * The one thing deliberately *not* protected here is the operator's authority.
- * A human override is meant to get through, and there is a test for that too —
- * the gate exists to stop the pipeline concluding something it has not
- * established, not to stop the person who owns the work from saying so.
- */
-
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,7 +29,6 @@ function fixture() {
   };
 }
 
-/** A criterion at the work item's own scope, returning its id. */
 function criterion(promptId: number, patch: Record<string, unknown>): number {
   const saved = workspaces.saveDodCriterion({ scope: "prompt", scopeId: promptId, patch });
   return saved.criteria[saved.criteria.length - 1]!.id;
@@ -57,13 +41,7 @@ const latestEvent = (promptId: number) =>
     evidence?: Record<string, unknown> | null;
   }>)[0]!;
 
-/* ------------------------------------------------------------------ */
-/* The promise: a work item does not close on an unmet criterion       */
-/* ------------------------------------------------------------------ */
-
 test("a work item with no definition of done closes exactly as it always did", async () => {
-  // The gate must be invisible until someone writes a criterion. An upgrade
-  // that quietly started refusing every close would be worse than no gate.
   const ctx = fixture();
   try {
     workspaces.completePrompt(ctx.prompt.id, "USER", { verificationSummary: "checked by hand" });
@@ -77,7 +55,6 @@ test("a failing command refuses the close, and the item is held for review", asy
     criterion(ctx.prompt.id, { kind: "COMMAND", text: "the tests pass", command: "exit 3" });
     await runDefinitionOfDoneCommands(ctx.prompt.id, null);
 
-    // A reviewer closing the station, which is the unattended path.
     const written = workspaces.completePrompt(ctx.prompt.id, "SYSTEM", { verificationSummary: "the reviewer was satisfied" });
     assert.equal(written, "NEEDS_REVIEW", "a reviewer's say-so closed an item over a failing command");
     assert.equal(statusOf(ctx.prompt.id), "NEEDS_REVIEW");
@@ -86,9 +63,6 @@ test("a failing command refuses the close, and the item is held for review", asy
 });
 
 test("the refusal names the criterion and carries the command's real output", async () => {
-  // The operator has to be able to see *why* without going to look for it, and
-  // what they see has to be the command's own words rather than a summary of
-  // them. This is the whole difference between a verdict and an assertion.
   const ctx = fixture();
   try {
     criterion(ctx.prompt.id, { kind: "COMMAND", text: "the build is clean", command: "echo 'TS2322: Type mismatch on line 4' >&2; exit 2" });
@@ -118,9 +92,6 @@ test("a passing command closes the item, with the exit code recorded", async () 
 
     const evaluation = workspaces.definitionOfDoneEvaluation(ctx.prompt.id);
     assert.equal(evaluation.satisfied, true);
-    // Checked rather than taken on trust: "it passed" and "we recorded that
-    // something ran and returned 0" are different claims, and only the second
-    // is evidence.
     assert.equal(evaluation.criteria[0]!.exitCode, 0);
     assert.equal(evaluation.criteria[0]!.source, "RUNNER");
 
@@ -129,9 +100,6 @@ test("a passing command closes the item, with the exit code recorded", async () 
 });
 
 test("a command nobody ran is unverified, and unverified closes nothing", async () => {
-  // The same rule as a run that ends without reporting: absence of evidence is
-  // not evidence. A criterion that has never been checked must not pass by
-  // default, or the gate is decorative.
   const ctx = fixture();
   try {
     criterion(ctx.prompt.id, { kind: "COMMAND", text: "the tests pass", command: "exit 0" });
@@ -166,10 +134,6 @@ test("an optional criterion is reported but never blocks a close", async () => {
   } finally { ctx.cleanup(); }
 });
 
-/* ------------------------------------------------------------------ */
-/* Who is allowed past it                                              */
-/* ------------------------------------------------------------------ */
-
 test("an operator can always close over an unmet definition of done, and it is recorded", async () => {
   const ctx = fixture();
   try {
@@ -179,8 +143,6 @@ test("an operator can always close over an unmet definition of done, and it is r
     assert.equal(workspaces.completePrompt(ctx.prompt.id, "USER", { reason: "the test is wrong, not the code", verificationSummary: "verified by hand" }), "DONE");
     const event = latestEvent(ctx.prompt.id);
     assert.equal(event.trigger, "operator_override");
-    // Honoured is not the same as unremarked. Anyone reading this later has to
-    // be able to see that it was closed over a red criterion.
     assert.match(JSON.stringify(event.evidence), /closed this work item anyway/);
     assert.match(JSON.stringify(event.evidence), /the tests pass/);
   } finally { ctx.cleanup(); }
@@ -203,17 +165,11 @@ test("enforcement 'off' checks nothing at all", async () => {
   try {
     criterion(ctx.prompt.id, { kind: "COMMAND", text: "the tests pass", command: "exit 1" });
     workspaces.setDodEnforcement("prompt", ctx.prompt.id, "off");
-    // Nothing is even offered to the runner, so a switched-off definition of
-    // done costs no time as well as blocking nothing.
     assert.deepEqual(workspaces.dodCommandPlan(ctx.prompt.id).criteria, []);
     assert.equal(workspaces.definitionOfDoneEvaluation(ctx.prompt.id).satisfied, true);
     assert.equal(workspaces.completePrompt(ctx.prompt.id, "SYSTEM", { verificationSummary: "done" }), "DONE");
   } finally { ctx.cleanup(); }
 });
-
-/* ------------------------------------------------------------------ */
-/* Inheritance                                                         */
-/* ------------------------------------------------------------------ */
 
 test("a work item inherits the nearest definition of done above it", () => {
   const ctx = fixture();
@@ -223,9 +179,6 @@ test("a work item inherits the nearest definition of done above it", () => {
     assert.equal(resolved.criteria.length, 1);
     assert.deepEqual(resolved.inheritedFrom, { scope: "workspace", scopeId: ctx.workspace.id });
 
-    // A nearer scope replaces the inherited set rather than adding to it, so an
-    // item can drop a house rule that does not apply to it. Accumulating would
-    // read well right up to the point where something needs to opt out.
     workspaces.saveDodCriterion({ scope: "suite", scopeId: ctx.suite.id, patch: { kind: "PROSE", text: "the suite's own rule" } });
     resolved = workspaces.resolvedDefinitionOfDone(ctx.prompt.id);
     assert.equal(resolved.criteria.length, 1);
@@ -246,11 +199,6 @@ test("enforcement resolves on its own, so a suite can soften a rule it did not w
 });
 
 test("a deleted work item's criteria do not come back attached to the next one", () => {
-  // SQLite hands out a deleted row's INTEGER PRIMARY KEY again, and this table
-  // is keyed by (scope, scope_id) rather than by a foreign key. Without the
-  // sweep, a work item nobody had ever configured would refuse to close because
-  // of a criterion written for a different one that happened to share its id —
-  // a work item held up for reasons nobody wrote.
   const first = fixture();
   const promptId = first.prompt.id;
   criterion(promptId, { kind: "PROSE", text: "a rule from a work item that no longer exists" });
@@ -259,22 +207,13 @@ test("a deleted work item's criteria do not come back attached to the next one",
   assert.deepEqual(workspaces.definitionOfDone("prompt", promptId).criteria, []);
 });
 
-/* ------------------------------------------------------------------ */
-/* Children                                                            */
-/* ------------------------------------------------------------------ */
-
 test("a children-closed criterion is read off the children, not asked of anyone", () => {
   const ctx = fixture();
   try {
     criterion(ctx.prompt.id, { kind: "CHILDREN_CLOSED", text: "every sub-step is closed" });
-    // No sub-steps: nothing is open, so nothing is outstanding.
     assert.equal(workspaces.definitionOfDoneEvaluation(ctx.prompt.id).criteria[0]!.result, "PASSED");
   } finally { ctx.cleanup(); }
 });
-
-/* ------------------------------------------------------------------ */
-/* The command runner's bounds                                         */
-/* ------------------------------------------------------------------ */
 
 test("a command runs in the workspace, not wherever the server happens to be", async () => {
   const ctx = fixture();
@@ -287,9 +226,6 @@ test("a command runs in the workspace, not wherever the server happens to be", a
 });
 
 test("a command cannot be pointed outside the workspace", () => {
-  // The command itself is the operator's to write, but the directory it starts
-  // in is a boundary: a criterion that verifies a tree it was not scoped to is
-  // not verifying anything the operator asked about.
   assert.throws(() => resolveCommandCwd("/tmp/ws", "../elsewhere"), /inside the workspace/);
   assert.throws(() => resolveCommandCwd("/tmp/ws", "/etc"), /relative to the workspace/);
   assert.equal(resolveCommandCwd("/tmp/ws", "packages/api"), "/tmp/ws/packages/api");
@@ -297,8 +233,6 @@ test("a command cannot be pointed outside the workspace", () => {
 });
 
 test("a command that hangs is killed, and its criterion does not pass", async () => {
-  // A criterion that waits forever would hold a work item open forever, which
-  // looks exactly like a pipeline that has silently stopped.
   const outcome = await runDodCommand({ command: "sleep 30", workDirectory: tmpdir(), cwd: null, timeoutMs: 1_000 });
   assert.equal(outcome.timedOut, true);
   assert.equal(commandPassed(outcome, 0), false, "a timed-out command must never count as a pass");
@@ -312,8 +246,6 @@ test("a command that does not exist fails with the reason, rather than throwing"
 });
 
 test("a non-zero expected exit code is honoured", async () => {
-  // "This must still fail" is a real criterion — a regression test that has not
-  // been fixed yet, a command that must reject bad input.
   const outcome = await runDodCommand({ command: "exit 7", workDirectory: tmpdir(), cwd: null, timeoutMs: 5_000 });
   assert.equal(commandPassed(outcome, 7), true);
   assert.equal(commandPassed(outcome, 0), false);
@@ -333,13 +265,7 @@ test("a timeout cannot be set beyond what the server will honour", () => {
   assert.equal(clampDodTimeout(Number.NaN), 120_000);
 });
 
-/* ------------------------------------------------------------------ */
-/* The editor refuses what the runner could not honour                 */
-/* ------------------------------------------------------------------ */
-
 test("a criterion that could never be run is refused when it is written, not when it matters", () => {
-  // Discovering at 3am that a work item can never close because the command
-  // field was left empty is the failure this is here to prevent.
   const ctx = fixture();
   try {
     assert.throws(
@@ -368,10 +294,6 @@ test("a criterion cannot be edited or deleted through a scope it does not belong
     assert.equal(workspaces.definitionOfDone("prompt", ctx.prompt.id).criteria.length, 1);
   } finally { ctx.cleanup(); }
 });
-
-/* ------------------------------------------------------------------ */
-/* Verify blocks on the work item itself                               */
-/* ------------------------------------------------------------------ */
 
 test("saving a ## Verify block writes prompt-scope COMMAND criteria and keeps ids", () => {
   const ctx = fixture();
@@ -447,14 +369,7 @@ test("a depth-2 child with no Verify block inherits suite-level COMMAND criteria
   } finally { ctx.cleanup(); }
 });
 
-/* ------------------------------------------------------------------ */
-/* The agent is told the truth about its own post                      */
-/* ------------------------------------------------------------------ */
-
 test("a failing Verify on agent done is a refusal, not a status change", async () => {
-  // The agent door runs the commands, then refuses with the output while the
-  // item stays IN_PROGRESS. Writing NEEDS_REVIEW would end the run; the agent
-  // still has the provider session and can fix the failure in place.
   const ctx = fixture();
   try {
     workspaces.updateChild("prompt", ctx.prompt.id, {
@@ -575,9 +490,6 @@ test("a Verify repair cannot replace a real check with unconditional success", a
 });
 
 test("an unmet definition of done lands on NEEDS_REVIEW with a recorded cause", async () => {
-  // The status alone does not say why; the ledger trigger does. Continuation
-  // treats NEEDS_REVIEW like UNREPORTED, and Resume after a park still sees
-  // the failing criterion on the evidence.
   const ctx = fixture();
   try {
     criterion(ctx.prompt.id, { kind: "COMMAND", text: "the tests pass", command: "exit 1" });
@@ -588,10 +500,6 @@ test("an unmet definition of done lands on NEEDS_REVIEW with a recorded cause", 
     assert.ok(trigger === "dod_unmet" || trigger === "dod_command_failed", `unexpected trigger ${trigger}`);
   } finally { ctx.cleanup(); }
 });
-
-/* ------------------------------------------------------------------ */
-/* The evidence an operator reads                                      */
-/* ------------------------------------------------------------------ */
 
 test("the evidence panel gets one entry per failing criterion, with its detail", () => {
   const evaluation = {
@@ -607,8 +515,6 @@ test("the evidence panel gets one entry per failing criterion, with its detail",
   const evidence = dodUnmetEvidence(evaluation);
   assert.equal(evidence.definitionOfDone, "2 of 3 required criteria not met");
   assert.match(String(evidence["the tests pass"]), /Exit 1, expected 0/);
-  // A criterion nobody checked says so rather than appearing as a bare token,
-  // because "it failed" and "nothing looked" send the operator different places.
   assert.match(String(evidence["the changelog is written"]), /Nothing has checked this yet/);
   assert.equal(evidence["the docs are updated"], undefined, "a passing criterion is not evidence of a problem");
 });

@@ -20,7 +20,6 @@ export interface KiloStreamOptions {
 
 interface PartState { part: Record<string, unknown>; text: string; }
 
-/** A per-run Kilo server emits live part deltas that `kilo run --format json` omits. */
 export class KiloStreamMapper implements StreamMapper {
   settled = false;
   private channel?: StreamChannel;
@@ -65,7 +64,6 @@ export class KiloStreamMapper implements StreamMapper {
 
   private async connect(): Promise<void> {
     if (this.interrupted || this.disposed) return;
-    // The stream is established before creating/resuming or prompting a session.
     const stream = await this.request("/event");
     if (!stream.body) throw new Error("Kilo returned no event stream");
     void this.read(stream.body).catch(error => { if (!this.disposed && !this.settled) this.channel?.fail(error); });

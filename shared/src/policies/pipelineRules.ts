@@ -1,33 +1,11 @@
-/**
- * The pipeline transport interlocking: which controls a run offers, and why.
- *
- * This is deliberately *data* rather than a chain of `if`s. A chain can be
- * executed but not inspected — it cannot be rendered as a table, enumerated by
- * a test, or pointed at by a settings screen. Every one of those is something
- * the app needs, and keeping four hand-written copies of the same rules in
- * sync is what made the transport controls regress repeatedly.
- *
- * Rows are ordered and the first match wins, exactly like the `if` chain this
- * replaces. Add a row above the one it should pre-empt.
- */
-
 import type { OnDoneAction, OnUnfinishedAction, PipelineState, PromptOperationalState, PromptPipelineRule } from "../contracts/pipeline.ts";
 import type { ProviderId } from "../contracts/providers.ts";
 import type { DodEnforcement, PolicyKey, RulePolicy, StatusTone } from "../models/statusModel.ts";
 
-/**
- * The tone and rule-policy vocabularies moved to `statusModel`, which sits
- * below this module so a status can describe itself without depending on the
- * transport interlocking. Re-exported here so existing importers do not care.
- */
 export type { PolicyKey, RulePolicy, StatusTone } from "../models/statusModel.ts";
 
 export const PIPELINE_CONTROLS = ["play", "resume", "newRun", "recover", "pause", "stop"] as const;
 
-/**
- * The controls a pipeline can offer. Exactly one is ever primary, so a header
- * never presents two equally-weighted "do something" buttons.
- */
 export type PipelineControl = (typeof PIPELINE_CONTROLS)[number];
 
 export const CONTROL_LABEL: Record<PipelineControl, string> = {
@@ -39,22 +17,9 @@ export const CONTROL_LABEL: Record<PipelineControl, string> = {
   stop: "Stop",
 };
 
-/* ------------------------------------------------------------------ */
-/* Operator-settable policy                                            */
-/* ------------------------------------------------------------------ */
-
 export const PAUSE_MODES = ["graceful", "immediate"] as const;
 export type PauseMode = (typeof PAUSE_MODES)[number];
 
-/**
- * What happens to a run the server restart interrupted.
- *
- * `autoResume` is first because it is the default and the reason this policy
- * exists at all: 22 of the first 34 pipeline runs died to a restart of the
- * console itself and then sat interrupted until somebody came back and pressed
- * a button. The other two options still only *offer* something; they relaunch
- * nothing on their own.
- */
 export const RESTART_POLICIES = ["autoResume", "newRun", "resumeSameRun"] as const;
 export type RestartPolicy = (typeof RESTART_POLICIES)[number];
 
@@ -62,47 +27,15 @@ export function isRestartPolicy(value: unknown): value is RestartPolicy {
   return typeof value === "string" && (RESTART_POLICIES as readonly string[]).includes(value);
 }
 
-/**
- * House rules for how a pipeline behaves, resolved on the server from settings
- * and shipped to the client with the operations snapshot so that both sides
- * decide from the same values.
- *
- * Every field here is honoured by code today. A switch that changes nothing is
- * worse than a missing one, so a policy field lands in the same change as the
- * behaviour it governs.
- */
 export interface PipelinePolicy {
-  /** Whether Pause lets the running agent finish, or interrupts it. */
   pauseMode: PauseMode;
-  /** Whether Stop also interrupts the agent that is running right now. */
   stopInterruptsAgent: boolean;
-  /** What a run interrupted by a server restart offers when you come back. */
   onRestart: RestartPolicy;
-  /**
-   * Maximum automatic successors, including agent-requested CONTINUE,
-   * crashes and unreported endings. An explicit operator Resume allocates
-   * another legacy allowance; adopted requirements also retain a root ledger.
-   */
   maxContinuations: number;
-  /**
-   * Whether a station that used up its continuations gets one read-only
-   * completion audit before the rail parks. Off skips straight to parking
-   * `continuations_exhausted`.
-   */
   reviewAfterContinuations: boolean;
-  /**
-   * What an unmet definition of done does to a close. The scope-level setting
-   * overrides this per workspace/program/suite/item; this is the house default
-   * the `dod-unmet` rule row points at.
-   */
   dodEnforcement: DodEnforcement;
-  /** The rule a station gets before anyone configures it. */
   defaultOnUnfinished: OnUnfinishedAction;
   defaultOnDone: OnDoneAction;
-  /**
-   * House default ordered fallbacks when a station and its suite leave the
-   * list empty. Comma-separated in settings as `pipeline.fallbackProviders`.
-   */
   fallbackProviders: ProviderId[];
 }
 
@@ -112,89 +45,49 @@ export const DEFAULT_PIPELINE_POLICY: PipelinePolicy = {
   onRestart: "autoResume",
   maxContinuations: 4,
   reviewAfterContinuations: true,
-  // Blocking by default is safe on an existing install: with no criteria
-  // defined anywhere, a definition of done is satisfied vacuously and nothing
-  // changes until someone writes one.
   dodEnforcement: "block",
   defaultOnUnfinished: "continue",
   defaultOnDone: "continue",
   fallbackProviders: ["codex", "claude", "cursor"],
 };
 
-/** Everything a row is allowed to look at, both to match and to explain itself. */
 export interface RuleContext {
   runState: PipelineState | null;
-  /**
-   * Operational state of the station the run is sitting on, or null when it is
-   * not sitting on one. This is what lets a row tell "the run stopped" apart
-   * from "the run stopped and its station needs recovering", which want very
-   * different buttons.
-   */
   stationState: PromptOperationalState | null;
-  /** Where the run sits, e.g. "S6 · S6-07 · S6-07.2". */
   station: string | null;
   stopReason: string | null;
-  /** Why a live run is parked, when the scheduler recorded one (D5). */
   waitReason: string | null;
-  /** A human-intervention step on the current station is still unanswered. */
   awaitingHuman: boolean;
-  /** The scheduler is paused, but its already-started agent is still draining. */
   agentActive: boolean;
-  /** House rules in force. Rows read it so their copy matches what will happen. */
   policy: PipelinePolicy;
 }
 
 export interface TransitionRow {
-  /** Stable id: a React key, a test label, and a policy anchor. */
   id: string;
-  /**
-   * Condition. `runState` is required so that "no run yet" (`null`) is never
-   * confused with "don't care"; every other field is optional and an omitted
-   * one matches anything.
-   */
   when: {
     runState: PipelineState | null;
     agentActive?: boolean;
     awaitingHuman?: boolean;
     stationState?: PromptOperationalState;
-    /**
-     * Matched against the reason the scheduler parked the run. Every park
-     * reason is its own row, because they are not variations on one situation:
-     * "a reviewer is still reading it" and "it ran out of continuations" want
-     * different sentences, and the row that catches all of them at once can
-     * only describe them by lying about the ones it did not expect.
-     */
     waitReason?: string;
-    /** Matched against `policy.onRestart`, so a policy choice is a visible row. */
     onRestart?: RestartPolicy;
   };
 
-  /**
-   * When this row applies, as a short phrase. Declared rather than derived from
-   * `when`, because the rules panel renders it verbatim and two rows can share
-   * a `label` ("Needs you") while describing very different situations.
-   */
   condition: string;
 
-  /* The decision itself — static, so it can be rendered as a table cell. */
   label: string;
   tone: StatusTone;
   pulse: boolean;
   primary: PipelineControl | null;
   secondary: readonly PipelineControl[];
 
-  /* The prose — a function, because it names the station and the reason. */
-  /** One sentence: what the pipeline is doing right now. */
   headline: (ctx: RuleContext) => string;
-  /** One sentence: what happens if you press the primary control. */
   hint: (ctx: RuleContext) => string | null;
-  /** One sentence: what put the run in this state. */
   because: (ctx: RuleContext) => string;
 
   policy: RulePolicy;
 }
 
-/** Human sentences for the reasons the scheduler persists on a finished run. */
 export const STOP_REASON: Record<string, string> = {
   "execution:budget_exhausted": "The approved execution or recovery allowance is exhausted. Work is preserved. Resume cannot renew it; a new explicit allocation is required.",
   operator_stop: "You stopped it.",
@@ -218,10 +111,6 @@ export const STOP_REASON: Record<string, string> = {
     "The station hit unfinished endings until its allowance ran out and is still not finished. Resume grants a fresh allowance.",
 };
 
-/**
- * A stop reason as a sentence. An unrecognised reason is passed through rather
- * than dropped: a raw token in the UI is ugly, but silence is worse.
- */
 export function describeStopReason(reason: string | null): string | null {
   if (reason === null) return null;
   if (reason.startsWith(START_REFUSED_PREFIX)) {
@@ -231,13 +120,8 @@ export function describeStopReason(reason: string | null): string | null {
   return STOP_REASON[reason] ?? reason;
 }
 
-/**
- * `start_refused:<code>` carries the error that refused the start, so the park
- * can say which one it was. Rows match on the kind alone.
- */
 const START_REFUSED_PREFIX = "start_refused:";
 
-/** The refusals worth a sentence of their own; any other shows its code. */
 const START_REFUSAL: Record<string, string> = {
   git_repository_busy: "Another agent is still writing in this Git repository.",
   workspace_busy: "Another run is already in progress in this workspace.",
@@ -255,20 +139,10 @@ function waitKind(reason: string | null): string | null {
   return reason !== null && reason.startsWith(START_REFUSED_PREFIX) ? "start_refused" : reason;
 }
 
-/** Where the run sits, in a form safe to drop into a sentence. */
 function where(ctx: RuleContext): string {
   return ctx.station === null ? "the current station" : ctx.station;
 }
 
-/**
- * How the station's run ended, from its stored status.
- *
- * The scheduler sends UNREPORTED, FAILED and NEEDS_REVIEW down the same
- * continuation path, so every parked row below is reachable by a station that
- * never posted BLOCKED at all. Writing "reported blocked" regardless is how a
- * dropped status post gets read as a deliberate question — the exact
- * distinction the stored status exists to make.
- */
 function endedAs(ctx: RuleContext): string {
   switch (ctx.stationState) {
     case "BLOCKED":
@@ -292,12 +166,6 @@ const LOCKED_TERMINAL =
   "A finished run is history. A new run picks up only unfinished stations, so nothing "
   + "already done is repeated.";
 
-/**
- * The interlocking, in order. First match wins.
- *
- * Rows are split so that every variation is its own row — the point is that a
- * reader can see each distinct outcome, rather than a ternary buried in one.
- */
 export const TRANSITIONS: readonly TransitionRow[] = [
   {
     id: "not-started",
@@ -412,16 +280,6 @@ export const TRANSITIONS: readonly TransitionRow[] = [
       reason: "The station asked for a specific human decision; nothing else can supply it.",
     },
   },
-  /*
-   * The park reasons, one row each.
-   *
-   * `human_question` is kept so a rail already parked on an agent's question can
-   * still be answered. A new blocked post does not create this wait: the
-   * pipeline waives it and keeps going. `review_running` and
-   * `continuations_exhausted` are what the continuation loop lands on once a
-   * station's allowance is spent. `station_rule_wait` falls through to the
-   * catch-all row below; a wait-for-a-person rule no longer parks the rail.
-   */
   {
     id: "waiting-human-question",
     when: { runState: "WAITING_HUMAN", waitReason: "human_question" },
@@ -511,11 +369,6 @@ export const TRANSITIONS: readonly TransitionRow[] = [
       reason: "With no agent that can run, the rail has nowhere to go until a provider recovers or you change the list.",
     },
   },
-  /*
-   * The two parks where the workspace, not a provider, refused the start. No
-   * run happened, so nothing is said about how the station "ended", and no
-   * provider is blamed — which is why they are not `no_provider_available`.
-   */
   {
     id: "waiting-human-worktree-dirty",
     when: { runState: "WAITING_HUMAN", waitReason: "worktree_dirty" },
@@ -562,14 +415,6 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     pulse: true,
     primary: "resume",
     secondary: ["stop"],
-    // The reasons above each have a row, so a null reason really is the "wait"
-    // rule. A reason with no row of its own is still described rather than
-    // mislabelled, so a new park reason in the scheduler degrades to a vague
-    // sentence instead of a confident wrong one.
-    //
-    // `dod_unmet` is no longer a park reason: an agent `done` that fails Verify
-    // is refused in place (409) while the run keeps going, and an operator or
-    // post-N reviewer close that fails lands on NEEDS_REVIEW → continuation.
     headline: (ctx) => {
       const parked = describeStopReason(ctx.waitReason);
       return parked === null
@@ -719,7 +564,6 @@ function stoppedBecause(ctx: RuleContext): string {
   return reason === null ? "The run reached a stop with no reason recorded." : reason;
 }
 
-/** The last row, used when nothing matches. Never null, so callers need no guard. */
 const FALLBACK: TransitionRow = TRANSITIONS[TRANSITIONS.length - 1]!;
 
 function matches(row: TransitionRow, ctx: RuleContext): boolean {
@@ -733,20 +577,10 @@ function matches(row: TransitionRow, ctx: RuleContext): boolean {
   return true;
 }
 
-/**
- * The one place that decides which controls a run offers. Both the client (to
- * render) and the server (to validate a request) go through here, so a control
- * the table hides can never be accepted by an endpoint.
- */
 export function matchTransition(ctx: RuleContext): TransitionRow {
   return TRANSITIONS.find((row) => matches(row, ctx)) ?? FALLBACK;
 }
 
-/* ------------------------------------------------------------------ */
-/* What a station rule leads to                                        */
-/* ------------------------------------------------------------------ */
-
-/** "You get Resume and Stop." — the controls a row offers, in prose. */
 function offers(row: TransitionRow): string {
   const controls = [...(row.primary === null ? [] : [row.primary]), ...row.secondary].map(
     (control) => CONTROL_LABEL[control],
@@ -756,12 +590,6 @@ function offers(row: TransitionRow): string {
   return ` You get ${controls.slice(0, -1).join(", ")} and ${controls[controls.length - 1]}.`;
 }
 
-/**
- * Where a rule lands the run, plus the controls the operator will then have.
- * The clause is written here, but the controls come from the row that state
- * matches — so a change to the table updates this copy automatically, and the
- * promise made in the editor cannot drift from what the status bar later says.
- */
 function landsIn(
   policy: PipelinePolicy,
   runState: PipelineState,
@@ -783,13 +611,7 @@ function landsIn(
   return `${clause}.${because}${offers(row)}`;
 }
 
-/**
- * What choosing this "on done" rule will actually do, phrased with the same
- * words the status bar will use when it happens.
- */
 export function onDoneConsequence(action: OnDoneAction, policy: PipelinePolicy): string {
-  // No stop reason passed: the clause already says what the status bar would,
-  // and repeating it reads as padding.
   if (action === "stop") return landsIn(policy, "STOPPED", "Ends the run");
   if (action === "skip_rest") {
     return landsIn(policy, "STOPPED", "Marks every later station SKIPPED and ends the run");
@@ -797,7 +619,6 @@ export function onDoneConsequence(action: OnDoneAction, policy: PipelinePolicy):
   return "The rail moves on to the next ready station.";
 }
 
-/** The same, for "on unfinished". */
 export function onUnfinishedConsequence(
   rule: Pick<PromptPipelineRule, "onUnfinished">,
   policy: PipelinePolicy,

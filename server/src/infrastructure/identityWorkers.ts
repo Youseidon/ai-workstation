@@ -4,11 +4,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { UserIdentity } from "@hydra/shared";
 import { config } from "../config/config.ts";
+import type { TelegramNotice } from "../contracts/remote.ts";
 
 export interface IdentityWorker { port: number; secret: string }
 
-/** Process boundaries also isolate scheduler state, provider caches and broadcasts. */
-export function createIdentityWorkers(databasePath: string) {
+export function createIdentityWorkers(databasePath: string, options: { onNotice?: (user: UserIdentity, notice: TelegramNotice) => void } = {}) {
   const workers = new Map<string, Promise<IdentityWorker>>();
   const children = new Set<ChildProcess>();
   const activeProviders = new Map<ChildProcess, string[]>();
@@ -31,6 +31,9 @@ export function createIdentityWorkers(databasePath: string) {
         children.add(child);
         const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error("Account runtime did not start in time")); }, 30_000);
         child.on("message", (message: unknown) => {
+          if (message && typeof message === "object" && "telegramNotice" in message && message.telegramNotice && typeof message.telegramNotice === "object") {
+            options.onNotice?.(user, message.telegramNotice as TelegramNotice);
+          }
           if (message && typeof message === "object" && "activeProviders" in message && Array.isArray(message.activeProviders)) {
             activeProviders.set(child, message.activeProviders.filter((value): value is string => typeof value === "string"));
           }

@@ -1,5 +1,3 @@
-/** Small inline icons. SVG rather than glyphs, so they render without a font that has them. */
-
 export function MoreIcon({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden fill="currentColor">

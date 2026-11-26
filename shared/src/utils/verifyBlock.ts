@@ -1,12 +1,3 @@
-/**
- * Parse a work item's `## Verify` block into shell commands the server will run
- * on `done`.
- *
- * Pure: no I/O, no database. The same function feeds the save path (which
- * writes COMMAND criteria) and the item editor (which shows them read-only),
- * so the two cannot disagree about what the text says.
- */
-
 import {
   DOD_COMMAND_MAX_LENGTH,
   DOD_COMMAND_TIMEOUT_DEFAULT_MS,
@@ -14,18 +5,12 @@ import {
 } from "../models/statusModel.ts";
 
 export interface VerifyCommand {
-  /** The shell line, with a trailing `# timeout=…` comment stripped. */
   text: string;
   timeoutMs: number;
 }
 
 export interface VerifyBlockParse {
-  /** Commands in document order. Empty when there is no usable Verify block. */
   commands: VerifyCommand[];
-  /**
-   * Lines that exceed `DOD_COMMAND_MAX_LENGTH`. The save path turns these into
-   * a 422; the editor can surface them without round-tripping the server.
-   */
   tooLong: string[];
 }
 
@@ -34,16 +19,6 @@ const FENCE_OPEN = /^```(sh|bash)[ \t]*$/i;
 const FENCE_CLOSE = /^```[ \t]*$/;
 const TIMEOUT_COMMENT = /^(.*?)(?:\s+#\s*timeout\s*=\s*(\d+(?:\.\d+)?)(s|ms|m)?)\s*$/i;
 
-/**
- * Find the last `## ` heading whose text starts with `Verify`, take the first
- * fenced `sh`/`bash` block between it and the next `## ` heading, and turn each
- * non-empty, non-comment line into a command.
- *
- * Prose between the heading and the fence is ignored. No fenced block → no
- * criteria. A trailing `# timeout=600s` (or `ms` / bare seconds) sets the
- * criterion timeout; the comment is stripped from `text`. Leading `VAR=value`
- * assignments stay in the line — `shell: true` passes them through unchanged.
- */
 export function parseVerifyBlock(content: string): VerifyBlockParse {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
   let verifyStart = -1;
