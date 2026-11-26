@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { StatusTone } from "@agent-console/shared";
+import type { StatusTone } from "@hydra/shared";
 import { cn } from "@/lib/cn";
 
 /* Owned by `shared` so the pipeline rule table can name a tone without the

@@ -1,0 +1,238 @@
+import { spawnSync } from "node:child_process";
+import type { ProviderId, RunChangeDetail, RunChangedFile, RunCommit, RunFileDiff } from "@hydra/shared";
+import { createLogger } from "../../utils/logger.ts";
+import { sourceFingerprint } from "../../infrastructure/sourceFingerprint.ts";
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
+import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "../../infrastructure/instanceLock.ts";
+import { executionStore, WorkspaceError, workspaces } from "../../repositories/workspaces.ts";
+
+const log=createLogger("changes");
+
+const GIT_TIMEOUT_MS = 15_000;
+const MAX_GIT_OUTPUT = 16 * 1024 * 1024;
+const MAX_PATCH_BYTES = 2 * 1024 * 1024;
+
+interface GitResult { stdout:string; stderr:string }
+
+function git(cwd:string,args:string[],allowFailure=false):GitResult {
+  const result=spawnSync("git",args,{cwd,encoding:"utf8",timeout:GIT_TIMEOUT_MS,maxBuffer:MAX_GIT_OUTPUT});
+  const stdout=result.stdout??"";const stderr=result.stderr??"";
+  if(result.error!==undefined||result.status!==0){
+    if(allowFailure)return{stdout,stderr};
+    const detail=(stderr||result.error?.message||`git exited ${result.status}`).trim().slice(0,4000);
+    throw new WorkspaceError(409,"git_operation_failed","Git could not complete the agent checkpoint.",undefined,{detail});
+  }
+  return{stdout,stderr};
+}
+
+export interface PreparedChangeCapture { repositoryRoot:string; branch:string|null; baseCommit:string }
+const repositoryWriters=new Map<string,string>();
+const repositoryLocks=new Map<string,InstanceLock>();
+
+/** Establishes the unambiguous boundary that makes per-run commits truthful. */
+export function prepareChangeCapture(cwd:string,runId?:string):PreparedChangeCapture {
+  const root=git(cwd,["rev-parse","--show-toplevel"],true);
+  if(root.stdout.trim()==="")throw new WorkspaceError(409,"git_repository_required","Writable agent runs require a Git repository.",undefined,{detail:"Initialize Git and create an initial commit before starting a writer. Read-only consults are still available."});
+  const repositoryRoot=root.stdout.trim();
+  const durableOwner=executionStore.writerOwner(`repository:${realpathSync(repositoryRoot)}`);
+  if(durableOwner!==null && durableOwner!==runId) throw new WorkspaceError(409,"git_repository_busy","A durable writer lease still owns this repository; reconcile its process before starting another writer");
+  const owner=repositoryWriters.get(repositoryRoot);
+  if(runId!==undefined&&owner!==undefined&&owner!==runId)throw new WorkspaceError(409,"git_repository_busy","Another agent is already writing in this Git repository.");
+  let acquired:InstanceLock|undefined;
+  if(!repositoryLocks.has(repositoryRoot)){
+    const gitDirectory=git(repositoryRoot,["rev-parse","--absolute-git-dir"]).stdout.trim();
+    try{acquired=acquireInstanceLock(join(gitDirectory,"hydra-writer.lock"));}
+    catch(error){
+      if(error instanceof InstanceLockedError)throw new WorkspaceError(409,"git_repository_busy","Another account is already writing in this Git repository.");
+      throw error;
+    }
+  }
+  // Account runtimes have separate in-memory leases. Take the shared Git lock
+  // before inspecting or adopting changes, so neither can commit the other's work.
+  try{
+  const head=git(repositoryRoot,["rev-parse","--verify","HEAD"],true).stdout.trim();
+  if(head==="")throw new WorkspaceError(409,"git_initial_commit_required","Create the repository's initial commit before starting a writable agent run.");
+  let baseCommit=head;
+  let status=worktreeStatus(repositoryRoot);
+  if(status!==""&&adoptAbandonedChanges(repositoryRoot,head)){baseCommit=currentHead(repositoryRoot);status=worktreeStatus(repositoryRoot);}
+  if(status!=="")throw new WorkspaceError(409,"git_worktree_dirty","Commit or stash the existing working-tree changes before starting an agent.",undefined,{detail:status.slice(0,8000)});
+  const branch=git(repositoryRoot,["symbolic-ref","--quiet","--short","HEAD"],true).stdout.trim()||null;
+  if(runId!==undefined){repositoryWriters.set(repositoryRoot,runId);if(acquired)repositoryLocks.set(repositoryRoot,acquired);}
+  else acquired?.release();
+  return{repositoryRoot,branch,baseCommit};
+  }catch(error){acquired?.release();throw error;}
+}
+
+function worktreeStatus(root:string):string {
+  return git(root,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
+}
+
+function commitWorkingTree(root:string,provider:ProviderId,subject:string,trailers:string[]):void {
+  git(root,["add","-A"]);
+  const providerLabel=provider[0]!.toUpperCase()+provider.slice(1);
+  git(root,[
+    "-c",`user.name=${providerLabel} via Hydra`,
+    "-c","user.email=agent@hydra.local",
+    "commit","-m",subject,"-m",trailers.join("\n"),
+  ]);
+}
+
+/**
+ * Commits what the last writer in this repository left behind, under that
+ * run's name, so the next run has a clean baseline.
+ *
+ * A run that dies — its provider out of allowance, the server restarted under
+ * it — cannot checkpoint, and the wrap-up turn sent to do it dies the same way.
+ * Its edits then sat in the tree and every later start was refused as a dirty
+ * baseline: the pipeline could not be resumed, retried or handed to a fallback
+ * provider until someone committed by hand in the workspace.
+ *
+ * The baseline is only ambiguous when nobody can say whose the changes are.
+ * Here the capsule says: the newest capture for this repository ended
+ * NEEDS_COMMIT (or never ended at all), its run is gone, and HEAD is where that
+ * run left it. Anything else is a change no run accounts for, and is still
+ * refused.
+ */
+function adoptAbandonedChanges(root:string,head:string):boolean {
+  const last=workspaces.latestRunChangeSet(root);
+  if(last===null||workspaces.agentRunActive(last.runId))return false;
+  if(last.state==="NEEDS_COMMIT"){
+    if((last.headCommit??last.baseCommit)!==head)return false;
+  }else if(last.state==="PENDING"){
+    // Never reconciled: the process died with the run. Its own checkpoints may
+    // have moved HEAD, which is fine as long as history still descends from
+    // where it started.
+    const descends=spawnSync("git",["merge-base","--is-ancestor",last.baseCommit,head],{cwd:root,encoding:"utf8",timeout:GIT_TIMEOUT_MS});
+    if(descends.status!==0)return false;
+  }else return false;
+  const run=workspaces.runSummary(last.runId);
+  commitWorkingTree(root,run.provider,"Checkpoint work left by an interrupted run",[
+    `Agent-Run: ${last.runId}`,"Agent-Checkpoint: orchestrator",`Agent-Provider: ${run.provider}`,...(run.model===null?[]:[`Agent-Model: ${run.model}`]),
+  ]);
+  refreshChangeCapture(last.runId);
+  log.info(`checkpointed work left uncommitted by ${last.runId} in ${root}`);
+  return true;
+}
+
+export function releaseChangeCapture(runId:string):void {
+  for(const [root,owner] of repositoryWriters)if(owner===runId){repositoryWriters.delete(root);repositoryLocks.get(root)?.release();repositoryLocks.delete(root);}
+}
+
+function currentHead(root:string):string {
+  const value=git(root,["rev-parse","--verify","HEAD"]).stdout.trim();
+  if(value==="")throw new WorkspaceError(409,"git_history_missing","The repository no longer has a HEAD commit.");
+  return value;
+}
+
+function ensureDescendant(root:string,base:string,head:string):void {
+  const result=spawnSync("git",["merge-base","--is-ancestor",base,head],{cwd:root,encoding:"utf8",timeout:GIT_TIMEOUT_MS});
+  if(result.status!==0)throw new WorkspaceError(409,"git_history_rewritten","The repository no longer descends from this run's starting commit. Restore the branch or resolve the history before finishing the run.");
+}
+
+function rangeStats(root:string,base:string,head:string):{filesChanged:number;additions:number;deletions:number;commitCount:number} {
+  if(base===head)return{filesChanged:0,additions:0,deletions:0,commitCount:0};
+  let filesChanged=0,additions=0,deletions=0;
+  for(const line of git(root,["diff","--numstat",`${base}..${head}`,"--"]).stdout.split("\n")){
+    if(line==="")continue;const [added,removed]=line.split("\t");filesChanged+=1;
+    if(added!=="-")additions+=Number(added)||0;if(removed!=="-")deletions+=Number(removed)||0;
+  }
+  const commitCount=Number(git(root,["rev-list","--count",`${base}..${head}`]).stdout.trim())||0;
+  return{filesChanged,additions,deletions,commitCount};
+}
+
+/** Reconciles the durable capsule with the repository as it exists now. */
+export function refreshChangeCapture(runId:string) {
+  const capture=workspaces.runChangeSet(runId);
+  if(capture===null)throw new WorkspaceError(404,"change_set_not_found","This run has no Git change capture record.");
+  const head=currentHead(capture.repositoryRoot);ensureDescendant(capture.repositoryRoot,capture.baseCommit,head);
+  const dirty=git(capture.repositoryRoot,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
+  const stats=rangeStats(capture.repositoryRoot,capture.baseCommit,head);
+  const state=dirty!==""?"NEEDS_COMMIT":head===capture.baseCommit?"UNCHANGED":"COMMITTED";
+  const message=dirty!==""?dirty.slice(0,8000):state==="COMMITTED"?git(capture.repositoryRoot,["log","-1","--format=%s",head]).stdout.trim()||null:null;
+  return workspaces.updateRunChangeSet(runId,{headCommit:head,state, ...stats,message});
+}
+
+export function assertRunChangesCommitted(runId:string):void {
+  const captureId=workspaces.runChangeSet(runId)===null?(workspaces.wrapupSourceRunId(runId)??runId):runId;
+  const capture=workspaces.runChangeSet(captureId);
+  if(capture===null)return; // legacy and deliberately read-only runs
+  const refreshed=refreshChangeCapture(captureId);
+  if(refreshed.state==="NEEDS_COMMIT")throw new WorkspaceError(409,"git_commit_required","Checkpoint the working-tree changes before ending this run.",undefined,{detail:refreshed.message});
+}
+
+export function checkpointRun(runId:string,message:unknown,provider:ProviderId,model:string|null,requestId?:string,inputHash?:string) {
+  if(typeof message!=="string"||message.trim()===""||message.includes("\n")||message.trim().length>72){
+    throw new WorkspaceError(422,"checkpoint_message_invalid","Use one meaningful commit subject of 72 characters or fewer.");
+  }
+  const captureId=workspaces.runChangeSet(runId)===null?(workspaces.wrapupSourceRunId(runId)??runId):runId;
+  const capture=workspaces.runChangeSet(captureId);
+  if(capture===null)throw new WorkspaceError(409,"change_set_not_found","This run was not opened as a writable Git run.");
+  const before=currentHead(capture.repositoryRoot);ensureDescendant(capture.repositoryRoot,capture.baseCommit,before);
+  if(requestId) {
+    const prior=git(capture.repositoryRoot,["log",`${capture.baseCommit}..HEAD`,"--format=%H",`--grep=^Agent-Checkpoint-Request: ${requestId}$`,"-1"]).stdout.trim();
+    if(prior)return {...refreshChangeCapture(captureId),checkpointCommit:prior};
+    if(inputHash && sourceFingerprint(capture.repositoryRoot)!==inputHash) throw new WorkspaceError(409,"checkpoint_inputs_changed","The owned tree changed before this checkpoint was dispatched; request a new checkpoint ID");
+  }
+  const dirty=git(capture.repositoryRoot,["status","--porcelain=v1","--untracked-files=all"]).stdout.trim();
+  if(dirty==="")return refreshChangeCapture(captureId);
+  commitWorkingTree(capture.repositoryRoot,provider,message.trim(),[
+    ...(requestId?[`Agent-Checkpoint-Request: ${requestId}`]:[]),`Agent-Run: ${captureId}`,...(captureId===runId?[]:[`Agent-Finalizer-Run: ${runId}`]),`Agent-Provider: ${provider}`,...(model===null?[]:[`Agent-Model: ${model}`]),
+  ]);
+  return refreshChangeCapture(captureId);
+}
+
+function commits(root:string,base:string,head:string):RunCommit[] {
+  if(base===head)return[];
+  const out=git(root,["log","--reverse","--format=%H%x1f%s%x1f%an%x1f%aI%x1e",`${base}..${head}`]).stdout;
+  return out.split("\x1e").map(row=>row.trim()).filter(Boolean).map(row=>{
+    const [sha,subject,author,authoredAt]=row.split("\x1f");return{sha:sha!,subject:subject!,author:author!,authoredAt:authoredAt!};
+  });
+}
+
+function statusName(code:string):RunChangedFile["status"] {
+  if(code.startsWith("A"))return"added";if(code.startsWith("M"))return"modified";if(code.startsWith("D"))return"deleted";
+  if(code.startsWith("R"))return"renamed";if(code.startsWith("C"))return"copied";if(code.startsWith("T"))return"type-changed";return"unknown";
+}
+
+function changedFiles(root:string,base:string,head:string):RunChangedFile[] {
+  if(base===head)return[];
+  const numbers=new Map<string,{additions:number|null;deletions:number|null;binary:boolean}>();
+  for(const line of git(root,["diff","--numstat",`${base}..${head}`,"--"]).stdout.split("\n")){
+    if(line==="")continue;const [a,d,...parts]=line.split("\t");const path=parts.join("\t");
+    numbers.set(path,{additions:a==="-"?null:Number(a),deletions:d==="-"?null:Number(d),binary:a==="-"||d==="-"});
+  }
+  return git(root,["diff","--name-status","--find-renames",`${base}..${head}`,"--"]).stdout.split("\n").filter(Boolean).map(line=>{
+    const [code,first,second]=line.split("\t");const renamed=code!.startsWith("R")||code!.startsWith("C");const path=renamed?second!:first!;
+    const count=numbers.get(path)??numbers.get(renamed?`${first} => ${second}`:path);
+    return{path,previousPath:renamed?first!:null,status:statusName(code!),additions:count?.additions??null,deletions:count?.deletions??null,binary:count?.binary??false};
+  });
+}
+
+export function runChangeDetail(runId:string):RunChangeDetail {
+  const stored=workspaces.runChangeSet(runId);
+  if(stored===null)throw new WorkspaceError(404,"change_set_not_found","This run has no Git change capture record.");
+  const summary=workspaces.agentRunActive(runId)?refreshChangeCapture(runId):stored;const head=summary.headCommit??summary.baseCommit;
+  return{...summary,commits:commits(summary.repositoryRoot,summary.baseCommit,head),files:changedFiles(summary.repositoryRoot,summary.baseCommit,head)};
+}
+
+export function runFileDiff(runId:string,path:string):RunFileDiff {
+  const detail=runChangeDetail(runId);const file=detail.files.find(entry=>entry.path===path);
+  if(file===undefined)throw new WorkspaceError(404,"changed_file_not_found","That file is not part of this run's committed changes.");
+  const head=detail.headCommit??detail.baseCommit;
+  const raw=git(detail.repositoryRoot,["diff","--no-ext-diff","--unified=4",`${detail.baseCommit}..${head}`,"--",file.previousPath??file.path,file.path]).stdout;
+  const truncated=Buffer.byteLength(raw)>MAX_PATCH_BYTES;
+  return{runId,path:file.path,previousPath:file.previousPath,patch:truncated?raw.slice(0,MAX_PATCH_BYTES)+"\n… diff truncated by Hydra\n":raw,truncated};
+}
+
+/** Intent and response are durable; Git runs outside both short transactions. */
+export function checkpointCommand(runId:string,input:Record<string,unknown>,provider:ProviderId,model:string|null):unknown {
+  const capture=workspaces.runChangeSet(runId) ?? (workspaces.wrapupSourceRunId(runId)?workspaces.runChangeSet(workspaces.wrapupSourceRunId(runId)!):null);
+  if(!capture)throw new WorkspaceError(409,"change_set_not_found","This run has no owned Git capture");
+  const initial=refreshChangeCapture(capture.runId);
+  const intent=workspaces.beginCheckpointCommand(runId,input,{changes:initial,inputHash:sourceFingerprint(capture.repositoryRoot)});
+  if(intent.state==="SETTLED")return intent.response;
+  const response=intent.intent.changes.state!=="NEEDS_COMMIT" ? {changes:intent.intent.changes} : {changes:checkpointRun(runId,input.message,provider,model,String(input.requestId),intent.intent.inputHash)};
+  workspaces.finishCheckpointCommand(runId,String(input.requestId),response);
+  return response;
+}

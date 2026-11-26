@@ -2,12 +2,12 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useWorkspace } from "@/lib/workspaceContext";
-import { SERVER_URL } from "@/lib/serverUrl";
-import { workspaceApi } from "@/lib/workspacesApi";
-import { resolveOpenTarget } from "@/components/pipeline/station/openTarget";
+import { useWorkspace } from "@/contexts/workspaceContext";
+import { SERVER_URL } from "@/api/serverUrl";
+import { workspaceApi } from "@/api/workspacesApi";
+import { resolveOpenTarget } from "@/features/pipeline/lib/station/openTarget";
 
 /**
  * One address for "show me this work item": `/pipeline/open?prompt=…&suite=…`.

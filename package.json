@@ -1,5 +1,5 @@
 {
-  "name": "ai-orchestration",
+  "name": "hydra",
   "version": "0.1.0",
   "private": true,
   "description": "Web-based multi-agent live console for local CLI coding agents",
@@ -22,9 +22,7 @@
     "start:server": "npm run start --workspace server",
     "start:web": "npm run start --workspace web",
     "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace server && npm run typecheck --workspace web",
-    "test": "npm run test --workspace shared && npm run test --workspace server && npm run test --workspace web",
-    "verify:contrast": "node scripts/verify-contrast.mjs",
-    "sync:cursor-models": "node scripts/sync-cursor-models.mjs"
+    "test": "npm run test --workspace shared && npm run test --workspace server && npm run test --workspace web"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

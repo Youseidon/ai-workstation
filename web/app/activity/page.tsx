@@ -1,4 +1,4 @@
-import { ActivityView } from "@/components/activity/ActivityView";
+import { ActivityView } from "@/features/activity/components/ActivityView";
 
 export default async function ActivityPage({searchParams}:{searchParams:Promise<{run?:string|string[]}>}) {
   const value=(await searchParams).run;

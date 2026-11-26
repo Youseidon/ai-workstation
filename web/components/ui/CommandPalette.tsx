@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { overlayHost } from "@/lib/overlayHost";
-import { useIsClient } from "@/lib/useIsClient";
+import { useIsClient } from "@/hooks/useIsClient";
 
 export interface PaletteEntry {
   id: string;

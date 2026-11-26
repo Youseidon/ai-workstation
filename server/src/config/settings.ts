@@ -1,0 +1,1726 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import {
+  DEFAULT_PIPELINE_POLICY,
+  isDodEnforcement,
+  isOnDoneAction,
+  isOnUnfinishedAction,
+  isModelAccessTier,
+  isModelSelectionMode,
+  isReasoningEffort,
+  isProviderId,
+  isRestartPolicy,
+  type PipelinePolicy,
+  type PauseMode,
+  type ModelAccessTier,
+  type ModelSelectionMode,
+  type ProviderId,
+  type ReasoningEffort,
+} from "@hydra/shared";
+import type {
+  SettingField,
+  SettingOption,
+  SettingScale,
+  SettingType,
+  SettingValue,
+  SettingsPatch,
+  SettingsSnapshot,
+} from "@hydra/shared";
+import type { PermissionOverride } from "../contracts/agentAdapter.ts";
+import { config } from "./config.ts";
+import { createLogger } from "../utils/logger.ts";
+
+const log = createLogger("settings");
+
+/*
+ * Every tunable lives in one table. `.env` supplies the default for each field;
+ * overrides saved from the Agents page are persisted to a JSON file and layered
+ * on top. Adapters read through the `settings` accessor at run time, so a change
+ * applies to the next run without restarting the server — and the Agents page
+ * is generated from this table, so adding a knob is a one-entry change.
+ */
+
+interface FieldDef {
+  key: string;
+  label: string;
+  group: string;
+  type: SettingType;
+  description: string;
+  envVar: string;
+  fallback: SettingValue;
+  placeholder?: string;
+  options?: SettingOption[];
+  /** The ladder of values a number field is offered as. */
+  scale?: SettingScale;
+  requiresRestart?: boolean;
+  /** Marks values that loosen a sandbox or permission check. */
+  isDangerous?: (value: SettingValue) => boolean;
+}
+
+function option(value: string, label: string, hint: string | null, danger = false): SettingOption {
+  return { value, label, hint, danger };
+}
+
+function scale(unit: SettingScale["unit"], stops: number[], extra: { zeroLabel?: string; noun?: string } = {}): SettingScale {
+  return { unit, stops, zeroLabel: extra.zeroLabel ?? null, noun: extra.noun ?? null };
+}
+
+const KB = 1024;
+const MB = 1024 * 1024;
+
+export const GROUPS = ["Model access", "General", "Run budgets", "Resource containment", "Pipeline policy", "Retention", "Claude Code", "Codex CLI", "Cursor CLI", "Grok CLI", "GitHub Copilot", "Kilo Code"] as const;
+
+const FIELDS: FieldDef[] = [
+  {
+    key: "models.selectionMode",
+    label: "Model choice",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_SELECTION_MODE",
+    fallback: "manual",
+    description:
+      "Auto Select locks manual model controls and resolves every run to the best model allowed by the access tier. Kilo uses its native tier router when available.",
+    options: [
+      option("auto", "Auto Select", "Choose the model automatically within the selected access tier"),
+      option("manual", "Manual", "Allow users to choose an eligible model per provider and run"),
+    ],
+  },
+  {
+    key: "models.accessTier",
+    label: "Model access tier",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_ACCESS_TIER",
+    fallback: "all",
+    description:
+      "A global credit-use ceiling for every new run: console, tasks, workspace requests, pipelines, fallbacks, authors, handoffs, and reviewers. Saved out-of-tier choices are preserved but the tier default runs instead.",
+    options: [
+      option("free", "Free", "Only models explicitly identified as free or zero-credit"),
+      option("efficient", "Efficient", "Fast, economical models for routine work"),
+      option("professional", "Professional", "Strong coding models for production work"),
+      option("frontier", "Frontier", "The strongest curated models and reasoning variants"),
+      option("all", "All models", "Every discovered model, provider default, and custom model id"),
+    ],
+  },
+  {
+    key: "models.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Model access",
+    type: "select",
+    envVar: "MODELS_REASONING_EFFORT",
+    fallback: "medium",
+    description:
+      "Default reasoning effort for every provider. A provider-specific choice overrides it for that agent. Cursor's model list shows only ids at this effort.",
+    options: [
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "budget.maxSpendUsd",
+    label: "Spend cap per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_SPEND_USD",
+    fallback: 100,
+    scale: scale("usd", [5, 10, 25, 50, 100, 150, 250, 500, 0], { zeroLabel: "No cap" }),
+    description:
+      "What one run may spend on input, in dollars at API list rates. Each run converts it into a token allowance at its own provider's and model's price, so the same cap is fewer tokens on an expensive model and more on a cheap one. Cache reads count at their discounted rate. Plan subscriptions are not billed this way; read it as relative spend.",
+  },
+  {
+    key: "budget.maxWallClockMinutes",
+    label: "Time per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_WALL_CLOCK_MINUTES",
+    fallback: 90,
+    scale: scale("minutes", [15, 30, 45, 60, 90, 120, 180, 240, 360, 0], { zeroLabel: "No limit" }),
+    description: "Hard time limit for one run. Reaching it earns a wrap-up turn, not a lost run. 0 disables.",
+  },
+  {
+    key: "budget.maxToolCalls",
+    label: "Tool calls per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_CALLS",
+    fallback: 1000,
+    scale: scale("count", [100, 250, 500, 1000, 2000, 5000, 0], { zeroLabel: "No limit", noun: "call" }),
+    description:
+      "A safety ceiling, not a working limit. When it is reached the run gets a wrap-up turn to record its progress, then continues in a fresh run. 0 disables.",
+  },
+  {
+    key: "budget.maxToolOutputBytes",
+    label: "Total tool output per run",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_OUTPUT_BYTES",
+    fallback: 8388608,
+    scale: scale("bytes", [1 * MB, 2 * MB, 4 * MB, 8 * MB, 16 * MB, 32 * MB, 64 * MB, 0], { zeroLabel: "No limit" }),
+    description: "Cumulative size of every tool result in one run. A ceiling on context flooding, not a working limit. 0 disables.",
+  },
+  {
+    key: "budget.noProgressToolCalls",
+    label: "Identical calls before a loop is stopped",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_NO_PROGRESS_TOOL_CALLS",
+    fallback: 25,
+    scale: scale("count", [5, 10, 15, 25, 40, 60, 0], { zeroLabel: "Never stopped", noun: "repeat" }),
+    description:
+      "Stops a run repeating the same tool call with the same input this many times in a row — the signature of a thrash loop. 0 disables.",
+  },
+  {
+    key: "budget.maxToolResultBytes",
+    label: "Longest tool result kept whole",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_TOOL_RESULT_BYTES",
+    fallback: 8192,
+    scale: scale("bytes", [2 * KB, 4 * KB, 8 * KB, 16 * KB, 32 * KB, 64 * KB, 0], { zeroLabel: "Never trimmed" }),
+    description:
+      "Longest single tool output kept in full. Longer results keep their head and tail and lose the middle. Every turn resends the whole transcript, so one unbounded command is paid for many times over. 0 disables truncation.",
+  },
+  {
+    key: "budget.maxOpenToolCallMinutes",
+    label: "Time for one open tool call",
+    group: "Run budgets",
+    type: "number",
+    envVar: "BUDGET_MAX_OPEN_TOOL_CALL_MINUTES",
+    fallback: 15,
+    scale: scale("minutes", [5, 10, 15, 30, 60, 90, 0], { zeroLabel: "No limit" }),
+    description: "Stops a run when a tool_use has no matching tool_result within this time. 0 disables.",
+  },
+  {
+    key: "resources.memoryHighMiB",
+    label: "Memory pressure threshold",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_HIGH_MIB",
+    fallback: 3072,
+    scale: scale("count", [1024, 2048, 3072, 4096, 6144, 0], { zeroLabel: "Disabled", noun: "MiB" }),
+    description: "Linux/systemd MemoryHigh for one provider and all of its descendants. 0 disables the soft threshold.",
+  },
+  {
+    key: "resources.memoryMaxMiB",
+    label: "Memory hard limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_MAX_MIB",
+    fallback: 4096,
+    scale: scale("count", [1024, 2048, 3072, 4096, 6144, 0], { zeroLabel: "Disabled", noun: "MiB" }),
+    description: "Linux/systemd MemoryMax for one provider and its complete descendant tree. 0 disables the hard memory limit.",
+  },
+  {
+    key: "resources.memorySwapMaxMiB",
+    label: "Swap hard limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_MEMORY_SWAP_MAX_MIB",
+    fallback: 512,
+    scale: scale("count", [0, 256, 512, 1024, 2048], { zeroLabel: "No swap", noun: "MiB" }),
+    description: "Linux/systemd MemorySwapMax shared by the provider tree. 0 prevents the run from consuming swap.",
+  },
+  {
+    key: "resources.tasksMax",
+    label: "Process/thread limit",
+    group: "Resource containment",
+    type: "number",
+    envVar: "RUN_TASKS_MAX",
+    fallback: 512,
+    scale: scale("count", [128, 256, 512, 1024, 0], { zeroLabel: "Disabled", noun: "task" }),
+    description: "Linux/systemd TasksMax for the complete provider process tree. 0 disables the task limit.",
+  },
+  {
+    key: "pipeline.pauseMode",
+    label: "What Pause does",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_PAUSE_MODE",
+    fallback: "graceful",
+    description:
+      "Graceful lets the station's agent finish and applies its result, then holds before the next one. "
+      + "Immediate interrupts the agent straight away but keeps the run resumable, unlike Stop.",
+    options: [
+      option("graceful", "Let the current station finish", "The agent completes; its DONE or BLOCKED still applies"),
+      option("immediate", "Interrupt the agent now", "Stops the agent, but the run stays resumable"),
+    ],
+  },
+  {
+    key: "pipeline.stopInterruptsAgent",
+    label: "Stop interrupts the running agent",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_STOP_INTERRUPTS_AGENT",
+    fallback: true,
+    description:
+      "On, Stop kills the agent working right now and its station stays unfinished. Off, Stop only ends "
+      + "auto-advance and lets that agent finish what it started.",
+  },
+  {
+    key: "pipeline.onRestart",
+    label: "After a server restart",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_ON_RESTART",
+    fallback: "autoResume",
+    description:
+      "A run holding a station when the server restarts is marked interrupted. This decides what happens "
+      + "next. Only the first option relaunches anything by itself; under the other two nothing starts "
+      + "until you press the button.",
+    options: [
+      option(
+        "autoResume",
+        "Resume it automatically",
+        "Resume every interrupted pipeline by itself a few seconds after boot. The station whose agent "
+          + "died is re-run on the same working tree; nothing is marked done or failed.",
+      ),
+      option("newRun", "Offer a fresh run", "Starts again from the first unfinished station"),
+      option("resumeSameRun", "Offer to continue the same run", "Picks the interrupted run back up where it stopped"),
+    ],
+  },
+  {
+    key: "pipeline.maxContinuations",
+    label: "Max continuations per station",
+    group: "Pipeline policy",
+    type: "number",
+    envVar: "PIPELINE_MAX_CONTINUATIONS",
+    fallback: 4,
+    scale: scale("count", [1, 2, 3, 4, 5, 6, 8, 10], { noun: "continuation" }),
+    description:
+      "How many unfinished endings (crash, unreported, verification failure) one station may take "
+      + "before a reviewer is sent and the rail parks. An agent's own continue does not spend this. "
+      + "An operator Resume grants a fresh allowance.",
+  },
+  {
+    key: "pipeline.reviewAfterContinuations",
+    label: "Review after continuations run out",
+    group: "Pipeline policy",
+    type: "boolean",
+    envVar: "PIPELINE_REVIEW_AFTER_CONTINUATIONS",
+    fallback: true,
+    description:
+      "When a station uses up its unfinished-continuation allowance, send one read-only completion audit before parking. "
+      + "Off parks as continuations_exhausted immediately.",
+  },
+  {
+    key: "pipeline.defaultOnUnfinished",
+    label: "Default rule when a station does not finish",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_UNFINISHED",
+    fallback: "continue",
+    description:
+      "The 'on unfinished' rule a station starts with, before anyone configures it on the flowchart. "
+      + "Existing stations keep whatever they were given.",
+    options: [
+      option("continue", "Continue the station", "Re-run it; unfinished endings are capped, agent continues are not"),
+      option("wait", "Wait for a human", "Recorded on the station, but a pipeline does not stop for it"),
+      option("skip", "Skip and carry on", "Marks the station SKIPPED; dependants stay blocked", true),
+    ],
+    isDangerous: (value) => value === "skip",
+  },
+  {
+    key: "pipeline.dodEnforcement",
+    label: "When a definition of done is not met",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DOD_ENFORCEMENT",
+    fallback: "block",
+    description:
+      "A work item's definition of done is a list of criteria — prose a reviewer judges, commands "
+      + "this server runs itself and checks the exit code of, and whether every sub-step is closed. "
+      + "This is the house default for what happens when a required criterion does not pass; a "
+      + "workspace, program, suite or single item can say something different. With no criteria "
+      + "written anywhere, there is nothing to fail and this setting does nothing.",
+    options: [
+      option("block", "Refuse to close the work item", "It lands in Needs review, with the failing criteria and the real command output recorded as its evidence"),
+      option("warn", "Close it anyway, but record what did not pass", "The item completes; the failing criteria are still visible on it", true),
+      option("off", "Do not check", "Nothing is evaluated and no evidence is recorded", true),
+    ],
+    isDangerous: (value) => value !== "block",
+  },
+  {
+    key: "pipeline.defaultOnDone",
+    label: "Default rule when a station finishes",
+    group: "Pipeline policy",
+    type: "select",
+    envVar: "PIPELINE_DEFAULT_ON_DONE",
+    fallback: "continue",
+    description:
+      "The 'on done' rule a station starts with, before anyone configures it on the flowchart.",
+    options: [
+      option("continue", "Continue to the next station", "The usual rail behaviour"),
+      option("stop", "Stop the run", "Finishing this station ends the run"),
+      option("skip_rest", "Skip the rest of the stage", "Marks every later station SKIPPED", true),
+    ],
+    isDangerous: (value) => value === "skip_rest",
+  },
+  {
+    key: "pipeline.fallbackProviders",
+    label: "Default provider fallbacks",
+    group: "Pipeline policy",
+    type: "string",
+    envVar: "PIPELINE_FALLBACK_PROVIDERS",
+    fallback: "codex,claude,cursor",
+    placeholder: "codex,claude,cursor",
+    description:
+      "Ordered comma-separated providers to try when a station's own agent cannot start or dies "
+      + "before doing any work (capacity, quota, auth, network). A station or suite can override "
+      + "this list. The failing provider is marked cooling and skipped until it recovers.",
+  },
+
+  {
+    key: "statusIntervalMs",
+    label: "Status heartbeat",
+    group: "General",
+    type: "number",
+    envVar: "STATUS_INTERVAL_MS",
+    fallback: 1000,
+    scale: scale("ms", [250, 500, 1000, 2000, 5000]),
+    description:
+      "How often the server pushes elapsed time and token usage during a run. Lower is smoother, higher is quieter.",
+  },
+  {
+    key: "hostAccess",
+    label: "Host access (Docker)",
+    group: "General",
+    type: "boolean",
+    envVar: "AGENT_HOST_ACCESS",
+    fallback: false,
+    description:
+      "Lets every provider reach Docker and other host services. Codex drops its sandbox, Claude and Grok skip permission prompts, Grok's OS sandbox is turned off, and Copilot runs yolo. Needed for docker compose, local stacks, and /var/run/docker.sock. The per-provider sandbox settings below are ignored while this is on.",
+    isDangerous: (value) => value === true,
+  },
+
+  {
+    key: "retention.eventsPerRun",
+    label: "Events kept per run",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENTS_PER_RUN",
+    fallback: 4000,
+    scale: scale("count", [500, 1000, 2000, 4000, 8000, 16000], { noun: "event" }),
+    description:
+      "Ceiling on how many transcript events one run may keep. Older events are deleted first; the most recent ones stay so a station's \"what happened\" remains readable. Applies to runs that have not aged out.",
+  },
+  {
+    key: "retention.eventAgeDays",
+    label: "Full transcript kept for",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_EVENT_AGE_DAYS",
+    fallback: 30,
+    scale: scale("days", [7, 14, 30, 60, 90, 180, 365, 0], { zeroLabel: "Forever" }),
+    description:
+      "After a run has been ended this many days, only the last \"final events\" count is kept. Live and recent runs still use the per-run ceiling. 0 disables age thinning.",
+  },
+  {
+    key: "retention.keepFinalEvents",
+    label: "Final events always kept",
+    group: "Retention",
+    type: "number",
+    envVar: "RETENTION_KEEP_FINAL_EVENTS",
+    fallback: 200,
+    scale: scale("count", [50, 100, 200, 500, 1000], { noun: "event" }),
+    description:
+      "The last N events of every run are always kept, even after age thinning, so the end of a station's transcript stays readable.",
+  },
+
+  {
+    key: "claude.enabled",
+    label: "Enabled",
+    group: "Claude Code",
+    type: "boolean",
+    envVar: "CLAUDE_ENABLED",
+    fallback: true,
+    description: "When off, Claude Code is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "claude.apiKey",
+    label: "ANTHROPIC_API_KEY",
+    group: "Claude Code",
+    type: "password",
+    envVar: "ANTHROPIC_API_KEY",
+    fallback: "",
+    placeholder: "sk-ant-…",
+    description:
+      "Optional. Leave empty to reuse an existing `claude` CLI login. Stored server-side only and never sent to the browser.",
+  },
+  {
+    key: "claude.model",
+    label: "Model",
+    group: "Claude Code",
+    type: "string",
+    envVar: "CLAUDE_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the SDK default",
+    description:
+      "Default model when no model is picked in the header. The header dropdown overrides this per run without changing it.",
+  },
+  {
+    key: "claude.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Claude Code",
+    type: "select",
+    envVar: "CLAUDE_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Claude Code.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "claude.permissionMode",
+    label: "Permission mode",
+    group: "Claude Code",
+    type: "select",
+    envVar: "CLAUDE_PERMISSION_MODE",
+    fallback: "acceptEdits",
+    description:
+      "How Claude Code handles tool permissions during a headless run. Overridden to bypassPermissions while Host access is on.",
+    options: [
+      option("acceptEdits", "acceptEdits", "Auto-accept file edits (recommended)"),
+      option("plan", "plan", "Read-only planning; no tools execute"),
+      option("dontAsk", "dontAsk", "Never prompt; deny anything not pre-approved"),
+      option("default", "default", "Prompts have nowhere to go headless — tool calls get denied"),
+      option("bypassPermissions", "bypassPermissions", "No permission checks at all", true),
+    ],
+    isDangerous: (value) => value === "bypassPermissions",
+  },
+  {
+    key: "claude.settingSources",
+    label: "Setting sources",
+    group: "Claude Code",
+    type: "string",
+    envVar: "CLAUDE_SETTING_SOURCES",
+    fallback: "user,project,local",
+    placeholder: "user,project,local",
+    description:
+      "Which Claude Code settings files to honour (CLAUDE.md, settings.json). Comma separated; empty loads none.",
+  },
+  {
+    key: "claude.maxTurns",
+    label: "Max turns",
+    group: "Claude Code",
+    type: "number",
+    envVar: "CLAUDE_MAX_TURNS",
+    fallback: 0,
+    scale: scale("count", [10, 25, 50, 100, 200, 400, 0], { zeroLabel: "No limit", noun: "turn" }),
+    description: "Stop the run after this many assistant turns. 0 means no limit.",
+  },
+
+  {
+    key: "codex.enabled",
+    label: "Enabled",
+    group: "Codex CLI",
+    type: "boolean",
+    envVar: "CODEX_ENABLED",
+    fallback: true,
+    description: "When off, Codex CLI is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "codex.apiKey",
+    label: "OPENAI_API_KEY",
+    group: "Codex CLI",
+    type: "password",
+    envVar: "OPENAI_API_KEY",
+    fallback: "",
+    placeholder: "sk-…",
+    description:
+      "Optional. Leave empty to reuse an existing `codex login`. API-key runs authenticate in memory without replacing that login. The key stays server-side and is never sent to the browser.",
+  },
+  {
+    key: "codex.binary",
+    label: "Binary",
+    group: "Codex CLI",
+    type: "string",
+    envVar: "CODEX_BIN",
+    fallback: "codex",
+    placeholder: "codex",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "codex.model",
+    label: "Model",
+    group: "Codex CLI",
+    type: "string",
+    envVar: "CODEX_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the codex default",
+    description:
+      "Default model for Codex App Server when no model is picked in the header. The header dropdown overrides this per run.",
+  },
+  {
+    key: "codex.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Codex CLI",
+    type: "select",
+    envVar: "CODEX_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Codex CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "codex.sandboxMode",
+    label: "Sandbox mode",
+    group: "Codex CLI",
+    type: "select",
+    envVar: "CODEX_SANDBOX_MODE",
+    fallback: "workspace-write",
+    description:
+      "Codex's own sandbox policy for model-generated commands. Overridden to danger-full-access while Host access is on (workspace-write cannot talk to /var/run/docker.sock).",
+    options: [
+      option("read-only", "read-only", "May read, but not write or reach the network"),
+      option("workspace-write", "workspace-write", "Writes confined to the working directory"),
+      option("danger-full-access", "danger-full-access", "No sandbox at all", true),
+    ],
+    isDangerous: (value) => value === "danger-full-access",
+  },
+  {
+    key: "codex.skipGitRepoCheck",
+    label: "Allow running outside a git repo",
+    group: "Codex CLI",
+    type: "boolean",
+    envVar: "CODEX_SKIP_GIT_REPO_CHECK",
+    fallback: true,
+    description: "Codex refuses to run outside a git repository unless this is on.",
+  },
+  {
+    key: "codex.extraArgs",
+    label: "Extra arguments",
+    group: "Codex CLI",
+    type: "string",
+    envVar: "CODEX_EXTRA_ARGS",
+    fallback: "",
+    placeholder: `-c model_reasoning_effort="high"`,
+    description: "Codex App Server configuration arguments: -c/--config, --enable, --disable. Exec-only flags are rejected with an explanation. Quoted tokens are respected.",
+  },
+
+  {
+    key: "cursor.enabled",
+    label: "Enabled",
+    group: "Cursor CLI",
+    type: "boolean",
+    envVar: "CURSOR_ENABLED",
+    fallback: true,
+    description: "When off, Cursor CLI is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "cursor.binary",
+    label: "Binary",
+    group: "Cursor CLI",
+    type: "string",
+    envVar: "CURSOR_BIN",
+    fallback: "cursor-agent",
+    placeholder: "cursor-agent",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "cursor.model",
+    label: "Model",
+    group: "Cursor CLI",
+    type: "string",
+    envVar: "CURSOR_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the cursor default",
+    description:
+      "Default model when no model is picked in the header, passed as `-m` to cursor-agent. The header dropdown overrides this per run.",
+  },
+  {
+    key: "cursor.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Cursor CLI",
+    type: "select",
+    envVar: "CURSOR_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Cursor CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "cursor.outputFormat",
+    label: "Output format",
+    group: "Cursor CLI",
+    type: "select",
+    envVar: "CURSOR_OUTPUT_FORMAT",
+    fallback: "stream-json",
+    description: "Headless output mode. stream-json gives live events; json gives one final object.",
+    options: [
+      option("stream-json", "stream-json", "Live event stream (recommended)"),
+      option("json", "json", "One object at the end of the run"),
+    ],
+  },
+  {
+    key: "cursor.force",
+    label: "Force (skip approvals)",
+    group: "Cursor CLI",
+    type: "boolean",
+    envVar: "CURSOR_FORCE",
+    fallback: true,
+    description:
+      "Allows commands without approval unless explicitly denied. Saved work-item runs also load platform policy hooks and enable Cursor sandboxing. Forced on while Host access is on.",
+    isDangerous: (value) => value === true,
+  },
+  {
+    key: "cursor.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "Cursor CLI",
+    type: "boolean",
+    envVar: "CURSOR_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description: "Skip the login check if detection misfires but you know you are logged in.",
+  },
+  {
+    key: "cursor.extraArgs",
+    label: "Extra arguments",
+    group: "Cursor CLI",
+    type: "string",
+    envVar: "CURSOR_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the cursor-agent invocation. Quoted tokens are respected.",
+  },
+
+  {
+    key: "grok.enabled",
+    label: "Enabled",
+    group: "Grok CLI",
+    type: "boolean",
+    envVar: "GROK_ENABLED",
+    fallback: true,
+    description: "When off, Grok CLI is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "grok.apiKey",
+    label: "XAI_API_KEY",
+    group: "Grok CLI",
+    type: "password",
+    envVar: "XAI_API_KEY",
+    fallback: "",
+    placeholder: "xai-…",
+    description:
+      "Optional. Leave empty to reuse an existing `grok login`. Stored server-side only and never sent to the browser.",
+  },
+  {
+    key: "grok.binary",
+    label: "Binary",
+    group: "Grok CLI",
+    type: "string",
+    envVar: "GROK_BIN",
+    fallback: "grok",
+    placeholder: "grok",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "grok.model",
+    label: "Model",
+    group: "Grok CLI",
+    type: "string",
+    envVar: "GROK_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the grok default",
+    description:
+      "Default model when no model is picked in the header, passed as `-m` to `grok -p`. The header dropdown overrides this per run.",
+  },
+  {
+    key: "grok.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Grok CLI",
+    type: "select",
+    envVar: "GROK_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Grok CLI.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "grok.permissionMode",
+    label: "Permission mode",
+    group: "Grok CLI",
+    type: "select",
+    envVar: "GROK_PERMISSION_MODE",
+    fallback: "acceptEdits",
+    description:
+      "How Grok handles tool permissions during a headless run. Overridden to bypassPermissions while Host access is on.",
+    options: [
+      option("acceptEdits", "acceptEdits", "Auto-accept file edits (recommended)"),
+      option("auto", "auto", "Safety-checked auto; blocked calls fail in headless"),
+      option("plan", "plan", "Read-only planning; no tools execute"),
+      option("dontAsk", "dontAsk", "Never prompt; deny anything not pre-approved"),
+      option("default", "default", "Asks for approval — prompts have nowhere to go headless"),
+      option("bypassPermissions", "bypassPermissions", "No permission checks at all", true),
+    ],
+    isDangerous: (value) => value === "bypassPermissions",
+  },
+  {
+    key: "grok.sandboxMode",
+    label: "Sandbox mode",
+    group: "Grok CLI",
+    type: "select",
+    envVar: "GROK_SANDBOX_MODE",
+    fallback: "workspace",
+    description:
+      "Grok's OS-level sandbox for filesystem and network access. Overridden to off while Host access is on.",
+    options: [
+      option("workspace", "workspace", "Writes confined to the working directory"),
+      option("read-only", "read-only", "May read, but not write project files"),
+      option("strict", "strict", "Read CWD + system paths; writes confined to CWD"),
+      option("off", "off", "No sandbox at all", true),
+    ],
+    isDangerous: (value) => value === "off",
+  },
+  {
+    key: "grok.maxTurns",
+    label: "Max turns",
+    group: "Grok CLI",
+    type: "number",
+    envVar: "GROK_MAX_TURNS",
+    fallback: 0,
+    scale: scale("count", [10, 25, 50, 100, 200, 400, 0], { zeroLabel: "No limit", noun: "turn" }),
+    description: "Stop the run after this many agentic turns. 0 means no limit.",
+  },
+  {
+    key: "grok.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "Grok CLI",
+    type: "boolean",
+    envVar: "GROK_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description: "Skip the login check if detection misfires but you know you are logged in.",
+  },
+  {
+    key: "grok.extraArgs",
+    label: "Extra arguments",
+    group: "Grok CLI",
+    type: "string",
+    envVar: "GROK_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the grok invocation. Quoted tokens are respected.",
+  },
+
+  {
+    key: "copilot.enabled",
+    label: "Enabled",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ENABLED",
+    fallback: true,
+    description: "When off, GitHub Copilot is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "copilot.githubToken",
+    label: "COPILOT_GITHUB_TOKEN",
+    group: "GitHub Copilot",
+    type: "password",
+    envVar: "COPILOT_GITHUB_TOKEN",
+    fallback: "",
+    placeholder: "gho_… or github_pat_…",
+    description:
+      "Optional. Leave empty to reuse an existing `copilot login`, GH_TOKEN, or `gh auth login`. Classic ghp_ tokens are not accepted by Copilot. Stored server-side only and never sent to the browser.",
+  },
+  {
+    key: "copilot.binary",
+    label: "Binary",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_BIN",
+    fallback: "copilot",
+    placeholder: "copilot",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "copilot.model",
+    label: "Model",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the copilot default",
+    description:
+      "Default model when no model is picked in the header, passed as `--model`. Copilot only accepts ids your plan's model picker exposes — `auto` always works. The header dropdown overrides this per run.",
+  },
+  {
+    key: "copilot.permissionMode",
+    label: "Permission mode",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_PERMISSION_MODE",
+    fallback: "allow-all-tools",
+    description:
+      "How much a headless Copilot run may touch. Tool approval is always pre-granted — a non-interactive run has nowhere to prompt — so this chooses how far outside the workspace that reaches. Overridden to yolo while Host access is on.",
+    options: [
+      option("allow-all-tools", "allow-all-tools", "Tools run automatically; file access stays inside the workspace (recommended)"),
+      option("plan", "plan", "Read-only planning; the built-in file-write tools are denied"),
+      option("allow-all-paths", "allow-all-paths", "Also drops path verification — the agent can read and write anywhere", true),
+      option("yolo", "yolo", "All tools, all paths, all URLs", true),
+    ],
+    isDangerous: (value) => value === "yolo" || value === "allow-all-paths",
+  },
+  {
+    key: "copilot.reasoningEffort",
+    label: "Reasoning effort",
+    group: "GitHub Copilot",
+    type: "select",
+    envVar: "COPILOT_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for GitHub Copilot.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "copilot.maxAiCredits",
+    label: "Max AI credits",
+    group: "GitHub Copilot",
+    type: "number",
+    envVar: "COPILOT_MAX_AI_CREDITS",
+    fallback: 0,
+    scale: scale("count", [5, 10, 25, 50, 100, 250, 0], { zeroLabel: "No cap", noun: "credit" }),
+    description: "Stop the run once it has spent this many AI credits. 0 means no cap.",
+  },
+  {
+    key: "copilot.builtinMcpServers",
+    label: "Built-in GitHub MCP",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_BUILTIN_MCP",
+    fallback: true,
+    description:
+      "Copilot's bundled github-mcp-server, which lets a run read issues and pull requests. Turning it off (`--disable-builtin-mcps`) starts runs faster and keeps the prompt smaller.",
+  },
+  {
+    key: "copilot.remoteExport",
+    label: "Export sessions to GitHub",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_REMOTE_EXPORT",
+    fallback: false,
+    description:
+      "Copilot can publish a session to GitHub web and mobile and accept remote control from there. Off by default: runs started here are driven by this server, and the transcript stays local.",
+  },
+  {
+    key: "copilot.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "GitHub Copilot",
+    type: "boolean",
+    envVar: "COPILOT_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description:
+      "Skip the login check. Needed when `copilot login` stored its token in the OS credential store, which this server cannot read.",
+  },
+  {
+    key: "copilot.extraArgs",
+    label: "Extra arguments",
+    group: "GitHub Copilot",
+    type: "string",
+    envVar: "COPILOT_EXTRA_ARGS",
+    fallback: "",
+    description: "Appended verbatim to the copilot invocation. Quoted tokens are respected.",
+  },
+
+  {
+    key: "kilocode.enabled",
+    label: "Enabled",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_ENABLED",
+    fallback: true,
+    description: "When off, Kilo Code is hidden from the agent picker and cannot start runs.",
+  },
+  {
+    key: "kilocode.binary",
+    label: "Binary",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_BIN",
+    fallback: "kilo",
+    placeholder: "kilo",
+    description: "Command looked up on $PATH. An absolute path also works.",
+  },
+  {
+    key: "kilocode.model",
+    label: "Model",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_MODEL",
+    fallback: "",
+    placeholder: "leave empty for the kilo default",
+    description:
+      "Default model when no model is picked in the header, passed as `-m provider/model` (e.g. kilo/~anthropic/claude-sonnet-latest). The header dropdown overrides this per run.",
+  },
+  {
+    key: "kilocode.reasoningEffort",
+    label: "Reasoning effort",
+    group: "Kilo Code",
+    type: "select",
+    envVar: "KILOCODE_REASONING_EFFORT",
+    fallback: "",
+    description: "Overrides the global reasoning effort for Kilo Code.",
+    options: [
+      option("", "Follow global", "Use the reasoning effort at the top of this page"),
+      option("low", "Low", "Faster and less expensive"),
+      option("medium", "Medium", "Balanced reasoning and speed"),
+      option("high", "High", "More reasoning; usually slower and more expensive"),
+    ],
+  },
+  {
+    key: "kilocode.autoApprove",
+    label: "Auto-approve permissions",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_AUTO_APPROVE",
+    fallback: true,
+    description:
+      "Adds --auto so headless runs are not stalled by an approval prompt: permissions not explicitly denied in kilo's own config are granted. Off means permission asks fail and the model routes around them.",
+  },
+  {
+    key: "kilocode.variant",
+    label: "Reasoning variant",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_VARIANT",
+    fallback: "",
+    placeholder: "leave empty for the model default",
+    description: "Passed as `--variant` (model-specific reasoning effort, e.g. high, max, minimal).",
+  },
+  {
+    key: "kilocode.assumeAuthenticated",
+    label: "Assume authenticated",
+    group: "Kilo Code",
+    type: "boolean",
+    envVar: "KILOCODE_ASSUME_AUTHENTICATED",
+    fallback: false,
+    description: "Skip the login check if detection misfires but you know you are logged in.",
+  },
+  {
+    key: "kilocode.extraArgs",
+    label: "Extra arguments",
+    group: "Kilo Code",
+    type: "string",
+    envVar: "KILOCODE_EXTRA_ARGS",
+    fallback: "",
+    description: "Kilo streaming server options: --pure, --print-logs, --log-level. Choose model, variant and approvals with their dedicated settings. Quoted tokens are respected.",
+  },
+];
+
+const FIELDS_BY_KEY = new Map(FIELDS.map((field) => [field.key, field]));
+
+/* -------------------------------------------------------------------------- */
+/* Value layering: built-in fallback → .env → saved override                   */
+/* -------------------------------------------------------------------------- */
+
+function coerce(type: SettingType, raw: string, fallback: SettingValue): SettingValue {
+  switch (type) {
+    case "boolean":
+      return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+    case "number": {
+      const parsed = Number.parseInt(raw.trim(), 10);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+    default:
+      return raw.trim();
+  }
+}
+
+function envDefault(field: FieldDef): SettingValue {
+  if (process.env.HYDRA_PERSONAL_DEFAULTS === "1") return field.fallback;
+  const raw = process.env[field.envVar];
+  if (raw === undefined || raw.trim() === "") return field.fallback;
+  return coerce(field.type, raw, field.fallback);
+}
+
+const defaults = new Map<string, SettingValue>(
+  FIELDS.map((field) => [field.key, envDefault(field)]),
+);
+
+let overrides = new Map<string, SettingValue>();
+
+const STORAGE_PATH = resolve(
+  config.repoRoot,
+  process.env.SETTINGS_FILE ?? ".hydra/settings.json",
+);
+
+/** Pre-rename location; moved once so saved overrides (and API keys) survive the rename. */
+const PRE_RENAME_STORAGE_PATH = resolve(config.repoRoot, ".agent-console/settings.json");
+
+function load(): void {
+  if (process.env.SETTINGS_FILE === undefined && !existsSync(STORAGE_PATH) && existsSync(PRE_RENAME_STORAGE_PATH)) {
+    mkdirSync(dirname(STORAGE_PATH), { recursive: true, mode: 0o700 });
+    renameSync(PRE_RENAME_STORAGE_PATH, STORAGE_PATH);
+    log.info(`moved saved overrides from ${PRE_RENAME_STORAGE_PATH} to ${STORAGE_PATH}`);
+  }
+  if (!existsSync(STORAGE_PATH)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(STORAGE_PATH, "utf8")) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      const field = FIELDS_BY_KEY.get(key);
+      if (field === undefined) continue;
+      const normalized = normalize(field, value);
+      if (normalized !== null) overrides.set(key, normalized);
+    }
+    log.info(`loaded ${overrides.size} saved override(s) from ${STORAGE_PATH}`);
+  } catch (error) {
+    log.warn(`could not read ${STORAGE_PATH}; using .env values only`, error);
+  }
+}
+
+function persist(): void {
+  const body = JSON.stringify(Object.fromEntries(overrides), null, 2);
+  mkdirSync(dirname(STORAGE_PATH), { recursive: true, mode: 0o700 });
+  // 0600: this file can hold API keys.
+  writeFileSync(STORAGE_PATH, `${body}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+/** Accepts a raw value from the client and coerces it to the field's type. */
+function normalize(field: FieldDef, value: unknown): SettingValue | null {
+  switch (field.type) {
+    case "boolean":
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") return coerce("boolean", value, false);
+      return null;
+    case "number": {
+      if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+      if (typeof value === "string") return coerce("number", value, field.fallback);
+      return null;
+    }
+    default:
+      return typeof value === "string" ? value.trim() : null;
+  }
+}
+
+function validate(field: FieldDef, value: SettingValue): string | null {
+  if (field.options !== undefined) {
+    const allowed = field.options.map((entry) => entry.value);
+    if (typeof value !== "string" || !allowed.includes(value)) {
+      return `${field.label} must be one of: ${allowed.join(", ")}`;
+    }
+  }
+  if (field.type === "number" && typeof value === "number" && value < 0) {
+    return `${field.label} cannot be negative`;
+  }
+  if (field.key === "statusIntervalMs" && typeof value === "number" && value !== 0 && value < 200) {
+    return "Status heartbeat must be at least 200ms";
+  }
+  return null;
+}
+
+function raw(key: string): SettingValue {
+  const override = overrides.get(key);
+  if (override !== undefined) return override;
+  return defaults.get(key) ?? "";
+}
+
+function text(key: string): string {
+  const value = raw(key);
+  return typeof value === "string" ? value : String(value);
+}
+
+function optionalText(key: string): string | null {
+  const value = text(key).trim();
+  return value === "" ? null : value;
+}
+
+function flag(key: string): boolean {
+  return raw(key) === true;
+}
+
+function count(key: string): number {
+  const value = raw(key);
+  return typeof value === "number" ? value : 0;
+}
+
+function commaList(key: string): string[] {
+  return text(key)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Splits a shell-ish extra-args string into argv. Supports single and double
+ * quotes; deliberately not a full shell parser.
+ */
+function argvList(key: string): string[] {
+  const value = text(key);
+  const matches = value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  return matches.map((token) => token.replace(/^["']|["']$/g, ""));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public accessor — what the rest of the server reads                         */
+/* -------------------------------------------------------------------------- */
+
+export const settings = {
+  get modelSelectionMode(): ModelSelectionMode {
+    const value = text("models.selectionMode");
+    return isModelSelectionMode(value) ? value : "manual";
+  },
+  get modelAccessTier(): ModelAccessTier {
+    const value = text("models.accessTier");
+    return isModelAccessTier(value) ? value : "all";
+  },
+  get reasoningEffort(): ReasoningEffort {
+    const value = text("models.reasoningEffort");
+    return isReasoningEffort(value) ? value : "medium";
+  },
+  reasoningEffortFor(provider: ProviderId): ReasoningEffort {
+    const configured = settings[provider].reasoningEffort;
+    if (configured !== null) return configured;
+    // Kilo exposed its provider-specific --variant setting before the common
+    // effort control existed. Honour low/medium/high values already saved there.
+    if (provider === "kilocode" && isReasoningEffort(settings.kilocode.variant)) {
+      return settings.kilocode.variant;
+    }
+    return settings.reasoningEffort;
+  },
+  get statusIntervalMs(): number {
+    return count("statusIntervalMs") || 1000;
+  },
+  /**
+   * Run budgets. One allowance, whatever the work item's depth.
+   *
+   * These used to be halved for a decomposed sub-step, on the theory that a
+   * slice of the parent's work deserves a slice of its allowance. In practice
+   * it is what killed 23 execute runs: a sub-step got 125 tool calls, Cursor
+   * spends about 30 a minute, and a run died three minutes in while it was
+   * still reading. A sub-step *is* the unit of work — the ceilings below are
+   * safety ceilings, and a run that reaches one now gets a wrap-up turn and a
+   * continuation rather than a silent kill.
+   */
+  budgetFor(): {
+    maxToolCalls: number | null;
+    maxWallClockMs: number | null;
+    maxSpendUsd: number | null;
+    maxToolOutputBytes: number | null;
+    noProgressToolCalls: number | null;
+    maxToolResultBytes: number;
+    maxOpenToolCallMs: number | null;
+  } {
+    // 0 is a real answer here — "no limit" — and not a missing value to paper
+    // over with the default: an unset field already reads as its default.
+    const limit = (key: string): number | null => {
+      const value = count(key);
+      return value <= 0 ? null : value;
+    };
+    const minutes = limit("budget.maxWallClockMinutes");
+    const openToolMinutes = limit("budget.maxOpenToolCallMinutes");
+    return {
+      maxToolCalls: limit("budget.maxToolCalls"),
+      maxWallClockMs: minutes === null ? null : minutes * 60_000,
+      // The money, in dollars. The runner turns it into a token allowance at
+      // its own provider's and model's rate, so one cap means the same spend on
+      // every agent. It is the one budget a wrap-up turn does not get.
+      maxSpendUsd: limit("budget.maxSpendUsd"),
+      maxToolOutputBytes: limit("budget.maxToolOutputBytes"),
+      // The thrash detector, not a ceiling on work.
+      noProgressToolCalls: limit("budget.noProgressToolCalls"),
+      maxToolResultBytes: Math.max(0, count("budget.maxToolResultBytes")),
+      maxOpenToolCallMs: openToolMinutes === null ? null : openToolMinutes * 60_000,
+    };
+  },
+  get resourceLimits(): {
+    memoryHighBytes: number | null;
+    memoryMaxBytes: number | null;
+    memorySwapMaxBytes: number;
+    tasksMax: number | null;
+  } {
+    const bytes = (key: string): number | null => {
+      const value = count(key);
+      return value <= 0 ? null : value * MB;
+    };
+    const tasks = count("resources.tasksMax");
+    return {
+      memoryHighBytes: bytes("resources.memoryHighMiB"),
+      memoryMaxBytes: bytes("resources.memoryMaxMiB"),
+      memorySwapMaxBytes: Math.max(0, count("resources.memorySwapMaxMiB")) * MB,
+      tasksMax: tasks <= 0 ? null : tasks,
+    };
+  },
+  /**
+   * House rules for the pipeline transport, resolved once so the scheduler and
+   * the browser all read the same values. Anything
+   * unrecognised in the store falls back to the built-in default rather than
+   * reaching the rule table as a bad value.
+   */
+  get pipelinePolicy(): PipelinePolicy {
+    const pauseMode = text("pipeline.pauseMode");
+    const onDone = text("pipeline.defaultOnDone");
+    const onUnfinished = text("pipeline.defaultOnUnfinished");
+    const restart = text("pipeline.onRestart");
+    const enforcement = text("pipeline.dodEnforcement");
+    const maxContinuations = count("pipeline.maxContinuations");
+    const fallbackProviders = commaList("pipeline.fallbackProviders")
+      .filter(isProviderId)
+      .filter((id, index, all) => all.indexOf(id) === index);
+    return {
+      pauseMode: pauseMode === "immediate" ? "immediate" : ("graceful" satisfies PauseMode),
+      stopInterruptsAgent: flag("pipeline.stopInterruptsAgent"),
+      onRestart: isRestartPolicy(restart) ? restart : DEFAULT_PIPELINE_POLICY.onRestart,
+      maxContinuations: maxContinuations > 0 ? maxContinuations : DEFAULT_PIPELINE_POLICY.maxContinuations,
+      reviewAfterContinuations: flag("pipeline.reviewAfterContinuations"),
+      dodEnforcement: isDodEnforcement(enforcement) ? enforcement : DEFAULT_PIPELINE_POLICY.dodEnforcement,
+      defaultOnUnfinished: isOnUnfinishedAction(onUnfinished) ? onUnfinished : DEFAULT_PIPELINE_POLICY.defaultOnUnfinished,
+      defaultOnDone: isOnDoneAction(onDone) ? onDone : DEFAULT_PIPELINE_POLICY.defaultOnDone,
+      fallbackProviders: fallbackProviders.length > 0 ? fallbackProviders : DEFAULT_PIPELINE_POLICY.fallbackProviders,
+    };
+  },
+
+  /**
+   * One switch that lifts every provider's sandbox/permission gate so Docker
+   * and other host services work. Per-provider knobs still exist; this
+   * overlays them at run time.
+   */
+  get hostAccess(): boolean {
+    return flag("hostAccess");
+  },
+
+  /**
+   * How long transcript events stick around. Only `agent_run_event` is swept —
+   * runs, remarks, status events and commands are the record and stay.
+   */
+  get retention(): { eventsPerRun: number; eventAgeDays: number; keepFinalEvents: number } {
+    const eventsPerRun = Math.max(0, count("retention.eventsPerRun") || 4000);
+    const eventAgeDays = Math.max(0, count("retention.eventAgeDays") || 0);
+    // A zero keep would leave an aged run with no readable tail; floor at 1 when
+    // the field is somehow cleared rather than honouring a silent wipe.
+    const keepFinalEvents = Math.max(1, count("retention.keepFinalEvents") || 200);
+    return { eventsPerRun, eventAgeDays, keepFinalEvents };
+  },
+
+  claude: {
+    get enabled(): boolean {
+      return flag("claude.enabled");
+    },
+    get apiKey(): string | null {
+      return optionalText("claude.apiKey");
+    },
+    get model(): string | null {
+      return optionalText("claude.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("claude.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get permissionMode(): string {
+      return text("claude.permissionMode");
+    },
+    get settingSources(): string[] {
+      return commaList("claude.settingSources");
+    },
+    get maxTurns(): number | null {
+      return count("claude.maxTurns") || null;
+    },
+  },
+
+  codex: {
+    get enabled(): boolean {
+      return flag("codex.enabled");
+    },
+    get apiKey(): string | null {
+      return optionalText("codex.apiKey");
+    },
+    get binary(): string {
+      return text("codex.binary") || "codex";
+    },
+    get model(): string | null {
+      return optionalText("codex.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("codex.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get sandboxMode(): string {
+      return text("codex.sandboxMode");
+    },
+    get skipGitRepoCheck(): boolean {
+      return flag("codex.skipGitRepoCheck");
+    },
+    get extraArgs(): string[] {
+      return argvList("codex.extraArgs");
+    },
+  },
+
+  cursor: {
+    get enabled(): boolean {
+      return flag("cursor.enabled");
+    },
+    get binary(): string {
+      return text("cursor.binary") || "cursor-agent";
+    },
+    get model(): string | null {
+      return optionalText("cursor.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("cursor.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get outputFormat(): string {
+      return text("cursor.outputFormat");
+    },
+    get force(): boolean {
+      return flag("cursor.force");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("cursor.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("cursor.extraArgs");
+    },
+  },
+
+  grok: {
+    get enabled(): boolean {
+      return flag("grok.enabled");
+    },
+    get apiKey(): string | null {
+      return optionalText("grok.apiKey");
+    },
+    get binary(): string {
+      return text("grok.binary") || "grok";
+    },
+    get model(): string | null {
+      return optionalText("grok.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("grok.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get permissionMode(): string {
+      return text("grok.permissionMode");
+    },
+    get sandboxMode(): string {
+      return text("grok.sandboxMode");
+    },
+    get maxTurns(): number | null {
+      return count("grok.maxTurns") || null;
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("grok.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("grok.extraArgs");
+    },
+  },
+
+  copilot: {
+    get enabled(): boolean {
+      return flag("copilot.enabled");
+    },
+    get githubToken(): string | null {
+      return optionalText("copilot.githubToken");
+    },
+    get binary(): string {
+      return text("copilot.binary") || "copilot";
+    },
+    get model(): string | null {
+      return optionalText("copilot.model");
+    },
+    get permissionMode(): string {
+      return text("copilot.permissionMode");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("copilot.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get maxAiCredits(): number | null {
+      return count("copilot.maxAiCredits") || null;
+    },
+    get builtinMcpServers(): boolean {
+      return flag("copilot.builtinMcpServers");
+    },
+    get remoteExport(): boolean {
+      return flag("copilot.remoteExport");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("copilot.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("copilot.extraArgs");
+    },
+  },
+
+  kilocode: {
+    get enabled(): boolean {
+      return flag("kilocode.enabled");
+    },
+    get binary(): string {
+      return text("kilocode.binary") || "kilo";
+    },
+    get model(): string | null {
+      return optionalText("kilocode.model");
+    },
+    get reasoningEffort(): ReasoningEffort | null {
+      const value = optionalText("kilocode.reasoningEffort");
+      return isReasoningEffort(value) ? value : null;
+    },
+    get autoApprove(): boolean {
+      return flag("kilocode.autoApprove");
+    },
+    get variant(): string | null {
+      return optionalText("kilocode.variant");
+    },
+    get assumeAuthenticated(): boolean {
+      return flag("kilocode.assumeAuthenticated");
+    },
+    get extraArgs(): string[] {
+      return argvList("kilocode.extraArgs");
+    },
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/* Snapshot / update / reset                                                   */
+/* -------------------------------------------------------------------------- */
+
+function describeField(field: FieldDef): SettingField {
+  const current = raw(field.key);
+  const defaultValue = defaults.get(field.key) ?? field.fallback;
+  const sensitive = field.type === "password";
+  return {
+    key: field.key,
+    label: field.label,
+    group: field.group,
+    type: field.type,
+    description: field.description,
+    envVar: field.envVar,
+    placeholder: field.placeholder ?? null,
+    options: field.options ?? null,
+    // Secrets never leave the server: the client learns only whether one is set.
+    defaultValue: sensitive ? "" : defaultValue,
+    value: sensitive ? "" : current,
+    overridden: overrides.has(field.key) && current !== defaultValue,
+    isSet: sensitive ? String(current) !== "" : false,
+    danger: field.isDangerous?.(current) ?? false,
+    dangerWhenTrue: field.type === "boolean" && (field.isDangerous?.(true) ?? false),
+    requiresRestart: field.requiresRestart ?? false,
+    scale: field.scale ?? null,
+  };
+}
+
+/** Groups that actually have at least one field. Used by the UI-coverage test. */
+export function groupsWithFields(): string[] {
+  return [...GROUPS].filter((group) => FIELDS.some((field) => field.group === group));
+}
+
+export function snapshot(): SettingsSnapshot {
+  return {
+    fields: FIELDS.map(describeField),
+    groups: [...GROUPS],
+    storagePath: STORAGE_PATH,
+  };
+}
+
+export interface UpdateResult {
+  ok: boolean;
+  errors: string[];
+  changed: string[];
+  snapshot: SettingsSnapshot;
+}
+
+export function updateSettings(patch: SettingsPatch): UpdateResult {
+  const errors: string[] = [];
+  const staged = new Map<string, SettingValue>();
+
+  for (const [key, value] of Object.entries(patch)) {
+    const field = FIELDS_BY_KEY.get(key);
+    if (field === undefined) {
+      errors.push(`Unknown setting "${key}"`);
+      continue;
+    }
+    const normalized = normalize(field, value);
+    if (normalized === null) {
+      errors.push(`${field.label} has an invalid value`);
+      continue;
+    }
+    const problem = validate(field, normalized);
+    if (problem !== null) {
+      errors.push(problem);
+      continue;
+    }
+    staged.set(key, normalized);
+  }
+
+  if (errors.length > 0) return { ok: false, errors, changed: [], snapshot: snapshot() };
+
+  const changed: string[] = [];
+  for (const [key, value] of staged) {
+    if (raw(key) === value) continue;
+    const defaultValue = defaults.get(key);
+    // Setting a field back to its .env value drops the override entirely.
+    if (defaultValue !== undefined && defaultValue === value) overrides.delete(key);
+    else overrides.set(key, value);
+    changed.push(key);
+  }
+
+  if (changed.length > 0) {
+    try {
+      persist();
+      log.info(`saved ${changed.length} setting(s): ${changed.join(", ")}`);
+    } catch (error) {
+      return {
+        ok: false,
+        errors: [`Could not write ${STORAGE_PATH}: ${error instanceof Error ? error.message : String(error)}`],
+        changed: [],
+        snapshot: snapshot(),
+      };
+    }
+  }
+
+  return { ok: true, errors: [], changed, snapshot: snapshot() };
+}
+
+/** Drops saved overrides, returning the given keys (or everything) to .env values. */
+export function resetSettings(keys?: string[]): UpdateResult {
+  const changed: string[] = [];
+  if (keys === undefined || keys.length === 0) {
+    changed.push(...overrides.keys());
+    overrides = new Map();
+  } else {
+    for (const key of keys) {
+      if (overrides.delete(key)) changed.push(key);
+    }
+  }
+  if (changed.length > 0) {
+    try {
+      persist();
+    } catch (error) {
+      return {
+        ok: false,
+        errors: [error instanceof Error ? error.message : String(error)],
+        changed: [],
+        snapshot: snapshot(),
+      };
+    }
+  }
+  return { ok: true, errors: [], changed, snapshot: snapshot() };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Host-access overlay                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Unix sockets Docker-style clients talk to. `DOCKER_HOST=unix://…` wins;
+ * otherwise the default engine socket. TCP Docker hosts need no socket grant.
+ */
+export function hostUnixSockets(): string[] {
+  const dockerHost = process.env.DOCKER_HOST?.trim();
+  if (dockerHost === undefined || dockerHost === "") return ["/var/run/docker.sock"];
+  if (dockerHost.startsWith("unix://")) {
+    const path = dockerHost.slice("unix://".length);
+    return path === "" ? [] : [path];
+  }
+  return [];
+}
+
+/** Effective Claude permission mode after the host-access overlay. */
+export function effectiveClaudePermissionMode(): string {
+  return settings.hostAccess ? "bypassPermissions" : settings.claude.permissionMode;
+}
+
+/** Effective Codex sandbox mode after the host-access overlay. */
+export function effectiveCodexSandboxMode(): string {
+  return settings.hostAccess ? "danger-full-access" : settings.codex.sandboxMode;
+}
+
+/** Effective Grok permission mode after the host-access overlay. */
+export function effectiveGrokPermissionMode(): string {
+  return settings.hostAccess ? "bypassPermissions" : settings.grok.permissionMode;
+}
+
+/** Effective Grok sandbox profile after the host-access overlay. */
+export function effectiveGrokSandboxMode(): string {
+  return settings.hostAccess ? "off" : settings.grok.sandboxMode;
+}
+
+/** Effective Copilot permission mode after the host-access overlay. */
+export function effectiveCopilotPermissionMode(): string {
+  return settings.hostAccess ? "yolo" : settings.copilot.permissionMode;
+}
+
+/** Effective Kilo approval behaviour after the host-access overlay. */
+export function effectiveKilocodePermissionMode(): string {
+  // Host access means the run may need real commands (docker compose, …) and
+  // has nowhere to put an ask prompt, so approvals are pre-granted like the
+  // other providers' bypass modes. The plan-agent consult ignores this.
+  if (settings.hostAccess) return "auto";
+  return settings.kilocode.autoApprove ? "auto" : "kilos own permission rules";
+}
+
+/** Effective Cursor --force after the host-access overlay. */
+export function effectiveCursorForce(): boolean {
+  return settings.hostAccess ? true : settings.cursor.force;
+}
+
+function hostAccessSuffix(value: string): string {
+  return settings.hostAccess ? `${value} · host access` : value;
+}
+
+/** Status-bar / tooltip string; includes the overlay so the UI is honest. */
+export function describeEffectiveAccess(base: string): string {
+  return hostAccessSuffix(base);
+}
+
+/** Permission/sandbox the process should start with for this run. */
+export function permissionForRun(
+  provider: ProviderId,
+  override: PermissionOverride,
+): { mode: string; hostAccessApplied: boolean } {
+  if (override !== "inherit") {
+    switch (provider) {
+      case "claude":
+        return { mode: "plan", hostAccessApplied: false };
+      case "codex":
+        return { mode: "read-only", hostAccessApplied: false };
+      case "grok":
+        return { mode: "plan · sandbox: workspace", hostAccessApplied: false };
+      case "cursor":
+        return { mode: "read-only-not-supported", hostAccessApplied: false };
+      case "copilot":
+        return { mode: "plan", hostAccessApplied: false };
+      case "kilocode":
+        return { mode: "plan agent (read-only)", hostAccessApplied: false };
+    }
+  }
+  switch (provider) {
+    case "claude":
+      return { mode: effectiveClaudePermissionMode(), hostAccessApplied: settings.hostAccess };
+    case "codex":
+      return { mode: effectiveCodexSandboxMode(), hostAccessApplied: settings.hostAccess };
+    case "grok":
+      return {
+        mode: `${effectiveGrokPermissionMode()} · sandbox: ${effectiveGrokSandboxMode()}`,
+        hostAccessApplied: settings.hostAccess,
+      };
+    case "cursor":
+      return {
+        mode: effectiveCursorForce() ? "force (non-interactive)" : "interactive approval",
+        hostAccessApplied: settings.hostAccess,
+      };
+    case "copilot":
+      return { mode: effectiveCopilotPermissionMode(), hostAccessApplied: settings.hostAccess };
+    case "kilocode":
+      return { mode: effectiveKilocodePermissionMode(), hostAccessApplied: settings.hostAccess };
+  }
+}
+
+load();

@@ -1,20 +1,24 @@
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
-import { Geist, Geist_Mono } from "next/font/google";
-import { AppShell } from "@/components/shell/AppShell";
-import { ThemeScript } from "@/components/ThemeScript";
+import { Geist, Geist_Mono, Unbounded } from "next/font/google";
+import { AppShell } from "@/components/layout/AppShell";
+import { ThemeScript } from "@/components/theme/ThemeScript";
 import { DialogProvider } from "@/components/ui/Dialogs";
 import { ToastProvider } from "@/components/ui/Toast";
-import { AgentConsoleProvider } from "@/lib/agentConsole";
-import { WorkspaceProvider, WorkspaceUrlSync } from "@/lib/workspaceContext";
+import { HydraProvider } from "@/contexts/hydra";
+import { IdentityGate } from "@/contexts/identity";
+import { WorkspaceProvider, WorkspaceUrlSync } from "@/contexts/workspaceContext";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+// The brand display face: page titles and brand moments only (brand/README.md).
+const unbounded = Unbounded({ variable: "--font-unbounded", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Agent Console",
-  description: "Live console for local CLI coding agents",
+  title: { default: "Hydra", template: "%s · Hydra" },
+  applicationName: "Hydra",
+  description: "Many heads. One console. A live console for local CLI coding agents.",
 };
 
 export const viewport: Viewport = {
@@ -30,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${unbounded.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       {/*
@@ -50,14 +54,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
              * navigating between pages does not tear it down and lose the
              * transcript of a run that is still going.
              */}
-            <AgentConsoleProvider>
+            <IdentityGate>
+            <HydraProvider>
               <WorkspaceProvider>
                 <Suspense fallback={null}>
                   <WorkspaceUrlSync />
                 </Suspense>
                 <AppShell>{children}</AppShell>
               </WorkspaceProvider>
-            </AgentConsoleProvider>
+            </HydraProvider>
+            </IdentityGate>
           </DialogProvider>
         </ToastProvider>
       </body>

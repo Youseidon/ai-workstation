@@ -1,2503 +1,232 @@
-import type { PipelinePolicy } from "./pipelineRules";
-/**
- * The single source of truth for everything that crosses the WebSocket boundary.
- *
- * Provider-specific shapes (SDKMessage, codex JSONL items, cursor-agent JSON, ...)
- * must be normalized into these types inside `server/src/adapters/*` and must never
- * leak into the transport layer or the frontend.
- */
-
-export const PROVIDER_IDS = ["claude", "codex", "cursor", "grok", "copilot", "kilocode"] as const;
-export type ProviderId = (typeof PROVIDER_IDS)[number];
-
-export function isProviderId(value: unknown): value is ProviderId {
-  return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
-}
-
-export const RUN_ROLES = ["execute", "consult", "handoff", "author"] as const;
-export type RunRole = (typeof RUN_ROLES)[number];
-
-export function isRunRole(value: unknown): value is RunRole {
-  return typeof value === "string" && (RUN_ROLES as readonly string[]).includes(value);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Model catalog                                                               */
-/* -------------------------------------------------------------------------- */
-
-export interface ModelOption {
-  /**
-   * Exactly what gets handed to the provider (`options.model` for the Agent
-   * SDK, `-m <id>` for the CLIs). `null` means "send nothing and let the
-   * provider pick", which is what an unset CLAUDE_MODEL/CODEX_MODEL/... does.
-   */
-  id: string | null;
-  /** Short name for the chip that sits next to the provider label. */
-  label: string;
-  /** One-phrase positioning, shown in the dropdown. */
-  hint: string;
-  /**
-   * Which pool the model is billed and served from, when the provider has more
-   * than one. `cursor` is Cursor's own pool (Composer, Cursor-hosted Grok, and
-   * the `auto` router); `vendor` is a frontier model billed against Anthropic,
-   * OpenAI, Google, Moonshot or Zhipu. Absent for providers that only ever
-   * serve their own models.
-   */
-  pool?: ModelPool;
-}
-
-/** Global ceiling controlling which models may be used by any new run. */
-export const MODEL_ACCESS_TIERS = ["free", "efficient", "professional", "frontier", "all"] as const;
-export type ModelAccessTier = (typeof MODEL_ACCESS_TIERS)[number];
-export type ClassifiedModelTier = Exclude<ModelAccessTier, "all">;
-
-export const MODEL_SELECTION_MODES = ["manual", "auto"] as const;
-export type ModelSelectionMode = (typeof MODEL_SELECTION_MODES)[number];
-
-/** Provider-neutral reasoning levels supported by every adapter. */
-export const REASONING_EFFORTS = ["low", "medium", "high"] as const;
-export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-
-export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return typeof value === "string" && (REASONING_EFFORTS as readonly string[]).includes(value);
-}
-
-export function isModelSelectionMode(value: unknown): value is ModelSelectionMode {
-  return typeof value === "string" && (MODEL_SELECTION_MODES as readonly string[]).includes(value);
-}
-
-export interface ModelAccessTierInfo {
-  label: string;
-  shortLabel: string;
-  description: string;
-  creditUse: string;
-}
-
-export const MODEL_ACCESS_TIER_INFO: Record<ModelAccessTier, ModelAccessTierInfo> = {
-  free: {
-    label: "Free",
-    shortLabel: "Free",
-    description: "Only models explicitly identified as free or zero-credit.",
-    creditUse: "No paid credits",
-  },
-  efficient: {
-    label: "Efficient",
-    shortLabel: "Efficient",
-    description: "Fast, economical models for routine work.",
-    creditUse: "Low credit use",
-  },
-  professional: {
-    label: "Professional",
-    shortLabel: "Pro",
-    description: "Strong coding models for everyday production work.",
-    creditUse: "Balanced credit use",
-  },
-  frontier: {
-    label: "Frontier",
-    shortLabel: "Frontier",
-    description: "The strongest curated models, including high-reasoning variants.",
-    creditUse: "High credit use",
-  },
-  all: {
-    label: "All models",
-    shortLabel: "All",
-    description: "Every discovered model, provider defaults, and custom model IDs.",
-    creditUse: "No model limit",
-  },
-};
-
-export function isModelAccessTier(value: unknown): value is ModelAccessTier {
-  return typeof value === "string" && (MODEL_ACCESS_TIERS as readonly string[]).includes(value);
-}
-
-const MODEL_TIER_RANK: Record<ClassifiedModelTier, number> = {
-  free: 0,
-  efficient: 1,
-  professional: 2,
-  frontier: 3,
-};
-
-/**
- * Conservative model classification used by both server enforcement and the
- * UI. A model has to be recognised to enter a restricted tier; new/unknown
- * ids remain reachable through All models without silently escaping a cap.
- */
-export function classifyModel(provider: ProviderId, modelId: string | null): ClassifiedModelTier | null {
-  if (modelId === null) return null;
-  const id = modelId.toLowerCase();
-  // Kilo's tier routers are models in the CLI catalog, but their tier is
-  // carried by the path rather than a model-family name.
-  if (provider === "kilocode") {
-    if (id === "kilo-auto/free") return "free";
-    if (id === "kilo-auto/efficient") return "efficient";
-    if (id === "kilo-auto/frontier") return "frontier";
-  }
-  if (/(?:^|[-_/:.])free(?:$|[-_/:.])|zero[-_ ]?credit/.test(id)) return "free";
-
-  // Family comes before effort suffix: opus-low is still a frontier-priced
-  // family, not an efficient model merely because its reasoning is low.
-  if (/opus|fable|gpt[-_.]?sol|\bsol\b/.test(id)) return "frontier";
-  if (/haiku|gpt[-_.]?luna|\bluna\b|mini|flash|deepseek|\bglm\b|\bkimi\b|small|lite/.test(id)) {
-    return "efficient";
-  }
-  if (/sonnet|gpt[-_.]?terra|\bterra\b|composer|codex|gpt|gemini[-_/.:]?pro|grok|auto/.test(id)) {
-    if (/xhigh|extra[-_ ]?high|\bmax\b|thinking[-_/.:]?high/.test(id)) return "frontier";
-    return "professional";
-  }
-
-  // Provider-native ids with no family marker are intentionally conservative.
-  // A maintainer can classify them by extending the rules; until then All
-  // models is the explicit escape hatch.
-  void provider;
-  return null;
-}
-
-/** Stable family label for grouping very large provider catalogs. */
-export function modelFamily(modelId: string | null): string {
-  if (modelId === null) return "Provider default";
-  const id = modelId.toLowerCase();
-  if (/claude|anthropic|opus|sonnet|haiku|fable/.test(id)) return "Claude";
-  if (/composer|cursor-/.test(id)) return "Cursor";
-  if (/gpt|openai|codex|\bsol\b|\bterra\b|\bluna\b/.test(id)) return "GPT & Codex";
-  if (/gemini|google/.test(id)) return "Gemini";
-  if (/grok|x-ai/.test(id)) return "Grok";
-  if (/deepseek/.test(id)) return "DeepSeek";
-  if (/kimi|moonshot/.test(id)) return "Kimi";
-  if (/glm|z-ai/.test(id)) return "GLM";
-  return "Other";
-}
-
-export function modelAllowedInTier(provider: ProviderId, modelId: string | null, tier: ModelAccessTier): boolean {
-  if (tier === "all") return true;
-  const classified = classifyModel(provider, modelId);
-  return classified !== null && MODEL_TIER_RANK[classified] <= MODEL_TIER_RANK[tier];
-}
-
-/**
- * Effort Cursor already baked into a model id (`claude-sonnet-5-medium-fast`
- * → medium). `null` means the id has no effort token, so the spawn-time
- * `[effort=…]` override still applies.
- */
-export type BakedModelEffort = ReasoningEffort | "xhigh" | "max" | "none";
-
-export function bakedModelEffort(modelId: string | null): BakedModelEffort | null {
-  if (modelId === null || modelId === "") return null;
-  const body = modelId
-    .toLowerCase()
-    .replace(/\[.*$/, "")
-    .replace(/-fast$/, "")
-    .replace(/-thinking$/, "");
-  const match = /(?:^|-)(?:thinking-)?(none|low|medium|extra-high|xhigh|high|max)$/.exec(body);
-  if (match === null) return null;
-  const token = match[1];
-  if (token === "extra-high") return "xhigh";
-  return token as BakedModelEffort;
-}
-
-/**
- * Cursor lists a separate id per effort. Other providers take effort as a
- * flag, so their catalogs are not filtered. High also matches Cursor's
- * xhigh/max ids because the Agents page only has three effort buttons.
- */
-export function modelMatchesEffort(
-  provider: ProviderId,
-  modelId: string | null,
-  effort: ReasoningEffort,
-): boolean {
-  if (provider !== "cursor") return true;
-  const baked = bakedModelEffort(modelId);
-  if (baked === null) return true;
-  if (baked === "none") return effort === "low";
-  if (effort === "high") return baked === "high" || baked === "xhigh" || baked === "max";
-  return baked === effort;
-}
-
-export function eligibleModels(
-  provider: ProviderId,
-  models: readonly ModelOption[],
-  tier: ModelAccessTier,
-  effort?: ReasoningEffort,
-): ModelOption[] {
-  const byTier = tier === "all"
-    ? [...models]
-    : models.filter((model) => model.id !== null && modelAllowedInTier(provider, model.id, tier));
-  if (effort === undefined) return byTier;
-  return byTier.filter((model) => modelMatchesEffort(provider, model.id, effort));
-}
-
-const MODEL_DEFAULT_PREFERENCES: Record<ClassifiedModelTier, Record<ProviderId, RegExp[]>> = {
-  free: Object.fromEntries(PROVIDER_IDS.map((provider) => [provider, [/free|zero[-_ ]?credit/i]])) as Record<ProviderId, RegExp[]>,
-  efficient: {
-    claude: [/haiku/i],
-    codex: [/luna/i, /mini/i],
-    cursor: [/luna/i, /mini/i, /flash/i],
-    grok: [/mini|fast|light/i],
-    copilot: [/mini|flash|haiku|luna/i],
-    kilocode: [/luna/i, /mini/i, /flash/i, /haiku/i, /deepseek/i],
-  },
-  professional: {
-    claude: [/sonnet/i],
-    codex: [/terra/i, /5\.4(?!-mini)/i],
-    cursor: [/composer/i, /sonnet/i, /terra/i, /codex/i],
-    grok: [/grok/i],
-    copilot: [/^auto$/i, /sonnet|gpt/i],
-    kilocode: [/sonnet/i, /terra/i, /gemini[-_/.:]?pro/i, /grok/i],
-  },
-  frontier: {
-    claude: [/opus/i, /fable/i],
-    codex: [/sol/i, /5\.6/i, /5\.5/i],
-    cursor: [/opus/i, /sol.*(?:xhigh|max|high)/i, /fable/i],
-    grok: [/xhigh|max|high/i, /grok/i],
-    copilot: [/opus/i, /sol/i],
-    kilocode: [/opus/i, /sol/i, /fable/i],
-  },
-};
-
-/** Best discovered model for a provider under the selected ceiling. */
-export function recommendedModel(
-  provider: ProviderId,
-  models: readonly ModelOption[],
-  tier: ModelAccessTier,
-): string | null {
-  if (tier === "all") return null;
-  const allowed = eligibleModels(provider, models, tier).filter((model): model is ModelOption & { id: string } => model.id !== null);
-  if (allowed.length === 0) return null;
-  // A default nobody picked must not bill a separate allowance. Cursor's own
-  // pool (auto, Composer, Cursor-hosted Grok) is covered by the plan; its
-  // vendor pool (Opus, GPT, …) draws on the limited API budget. Pipeline
-  // fallbacks start Cursor with no model, so this is what they run on.
-  const ownPool = allowed.filter((model) => model.pool === "cursor");
-  if (ownPool.length > 0) return pickRecommended(provider, ownPool, tier);
-  return pickRecommended(provider, allowed, tier);
-}
-
-function pickRecommended(
-  provider: ProviderId,
-  allowed: ReadonlyArray<ModelOption & { id: string }>,
-  tier: ModelAccessTier,
-): string | null {
-  // Prefer the highest band the ceiling permits, then a provider-specific
-  // family. This makes Professional default to Sonnet/Terra rather than the
-  // first cheap entry while still falling back safely if an account lacks it.
-  const targetBands: ClassifiedModelTier[] = tier === "frontier"
-    ? ["frontier", "professional", "efficient", "free"]
-    : tier === "professional"
-      ? ["professional", "efficient", "free"]
-      : tier === "efficient"
-        ? ["efficient", "free"]
-        : ["free"];
-  for (const band of targetBands) {
-    const inBand = allowed.filter((model) => classifyModel(provider, model.id) === band);
-    if (inBand.length === 0) continue;
-    for (const preference of MODEL_DEFAULT_PREFERENCES[band][provider]) {
-      const match = inBand.find((model) => preference.test(`${model.id} ${model.label}`));
-      if (match !== undefined) return match.id;
-    }
-    return inBand[0]!.id;
-  }
-  return null;
-}
-
-/**
- * Resolve the model used by the global Auto Select policy. Providers that
- * expose a native router (`auto` for Cursor, `kilo-auto/*` for Kilo) keep
- * that router: the operator cannot override the pick, so a guessed vendor
- * slug that the CLI then rejects is worse than letting the provider choose.
- * Everyone else gets the best concrete account model. "All" has no spending
- * ceiling, so automatic selection targets the frontier band.
- */
-export function automaticModel(
-  provider: ProviderId,
-  models: readonly ModelOption[],
-  tier: ModelAccessTier,
-): string | null {
-  const has = (id: string): boolean => models.some((model) => model.id === id);
-  if (provider === "cursor" && has("auto") && modelAllowedInTier("cursor", "auto", tier)) return "auto";
-  if (provider === "kilocode") {
-    const native = tier === "free"
-      ? "kilo-auto/free"
-      : tier === "efficient"
-        ? "kilo-auto/efficient"
-        : tier === "frontier" || tier === "all"
-          ? "kilo-auto/frontier"
-          : null;
-    if (native !== null && has(native)) return native;
-  }
-  return recommendedModel(provider, models, tier === "all" ? "frontier" : tier);
-}
-
-export const MODEL_POOLS = ["cursor", "vendor"] as const;
-export type ModelPool = (typeof MODEL_POOLS)[number];
-
-/** Section heading for a pool in the model picker. */
-export const MODEL_POOL_LABEL: Record<ModelPool, string> = {
-  cursor: "Cursor pool",
-  vendor: "Vendor pool",
-};
-
-/**
- * Bundled fallback used when runtime provider discovery is unavailable. The
- * server refreshes account-scoped catalogs during provider detection; this
- * snapshot keeps startup and model selection working while offline. Anything
- * missing here can still be typed in as a custom id.
- */
-export const MODEL_CATALOG: Record<ProviderId, ModelOption[]> = {
-  claude: [
-    { id: null, label: "default", hint: "whatever the Agent SDK picks" },
-    { id: "claude-opus-5", label: "opus 5", hint: "flagship" },
-    { id: "claude-sonnet-5", label: "sonnet 5", hint: "balanced" },
-    { id: "claude-haiku-4-5", label: "haiku 4.5", hint: "fast and cheap" },
-    { id: "claude-opus-4-8", label: "opus 4.8", hint: "previous flagship" },
-    { id: "claude-fable-5", label: "fable 5", hint: "most capable, priciest" },
-  ],
-  // Slugs taken from the codex CLI's own model cache (~/.codex/models_cache.json).
-  codex: [
-    { id: null, label: "default", hint: "whatever `codex exec` picks" },
-    { id: "gpt-5.6-sol", label: "5.6 sol", hint: "frontier agentic coding" },
-    { id: "gpt-5.6-terra", label: "5.6 terra", hint: "balanced everyday work" },
-    { id: "gpt-5.6-luna", label: "5.6 luna", hint: "fast and affordable" },
-    { id: "gpt-5.5", label: "5.5", hint: "previous frontier" },
-    { id: "gpt-5.4", label: "5.4", hint: "strong everyday coding" },
-    { id: "gpt-5.4-mini", label: "5.4 mini", hint: "small, cheap, simple tasks" },
-  ],
-  // The one provider whose list is machine-readable: `cursor-agent
-  // --list-models` is authoritative and account-scoped. Everything below the
-  // marker is generated — run `npm run sync:cursor-models` after a Cursor
-  // upgrade rather than editing by hand. Cursor retires ids between releases,
-  // and a stale id fails the run outright.
-  cursor: [
-    { id: null, label: "default", hint: "whatever cursor-agent picks" },
-    // <cursor-models:start> — generated by scripts/sync-cursor-models.mjs
-    // Cursor's own pool (17)
-    { id: "auto", label: "auto", hint: "Auto (default)", pool: "cursor" },
-    { id: "composer-2.5", label: "composer 2.5", hint: "Composer 2.5", pool: "cursor" },
-    { id: "cursor-grok-4.5-high", label: "grok 4.5 high", hint: "Grok 4.5", pool: "cursor" },
-    { id: "cursor-grok-4.5-high-fast", label: "grok 4.5 high fast", hint: "Grok 4.5 Fast", pool: "cursor" },
-    { id: "cursor-grok-4.6-low", label: "grok 4.6 low", hint: "Grok 4.6 Low", pool: "cursor" },
-    { id: "cursor-grok-4.6-low-fast", label: "grok 4.6 low fast", hint: "Grok 4.6 Low Fast", pool: "cursor" },
-    { id: "cursor-grok-4.6-medium", label: "grok 4.6 medium", hint: "Grok 4.6 Medium", pool: "cursor" },
-    { id: "cursor-grok-4.6-medium-fast", label: "grok 4.6 medium fast", hint: "Grok 4.6 Medium Fast", pool: "cursor" },
-    { id: "cursor-grok-4.6-high", label: "grok 4.6 high", hint: "Grok 4.6", pool: "cursor" },
-    { id: "cursor-grok-4.6-high-fast", label: "grok 4.6 high fast", hint: "Grok 4.6 Fast", pool: "cursor" },
-    { id: "cursor-grok-4.6-xhigh", label: "grok 4.6 xhigh", hint: "Grok 4.6 Extra High", pool: "cursor" },
-    { id: "cursor-grok-4.6-xhigh-fast", label: "grok 4.6 xhigh fast", hint: "Grok 4.6 Extra High Fast", pool: "cursor" },
-    { id: "composer-2.5-fast", label: "composer 2.5 fast", hint: "Composer 2.5 Fast", pool: "cursor" },
-    { id: "cursor-grok-4.5-low", label: "grok 4.5 low", hint: "Grok 4.5 Low", pool: "cursor" },
-    { id: "cursor-grok-4.5-low-fast", label: "grok 4.5 low fast", hint: "Grok 4.5 Low Fast", pool: "cursor" },
-    { id: "cursor-grok-4.5-medium", label: "grok 4.5 medium", hint: "Grok 4.5 Medium", pool: "cursor" },
-    { id: "cursor-grok-4.5-medium-fast", label: "grok 4.5 medium fast", hint: "Grok 4.5 Medium Fast", pool: "cursor" },
-    // Frontier vendor models (239)
-    { id: "gpt-5.3-codex-low", label: "5.3 codex low", hint: "Codex 5.3 Low", pool: "vendor" },
-    { id: "gpt-5.3-codex-low-fast", label: "5.3 codex low fast", hint: "Codex 5.3 Low Fast", pool: "vendor" },
-    { id: "gpt-5.3-codex", label: "5.3 codex", hint: "Codex 5.3", pool: "vendor" },
-    { id: "gpt-5.3-codex-fast", label: "5.3 codex fast", hint: "Codex 5.3 Fast", pool: "vendor" },
-    { id: "gpt-5.3-codex-high", label: "5.3 codex high", hint: "Codex 5.3 High", pool: "vendor" },
-    { id: "gpt-5.3-codex-high-fast", label: "5.3 codex high fast", hint: "Codex 5.3 High Fast", pool: "vendor" },
-    { id: "gpt-5.3-codex-xhigh", label: "5.3 codex xhigh", hint: "Codex 5.3 Extra High", pool: "vendor" },
-    { id: "gpt-5.3-codex-xhigh-fast", label: "5.3 codex xhigh fast", hint: "Codex 5.3 Extra High Fast", pool: "vendor" },
-    { id: "gpt-5.2", label: "5.2", hint: "GPT-5.2", pool: "vendor" },
-    { id: "claude-opus-5-thinking-high", label: "opus 5 thinking high", hint: "Claude Opus 5 1M Thinking", pool: "vendor" },
-    { id: "claude-opus-5-thinking-high-fast", label: "opus 5 thinking high fast", hint: "Claude Opus 5 1M Thinking Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-high", label: "5.6 sol high", hint: "GPT-5.6 Sol 1M High", pool: "vendor" },
-    { id: "gpt-5.6-sol-high-fast", label: "5.6 sol high fast", hint: "GPT-5.6 Sol 1M High Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-xhigh", label: "5.6 sol xhigh", hint: "GPT-5.6 Sol 1M Extra High", pool: "vendor" },
-    { id: "gpt-5.6-sol-xhigh-fast", label: "5.6 sol xhigh fast", hint: "GPT-5.6 Sol 1M Extra High Fast", pool: "vendor" },
-    { id: "claude-fable-5-thinking-high", label: "fable 5 thinking high", hint: "Claude Fable 5 1M Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-thinking-xhigh", label: "fable 5 thinking xhigh", hint: "Claude Fable 5 1M Extra High Thinking (NO ZDR)", pool: "vendor" },
-    { id: "gemini-3.7-flash-high", label: "gemini 3.7 flash high", hint: "Gemini 3.7 Flash", pool: "vendor" },
-    { id: "claude-sonnet-5-thinking-high", label: "sonnet 5 thinking high", hint: "Claude Sonnet 5 1M Thinking", pool: "vendor" },
-    { id: "claude-sonnet-5-thinking-xhigh", label: "sonnet 5 thinking xhigh", hint: "Claude Sonnet 5 1M Extra High Thinking", pool: "vendor" },
-    { id: "gpt-5.6-luna-high", label: "5.6 luna high", hint: "GPT-5.6 Luna 1M High", pool: "vendor" },
-    { id: "grok-4.7-low", label: "grok 4.7 low", hint: "Grok 4.7  Low", pool: "vendor" },
-    { id: "grok-4.7-low-fast", label: "grok 4.7 low fast", hint: "Grok 4.7  Low Fast​​", pool: "vendor" },
-    { id: "grok-4.7-medium", label: "grok 4.7 medium", hint: "Grok 4.7  Medium", pool: "vendor" },
-    { id: "grok-4.7-medium-fast", label: "grok 4.7 medium fast", hint: "Grok 4.7  Medium Fast​​", pool: "vendor" },
-    { id: "grok-4.7-high", label: "grok 4.7 high", hint: "Grok 4.7  High", pool: "vendor" },
-    { id: "grok-4.7-high-fast", label: "grok 4.7 high fast", hint: "Grok 4.7  High Fast​​", pool: "vendor" },
-    { id: "grok-4.7-xhigh", label: "grok 4.7 xhigh", hint: "Grok 4.7  Extra High", pool: "vendor" },
-    { id: "grok-4.7-xhigh-fast", label: "grok 4.7 xhigh fast", hint: "Grok 4.7  Extra High Fast​​", pool: "vendor" },
-    { id: "claude-opus-5-5-low", label: "opus 5 5 low", hint: "Claude Opus 5.5 1M Low", pool: "vendor" },
-    { id: "claude-opus-5-5-low-fast", label: "opus 5 5 low fast", hint: "Claude Opus 5.5 1M Low Fast", pool: "vendor" },
-    { id: "claude-opus-5-5-medium", label: "opus 5 5 medium", hint: "Claude Opus 5.5 1M", pool: "vendor" },
-    { id: "claude-opus-5-5-medium-fast", label: "opus 5 5 medium fast", hint: "Claude Opus 5.5 1M Fast", pool: "vendor" },
-    { id: "claude-opus-5-5-high", label: "opus 5 5 high", hint: "Claude Opus 5.5 1M High", pool: "vendor" },
-    { id: "claude-opus-5-5-high-fast", label: "opus 5 5 high fast", hint: "Claude Opus 5.5 1M High Fast", pool: "vendor" },
-    { id: "claude-opus-5-5-xhigh", label: "opus 5 5 xhigh", hint: "Claude Opus 5.5 1M Extra High", pool: "vendor" },
-    { id: "claude-opus-5-5-xhigh-fast", label: "opus 5 5 xhigh fast", hint: "Claude Opus 5.5 1M Extra High Fast", pool: "vendor" },
-    { id: "claude-opus-5-5-max", label: "opus 5 5 max", hint: "Claude Opus 5.5 1M Max", pool: "vendor" },
-    { id: "claude-opus-5-5-max-fast", label: "opus 5 5 max fast", hint: "Claude Opus 5.5 1M Max Fast", pool: "vendor" },
-    { id: "claude-opus-5-low", label: "opus 5 low", hint: "Claude Opus 5 1M Low", pool: "vendor" },
-    { id: "claude-opus-5-low-fast", label: "opus 5 low fast", hint: "Claude Opus 5 1M Low Fast", pool: "vendor" },
-    { id: "claude-opus-5-medium", label: "opus 5 medium", hint: "Claude Opus 5 1M Medium", pool: "vendor" },
-    { id: "claude-opus-5-medium-fast", label: "opus 5 medium fast", hint: "Claude Opus 5 1M Medium Fast", pool: "vendor" },
-    { id: "claude-opus-5-high", label: "opus 5 high", hint: "Claude Opus 5 1M", pool: "vendor" },
-    { id: "claude-opus-5-high-fast", label: "opus 5 high fast", hint: "Claude Opus 5 1M Fast", pool: "vendor" },
-    { id: "claude-opus-5-thinking-low", label: "opus 5 thinking low", hint: "Claude Opus 5 1M Low Thinking", pool: "vendor" },
-    { id: "claude-opus-5-thinking-low-fast", label: "opus 5 thinking low fast", hint: "Claude Opus 5 1M Low Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-5-thinking-medium", label: "opus 5 thinking medium", hint: "Claude Opus 5 1M Medium Thinking", pool: "vendor" },
-    { id: "claude-opus-5-thinking-medium-fast", label: "opus 5 thinking medium fast", hint: "Claude Opus 5 1M Medium Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-5-thinking-xhigh", label: "opus 5 thinking xhigh", hint: "Claude Opus 5 1M Extra High Thinking", pool: "vendor" },
-    { id: "claude-opus-5-thinking-xhigh-fast", label: "opus 5 thinking xhigh fast", hint: "Claude Opus 5 1M Extra High Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-5-thinking-max", label: "opus 5 thinking max", hint: "Claude Opus 5 1M Max Thinking", pool: "vendor" },
-    { id: "claude-opus-5-thinking-max-fast", label: "opus 5 thinking max fast", hint: "Claude Opus 5 1M Max Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-low", label: "opus 4 8 low", hint: "Claude Opus 4.8 1M Low", pool: "vendor" },
-    { id: "claude-opus-4-8-low-fast", label: "opus 4 8 low fast", hint: "Claude Opus 4.8 1M Low Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-medium", label: "opus 4 8 medium", hint: "Claude Opus 4.8 1M Medium", pool: "vendor" },
-    { id: "claude-opus-4-8-medium-fast", label: "opus 4 8 medium fast", hint: "Claude Opus 4.8 1M Medium Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-high", label: "opus 4 8 high", hint: "Claude Opus 4.8 1M", pool: "vendor" },
-    { id: "claude-opus-4-8-high-fast", label: "opus 4 8 high fast", hint: "Claude Opus 4.8 1M Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-xhigh", label: "opus 4 8 xhigh", hint: "Claude Opus 4.8 1M Extra High", pool: "vendor" },
-    { id: "claude-opus-4-8-xhigh-fast", label: "opus 4 8 xhigh fast", hint: "Claude Opus 4.8 1M Extra High Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-max", label: "opus 4 8 max", hint: "Claude Opus 4.8 1M Max", pool: "vendor" },
-    { id: "claude-opus-4-8-max-fast", label: "opus 4 8 max fast", hint: "Claude Opus 4.8 1M Max Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-low", label: "opus 4 8 thinking low", hint: "Claude Opus 4.8 1M Low Thinking", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-low-fast", label: "opus 4 8 thinking low fast", hint: "Claude Opus 4.8 1M Low Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-medium", label: "opus 4 8 thinking medium", hint: "Claude Opus 4.8 1M Medium Thinking", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-medium-fast", label: "opus 4 8 thinking medium fast", hint: "Claude Opus 4.8 1M Medium Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-high", label: "opus 4 8 thinking high", hint: "Claude Opus 4.8 1M Thinking", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-high-fast", label: "opus 4 8 thinking high fast", hint: "Claude Opus 4.8 1M Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-xhigh", label: "opus 4 8 thinking xhigh", hint: "Claude Opus 4.8 1M Extra High Thinking", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-xhigh-fast", label: "opus 4 8 thinking xhigh fast", hint: "Claude Opus 4.8 1M Extra High Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-max", label: "opus 4 8 thinking max", hint: "Claude Opus 4.8 1M Max Thinking", pool: "vendor" },
-    { id: "claude-opus-4-8-thinking-max-fast", label: "opus 4 8 thinking max fast", hint: "Claude Opus 4.8 1M Max Thinking Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-none", label: "5.6 sol none", hint: "GPT-5.6 Sol 1M None", pool: "vendor" },
-    { id: "gpt-5.6-sol-none-fast", label: "5.6 sol none fast", hint: "GPT-5.6 Sol 1M None Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-low", label: "5.6 sol low", hint: "GPT-5.6 Sol 1M Low", pool: "vendor" },
-    { id: "gpt-5.6-sol-low-fast", label: "5.6 sol low fast", hint: "GPT-5.6 Sol 1M Low Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-medium", label: "5.6 sol medium", hint: "GPT-5.6 Sol 1M", pool: "vendor" },
-    { id: "gpt-5.6-sol-medium-fast", label: "5.6 sol medium fast", hint: "GPT-5.6 Sol 1M Fast", pool: "vendor" },
-    { id: "gpt-5.6-sol-max", label: "5.6 sol max", hint: "GPT-5.6 Sol 1M Max", pool: "vendor" },
-    { id: "gpt-5.6-sol-max-fast", label: "5.6 sol max fast", hint: "GPT-5.6 Sol 1M Max Fast", pool: "vendor" },
-    { id: "gpt-5.5-none", label: "5.5 none", hint: "GPT-5.5 1M None", pool: "vendor" },
-    { id: "gpt-5.5-none-fast", label: "5.5 none fast", hint: "GPT-5.5 None Fast", pool: "vendor" },
-    { id: "gpt-5.5-low", label: "5.5 low", hint: "GPT-5.5 1M Low", pool: "vendor" },
-    { id: "gpt-5.5-low-fast", label: "5.5 low fast", hint: "GPT-5.5 Low Fast", pool: "vendor" },
-    { id: "gpt-5.5-medium", label: "5.5 medium", hint: "GPT-5.5 1M", pool: "vendor" },
-    { id: "gpt-5.5-medium-fast", label: "5.5 medium fast", hint: "GPT-5.5 Fast", pool: "vendor" },
-    { id: "gpt-5.5-high", label: "5.5 high", hint: "GPT-5.5 1M High", pool: "vendor" },
-    { id: "gpt-5.5-high-fast", label: "5.5 high fast", hint: "GPT-5.5 High Fast", pool: "vendor" },
-    { id: "gpt-5.5-extra-high", label: "5.5 extra high", hint: "GPT-5.5 1M Extra High", pool: "vendor" },
-    { id: "gpt-5.5-extra-high-fast", label: "5.5 extra high fast", hint: "GPT-5.5 Extra High Fast", pool: "vendor" },
-    { id: "claude-fable-5-1-low", label: "fable 5 1 low", hint: "Claude Fable 5.1 1M Low (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-medium", label: "fable 5 1 medium", hint: "Claude Fable 5.1 1M Medium (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-high", label: "fable 5 1 high", hint: "Claude Fable 5.1 1M (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-xhigh", label: "fable 5 1 xhigh", hint: "Claude Fable 5.1 1M Extra High (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-max", label: "fable 5 1 max", hint: "Claude Fable 5.1 1M Max (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-thinking-low", label: "fable 5 1 thinking low", hint: "Claude Fable 5.1 1M Low Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-thinking-medium", label: "fable 5 1 thinking medium", hint: "Claude Fable 5.1 1M Medium Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-thinking-high", label: "fable 5 1 thinking high", hint: "Claude Fable 5.1 1M Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-thinking-xhigh", label: "fable 5 1 thinking xhigh", hint: "Claude Fable 5.1 1M Extra High Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-1-thinking-max", label: "fable 5 1 thinking max", hint: "Claude Fable 5.1 1M Max Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-low", label: "fable 5 low", hint: "Claude Fable 5 1M Low (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-medium", label: "fable 5 medium", hint: "Claude Fable 5 1M Medium (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-high", label: "fable 5 high", hint: "Claude Fable 5 1M (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-xhigh", label: "fable 5 xhigh", hint: "Claude Fable 5 1M Extra High (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-max", label: "fable 5 max", hint: "Claude Fable 5 1M Max (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-thinking-low", label: "fable 5 thinking low", hint: "Claude Fable 5 1M Low Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-thinking-medium", label: "fable 5 thinking medium", hint: "Claude Fable 5 1M Medium Thinking (NO ZDR)", pool: "vendor" },
-    { id: "claude-fable-5-thinking-max", label: "fable 5 thinking max", hint: "Claude Fable 5 1M Max Thinking (NO ZDR)", pool: "vendor" },
-    { id: "gemini-3.8-flash-low", label: "gemini 3.8 flash low", hint: "Gemini 3.8 Flash Low", pool: "vendor" },
-    { id: "gemini-3.8-flash-medium", label: "gemini 3.8 flash medium", hint: "Gemini 3.8 Flash Medium", pool: "vendor" },
-    { id: "gemini-3.8-flash-high", label: "gemini 3.8 flash high", hint: "Gemini 3.8 Flash High", pool: "vendor" },
-    { id: "gemini-3.7-flash-low", label: "gemini 3.7 flash low", hint: "Gemini 3.7 Flash Low", pool: "vendor" },
-    { id: "gemini-3.7-flash-medium", label: "gemini 3.7 flash medium", hint: "Gemini 3.7 Flash Medium", pool: "vendor" },
-    { id: "muse-spark-1.3-minimal", label: "muse spark 1.3 minimal", hint: "Muse Spark 1.3 1M Minimal", pool: "vendor" },
-    { id: "muse-spark-1.3-low", label: "muse spark 1.3 low", hint: "Muse Spark 1.3 1M Low", pool: "vendor" },
-    { id: "muse-spark-1.3-medium", label: "muse spark 1.3 medium", hint: "Muse Spark 1.3 1M Medium", pool: "vendor" },
-    { id: "muse-spark-1.3-high", label: "muse spark 1.3 high", hint: "Muse Spark 1.3 1M", pool: "vendor" },
-    { id: "muse-spark-1.3-xhigh", label: "muse spark 1.3 xhigh", hint: "Muse Spark 1.3 1M Extra High", pool: "vendor" },
-    { id: "muse-spark-1.3-max", label: "muse spark 1.3 max", hint: "Muse Spark 1.3 1M Max", pool: "vendor" },
-    { id: "gpt-5.6-terra-none", label: "5.6 terra none", hint: "GPT-5.6 Terra 1M None", pool: "vendor" },
-    { id: "gpt-5.6-terra-none-fast", label: "5.6 terra none fast", hint: "GPT-5.6 Terra 1M None Fast", pool: "vendor" },
-    { id: "gpt-5.6-terra-low", label: "5.6 terra low", hint: "GPT-5.6 Terra 1M Low", pool: "vendor" },
-    { id: "gpt-5.6-terra-low-fast", label: "5.6 terra low fast", hint: "GPT-5.6 Terra 1M Low Fast", pool: "vendor" },
-    { id: "gpt-5.6-terra-medium", label: "5.6 terra medium", hint: "GPT-5.6 Terra 1M", pool: "vendor" },
-    { id: "gpt-5.6-terra-medium-fast", label: "5.6 terra medium fast", hint: "GPT-5.6 Terra 1M Fast", pool: "vendor" },
-    { id: "gpt-5.6-terra-high", label: "5.6 terra high", hint: "GPT-5.6 Terra 1M High", pool: "vendor" },
-    { id: "gpt-5.6-terra-high-fast", label: "5.6 terra high fast", hint: "GPT-5.6 Terra 1M High Fast", pool: "vendor" },
-    { id: "gpt-5.6-terra-xhigh", label: "5.6 terra xhigh", hint: "GPT-5.6 Terra 1M Extra High", pool: "vendor" },
-    { id: "gpt-5.6-terra-xhigh-fast", label: "5.6 terra xhigh fast", hint: "GPT-5.6 Terra 1M Extra High Fast", pool: "vendor" },
-    { id: "gpt-5.6-terra-max", label: "5.6 terra max", hint: "GPT-5.6 Terra 1M Max", pool: "vendor" },
-    { id: "gpt-5.6-terra-max-fast", label: "5.6 terra max fast", hint: "GPT-5.6 Terra 1M Max Fast", pool: "vendor" },
-    { id: "claude-sonnet-5-5-low", label: "sonnet 5 5 low", hint: "Claude Sonnet 5.5  Low", pool: "vendor" },
-    { id: "claude-sonnet-5-5-medium", label: "sonnet 5 5 medium", hint: "Claude Sonnet 5.5  Medium", pool: "vendor" },
-    { id: "claude-sonnet-5-5-high", label: "sonnet 5 5 high", hint: "Claude Sonnet 5.5  High", pool: "vendor" },
-    { id: "claude-sonnet-5-5-xhigh", label: "sonnet 5 5 xhigh", hint: "Claude Sonnet 5.5  Extra High", pool: "vendor" },
-    { id: "claude-sonnet-5-5-max", label: "sonnet 5 5 max", hint: "Claude Sonnet 5.5  Max", pool: "vendor" },
-    { id: "claude-sonnet-5-low", label: "sonnet 5 low", hint: "Claude Sonnet 5 1M Low", pool: "vendor" },
-    { id: "claude-sonnet-5-medium", label: "sonnet 5 medium", hint: "Claude Sonnet 5 1M Medium", pool: "vendor" },
-    { id: "claude-sonnet-5-high", label: "sonnet 5 high", hint: "Claude Sonnet 5 1M", pool: "vendor" },
-    { id: "claude-sonnet-5-xhigh", label: "sonnet 5 xhigh", hint: "Claude Sonnet 5 1M Extra High", pool: "vendor" },
-    { id: "claude-sonnet-5-max", label: "sonnet 5 max", hint: "Claude Sonnet 5 1M Max", pool: "vendor" },
-    { id: "claude-sonnet-5-thinking-low", label: "sonnet 5 thinking low", hint: "Claude Sonnet 5 1M Low Thinking", pool: "vendor" },
-    { id: "claude-sonnet-5-thinking-medium", label: "sonnet 5 thinking medium", hint: "Claude Sonnet 5 1M Medium Thinking", pool: "vendor" },
-    { id: "claude-sonnet-5-thinking-max", label: "sonnet 5 thinking max", hint: "Claude Sonnet 5 1M Max Thinking", pool: "vendor" },
-    { id: "claude-4.6-sonnet-medium", label: "4.6 sonnet medium", hint: "Claude Sonnet 4.6 1M", pool: "vendor" },
-    { id: "claude-4.6-sonnet-medium-thinking", label: "4.6 sonnet medium thinking", hint: "Claude Sonnet 4.6 1M Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-low", label: "opus 4 7 low", hint: "Claude Opus 4.7 1M Low", pool: "vendor" },
-    { id: "claude-opus-4-7-low-fast", label: "opus 4 7 low fast", hint: "Claude Opus 4.7 1M Low Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-medium", label: "opus 4 7 medium", hint: "Claude Opus 4.7 1M Medium", pool: "vendor" },
-    { id: "claude-opus-4-7-medium-fast", label: "opus 4 7 medium fast", hint: "Claude Opus 4.7 1M Medium Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-high", label: "opus 4 7 high", hint: "Claude Opus 4.7 1M High", pool: "vendor" },
-    { id: "claude-opus-4-7-high-fast", label: "opus 4 7 high fast", hint: "Claude Opus 4.7 1M High Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-xhigh", label: "opus 4 7 xhigh", hint: "Claude Opus 4.7 1M", pool: "vendor" },
-    { id: "claude-opus-4-7-xhigh-fast", label: "opus 4 7 xhigh fast", hint: "Claude Opus 4.7 1M Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-max", label: "opus 4 7 max", hint: "Claude Opus 4.7 1M Max", pool: "vendor" },
-    { id: "claude-opus-4-7-max-fast", label: "opus 4 7 max fast", hint: "Claude Opus 4.7 1M Max Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-low", label: "opus 4 7 thinking low", hint: "Claude Opus 4.7 1M Low Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-low-fast", label: "opus 4 7 thinking low fast", hint: "Claude Opus 4.7 1M Low Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-medium", label: "opus 4 7 thinking medium", hint: "Claude Opus 4.7 1M Medium Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-medium-fast", label: "opus 4 7 thinking medium fast", hint: "Claude Opus 4.7 1M Medium Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-high", label: "opus 4 7 thinking high", hint: "Claude Opus 4.7 1M High Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-high-fast", label: "opus 4 7 thinking high fast", hint: "Claude Opus 4.7 1M High Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-xhigh", label: "opus 4 7 thinking xhigh", hint: "Claude Opus 4.7 1M Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-xhigh-fast", label: "opus 4 7 thinking xhigh fast", hint: "Claude Opus 4.7 1M Thinking Fast", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-max", label: "opus 4 7 thinking max", hint: "Claude Opus 4.7 1M Max Thinking", pool: "vendor" },
-    { id: "claude-opus-4-7-thinking-max-fast", label: "opus 4 7 thinking max fast", hint: "Claude Opus 4.7 1M Max Thinking Fast", pool: "vendor" },
-    { id: "gpt-5.4-low", label: "5.4 low", hint: "GPT-5.4 1M Low", pool: "vendor" },
-    { id: "gpt-5.4-medium", label: "5.4 medium", hint: "GPT-5.4 1M", pool: "vendor" },
-    { id: "gpt-5.4-medium-fast", label: "5.4 medium fast", hint: "GPT-5.4 Fast", pool: "vendor" },
-    { id: "gpt-5.4-high", label: "5.4 high", hint: "GPT-5.4 1M High", pool: "vendor" },
-    { id: "gpt-5.4-high-fast", label: "5.4 high fast", hint: "GPT-5.4 High Fast", pool: "vendor" },
-    { id: "gpt-5.4-xhigh", label: "5.4 xhigh", hint: "GPT-5.4 1M Extra High", pool: "vendor" },
-    { id: "gpt-5.4-xhigh-fast", label: "5.4 xhigh fast", hint: "GPT-5.4 Extra High Fast", pool: "vendor" },
-    { id: "claude-4.6-opus-high", label: "4.6 opus high", hint: "Claude Opus 4.6 1M", pool: "vendor" },
-    { id: "claude-4.6-opus-max", label: "4.6 opus max", hint: "Claude Opus 4.6 1M Max", pool: "vendor" },
-    { id: "claude-4.6-opus-high-thinking", label: "4.6 opus high thinking", hint: "Claude Opus 4.6 1M Thinking", pool: "vendor" },
-    { id: "claude-4.6-opus-max-thinking", label: "4.6 opus max thinking", hint: "Claude Opus 4.6 1M Max Thinking", pool: "vendor" },
-    { id: "claude-4.5-opus-high", label: "4.5 opus high", hint: "Claude Opus 4.5", pool: "vendor" },
-    { id: "claude-4.5-opus-high-thinking", label: "4.5 opus high thinking", hint: "Claude Opus 4.5 Thinking", pool: "vendor" },
-    { id: "gpt-5.2-low", label: "5.2 low", hint: "GPT-5.2 Low", pool: "vendor" },
-    { id: "gpt-5.2-low-fast", label: "5.2 low fast", hint: "GPT-5.2 Low Fast", pool: "vendor" },
-    { id: "gpt-5.2-fast", label: "5.2 fast", hint: "GPT-5.2 Fast", pool: "vendor" },
-    { id: "gpt-5.2-high", label: "5.2 high", hint: "GPT-5.2 High", pool: "vendor" },
-    { id: "gpt-5.2-high-fast", label: "5.2 high fast", hint: "GPT-5.2 High Fast", pool: "vendor" },
-    { id: "gpt-5.2-xhigh", label: "5.2 xhigh", hint: "GPT-5.2 Extra High", pool: "vendor" },
-    { id: "gpt-5.2-xhigh-fast", label: "5.2 xhigh fast", hint: "GPT-5.2 Extra High Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-none", label: "5.6 luna none", hint: "GPT-5.6 Luna 1M None", pool: "vendor" },
-    { id: "gpt-5.6-luna-none-fast", label: "5.6 luna none fast", hint: "GPT-5.6 Luna 1M None Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-low", label: "5.6 luna low", hint: "GPT-5.6 Luna 1M Low", pool: "vendor" },
-    { id: "gpt-5.6-luna-low-fast", label: "5.6 luna low fast", hint: "GPT-5.6 Luna 1M Low Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-medium", label: "5.6 luna medium", hint: "GPT-5.6 Luna 1M", pool: "vendor" },
-    { id: "gpt-5.6-luna-medium-fast", label: "5.6 luna medium fast", hint: "GPT-5.6 Luna 1M Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-high-fast", label: "5.6 luna high fast", hint: "GPT-5.6 Luna 1M High Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-xhigh", label: "5.6 luna xhigh", hint: "GPT-5.6 Luna 1M Extra High", pool: "vendor" },
-    { id: "gpt-5.6-luna-xhigh-fast", label: "5.6 luna xhigh fast", hint: "GPT-5.6 Luna 1M Extra High Fast", pool: "vendor" },
-    { id: "gpt-5.6-luna-max", label: "5.6 luna max", hint: "GPT-5.6 Luna 1M Max", pool: "vendor" },
-    { id: "gpt-5.6-luna-max-fast", label: "5.6 luna max fast", hint: "GPT-5.6 Luna 1M Max Fast", pool: "vendor" },
-    { id: "gemini-3.6-flash-minimal", label: "gemini 3.6 flash minimal", hint: "Gemini 3.6 Flash Minimal", pool: "vendor" },
-    { id: "gemini-3.6-flash-low", label: "gemini 3.6 flash low", hint: "Gemini 3.6 Flash Low", pool: "vendor" },
-    { id: "gemini-3.6-flash-medium", label: "gemini 3.6 flash medium", hint: "Gemini 3.6 Flash Medium", pool: "vendor" },
-    { id: "gemini-3.6-flash-high", label: "gemini 3.6 flash high", hint: "Gemini 3.6 Flash", pool: "vendor" },
-    { id: "gemini-3.1-pro", label: "gemini 3.1 pro", hint: "Gemini 3.1 Pro", pool: "vendor" },
-    { id: "gpt-5.4-mini-none", label: "5.4 mini none", hint: "GPT-5.4 Mini None", pool: "vendor" },
-    { id: "gpt-5.4-mini-low", label: "5.4 mini low", hint: "GPT-5.4 Mini Low", pool: "vendor" },
-    { id: "gpt-5.4-mini-medium", label: "5.4 mini medium", hint: "GPT-5.4 Mini", pool: "vendor" },
-    { id: "gpt-5.4-mini-high", label: "5.4 mini high", hint: "GPT-5.4 Mini High", pool: "vendor" },
-    { id: "gpt-5.4-mini-xhigh", label: "5.4 mini xhigh", hint: "GPT-5.4 Mini Extra High", pool: "vendor" },
-    { id: "gpt-5.4-nano-none", label: "5.4 nano none", hint: "GPT-5.4 Nano None", pool: "vendor" },
-    { id: "gpt-5.4-nano-low", label: "5.4 nano low", hint: "GPT-5.4 Nano Low", pool: "vendor" },
-    { id: "gpt-5.4-nano-medium", label: "5.4 nano medium", hint: "GPT-5.4 Nano", pool: "vendor" },
-    { id: "gpt-5.4-nano-high", label: "5.4 nano high", hint: "GPT-5.4 Nano High", pool: "vendor" },
-    { id: "gpt-5.4-nano-xhigh", label: "5.4 nano xhigh", hint: "GPT-5.4 Nano Extra High", pool: "vendor" },
-    { id: "claude-haiku-5-5-low", label: "haiku 5 5 low", hint: "Claude Haiku 5.5  Low No Thinking", pool: "vendor" },
-    { id: "claude-haiku-5-5-medium", label: "haiku 5 5 medium", hint: "Claude Haiku 5.5  Medium No Thinking", pool: "vendor" },
-    { id: "claude-haiku-5-5-high", label: "haiku 5 5 high", hint: "Claude Haiku 5.5  High No Thinking", pool: "vendor" },
-    { id: "claude-haiku-5-5-xhigh", label: "haiku 5 5 xhigh", hint: "Claude Haiku 5.5  Extra High No Thinking", pool: "vendor" },
-    { id: "claude-haiku-5-5-max", label: "haiku 5 5 max", hint: "Claude Haiku 5.5  Max No Thinking", pool: "vendor" },
-    { id: "claude-haiku-5-5-thinking-low", label: "haiku 5 5 thinking low", hint: "Claude Haiku 5.5  Low", pool: "vendor" },
-    { id: "claude-haiku-5-5-thinking-medium", label: "haiku 5 5 thinking medium", hint: "Claude Haiku 5.5  Medium", pool: "vendor" },
-    { id: "claude-haiku-5-5-thinking-high", label: "haiku 5 5 thinking high", hint: "Claude Haiku 5.5  High", pool: "vendor" },
-    { id: "claude-haiku-5-5-thinking-xhigh", label: "haiku 5 5 thinking xhigh", hint: "Claude Haiku 5.5  Extra High", pool: "vendor" },
-    { id: "claude-haiku-5-5-thinking-max", label: "haiku 5 5 thinking max", hint: "Claude Haiku 5.5  Max", pool: "vendor" },
-    { id: "claude-4.5-sonnet", label: "4.5 sonnet", hint: "Claude Sonnet 4.5", pool: "vendor" },
-    { id: "claude-4.5-sonnet-thinking", label: "4.5 sonnet thinking", hint: "Claude Sonnet 4.5 Thinking", pool: "vendor" },
-    { id: "gpt-5.1-low", label: "5.1 low", hint: "GPT-5.1 Low", pool: "vendor" },
-    { id: "gpt-5.1", label: "5.1", hint: "GPT-5.1", pool: "vendor" },
-    { id: "gpt-5.1-high", label: "5.1 high", hint: "GPT-5.1 High", pool: "vendor" },
-    { id: "gemini-3-flash", label: "gemini 3 flash", hint: "Gemini 3 Flash", pool: "vendor" },
-    { id: "gemini-3.5-flash", label: "gemini 3.5 flash", hint: "Gemini 3.5 Flash", pool: "vendor" },
-    { id: "claude-4-sonnet", label: "4 sonnet", hint: "Claude Sonnet 4", pool: "vendor" },
-    { id: "claude-4-sonnet-thinking", label: "4 sonnet thinking", hint: "Claude Sonnet 4 Thinking", pool: "vendor" },
-    { id: "gpt-5-mini", label: "5 mini", hint: "GPT-5 Mini", pool: "vendor" },
-    { id: "kimi-k3-low", label: "kimi k3 low", hint: "Kimi K3 Low", pool: "vendor" },
-    { id: "kimi-k3-high", label: "kimi k3 high", hint: "Kimi K3 High", pool: "vendor" },
-    { id: "kimi-k3-max", label: "kimi k3 max", hint: "Kimi K3", pool: "vendor" },
-    { id: "kimi-k2.7-code", label: "kimi k2.7 code", hint: "Kimi K2.7 Code", pool: "vendor" },
-    { id: "glm-5.2-high", label: "glm 5.2 high", hint: "GLM 5.2", pool: "vendor" },
-    { id: "glm-5.2-max", label: "glm 5.2 max", hint: "GLM 5.2 Max", pool: "vendor" },
-    // <cursor-models:end>
-  ],
-  // Reported by `grok models` on a logged-in CLI.
-  grok: [
-    { id: null, label: "default", hint: "whatever the grok CLI picks" },
-    { id: "grok-4.6", label: "grok 4.6", hint: "current default" },
-    { id: "grok-4.5", label: "grok 4.5", hint: "previous generation" },
-  ],
-  // Copilot's model list is per-account: `--model` rejects anything the plan's
-  // picker does not expose, and a free plan exposes nothing but `auto`. Only the
-  // two entries every account has are listed; the ids a paid plan adds (and the
-  // routed model changes between releases) go through the custom field.
-  copilot: [
-    { id: null, label: "default", hint: "whatever the copilot CLI picks" },
-    { id: "auto", label: "auto", hint: "Copilot routes the request" },
-  ],
-  // Ids are the Kilo CLI's own `-m` values, `provider/model` with the model id
-  // itself carrying a vendor path. `~`-prefixed ids are the Kilo Gateway's
-  // pooled aliases — stable across gateway churn, which is why they (and not
-  // the ~300 concrete ids `kilo models` lists) are the offline fallback.
-  kilocode: [
-    { id: null, label: "default", hint: "whatever the kilo CLI picks" },
-    { id: "kilo-auto/free", label: "Auto Free", hint: "Kilo routes to the best available free model" },
-    { id: "kilo-auto/efficient", label: "Auto Efficient", hint: "Kilo routes by task complexity and cost" },
-    { id: "kilo-auto/frontier", label: "Auto Frontier", hint: "Kilo routes to its most capable models" },
-    { id: "kilo/~anthropic/claude-opus-latest", label: "opus latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~anthropic/claude-sonnet-latest", label: "sonnet latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~anthropic/claude-haiku-latest", label: "haiku latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~openai/gpt-sol-latest", label: "gpt sol latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~openai/gpt-luna-latest", label: "gpt luna latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~openai/gpt-mini-latest", label: "gpt mini latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~google/gemini-pro-latest", label: "gemini pro latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~google/gemini-flash-latest", label: "gemini flash latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~x-ai/grok-latest", label: "grok latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~z-ai/glm-latest", label: "glm latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~moonshotai/kimi-latest", label: "kimi latest", hint: "Kilo Gateway pool" },
-    { id: "kilo/~deepseek/deepseek-pro-latest", label: "deepseek pro latest", hint: "Kilo Gateway pool" },
-  ],
-};
-
-/**
- * Display name for a model id: the catalog label when we know it, otherwise the
- * raw id (a custom entry the user typed in), and `null` when nothing is set.
- */
-export function modelLabel(
-  provider: ProviderId,
-  modelId: string | null,
-  catalog: ModelOption[] = MODEL_CATALOG[provider],
-): string | null {
-  if (modelId === null) return null;
-  const known = catalog.find((option) => option.id === modelId);
-  return known?.label ?? modelId;
-}
-
-/**
- * Which pool a model is served from, or `null` when the provider has only one
- * (or the id is custom/unset, in which case the pool is unknowable offline).
- */
-export function modelPool(provider: ProviderId, modelId: string | null): ModelPool | null {
-  if (modelId === null) return null;
-  return MODEL_CATALOG[provider].find((option) => option.id === modelId)?.pool ?? null;
-}
-
-/** True when `modelId` is not one of the catalog entries for that provider. */
-export function isCustomModel(provider: ProviderId, modelId: string | null): boolean {
-  if (modelId === null) return false;
-  return !MODEL_CATALOG[provider].some((option) => option.id === modelId);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Provider detection                                                          */
-/* -------------------------------------------------------------------------- */
-
-export interface ProviderInfo {
-  commandEnforcement?: "brokered" | "cooperative";
-  id: ProviderId;
-  label: string;
-  /** Whether a run can actually be started with this provider right now. */
-  available: boolean;
-  /** Human-readable reason shown in a tooltip when `available` is false. */
-  reason: string | null;
-  /** Version string when cheaply obtainable, else null. */
-  version: string | null;
-  /** How the provider is driven, for display purposes. */
-  transport: "sdk" | "spawn";
-  /** Resolved binary path for spawn-based providers, when found. */
-  binary: string | null;
-  /** Whether this provider reports token usage in its stream. */
-  reportsTokens: boolean;
-  /** Effective permission/approval mode for this provider (from config). */
-  permissionMode: string;
-  /** Effective default after the global model-access policy is applied. */
-  model: string | null;
-  /** Raw per-provider setting, retained so the UI can explain an inactive choice. */
-  configuredModel: string | null;
-  /** Global access ceiling applied to this provider and every run role. */
-  modelAccessTier: ModelAccessTier;
-  /** Effective reasoning effort used to filter Cursor's effort-suffixed ids. */
-  reasoningEffort: ReasoningEffort;
-  /** Whether callers may choose a model or the server always resolves one. */
-  modelSelectionMode: ModelSelectionMode;
-  /** Recommended account-available model at the current tier. */
-  tierDefaultModel: string | null;
-  /** Total discovered count before the access-tier filter. */
-  totalModels: number;
-  /**
-   * Models this account can currently select. Refreshed from the provider at
-   * server startup (and on provider re-detection), with the bundled catalog as
-   * a fallback when the provider cannot enumerate models while offline.
-   */
-  models: ModelOption[];
-  /**
-   * Set when the scheduler recently saw a transient failure from this provider
-   * (capacity, quota, …). The header pill shows a small badge; the tooltip
-   * carries `because`. Null when the provider is not cooling.
-   */
-  cooling: { until: string; because: string } | null;
-}
-
-/** Outcome of updating one provider's SDK or CLI from the Agents page. */
-export interface ProviderUpdateResult {
-  provider: ProviderId;
-  /** False when the installed version was already the latest. */
-  updated: boolean;
-  before: string | null;
-  after: string | null;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Account usage credits                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Quota windows a provider's own account API actually reports.
- *
- * Names follow the window, not a wish: Claude and Codex expose a short session
- * window (typically 5 hours) and a weekly cap, not a calendar day. Grok's
- * billing API is weekly-only. Cursor reports a billing-cycle (typically monthly)
- * included allowance. Callers must skip kinds the provider omitted rather than
- * inventing a daily figure.
- */
-export const USAGE_WINDOW_KINDS = ["session", "daily", "weekly", "monthly"] as const;
-export type UsageWindowKind = (typeof USAGE_WINDOW_KINDS)[number];
-
-export interface ProviderUsageWindow {
-  kind: UsageWindowKind;
-  /** Length of the window in minutes, when the provider reports it. */
-  durationMinutes: number | null;
-  /** Percent used in 0–100. Null when the window exists but has no figure. */
-  usedPercent: number | null;
-  /** ISO 8601 instant the window resets, when the provider reports one. */
-  resetsAt: string | null;
-}
-
-export interface ProviderUsageCredits {
-  /** Prepaid/overage balance remaining, when the provider reports one. */
-  balance: number | null;
-  used: number | null;
-  limit: number | null;
-  currency: string | null;
-  /** False when extra usage exists as a setting but is switched off. */
-  enabled: boolean | null;
-}
-
-/**
- * Account-level usage for one provider, taken from that provider's own API.
- *
- * `available` is true only when at least one window or credit figure arrived.
- * `reason` explains a gap (no login, API key instead of a plan, the CLI has
- * no usage endpoint). Never fabricate numbers to fill a missing kind.
- */
-export interface ProviderUsage {
-  provider: ProviderId;
-  available: boolean;
-  reason: string | null;
-  plan: string | null;
-  fetchedAt: string | null;
-  windows: ProviderUsageWindow[];
-  credits: ProviderUsageCredits | null;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Token usage                                                                 */
-/* -------------------------------------------------------------------------- */
-
-export interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  reasoningOutputTokens: number;
-  /** inputTokens + outputTokens (cached input is already counted in inputTokens). */
-  totalTokens: number;
-}
-
-export function emptyUsage(): TokenUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-  };
-}
-
-/** True when a usage object carries a non-zero token count. */
-export function isMeaningfulUsage(usage: TokenUsage | null | undefined): usage is TokenUsage {
-  return usage !== null && usage !== undefined && usage.totalTokens > 0;
-}
-
-/**
- * Combine two usage snapshots. Empty/zero payloads never clobber a real count;
- * when both are meaningful, keep the larger total (handles incremental vs final).
- */
-export function mergeUsage(current: TokenUsage | null, next: TokenUsage | null): TokenUsage | null {
-  if (!isMeaningfulUsage(next)) return current;
-  if (!isMeaningfulUsage(current)) return next;
-  return next.totalTokens >= current.totalTokens ? next : current;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Cost estimation (API list-price proxy)                                      */
-/* -------------------------------------------------------------------------- */
-
-/** USD per million tokens for one price tier. */
-export interface TokenRates {
-  inputPerMTok: number;
-  outputPerMTok: number;
-  /** Cache-read input; defaults to ~10% of input when omitted in lookup tables. */
-  cachedInputPerMTok: number;
-}
-
-export interface CostEstimate {
-  /** Null when the session has no reported usage. */
-  usd: number | null;
-  rates: TokenRates | null;
-  /** How the rates were chosen. */
-  rateSource: "model" | "provider_default" | "none";
-}
-
-/**
- * Approximate public API list prices ($ / MTok). Subscription plans (Max,
- * Plus, Cursor Pro, …) are not metered this way — treat figures as a relative
- * spend signal, not an invoice.
- */
-const PROVIDER_DEFAULT_RATES: Record<ProviderId, TokenRates> = {
-  claude: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
-  codex: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
-  cursor: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
-  grok: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 },
-  // Copilot bills premium requests, not tokens; this is a spend signal only.
-  copilot: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
-  // Kilo bills through its gateway at the routed vendor's rate; this is the
-  // generic mid-tier signal.
-  kilocode: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 },
-};
-
-/** Model-id substrings → rates. First match wins; order matters (more specific first). */
-const MODEL_RATE_RULES: Array<{ provider?: ProviderId; match: RegExp; rates: TokenRates }> = [
-  { provider: "claude", match: /opus|fable/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
-  { provider: "claude", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
-  { provider: "claude", match: /haiku/i, rates: { inputPerMTok: 1, outputPerMTok: 5, cachedInputPerMTok: 0.1 } },
-  { provider: "codex", match: /mini|luna/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
-  { provider: "codex", match: /terra|5\.4(?!-mini)/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
-  { provider: "codex", match: /sol|5\.5|5\.6/i, rates: { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25 } },
-  { provider: "cursor", match: /opus/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
-  { provider: "cursor", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
-  { provider: "cursor", match: /gpt|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
-  { provider: "cursor", match: /grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
-  { provider: "grok", match: /4\.6|4\.5|grok/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.75 } },
-  // Copilot routes to whichever vendor the plan allows; price by the routed model.
-  { provider: "copilot", match: /opus/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
-  { provider: "copilot", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
-  { provider: "copilot", match: /haiku|mini|flash|luna/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
-  { provider: "copilot", match: /gpt|gemini|auto/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
-  // Kilo routes to a vendor model the same way; match on the routed name.
-  { provider: "kilocode", match: /opus|fable/i, rates: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 } },
-  { provider: "kilocode", match: /sonnet/i, rates: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 } },
-  { provider: "kilocode", match: /haiku|mini|flash|luna|deepseek/i, rates: { inputPerMTok: 0.25, outputPerMTok: 2, cachedInputPerMTok: 0.025 } },
-  { provider: "kilocode", match: /gpt|gemini|grok|glm|kimi/i, rates: { inputPerMTok: 1.25, outputPerMTok: 10, cachedInputPerMTok: 0.125 } },
-];
-
-export function ratesForModel(provider: string, modelId: string | null): { rates: TokenRates; source: "model" | "provider_default" } | null {
-  if (!isProviderId(provider)) return null;
-  if (modelId !== null && modelId !== "") {
-    for (const rule of MODEL_RATE_RULES) {
-      if (rule.provider !== undefined && rule.provider !== provider) continue;
-      if (rule.match.test(modelId)) return { rates: rule.rates, source: "model" };
-    }
-  }
-  return { rates: PROVIDER_DEFAULT_RATES[provider], source: "provider_default" };
-}
-
-export function estimateCost(usage: TokenUsage | null, provider: string, modelId: string | null): CostEstimate {
-  if (usage === null) return { usd: null, rates: null, rateSource: "none" };
-  const resolved = ratesForModel(provider, modelId);
-  if (resolved === null) return { usd: null, rates: null, rateSource: "none" };
-  const { rates, source } = resolved;
-  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
-  const uncached = Math.max(0, usage.inputTokens - cached);
-  // Reasoning is reported separately for display; most providers already fold it
-  // into outputTokens, so we do not add it again.
-  const usd =
-    (uncached * rates.inputPerMTok +
-      cached * rates.cachedInputPerMTok +
-      usage.outputTokens * rates.outputPerMTok) /
-    1_000_000;
-  return { usd, rates, rateSource: source };
-}
-
-/**
- * Input tokens weighted by what they cost, for run budgets that mean to cap
- * spend. An agentic loop resends its transcript every turn, so nearly all of
- * its input is cache reads — billed at a fraction of the base rate. Counting
- * those at full weight made the ceiling track transcript size instead of
- * money, and stopped runs that had barely spent anything.
- */
-export function billableInputTokens(usage: TokenUsage | null, provider: string, modelId: string | null): number {
-  if (usage === null) return 0;
-  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
-  const uncached = Math.max(0, usage.inputTokens - cached);
-  const rates = ratesForModel(provider, modelId)?.rates ?? null;
-  // No rate table for this provider: charge every token at full weight rather
-  // than silently handing an unpriced run a larger allowance.
-  if (rates === null || rates.inputPerMTok <= 0) return usage.inputTokens;
-  return Math.round(uncached + cached * (rates.cachedInputPerMTok / rates.inputPerMTok));
-}
-
-/**
- * A spend cap in dollars, turned into the cost-weighted input-token allowance
- * it buys on one provider and model. This is what lets a single budget mean the
- * same money everywhere: $100 is 6.7M tokens on an Opus-class model and 40M on
- * a mid-tier one, and each run is held to its own figure.
- *
- * Null (no cap) stays null. A provider with no rate table gets no cap rather
- * than an invented one.
- */
-export function inputTokenAllowance(spendUsd: number | null, provider: string, modelId: string | null): number | null {
-  if (spendUsd === null || spendUsd <= 0) return null;
-  const rates = ratesForModel(provider, modelId)?.rates ?? null;
-  if (rates === null || rates.inputPerMTok <= 0) return null;
-  return Math.round((spendUsd / rates.inputPerMTok) * 1_000_000);
-}
-
-export function formatUsd(amount: number, digits = 2): string {
-  if (!Number.isFinite(amount)) return "—";
-  if (amount === 0) return "$0";
-  if (amount > 0 && amount < 0.01) return "<$0.01";
-  return `$${amount.toFixed(digits)}`;
-}
-
-export const USAGE_REPORT_PRICING_NOTE =
-  "Estimated from public API list rates ($/MTok). Plan subscriptions are not billed this way — use the numbers to compare relative spend.";
-
-export interface UsageTotals {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  reasoningOutputTokens: number;
-  totalTokens: number;
-  estimatedUsd: number;
-  sessionCount: number;
-  sessionsWithUsage: number;
-  sessionsWithoutUsage: number;
-}
-
-export function emptyUsageTotals(): UsageTotals {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-    estimatedUsd: 0,
-    sessionCount: 0,
-    sessionsWithUsage: 0,
-    sessionsWithoutUsage: 0,
-  };
-}
-
-export function addUsageToTotals(totals: UsageTotals, usage: TokenUsage | null, usd: number | null): void {
-  totals.sessionCount += 1;
-  if (usage === null) {
-    totals.sessionsWithoutUsage += 1;
-    return;
-  }
-  totals.sessionsWithUsage += 1;
-  totals.inputTokens += usage.inputTokens;
-  totals.outputTokens += usage.outputTokens;
-  totals.cachedInputTokens += usage.cachedInputTokens;
-  totals.reasoningOutputTokens += usage.reasoningOutputTokens;
-  totals.totalTokens += usage.totalTokens;
-  if (usd !== null) totals.estimatedUsd += usd;
-}
-
-export interface SessionUsageRow {
-  id: string;
-  workspaceId: number;
-  workspaceName: string;
-  promptId: number | null;
-  promptKey: string | null;
-  promptTitle: string;
-  suiteId: number | null;
-  suiteName: string;
-  programId: number | null;
-  programName: string;
-  provider: string;
-  model: string | null;
-  role: RunRole;
-  state: string;
-  startedAt: string;
-  endedAt: string | null;
-  usage: TokenUsage | null;
-  cost: CostEstimate;
-}
-
-export interface TaskUsageRow {
-  promptId: number;
-  promptKey: string | null;
-  promptTitle: string;
-  suiteId: number;
-  suiteName: string;
-  programId: number;
-  programName: string;
-  workspaceId: number;
-  workspaceName: string;
-  totals: UsageTotals;
-  sessionIds: string[];
-}
-
-export interface SuiteUsageRow {
-  suiteId: number;
-  suiteName: string;
-  programId: number;
-  programName: string;
-  workspaceId: number;
-  workspaceName: string;
-  totals: UsageTotals;
-  tasks: TaskUsageRow[];
-}
-
-export interface UsageReport {
-  generatedAt: string;
-  pricingNote: string;
-  totals: UsageTotals;
-  byProvider: Array<{ provider: string; totals: UsageTotals }>;
-  suites: SuiteUsageRow[];
-  unassigned: { totals: UsageTotals; sessionIds: string[] };
-  sessions: SessionUsageRow[];
-}
-
-/* -------------------------------------------------------------------------- */
-/* Normalized event schema                                                     */
-/* -------------------------------------------------------------------------- */
-
-export type RunState = "starting" | "running" | "done" | "interrupted" | "error";
-
-export interface AssistantTextPayload {
-  /** Stable id of the text block this belongs to, so deltas can be appended. */
-  blockId: string;
-  /** When true, `text` is an incremental chunk to append to `blockId`. */
-  delta: boolean;
-  text: string;
-  /** Reasoning/thinking output is rendered differently from final answer text. */
-  kind: "message" | "thinking";
-}
-
-export interface ToolUsePayload {
-  toolUseId: string;
-  name: string;
-  /** One-line human summary of the input, for the collapsed row. */
-  summary: string;
-  /** Full input, shown when the row is expanded. */
-  input: unknown;
-}
-
-export interface ToolResultPayload {
-  /** Links back to the `tool_use` event with the same id. */
-  toolUseId: string;
-  name: string | null;
-  isError: boolean;
-  /** One-line human summary of the output, for the collapsed row. */
-  summary: string;
-  /** Full output, shown when the row is expanded. */
-  output: string;
-  exitCode: number | null;
-}
-
-export interface StatusPayload {
-  conversation?: { permissionKey: string; context: string; nativeSessionId?: string | null };
-  state: RunState;
-  elapsedMs: number;
-  /** Null when the provider does not report usage (never a fabricated number). */
-  usage: TokenUsage | null;
-  detail: string | null;
-  /**
-   * The provider's own id for the conversation this run is having, the moment
-   * the provider reveals it (or the id we assigned it up front). It rides a
-   * status event rather than the result because the run that most needs it is
-   * the one that never reaches a result: a budget stop interrupts the provider,
-   * and the wrap-up turn can only resume the same session if the id was already
-   * banked. Undefined on every status event that is not announcing one.
-   */
-  sessionId?: string | null;
-}
-
-export interface ResultPayload {
-  state: Extract<RunState, "done" | "interrupted" | "error">;
-  elapsedMs: number;
-  usage: TokenUsage | null;
-  /** Final assistant message, when the provider distinguishes one. */
-  text: string | null;
-  exitCode: number | null;
-  /** Orchestrator-owned classification for a forced stop (budget/resource). */
-  stopReason?: string | null;
-  /** Peak bytes charged to the run cgroup, when systemd reports it. */
-  peakMemoryBytes?: number | null;
-}
-
-export interface ErrorPayload {
-  message: string;
-  /** Fatal errors end the run; non-fatal ones are logged and the run continues. */
-  fatal: boolean;
-  detail: string | null;
-}
-
-interface EventBase {
-  /** Unique per event, used as a React key. */
-  id: string;
-  runId: string;
-  provider: ProviderId;
-  /**
-   * The model this run is actually using, or null when the provider was left on
-   * its own default. Stamped by the runner so the log can label an entry with
-   * the model that produced it, even after the selection has moved on.
-   */
-  model: string | null;
-  /** ISO 8601. */
-  timestamp: string;
-}
-
-/**
- * One trip an agent made to this app's database, through the only door it has.
- *
- * Synthesized server-side at the agent API's single route handler rather than
- * emitted by an adapter, so it covers every way an agent can reach the data —
- * a raw curl, the CLI shim, or a provider's own tool call — identically and
- * without each adapter having to cooperate.
- *
- * This exists because the operator could not previously see whether an agent
- * had talked to the app at all. A run that silently never posted looked exactly
- * like a run that posted and was ignored, and the difference decides whether to
- * distrust the agent or the app.
- */
-export interface DbAccessPayload {
-  /** Whether this read the app's state or changed it. */
-  direction: "read" | "write";
-  operation: "execution" | "check" | "plan" | "context" | "state" | "remarks" | "status" | "checkpoint" | "decompose" | "repair-verify" | "propose-program" | "propose-suite" | "revise-program" | "input" | "inbox" | "reply";
-  method: string;
-  /** Accepted, refused, or replayed from the idempotency ledger. */
-  outcome: "accepted" | "rejected" | "replayed";
-  httpStatus: number;
-  durationMs: number;
-  requestId: string | null;
-  /** What actually happened, in a few words: "IN_PROGRESS → DONE". */
-  summary: string;
-  /** The tables this touched, so a write is never merely implied. */
-  changed: string[];
-  /** The server's own error code when it refused, e.g. stale_status. */
-  errorCode: string | null;
-}
-
-export type AgentQuestionKind = "single" | "multiple" | "text";
-
-export interface AgentQuestionOption {
-  value: string;
-  label: string;
-  description: string | null;
-}
-
-/** One decision an agent cannot safely make on the operator's behalf. */
-export interface AgentQuestion {
-  id: string;
-  prompt: string;
-  kind: AgentQuestionKind;
-  options: AgentQuestionOption[];
-  required: boolean;
-  recommendation: string | null;
-  why: string | null;
-}
-
-export interface AgentInputRequestPayload {
-  requestId: string;
-  heading: string;
-  questions: AgentQuestion[];
-}
-
-export type AgentInputAnswer = string | string[];
-
-export interface AgentInputResponsePayload {
-  requestId: string;
-  answers: Record<string, AgentInputAnswer>;
-}
-
-/**
- * `/btw`: one message between the operator and a run that is already working.
- * `native` reached the provider's open input channel mid-turn; `inbox` waits
- * for the agent's next `agent-step` call; `resume` interrupted the run and
- * continues its provider session with the message.
- */
-export type RunMessageDelivery = "native" | "inbox" | "resume";
-export type RunMessageState = "QUEUED" | "DELIVERED" | "SUPERSEDED";
-export interface RunMessage {
-  id: number;
-  runId: string;
-  direction: "OPERATOR" | "AGENT";
-  text: string;
-  delivery: RunMessageDelivery;
-  state: RunMessageState;
-  createdAt: string;
-  deliveredAt: string | null;
-}
-export interface OperatorMessagePayload {
-  messageId: number;
-  text: string;
-  delivery: RunMessageDelivery;
-  state: RunMessageState;
-}
-export interface AgentMessagePayload {
-  messageId: number;
-  text: string;
-}
-
-export type NormalizedEvent =
-  | (EventBase & { type: "assistant_text"; payload: AssistantTextPayload })
-  | (EventBase & { type: "tool_use"; payload: ToolUsePayload })
-  | (EventBase & { type: "tool_result"; payload: ToolResultPayload })
-  | (EventBase & { type: "status"; payload: StatusPayload })
-  | (EventBase & { type: "result"; payload: ResultPayload })
-  | (EventBase & { type: "error"; payload: ErrorPayload })
-  | (EventBase & { type: "db_access"; payload: DbAccessPayload })
-  | (EventBase & { type: "input_request"; payload: AgentInputRequestPayload })
-  | (EventBase & { type: "input_response"; payload: AgentInputResponsePayload })
-  | (EventBase & { type: "operator_message"; payload: OperatorMessagePayload })
-  | (EventBase & { type: "agent_message"; payload: AgentMessagePayload });
-
-export type NormalizedEventType = NormalizedEvent["type"];
-
-/** Best usage from a run's status/result events (ignores zeroed terminal noise). */
-export function usageFromEvents(events: readonly NormalizedEvent[]): TokenUsage | null {
-  let usage: TokenUsage | null = null;
-  for (const event of events) {
-    if ((event.type === "status" || event.type === "result") && event.payload.usage !== null) {
-      usage = mergeUsage(usage, event.payload.usage);
-    }
-  }
-  return usage;
-}
-
-/**
- * What adapters yield: everything except the fields the runner stamps on
- * (`id`, `runId`, `provider`, `model`, `timestamp`).
- */
-export type AdapterEvent =
-  | { type: "assistant_text"; payload: AssistantTextPayload }
-  | { type: "tool_use"; payload: ToolUsePayload }
-  | { type: "tool_result"; payload: ToolResultPayload }
-  | { type: "status"; payload: Partial<StatusPayload> & { state?: RunState } }
-  | { type: "result"; payload: Partial<ResultPayload> }
-  | { type: "error"; payload: { message: string; fatal?: boolean; detail?: string | null } };
-
-
-/* -------------------------------------------------------------------------- */
-/* Settings                                                                    */
-/* -------------------------------------------------------------------------- */
-
-export type SettingType = "string" | "password" | "boolean" | "number" | "select" | "path";
-
-export type SettingValue = string | number | boolean;
-
-export interface SettingOption {
-  value: string;
-  label: string;
-  hint: string | null;
-  /** Loosens a sandbox or permission check; rendered with a warning. */
-  danger: boolean;
-}
-
-/** What a numeric setting measures, so every surface words it the same way. */
-export type SettingUnit = "usd" | "minutes" | "ms" | "days" | "bytes" | "count";
-
-/**
- * How a numeric setting is offered: a short ladder of sensible values instead
- * of a bare number box. Any other value is still legal — the ladder is a
- * presentation, not a validation rule.
- */
-export interface SettingScale {
-  unit: SettingUnit;
-  /** Ascending. A 0 here is the "no limit" stop and is listed last. */
-  stops: number[];
-  /** What 0 means for this field, when 0 is meaningful. */
-  zeroLabel: string | null;
-  /** Singular noun for a `count`, e.g. "call". */
-  noun: string | null;
-}
-
-/**
- * A numeric setting in words. `short` is the form for slider ticks and chips,
- * where "1,000 calls" has to fit in the width of "1k".
- */
-export function formatSettingValue(value: number, scale: SettingScale, short = false): string {
-  if (value === 0 && scale.zeroLabel !== null) return short ? "∞" : scale.zeroLabel;
-  const trim = (amount: number): string => String(Math.round(amount * 10) / 10);
-  switch (scale.unit) {
-    case "usd":
-      return `$${value.toLocaleString("en-US")}`;
-    case "minutes": {
-      if (value < 60) return short ? `${value}m` : `${value} min`;
-      const hours = Math.floor(value / 60);
-      const minutes = value % 60;
-      if (short) return `${trim(value / 60)}h`;
-      return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
-    }
-    case "ms":
-      return value < 1000 ? (short ? `${value}ms` : `${value} ms`) : `${trim(value / 1000)}s`;
-    case "days": {
-      if (value % 365 === 0) return short ? `${value / 365}y` : value === 365 ? "1 year" : `${value / 365} years`;
-      return short ? `${value}d` : value === 1 ? "1 day" : `${value} days`;
-    }
-    case "bytes": {
-      const space = short ? "" : " ";
-      if (value >= 1_048_576) return `${trim(value / 1_048_576)}${space}MB`;
-      if (value >= 1024) return `${trim(value / 1024)}${space}KB`;
-      return `${value}${space}B`;
-    }
-    case "count": {
-      if (short) return value >= 1000 ? `${trim(value / 1000)}k` : String(value);
-      const amount = value.toLocaleString("en-US");
-      return scale.noun === null ? amount : `${amount} ${scale.noun}${value === 1 ? "" : "s"}`;
-    }
-  }
-}
-
-export interface SettingField {
-  key: string;
-  label: string;
-  group: string;
-  type: SettingType;
-  description: string;
-  /** The environment variable this field mirrors, shown for reference. */
-  envVar: string;
-  placeholder: string | null;
-  options: SettingOption[] | null;
-  /** Value from .env / built-in fallback, before any saved override. */
-  defaultValue: SettingValue;
-  /** Effective value. Always "" for `password` fields — secrets never leave the server. */
-  value: SettingValue;
-  /** True when a saved override differs from `defaultValue`. */
-  overridden: boolean;
-  /** For `password` fields: whether a value is currently set. */
-  isSet: boolean;
-  /** True when the current value loosens a sandbox or permission check. */
-  danger: boolean;
-  /**
-   * For boolean fields: the `true` value is the dangerous one. The client uses
-   * this to warn on unsaved drafts, because `danger` only reflects the saved value.
-   */
-  dangerWhenTrue: boolean;
-  /** Changing this only takes effect after a server restart. */
-  requiresRestart: boolean;
-  /** For `number` fields offered as a ladder of values; null for a free number. */
-  scale: SettingScale | null;
-}
-
-export interface SettingsSnapshot {
-  fields: SettingField[];
-  /** Group names in display order. */
-  groups: string[];
-  /** Where overrides are persisted on the server. */
-  storagePath: string;
-}
-
-/** Patch sent to `PUT /api/settings`. Omitted keys are left unchanged. */
-export type SettingsPatch = Record<string, SettingValue>;
-
-/* -------------------------------------------------------------------------- */
-/* Workspaces                                                                  */
-/* -------------------------------------------------------------------------- */
-
-export interface PromptRecord {
-  id: number;
-  suiteId: number;
-  title: string;
-  content: string;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-  externalKey: string | null;
-  status: PromptStatus;
-  completedAt: string | null;
-  result: string;
-  isGate: boolean;
-  /** Set when this prompt was spawned by another prompt's decompose call. */
-  parentPromptId: number | null;
-  /** Run order among siblings under the same parent. Meaningless without a parent. */
-  childOrder: number;
-}
-
-/**
- * The stored status of a work item.
- *
- * Defined in `statusModel`, which owns the whole vocabulary — the catalog that
- * gives each value a label and a set of consequences, the triggers that record
- * what caused a change, and the transition table that decides them. Aliased
- * here because most of the app knows this name.
- */
-export type PromptStatus = StepStatus;
-
-export interface SuiteRecord {
-  id: number;
-  programId: number;
-  name: string;
-  overview: string;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-  prompts: PromptRecord[];
-  externalKey: string | null;
-}
-
-export interface ProgramRecord {
-  id: number;
-  workspaceId: number;
-  name: string;
-  overview: string;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-  suites: SuiteRecord[];
-  externalKey: string | null;
-}
-
-export interface WorkspaceRecord {
-  id: number;
-  name: string;
-  description: string;
-  workDirectory: string;
-  workDirectoryExists: boolean;
-  createdAt: string;
-  updatedAt: string;
-  /**
-   * Repo-level agent instruction files, owned by the workspace and written into
-   * the working tree for every run. Claude Code reads only CLAUDE.md; codex,
-   * cursor and grok read only AGENTS.md, so both are kept.
-   */
-  claudeMd: string;
-  agentsMd: string;
-}
-
-/** Live Git identity for a workspace. This is read from disk, never persisted. */
-export interface WorkspaceGitContext {
-  state: "ready" | "detached" | "not_repository" | "unavailable";
-  branch: string | null;
-  /** The current commit, abbreviated by Git. Null for a repository with no commits yet. */
-  head: string | null;
-  dirty: boolean;
-  ahead: number;
-  behind: number;
-}
-
-export type WorkspaceInstructionField = "claudeMd" | "agentsMd";
-
-export interface WorkspaceRevision {
-  id: number;
-  workspaceId: number;
-  field: WorkspaceInstructionField | "description";
-  content: string;
-  actorType: string;
-  reason: string;
-  createdAt: string;
-}
-
-export interface WorkspaceTree extends WorkspaceRecord {
-  programs: ProgramRecord[];
-}
-
-export interface PromptOption {
-  id: number;
-  title: string;
-  content: string;
-  suiteId: number;
-  suiteName: string;
-  programId: number;
-  programName: string;
-  externalKey: string | null;
-  status: PromptStatus;
-  ready: boolean;
-  blockedBy: string[];
-  currentRun: PromptRunSummary | null;
-  recoverable: boolean;
-  parentPromptId: number | null;
-  childOrder: number;
-}
-
-export interface PromptRunSummary {
-  id: string;
-  provider: string;
-  model: string | null;
-  role: RunRole;
-  state: string;
-  startedAt: string;
-  endedAt: string | null;
-  processActive: boolean;
-}
-
-export interface PromptDependency {
-  promptId: number;
-  dependsOnPromptId: number;
-}
-
-export interface ProgramGate {
-  id: number;
-  programId: number;
-  promptId: number;
-  code: string;
-  name: string;
-  description: string;
-  sortOrder: number;
-}
-
-/**
- * `CONTINUATION` is written by the server, not posted by an agent: it is the
- * brief a run left for the run that resumes the same work item on the same
- * working tree, recorded from an `agent-step continue`.
- */
-export type RemarkKind = "PROGRESS" | "FINDING" | "DECISION_NEEDED" | "BLOCKER" | "VERIFICATION" | "COMPLETION" | "CONTINUATION" | "HUMAN_RESPONSE" | "AGENT_RESPONSE" | "OPERATOR_BRIEFING";
-/**
- * Who caused a change. Named rather than repeated inline: it is the field that
- * separates "the agent said so" from "the system concluded it" from "you did
- * it", which is the first thing an operator asks of a status they distrust.
- */
-export type ActorType = "IMPORT" | "SYSTEM" | "AGENT" | "USER";
-
-export interface PromptRemark { id:number; promptId:number; runId:string|null; kind:RemarkKind; content:string; actorType:ActorType; createdAt:string }
-export interface PromptStatusEvent {
-  id:number; promptId:number; runId:string|null;
-  previousStatus:PromptStatus; newStatus:PromptStatus;
-  reason:string; verificationSummary:string;
-  actorType:ActorType; createdAt:string;
-  /** What caused this change. Null only on rows written before the ledger existed. */
-  trigger:StatusTrigger|null;
-  /** The transition row that decided, when a rule did rather than a person. */
-  ruleId:string|null;
-  /** What backs the decision: verdicts, exit codes, failing criteria, child ids. */
-  evidence:Record<string,unknown>|null;
-}
-
-export interface HumanInputRequest {
-  prompt: PromptOption;
-  workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory" | "workDirectoryExists">;
-  latestBlocker: PromptRemark | null;
-  remarks: PromptRemark[];
-  events: PromptStatusEvent[];
-  clarifications: ClarificationExchange[];
-  currentRun: AgentRunActivity | null;
-}
-
-export interface ClarificationExchange { id:number; promptId:number; question:string; answer:string|null; provider:string; model:string|null; state:"RUNNING"|"DONE"|"INTERRUPTED"|"ERROR"; createdAt:string; answeredAt:string|null }
-export interface AgentRunActivity { id:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null; events:NormalizedEvent[] }
-
-export const RUN_CHANGE_STATES = ["PENDING", "UNCHANGED", "COMMITTED", "NEEDS_COMMIT", "UNAVAILABLE"] as const;
-export type RunChangeState = (typeof RUN_CHANGE_STATES)[number];
-
-export interface RunChangeSummary {
-  runId:string;
-  promptTitle:string;
-  workspaceId:number;
-  repositoryRoot:string;
-  branch:string|null;
-  baseCommit:string;
-  headCommit:string|null;
-  state:RunChangeState;
-  filesChanged:number;
-  additions:number;
-  deletions:number;
-  commitCount:number;
-  message:string|null;
-  capturedAt:string;
-  updatedAt:string;
-  /** The pipeline holding this run's work item as a step. Null for ad-hoc runs. */
-  pipeline:{id:number;name:string}|null;
-}
-
-export interface RunCommit {
-  sha:string;
-  subject:string;
-  author:string;
-  authoredAt:string;
-}
-
-export interface RunChangedFile {
-  path:string;
-  previousPath:string|null;
-  status:"added"|"modified"|"deleted"|"renamed"|"copied"|"type-changed"|"unknown";
-  additions:number|null;
-  deletions:number|null;
-  binary:boolean;
-}
-
-export interface RunChangeDetail extends RunChangeSummary {
-  commits:RunCommit[];
-  files:RunChangedFile[];
-}
-
-export interface RunFileDiff {
-  runId:string;
-  path:string;
-  previousPath:string|null;
-  patch:string;
-  truncated:boolean;
-}
-
-export interface ChatThread {
-  id: string;
-  workspaceId: number;
-  title: string;
-  pinned: boolean;
-  archived: boolean;
-  updatedAt: string;
-  lastReplyAt: string | null;
-  lastReadAt: string | null;
-  unread: boolean;
-  lastRunState?: string | null;
-}
-
-export interface ChatThreadPage { threads: ChatThread[]; next: string | null }
-export interface ChatHistoryPage { sessions: AgentSession[]; next: string | null }
-export interface ChatThreadPatch { title?: string; pinned?: boolean; archived?: boolean; readAt?: string }
-
-export interface AgentSession extends AgentRunActivity {
-  /** Provider-neutral Chat thread. Null for work-item, consult, author, and legacy runs. */
-  threadId:string|null;
-  /** Concise, stable name for a custom Chat thread. */
-  threadTitle:string|null;
-  /** Provider-owned conversation id, used to resume this provider after reopening Chat. */
-  providerSessionId:string|null;
-  workspaceId:number;
-  workspaceName:string;
-  workDirectory:string;
-  promptId:number|null;
-  promptKey:string|null;
-  promptTitle:string;
-  promptStatus:PromptStatus|null;
-  programName:string;
-  suiteName:string;
-  /** Chat-box / consult instruction. Null for saved work items and older rows. */
-  displayText:string|null;
-  /** Git-backed changes attributed to this run. Null for legacy/read-only runs. */
-  changes:RunChangeSummary|null;
-}
-
-/**
- * Gives an ad-hoc chat the short, topic-first label users expect from hosted
- * LLM clients. It is deterministic so the browser can label a just-created
- * tab immediately and the server can persist exactly the same title without
- * spending a second model turn merely to name the first one.
- */
-export function conversationTitle(input: string): string {
-  let text = input
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/https?:\/\/\S+/g, " ")
-    .replace(/^[\s#>*`_~-]+/gm, "")
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/\n+/g, "\n")
-    .trim();
-  const polite = /^(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i(?:'d| would)\s+like\s+(?:you\s+)?to\s+|i\s+(?:need|want)\s+(?:you\s+)?to\s+|help\s+me\s+(?:to\s+)?|we\s+need\s+to\s+|is\s+there\s+(?:a\s+)?way\s+to\s+|a\s+way\s+to\s+)/i;
-  while (polite.test(text)) text = text.replace(polite, "").trim();
-  text = text
-    .split(/(?:[.!?](?:\s|$)|\s*[;\n]\s*)/, 1)[0]!
-    .replace(/,?\s+(?:please|for me|thanks|thank you)\.?$/i, "")
-    .replace(/^(?:make|create|build|add|implement)\s+(?:this|that)\s+(?:happen|for me)$/i, "")
-    .trim();
-  if (text === "") text = "New conversation";
-  const words = text.split(" ");
-  if (words.length > 9) text = `${words.slice(0, 9).join(" ")}…`;
-  if (text.length > 64) text = `${text.slice(0, 61).trimEnd()}…`;
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-/**
- * What a work item shows on a card: its stored status, unless a live overlay
- * (a running process, or an unmet prerequisite) describes it better.
- *
- * `AWAITING_RESPONSE` and `COMPLETE` are retained as aliases of `BLOCKED` and
- * `DONE` so that a status the operator relabels reads the same everywhere; the
- * set itself is `StepDisplayStatus`, defined in `statusModel`.
- */
-export type PromptOperationalState = StepDisplayStatus;
-
-export const ON_DONE_ACTIONS = ["continue", "stop", "skip_rest"] as const;
-export type OnDoneAction = (typeof ON_DONE_ACTIONS)[number];
-export function isOnDoneAction(value: unknown): value is OnDoneAction {
-  return typeof value === "string" && (ON_DONE_ACTIONS as readonly string[]).includes(value);
-}
-
-/**
- * What a station rule does when a run ends without settling the work item —
- * every case the continuation loop can act on: `TODO`/`UNREPORTED`/`FAILED`/
- * `NEEDS_REVIEW`. `wait` parks immediately, `skip` marks the station SKIPPED
- * and carries on, and `continue` (the default) is the continuation loop
- * itself. An agent's own `continue` keeps re-queueing; crash / unreported /
- * verification-failed loops are capped at `pipelinePolicy.maxContinuations`
- * before a reviewer is sent and the rail parks.
- */
-export const ON_UNFINISHED_ACTIONS = ["continue", "skip", "wait"] as const;
-export type OnUnfinishedAction = (typeof ON_UNFINISHED_ACTIONS)[number];
-export function isOnUnfinishedAction(value: unknown): value is OnUnfinishedAction {
-  return typeof value === "string" && (ON_UNFINISHED_ACTIONS as readonly string[]).includes(value);
-}
-
-export const PIPELINE_STATES = ["PLAYING", "WAITING_HUMAN", "PAUSED", "COMPLETE", "STOPPED", "INTERRUPTED"] as const;
-export type PipelineState = (typeof PIPELINE_STATES)[number];
-export function isPipelineState(value: unknown): value is PipelineState {
-  return typeof value === "string" && (PIPELINE_STATES as readonly string[]).includes(value);
-}
-
-export interface PromptPipelineRule {
-  promptId: number;
-  /** Execute provider for this step. Null until the step is configured. */
-  provider: ProviderId | null;
-  model: string | null;
-  /**
-   * Ordered providers to try when the station's own provider cannot start or
-   * dies before doing any work. Empty means "use the suite / house default".
-   * Never includes the station's own provider.
-   */
-  fallbackProviders: ProviderId[];
-  onDone: OnDoneAction;
-  onUnfinished: OnUnfinishedAction;
-  /** False until the prompt is added to the suite flowchart. */
-  enabled: boolean;
-  /** Sequence on the flowchart. Ignored when enabled is false. */
-  stepOrder: number;
-}
-
-/**
- * The rule a station has before anyone configures it. `policy` supplies the
- * operator's chosen defaults; without it the built-in ones are used, which is
- * what a caller with no snapshot in hand (a test, a first paint) should get.
- */
-export function defaultPromptPipelineRule(
-  promptId: number,
-  policy?: Pick<PipelinePolicy, "defaultOnDone" | "defaultOnUnfinished">,
-): PromptPipelineRule {
-  return {
-    promptId,
-    provider: null,
-    model: null,
-    fallbackProviders: [],
-    onDone: policy?.defaultOnDone ?? "continue",
-    onUnfinished: policy?.defaultOnUnfinished ?? "continue",
-    enabled: false,
-    stepOrder: 0,
-  };
-}
-
-export interface PipelineAvailablePrompt {
-  id: number;
-  title: string;
-  externalKey: string | null;
-  status: PromptStatus;
-}
-
-export interface SuitePipelineDefaults {
-  suiteId: number;
-  defaultProvider: ProviderId | null;
-  defaultModel: string | null;
-  /** Ordered fallbacks when a station leaves its own list empty. */
-  defaultFallbackProviders: ProviderId[];
-}
-
-export interface SuitePipelineRun {
-  id: string;
-  suiteId: number;
-  workspaceId: number;
-  state: PipelineState;
-  currentPromptId: number | null;
-  currentRunId: string | null;
-  playProvider: ProviderId | null;
-  playModel: string | null;
-  startedAt: string;
-  endedAt: string | null;
-  stopReason: string | null;
-  /**
-   * Why a live run is parked on WAITING_HUMAN. Distinct from `stopReason`,
-   * which means "why this run ended" — a waiting run has not ended.
-   */
-  waitReason: string | null;
-  /** Named pipeline execution that launched this suite, when there is one. */
-  pipelineRunId: string | null;
-}
-
-/**
- * A saved pipeline: an ordered set of suites in one workspace, played in
- * sequence. Distinct from a suite-stage run (`SuitePipelineRun`) and from a
- * single named execution (`PipelineRun`).
- */
-export interface PipelineStage {
-  suiteId: number;
-  sortOrder: number;
-  programId: number;
-  programName: string;
-  programKey: string | null;
-  suiteName: string;
-  suiteKey: string | null;
-  promptCount: number;
-  stepCount: number;
-  /** Suite lead and prompt overrides used in this pipeline stage. */
-  agentProviders: ProviderId[];
-}
-
-export interface PipelineRun {
-  id: string;
-  pipelineId: number;
-  workspaceId: number;
-  state: PipelineState;
-  currentSuiteId: number | null;
-  currentSuiteRunId: string | null;
-  playProvider: ProviderId | null;
-  playModel: string | null;
-  startedAt: string;
-  endedAt: string | null;
-  stopReason: string | null;
-  /** Why a live run is parked on WAITING_HUMAN; see `SuitePipelineRun`. */
-  waitReason: string | null;
-}
-
-export interface PipelineRecord {
-  id: number;
-  workspaceId: number;
-  workspaceName: string;
-  name: string;
-  description: string;
-  /** Opt in to switching providers when an account limit or outage is detected. */
-  autoReassign: boolean;
-  createdAt: string;
-  updatedAt: string;
-  stages: PipelineStage[];
-  active: PipelineRun | null;
-  latest: PipelineRun | null;
-}
-
-export interface PipelineRunStage {
-  suiteId: number;
-  suiteName: string;
-  programName: string;
-  sortOrder: number;
-  suiteRun: SuitePipelineRun | null;
-}
-
-export interface PipelineRunDetail extends PipelineRun {
-  pipelineName: string;
-  stages: PipelineRunStage[];
-}
-
-/**
- * A sub-step spawned by a station decomposing itself, plus the rule the
- * scheduler will actually use for it. Sub-steps are never flowchart entries,
- * but a pipeline can still override the agent (and the blocked policy) for one
- * without touching its parent station.
- */
-export interface PipelineSubStepRule {
-  promptId: number;
-  parentPromptId: number;
-  /** Nesting depth below the station: 1 for a direct sub-step, 2 for its child. */
-  depth: number;
-  /** True while this sub-step has no override and simply follows its parent. */
-  inherited: boolean;
-  /** The effective rule — the parent's when `inherited`, the override otherwise. */
-  rule: PromptPipelineRule;
-}
-
-/** Per-named-pipeline flowchart for one suite stage. */
-export interface PipelineFlowchartView {
-  pipelineId: number;
-  suiteId: number;
-  defaults: SuitePipelineDefaults;
-  /** Enabled steps on this pipeline's flowchart, ordered by stepOrder. */
-  steps: PromptPipelineRule[];
-  /** Suite prompts not yet on this pipeline's flowchart. */
-  available: PipelineAvailablePrompt[];
-  rules: PromptPipelineRule[];
-  /**
-   * Effective rules for every sub-step under this stage's stations, in
-   * depth-first order. Drives the nested sub-pipeline view.
-   */
-  subSteps: PipelineSubStepRule[];
-  active: SuitePipelineRun | null;
-  latest: SuitePipelineRun | null;
-}
-
-export interface PipelineDashboardSummary {
-  pipelineCount: number;
-  activePipelineCount: number;
-  totalSteps: number;
-  completedSteps: number;
-  pendingSteps: number;
-  attentionCount: number;
-  runsLast7Days: number;
-  avgRunDurationMs: number | null;
-}
-
-export interface PipelineDashboardItem {
-  pipeline: PipelineRecord;
-  completedSteps: number;
-  totalSteps: number;
-  attentionCount: number;
-  lastRunDurationMs: number | null;
-}
-
-/** A pipeline step that needs operator attention (blocked, recovery, failed). */
-export interface PipelineBlockedStation {
-  pipelineId: number;
-  pipelineName: string;
-  suiteId: number;
-  suiteName: string;
-  promptId: number;
-  promptKey: string | null;
-  promptTitle: string;
-  operationalState: PromptOperationalState;
-  latestIntervention: string | null;
-}
-
-export interface PipelineThroughputDay {
-  /** ISO date YYYY-MM-DD (UTC). */
-  date: string;
-  complete: number;
-  stopped: number;
-  total: number;
-}
-
-export interface PipelineDashboard {
-  generatedAt: string;
-  summary: PipelineDashboardSummary;
-  pipelines: PipelineDashboardItem[];
-  blockedStations: PipelineBlockedStation[];
-  throughput: PipelineThroughputDay[];
-}
-
-export interface OperationsPrompt {
-  execution?: import("./executionPlan").ExecutionStatus | null;
-  prompt: PromptOption;
-  workspace: Pick<WorkspaceRecord,"id"|"name"|"workDirectory"|"workDirectoryExists">;
-  programKey: string|null;
-  suiteKey: string|null;
-  operationalState: PromptOperationalState;
-  attention: boolean;
-  latestIntervention: string|null;
-  /** Dynamically created when an agent posts BLOCKED with a required human action. */
-  humanIntervention: HumanInterventionStep | null;
-  lastActivityAt: string;
-  sessionCount: number;
-  /** Newest completion audit for this station, when one has ever run. */
-  latestAudit: CompletionAuditRecord | null;
-  /**
-   * Latest continuation attempt for this station since the operator last
-   * intervened, from the ledger's `continuation` evidence. Null when none.
-   */
-  continuation: { attempt: number; of: number } | null;
-  /** Always present; missing DB rows are filled with defaults. */
-  pipelineRule: PromptPipelineRule;
-  /**
-   * Sub-steps this prompt spawned by decomposing itself, in run order. Empty
-   * for an ordinary prompt; a sub-step may decompose once more, so this nests
-   * at most two levels below a station. Never a pipeline "step" on its own —
-   * the outer flowchart never lists these, though a pipeline can still pin an
-   * agent on one (see `PipelineSubStepRule`).
-   */
-  children: OperationsPrompt[];
-  /**
-   * The worst outcome among this item's descendants, or null when none of them
-   * needs anything.
-   *
-   * Derived on every read, never stored. A parent's own status is deliberately
-   * left alone: after a decompose, once every sub-step is done, a fresh run
-   * resumes the *parent* to do final integration and post its own outcome.
-   * Overwriting the parent's status from its children would take that decision
-   * away from the agent that is about to make it — and would put a status on
-   * the item that nothing had actually established about it.
-   *
-   * So this is a separate signal. It answers "is there trouble underneath me"
-   * without claiming anything about the parent's own work. Without it a parent
-   * with a failed child sits at "Waiting", which is true and useless.
-   */
-  childAttention: StepDisplayStatus | null;
-  /** How many descendants are in that state, so the badge can say "2 failed". */
-  childAttentionCount: number;
-}
-
-export interface HumanInterventionStep {
-  id: string;
-  promptId: number;
-  requiredAction: string;
-  status: "PENDING" | "COMPLETE";
-  requestedAt: string;
-  response: string | null;
-  completedAt: string | null;
-}
-export interface OperationsSuite {
-  id: number;
-  key: string|null;
-  name: string;
-  programId: number;
-  programKey: string|null;
-  programName: string;
-  workspaceId: number;
-  workspaceName: string;
-  counts: Record<PromptOperationalState,number>;
-  attentionCount: number;
-  prompts: OperationsPrompt[];
-  sessions: OperationsSession[];
-  /** The most recent verification of this suite, for the badge. Null if never. */
-  latestVerification: SuiteVerificationBadge | null;
-  pipeline: {
-    defaults: SuitePipelineDefaults;
-    active: SuitePipelineRun | null;
-    latest: SuitePipelineRun | null;
-  } | null;
-}
-export interface OperationsSession { id:string; workspaceId:number; promptId:number|null; promptKey:string|null; promptTitle:string; provider:string; model:string|null; role:RunRole; state:string; startedAt:string; endedAt:string|null }
-export interface OperationsSnapshot {
-  generatedAt:string;
-  suites:OperationsSuite[];
-  policy:PipelinePolicy;
-  /**
-   * The status catalog as the operator has it: shipped defaults with their
-   * edits applied. Shipped with the snapshot for the same reason `policy` is —
-   * so the board and the server decide what a state is called, and what it
-   * means, from the same values.
-   */
-  statusCatalog:StatusDefinition[];
-  /** The operator's sentence for each cause, over the shipped defaults. */
-  triggerSentences:Record<string,string>;
-}
-export type SuiteVerificationVerdict = "PASS" | "WARNING" | "FAIL";
-/** UNVERIFIED is a real outcome: the agent looked and could not establish it. */
-export type SuiteVerificationCheck = "VERIFIED" | "WARNING" | "FAILED" | "UNVERIFIED";
-/** AGENT re-runs the checks; AUDIT only reads back what was already recorded. */
-export type SuiteVerificationKind = "AGENT" | "AUDIT";
-export type SuiteVerificationState = "RUNNING" | "DONE" | "INTERRUPTED" | "ERROR" | "RECORDED";
-
-export interface SuiteVerificationItem {
-  promptId: number | null;
-  promptKey: string | null;
-  title: string;
-  check: SuiteVerificationCheck;
-  evidence: string;
-  /** The decisive commands the agent says it ran for this item. */
-  commands: string;
-}
-
-export interface SuiteVerificationSummary {
-  total: number;
-  verified: number;
-  warnings: number;
-  failed: number;
-  unverified: number;
-}
-
-export interface SuiteVerificationStats {
-  workItems: number;
-  sourceCharacters: number;
-  dossierCharacters: number;
-  uniqueCommands: number;
-}
-
-/**
- * A verification that happened, kept forever.
- *
- * Verifications used to leave nothing behind: the agent kind ran as an
- * anonymous custom prompt whose events were never persisted, and the audit kind
- * was recomputed on every request. Both vanished on navigation or reload, so
- * "was this suite ever verified, and what did it find?" had no answer.
- */
-export interface SuiteVerificationRecord {
-  id: number;
-  suite: { id: number; key: string | null; name: string; programName: string; workspaceName: string; workspaceId: number };
-  kind: SuiteVerificationKind;
-  /** The agent run that produced it, for AGENT verifications. */
-  runId: string | null;
-  provider: string | null;
-  model: string | null;
-  state: SuiteVerificationState;
-  /** Null while an agent verification is still running. */
-  verdict: SuiteVerificationVerdict | null;
-  summary: SuiteVerificationSummary;
-  /** The agent's full written report, kept verbatim even if parsing fails. */
-  reportMarkdown: string;
-  stats: SuiteVerificationStats | null;
-  /** When set, the verification covered one work item rather than the whole suite. */
-  scopePromptId: number | null;
-  startedAt: string;
-  endedAt: string | null;
-  items: SuiteVerificationItem[];
-}
-
-/** A record plus the transcript of the run that produced it. */
-export interface SuiteVerificationDetail extends SuiteVerificationRecord {
-  events: NormalizedEvent[];
-}
-
-/** The badge on a suite: what the last verification concluded, and when. */
-export interface SuiteVerificationBadge {
-  id: number;
-  kind: SuiteVerificationKind;
-  state: SuiteVerificationState;
-  verdict: SuiteVerificationVerdict | null;
-  startedAt: string;
-  endedAt: string | null;
-}
-
-export interface SuiteVerificationContext {
-  suiteId: number;
-  prompt: string;
-  stats: SuiteVerificationStats;
-  scopePromptId: number | null;
-  scopePromptKey: string | null;
-}
-export interface PromptActivity {
-  item: OperationsPrompt;
-  remarks: PromptRemark[];
-  events: PromptStatusEvent[];
-  clarifications: ClarificationExchange[];
-  sessions: AgentSession[];
-  /** Newest first. Read-only adjudications of a run that ended without a status. */
-  audits: CompletionAuditRecord[];
-  /** True when the latest developer run made at least one tool call. */
-  producedWork: boolean;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Completion audit                                                            */
-/* -------------------------------------------------------------------------- */
-
-export const COMPLETION_AUDIT_STATES = ["QUEUED", "RUNNING", "READY", "FAILED"] as const;
-export type CompletionAuditState = (typeof COMPLETION_AUDIT_STATES)[number];
-
-/**
- * What a read-only auditor concluded about a station that blocked without an
- * agent-posted status. COMPLETE means the work is provably finished in the tree
- * and only the status post is missing; INCOMPLETE means real work remains;
- * UNVERIFIABLE means the auditor could not tell either way, which is not a pass.
- */
-export const COMPLETION_VERDICTS = ["COMPLETE", "INCOMPLETE", "UNVERIFIABLE"] as const;
-export type CompletionVerdict = (typeof COMPLETION_VERDICTS)[number];
-
-export const AUDIT_CHECK_RESULTS = ["PASSED", "FAILED", "UNVERIFIED"] as const;
-export type AuditCheckResult = (typeof AUDIT_CHECK_RESULTS)[number];
-
-export interface CompletionAuditCheck {
-  /** The acceptance criterion, quoted from the work item where possible. */
-  criterion: string;
-  /**
-   * The `dod_criterion` this check answers, when the reviewer was given a
-   * structured definition of done and echoed the id back.
-   *
-   * Matching a reviewer's verdict to a criterion by comparing its prose would
-   * be a fuzzy string match deciding whether a work item closes, which is not a
-   * thing to leave to a regex. An id the reviewer was handed and quoted back is
-   * exact, and a check that names no id is simply not recorded against any
-   * criterion rather than guessed at.
-   */
-  criterionId: number | null;
-  result: AuditCheckResult;
-  /** What the auditor observed — output, file contents, a diff hunk. */
-  evidence: string;
-  /** The read-only command it ran to see that, when it ran one. */
-  command: string | null;
-}
-
-export interface CompletionAuditReport {
-  version: 1;
-  verdict: CompletionVerdict;
-  confidence: "HIGH" | "MEDIUM" | "LOW";
-  checks: CompletionAuditCheck[];
-  /** Concrete work the auditor found still missing. Empty when COMPLETE. */
-  remainingWork: string[];
-  /** Evidence sentence recorded on the work item when a COMPLETE is applied. */
-  verificationSummary: string;
-  reasoning: string;
-}
-
-export interface CompletionAuditRecord {
-  id: string;
-  workspaceId: number;
-  promptId: number;
-  /** The developer run whose outcome is being adjudicated. */
-  sourceRunId: string;
-  auditRunId: string | null;
-  provider: ProviderId;
-  model: string | null;
-  state: CompletionAuditState;
-  verdict: CompletionVerdict | null;
-  report: CompletionAuditReport | null;
-  reportMarkdown: string;
-  /** True once a COMPLETE verdict actually moved the station to DONE. */
-  applied: boolean;
-  error: string | null;
-  createdAt: string;
-  completedAt: string | null;
-}
-
-export interface PromptImportPreview {
-  programKey: string;
-  programName: string;
-  suites: number;
-  prompts: number;
-  dependencies: number;
-  gates: number;
-  statuses: Record<PromptStatus, number>;
-  workspaceDescriptionCharacters: number;
-  warnings: string[];
-}
-
-export interface ApiErrorBody {
-  error: { code: string; message: string; fields?: Record<string, string> };
-}
-
-/* -------------------------------------------------------------------------- */
-/* WebSocket protocol                                                          */
-/* -------------------------------------------------------------------------- */
-
-export interface ClientRunMessage {
-  kind: "run";
-  /** Browser-local correlation id used to return a rejected launch to its tab. */
-  clientRequestId?: string;
-  provider: ProviderId;
-  workspaceId: number;
-  /** Exactly one of prompt and promptId must be supplied. */
-  prompt?: string;
-  promptId?: number;
-  /**
-   * App-owned conversation id shared by every custom execute turn in one Chat
-   * tab. Unlike resumeSessionId, this remains stable when the provider changes.
-   */
-  threadId?: string;
-  freshContext?: boolean;
-  /**
-   * Provider-owned conversation id to continue for a custom chat turn.
-   * Only valid with `prompt` on an execute run; saved work items and consults
-   * deliberately keep their own independent lifecycle.
-   */
-  resumeSessionId?: string;
-  /**
-   * Per-run model override. `null` (or omitted) falls back to the provider's
-   * configured model in settings, so switching models in the header never
-   * rewrites saved configuration.
-   */
-  model?: string | null;
-  /** Ask about a blocked work item without reopening or executing it. */
-  mode?: "execute" | "clarify";
-  question?: string;
-  /** Default "execute". Unknown values are a malformed frame. */
-  role?: RunRole;
-}
-
-export interface ClientInterruptMessage {
-  kind: "interrupt";
-  runId: string;
-}
-
-export interface ClientRefreshProvidersMessage {
-  kind: "refresh_providers";
-}
-
-export interface ClientPingMessage {
-  kind: "ping";
-}
-
-export interface ClientInputResponseMessage {
-  kind: "input_response";
-  runId: string;
-  requestId: string;
-  answers: Record<string, AgentInputAnswer>;
-}
-
-/**
- * Starts an agent verification of a whole suite.
- *
- * Server-initiated on purpose: the browser used to build the dossier itself and
- * fire it as an anonymous custom prompt, which is why the run was never
- * recorded and its report was lost the moment the page changed.
- */
-export interface ClientVerifySuiteMessage {
-  kind: "verify_suite";
-  suiteId: number;
-  provider: ProviderId;
-  model: string | null;
-  /** When set, verify only this work item inside the suite. */
-  promptId?: number | null;
-}
-
-export type ClientMessage =
-  | ClientVerifySuiteMessage
-  | ClientRunMessage
-  | ClientInterruptMessage
-  | ClientInputResponseMessage
-  | ClientRefreshProvidersMessage
-  | ClientPingMessage;
-
-export interface ServerHelloMessage {
-  kind: "hello";
-  providers: ProviderInfo[];
-  /** Every run in flight right now, with its transcript, for replay. */
-  activeRuns: RunSnapshot[];
-}
-
-export interface ServerProvidersMessage {
-  kind: "providers";
-  providers: ProviderInfo[];
-}
-
-export interface ServerEventMessage {
-  kind: "event";
-  event: NormalizedEvent;
-}
-
-/** What a run was asked to do. Named, because a run snapshot carries it too. */
-export type RunSource =
-  | { type: "custom"; displayText: string; threadId?: string; title?: string }
-  | { type: "saved"; promptId: number; promptKey: string | null; title: string; programName: string; suiteName: string }
-  | { type: "clarification"; promptId: number; promptKey: string | null; title: string; question: string }
-  | { type: "verification"; verificationId: number; suiteId: number; suiteKey: string | null; suiteName: string; promptKey: string | null }
-  | { type: "consult"; promptId: number | null; promptKey: string | null; title: string | null; question: string }
-  | { type: "wrapup"; promptId: number; promptKey: string | null; title: string; sourceRunId: string; stopReason: string | null }
-  | { type: "audit"; auditId: string; promptId: number; promptKey: string | null; title: string; sourceRunId: string }
-  | { type: "author"; draftId: number; goal: string; programName: string | null; /** True when changing an existing program. */ revision?: boolean }
-  /** An agent editing CLAUDE.md or AGENTS.md into a proposal the operator applies. */
-  | { type: "instructions"; proposalId: number; file: string; goal: string };
-
-export interface ServerRunStartedMessage {
-  clientRequestId?: string;
-  kind: "run_started";
-  runId: string;
-  provider: ProviderId;
-  /** The model the run resolved to, after the override/settings fallback. */
-  model: string | null;
-  workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
-  source: RunSource;
-  role: RunRole;
-}
-
-/**
- * A run as the server currently sees it, including every event it has emitted.
- *
- * Runs belong to the server, not to the socket that started them. This is what
- * lets a page opened mid-run — a new tab, a reload, or a navigation to another
- * page in the app — rebuild the transcript and the live status instead of
- * showing an empty log and claiming the agent is idle.
- */
-export interface RunSnapshot {
-  clientRequestId?: string;
-  runId: string;
-  provider: ProviderId;
-  model: string | null;
-  workspace: Pick<WorkspaceRecord, "id" | "name" | "workDirectory">;
-  source: RunSource;
-  role: RunRole;
-  state: RunState;
-  startedAt: string;
-  elapsedMs: number;
-  usage: TokenUsage | null;
-  detail: string | null;
-  /** Replay buffer, oldest first. */
-  events: NormalizedEvent[];
-  /** True when the buffer overflowed and the oldest events were dropped. */
-  truncated: boolean;
-  /**
-   * Forced permission/sandbox the process actually started with, for the
-   * status bar. Null means "inherited global settings".
-   */
-  permissionMode: string | null;
-}
-
-export interface ServerRunEndedMessage {
-  kind: "run_ended";
-  runId: string;
-  state: Extract<RunState, "done" | "interrupted" | "error">;
-}
-
-/** A run request failed before a run id existed. Sent only to its requesting socket. */
-export interface ServerRunRejectedMessage {
-  kind: "run_rejected";
-  clientRequestId: string;
-  message: string;
-  detail: string | null;
-}
-
-export interface ServerPongMessage {
-  kind: "pong";
-}
-
-/** Broadcast to every tab when provider settings change, so open panels stay in sync. */
-export interface ServerSettingsUpdatedMessage {
-  kind: "settings_updated";
-  providers: ProviderInfo[];
-}
-
-/**
- * Tells snapshot-backed views that durable operational data changed.
- *
- * The frame deliberately carries no partial record: the REST snapshot remains
- * the single projection of the database, while the socket makes refreshing it
- * event-driven instead of periodic.
- */
-export interface ServerOperationsChangedMessage {
-  kind: "operations_changed";
-}
-
-export type ServerMessage =
-  | ServerHelloMessage
-  | ServerProvidersMessage
-  | ServerEventMessage
-  | ServerRunStartedMessage
-  | ServerRunEndedMessage
-  | ServerRunRejectedMessage
-  | ServerSettingsUpdatedMessage
-  | ServerOperationsChangedMessage
-  | ServerPongMessage;
-
-/* -------------------------------------------------------------------------- */
-/* Small shared helpers                                                        */
-/* -------------------------------------------------------------------------- */
-
-export function formatElapsed(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
-}
-
-/**
- * Compact countdown to a reset instant. Null when the timestamp is missing
- * or unparseable. Omits seconds: "3h 12m", "4d 8h", or "soon".
- */
-export function formatResetIn(iso: string | null, now = Date.now()): string | null {
-  if (iso === null) return null;
-  const target = Date.parse(iso);
-  if (!Number.isFinite(target)) return null;
-  const totalSeconds = Math.max(0, Math.floor((target - now) / 1000));
-  if (totalSeconds < 60) return "soon";
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  return `${minutes}m`;
-}
-
-export function formatTokens(count: number): string {
-  if (count < 1000) return String(count);
-  if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
-  return `${(count / 1_000_000).toFixed(2)}M`;
-}
-
-/** Collapse arbitrary text to a single line suitable for a collapsed log row. */
-export function oneLine(value: string, max = 160): string {
-  const flat = value.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
+/** Public package boundary. Internal modules import their dependencies directly. */
+export type { UserIdentity, IdentitySession } from "./contracts/identity.ts";
+export {
+  PROVIDER_IDS,
+  isProviderId,
+  RUN_ROLES,
+  isRunRole,
+  USAGE_WINDOW_KINDS,
+} from "./contracts/providers.ts";
+export type {
+  ProviderId,
+  RunRole,
+  ProviderInfo,
+  ProviderUpdateResult,
+  UsageWindowKind,
+  ProviderUsageWindow,
+  ProviderUsageCredits,
+  ProviderUsage,
+} from "./contracts/providers.ts";
+export {
+  MODEL_ACCESS_TIERS,
+  MODEL_SELECTION_MODES,
+  REASONING_EFFORTS,
+  isReasoningEffort,
+  isModelSelectionMode,
+  MODEL_ACCESS_TIER_INFO,
+  isModelAccessTier,
+  classifyModel,
+  modelFamily,
+  modelAllowedInTier,
+  bakedModelEffort,
+  modelMatchesEffort,
+  eligibleModels,
+  recommendedModel,
+  automaticModel,
+  MODEL_POOLS,
+  MODEL_POOL_LABEL,
+  MODEL_CATALOG,
+  modelLabel,
+  modelPool,
+  isCustomModel,
+} from "./models/modelCatalog.ts";
+export type {
+  ModelOption,
+  ModelAccessTier,
+  ClassifiedModelTier,
+  ModelSelectionMode,
+  ReasoningEffort,
+  ModelAccessTierInfo,
+  BakedModelEffort,
+  ModelPool,
+} from "./models/modelCatalog.ts";
+export { emptyUsage, isMeaningfulUsage, mergeUsage, usageFromEvents } from "./models/tokenUsage.ts";
+export type { TokenUsage } from "./models/tokenUsage.ts";
+export {
+  ratesForModel,
+  estimateCost,
+  billableInputTokens,
+  inputTokenAllowance,
+  formatUsd,
+  USAGE_REPORT_PRICING_NOTE,
+  emptyUsageTotals,
+  addUsageToTotals,
+} from "./models/cost.ts";
+export type { TokenRates, CostEstimate, UsageTotals } from "./models/cost.ts";
+export type { SessionUsageRow, TaskUsageRow, SuiteUsageRow, UsageReport } from "./contracts/usageReport.ts";
+export type {
+  RunState,
+  AssistantTextPayload,
+  ToolUsePayload,
+  ToolResultPayload,
+  StatusPayload,
+  ResultPayload,
+  ErrorPayload,
+  DbAccessPayload,
+  AgentQuestionKind,
+  AgentQuestionOption,
+  AgentQuestion,
+  AgentInputRequestPayload,
+  AgentInputAnswer,
+  AgentInputResponsePayload,
+  RunMessageDelivery,
+  RunMessageState,
+  RunMessage,
+  OperatorMessagePayload,
+  AgentMessagePayload,
+  NormalizedEvent,
+  NormalizedEventType,
+  AdapterEvent,
+} from "./contracts/events.ts";
+export type {
+  SettingType,
+  SettingValue,
+  SettingOption,
+  SettingUnit,
+  SettingScale,
+  SettingField,
+  SettingsSnapshot,
+  SettingsPatch,
+} from "./contracts/settings.ts";
+export { formatSettingValue } from "./utils/settings.ts";
+export type {
+  PromptRecord,
+  PromptStatus,
+  SuiteRecord,
+  ProgramRecord,
+  WorkspaceRecord,
+  WorkspaceGitContext,
+  WorkspaceInstructionField,
+  WorkspaceRevision,
+  WorkspaceTree,
+  PromptOption,
+  PromptDependency,
+  ProgramGate,
+  RemarkKind,
+  ActorType,
+  PromptRemark,
+  PromptStatusEvent,
+  HumanInputRequest,
+  ClarificationExchange,
+} from "./contracts/workspaces.ts";
+export type { PromptRunSummary, AgentRunActivity, AgentSession } from "./contracts/runs.ts";
+export { RUN_CHANGE_STATES } from "./contracts/changes.ts";
+export type {
+  RunChangeState,
+  RunChangeSummary,
+  RunCommit,
+  RunChangedFile,
+  RunChangeDetail,
+  RunFileDiff,
+} from "./contracts/changes.ts";
+export type { ChatThread, ChatThreadPage, ChatHistoryPage, ChatThreadPatch } from "./contracts/chat.ts";
+export { conversationTitle } from "./utils/conversation.ts";
+export {
+  ON_DONE_ACTIONS,
+  isOnDoneAction,
+  ON_UNFINISHED_ACTIONS,
+  isOnUnfinishedAction,
+  PIPELINE_STATES,
+  isPipelineState,
+  defaultPromptPipelineRule,
+} from "./contracts/pipeline.ts";
+export type {
+  PromptOperationalState,
+  OnDoneAction,
+  OnUnfinishedAction,
+  PipelineState,
+  PromptPipelineRule,
+  PipelineAvailablePrompt,
+  SuitePipelineDefaults,
+  SuitePipelineRun,
+  PipelineStage,
+  PipelineRun,
+  PipelineRecord,
+  PipelineRunStage,
+  PipelineRunDetail,
+  PipelineSubStepRule,
+  PipelineFlowchartView,
+  PipelineDashboardSummary,
+  PipelineDashboardItem,
+  PipelineBlockedStation,
+  PipelineThroughputDay,
+  PipelineDashboard,
+} from "./contracts/pipeline.ts";
+export type {
+  OperationsPrompt,
+  HumanInterventionStep,
+  OperationsSuite,
+  OperationsSession,
+  OperationsSnapshot,
+} from "./contracts/operations.ts";
+export type {
+  SuiteVerificationVerdict,
+  SuiteVerificationCheck,
+  SuiteVerificationKind,
+  SuiteVerificationState,
+  SuiteVerificationItem,
+  SuiteVerificationSummary,
+  SuiteVerificationStats,
+  SuiteVerificationRecord,
+  SuiteVerificationDetail,
+  SuiteVerificationBadge,
+  SuiteVerificationContext,
+  PromptActivity,
+} from "./contracts/verification.ts";
+export {
+  COMPLETION_AUDIT_STATES,
+  COMPLETION_VERDICTS,
+  AUDIT_CHECK_RESULTS,
+} from "./contracts/completionAudit.ts";
+export type {
+  CompletionAuditState,
+  CompletionVerdict,
+  AuditCheckResult,
+  CompletionAuditCheck,
+  CompletionAuditReport,
+  CompletionAuditRecord,
+} from "./contracts/completionAudit.ts";
+export type { PromptImportPreview } from "./contracts/promptImport.ts";
+export type { ApiErrorBody } from "./contracts/api.ts";
+export type {
+  ClientRunMessage,
+  ClientInterruptMessage,
+  ClientRefreshProvidersMessage,
+  ClientPingMessage,
+  ClientInputResponseMessage,
+  ClientVerifySuiteMessage,
+  ClientMessage,
+  ServerHelloMessage,
+  ServerProvidersMessage,
+  ServerEventMessage,
+  RunSource,
+  ServerRunStartedMessage,
+  RunSnapshot,
+  ServerRunEndedMessage,
+  ServerRunRejectedMessage,
+  ServerPongMessage,
+  ServerSettingsUpdatedMessage,
+  ServerOperationsChangedMessage,
+  ServerMessage,
+} from "./contracts/websocket.ts";
+export { formatElapsed, formatResetIn, formatTokens, oneLine } from "./utils/format.ts";
+
+export {
+  resolveStationPolicy,
+  validateStationPolicy,
+  stationPolicyMarkdown,
+  type StationPolicy,
+} from "./policies/stationPolicy.ts";
 
 /*
  * The transport interlocking. Re-exported by name rather than with `export *`,
@@ -2517,15 +246,19 @@ export {
   onDoneConsequence,
   isRestartPolicy,
   RESTART_POLICIES,
-} from "./pipelineRules";
+} from "./policies/pipelineRules.ts";
+
 export {
   COOLING_MINUTES,
   TRANSIENT_PATTERNS,
   classifyFailure,
   coolingMinutesFor,
-} from "./providerFailure";
-export type { FailureClass } from "./providerFailure";
-export { exhaustedUsageWindow, quotaCoolingMinutes } from "./providerFailure";
+} from "./policies/providerFailure.ts";
+
+export type { FailureClass } from "./policies/providerFailure.ts";
+
+export { exhaustedUsageWindow, quotaCoolingMinutes } from "./policies/providerFailure.ts";
+
 /*
  * Re-exported by name rather than with `export *`.
  *
@@ -2587,7 +320,8 @@ export {
   satisfiesDependency,
   statusDefinition,
   statusFieldEditable,
-} from "./statusModel";
+} from "./models/statusModel.ts";
+
 export type {
   DefinitionOfDone,
   DodCriterion,
@@ -2611,9 +345,12 @@ export type {
   StepSignal,
   StepStatus,
   StepTransitionRow,
-} from "./statusModel";
-export { parseVerifyBlock } from "./verifyBlock";
-export type { VerifyBlockParse, VerifyCommand } from "./verifyBlock";
+} from "./models/statusModel.ts";
+
+export { parseVerifyBlock } from "./utils/verifyBlock.ts";
+
+export type { VerifyBlockParse, VerifyCommand } from "./utils/verifyBlock.ts";
+
 export {
   DRAFT_CONTENT_MAX,
   DRAFT_GOAL_MAX,
@@ -2644,7 +381,8 @@ export {
   resolvedDependencies,
   suiteKeyAt,
   withSuiteProposal,
-} from "./programDraft";
+} from "./models/programDraft.ts";
+
 export type {
   DraftLimits,
   DraftValidation,
@@ -2657,19 +395,22 @@ export type {
   ProgramDraftSuite,
   ProgramProposal,
   SuiteProposal,
-} from "./programDraft";
+} from "./models/programDraft.ts";
+
 export {
   REVISION_MAX_CHANGES,
   REVISION_OPERATIONS,
   applyRevisionChanges,
   diffProgramRevision,
-} from "./programRevision";
+} from "./models/programRevision.ts";
+
 export type {
   ProgramRevisionChange,
   RevisionChangeKind,
   RevisionOperation,
   RevisionResult,
-} from "./programRevision";
+} from "./models/programRevision.ts";
+
 export {
   AGENT_REQUEST_MODES,
   AGENT_REQUEST_MODE_LABELS,
@@ -2683,7 +424,8 @@ export {
   diffLines,
   isInstructionField,
   normalizeAgentRequest,
-} from "./agentRequest";
+} from "./contracts/agentRequest.ts";
+
 export type {
   AgentRequest,
   AgentRequestMode,
@@ -2692,8 +434,7 @@ export type {
   InstructionProposalOrigin,
   InstructionProposalRecord,
   InstructionProposalState,
-} from "./agentRequest";
-import type { StatusDefinition, StatusTrigger, StepDisplayStatus, StepStatus } from "./statusModel";
+} from "./contracts/agentRequest.ts";
 
 export type {
   PauseMode,
@@ -2705,7 +446,16 @@ export type {
   RulePolicy,
   StatusTone,
   TransitionRow,
-} from "./pipelineRules";
+} from "./policies/pipelineRules.ts";
 
-export { validateExecutionPlan, validateExecutionPolicy } from "./executionPlan";
-export type { ExecutionPhase, ExecutionDesiredState, ExecutionPolicy, ContractCriterion, ExecutionUnit, ExecutionPlan, ExecutionStatus } from "./executionPlan";
+export { validateExecutionPlan, validateExecutionPolicy } from "./models/executionPlan.ts";
+
+export type {
+  ExecutionPhase,
+  ExecutionDesiredState,
+  ExecutionPolicy,
+  ContractCriterion,
+  ExecutionUnit,
+  ExecutionPlan,
+  ExecutionStatus,
+} from "./models/executionPlan.ts";

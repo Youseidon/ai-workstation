@@ -21,8 +21,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const BASE = process.env.AGENT_CONSOLE_RUN_URL ?? "";
-const TOKEN = process.env.AGENT_CONSOLE_RUN_TOKEN ?? "";
+const BASE = process.env.HYDRA_RUN_URL ?? "";
+const TOKEN = process.env.HYDRA_RUN_TOKEN ?? "";
 
 const USAGE = `agent-step — record progress and status for this work item.
 
@@ -223,7 +223,7 @@ async function checkInbox({ quietWhenEmpty }) {
 async function post(path, body) {
   const response = await send(path, {
     method: "POST",
-    body: JSON.stringify({ requestId: typeof args["request-id"]==="string"?args["request-id"]:randomUUID(),expectedGeneration:process.env.AGENT_CONSOLE_EXECUTION_GENERATION===undefined?undefined:Number(process.env.AGENT_CONSOLE_EXECUTION_GENERATION),planRevision:process.env.AGENT_CONSOLE_PLAN_REVISION===undefined?undefined:Number(process.env.AGENT_CONSOLE_PLAN_REVISION), ...body }),
+    body: JSON.stringify({ requestId: typeof args["request-id"]==="string"?args["request-id"]:randomUUID(),expectedGeneration:process.env.HYDRA_EXECUTION_GENERATION===undefined?undefined:Number(process.env.HYDRA_EXECUTION_GENERATION),planRevision:process.env.HYDRA_PLAN_REVISION===undefined?undefined:Number(process.env.HYDRA_PLAN_REVISION), ...body }),
   });
   const text = await response.text();
   let parsed = null;
@@ -270,12 +270,12 @@ async function get(path) {
 const [command, ...rest] = process.argv.slice(2);
 const args = parseArgs(rest);
 
-if (command === undefined || command === "help" || args.help === true) {
+if (command === undefined || command === "help" || command === "--help" || command === "-h" || args.help === true) {
   process.stdout.write(`${USAGE}\n`);
   process.exit(command === undefined ? 1 : 0);
 }
 if (BASE === "" || TOKEN === "") {
-  fail("agent-step: AGENT_CONSOLE_RUN_URL and AGENT_CONSOLE_RUN_TOKEN are not set.\n"
+  fail("agent-step: HYDRA_RUN_URL and HYDRA_RUN_TOKEN are not set.\n"
     + "  This command only works inside a run started by the console.");
 }
 

@@ -30,7 +30,9 @@ playwright-report/
 *.pem
 *.key
 
-# Agent Console runtime state (settings, SQLite database, WAL files)
+# Hydra runtime state (settings, SQLite database, WAL files)
+.hydra/
+# Pre-rename location of the same state
 .agent-console/
 
 # Agent scratch workspace; retain its placeholder

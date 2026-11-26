@@ -1,0 +1,132 @@
+"use client";
+
+import type { OperationsSuite, PipelineState, ProviderId } from "@hydra/shared";
+import { AgentAvatar } from "@/features/providers/components/AgentAvatar";
+import { EditIconButton } from "@/components/ui/EditIconButton";
+import { Badge } from "@/components/ui/Badge";
+import { cn } from "@/lib/cn";
+import type { AgentActivity } from "@/features/runs/lib/agentState";
+import { providerTheme } from "@/features/providers/lib/providerTheme";
+import { SnakeFlow } from "./SnakeFlow";
+import { PIPELINE_LABEL, PIPELINE_TONE } from "../lib/status";
+
+export interface ConstellationStage {
+  suiteId: number;
+  programName: string;
+  programKey: string | null;
+  suiteName: string;
+  suiteKey: string | null;
+  promptCount: number;
+  stepCount: number;
+  operations: OperationsSuite | null;
+  providers: ProviderId[];
+}
+
+export function PipelineConstellation({
+  stages,
+  selectedSuiteId,
+  currentSuiteId,
+  pipelineState,
+  liveProviders,
+  onSelect,
+  onEdit,
+}: {
+  stages: ConstellationStage[];
+  selectedSuiteId: number | null;
+  currentSuiteId: number | null;
+  pipelineState: PipelineState | null;
+  liveProviders: Partial<Record<ProviderId, AgentActivity>>;
+  onSelect(suiteId: number): void;
+  /** Opens the suite's settings in the studio; no pencil without it. */
+  onEdit?(suiteId: number): void;
+}) {
+  if (stages.length === 0) {
+    return (
+      <div className="rounded-panel border border-dashed border-line bg-surface-1 px-6 py-16 text-center">
+        <div className="text-xs uppercase tracking-[0.25em] text-accent">Awaiting stages</div>
+        <p className="mt-2 text-sm text-fg-muted">
+          Pick suites from the programs on the left. They become stations on this rail, in order.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <SnakeFlow
+      items={stages}
+      getKey={(stage) => stage.suiteId}
+      isLiveIndex={(index) =>
+        stages[index] !== undefined &&
+        currentSuiteId === stages[index].suiteId &&
+        pipelineState === "PLAYING"
+      }
+      renderCard={(stage, index) => {
+        const current = currentSuiteId === stage.suiteId;
+        const selected = selectedSuiteId === stage.suiteId;
+        const live = current && pipelineState === "PLAYING";
+        const ops = stage.operations;
+        const done = ops?.counts.DONE ?? 0;
+        const total = ops?.prompts.length ?? stage.promptCount;
+        return (
+          <div className="group relative h-full min-w-0">
+          <button
+            type="button"
+            onClick={() => onSelect(stage.suiteId)}
+            aria-current={selected ? "true" : undefined}
+            className={cn(
+              "relative flex h-full min-w-0 w-full flex-col rounded-panel border p-4 text-left transition-[border-color,box-shadow,transform] duration-200",
+              selected
+                ? "border-accent/50 bg-surface-2 ring-1 ring-accent/25"
+                : "border-line bg-surface-1 hover:border-line-strong hover:bg-surface-2",
+              live && "pipeline-node-live glow text-accent",
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs numeric text-fg-muted ring-1 ring-inset ring-line">
+                {index + 1}
+              </span>
+              {current && pipelineState !== null && (
+                <Badge tone={PIPELINE_TONE[pipelineState]} dot pulse={pipelineState === "PLAYING"}>
+                  {PIPELINE_LABEL[pipelineState]}
+                </Badge>
+              )}
+            </div>
+            <div className="mt-3 text-xs uppercase tracking-[0.18em] text-fg-dim">
+              {stage.programKey ?? stage.programName}
+            </div>
+            <div className="mt-0.5 truncate text-base text-fg">
+              {stage.suiteKey !== null && <span className="text-fg-muted">{stage.suiteKey} · </span>}
+              {stage.suiteName}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-fg-dim">
+              <span className="numeric">
+                {done}/{total} done
+              </span>
+              <span>· {stage.stepCount} on rail</span>
+            </div>
+            {stage.providers.length > 0 && (
+              <div className="mt-3 flex items-center gap-1.5">
+                {stage.providers.map((provider) => (
+                  <span key={provider} className={cn("rounded-full", providerTheme[provider].text)} title={provider}>
+                    <AgentAvatar
+                      provider={provider}
+                      size={22}
+                      activity={liveProviders[provider] ?? (stage.providers.includes(provider) ? "idle" : "offline")}
+                    />
+                  </span>
+                ))}
+              </div>
+            )}
+            {ops !== undefined && ops !== null && ops.attentionCount > 0 && (
+              <div className="mt-2 text-xs text-warning">{ops.attentionCount} need you</div>
+            )}
+          </button>
+          {onEdit !== undefined && (
+            <EditIconButton label={`Edit ${stage.suiteKey ?? stage.suiteName} in Studio`} onClick={() => onEdit(stage.suiteId)} className="absolute right-3 bottom-3 z-10" />
+          )}
+          </div>
+        );
+      }}
+    />
+  );
+}

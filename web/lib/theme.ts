@@ -15,8 +15,8 @@ export type Effects = (typeof EFFECTS)[number];
 export const DEFAULT_THEME: Theme = "midnight";
 export const DEFAULT_EFFECTS: Effects = "full";
 
-export const THEME_STORAGE_KEY = "agent-console.theme";
-export const EFFECTS_STORAGE_KEY = "agent-console.effects";
+export const THEME_STORAGE_KEY = "hydra.theme";
+export const EFFECTS_STORAGE_KEY = "hydra.effects";
 
 export const THEME_META: Record<Theme, { label: string; description: string }> = {
   midnight: { label: "Midnight", description: "Layered dark. The default." },

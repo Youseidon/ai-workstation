@@ -1,0 +1,1058 @@
+"use client";
+
+import { apiFetch } from "@/api/http";
+
+import Link from "next/link";
+import { useCallback, useMemo, useState } from "react";
+import {
+  classifyModel,
+  formatElapsed,
+  formatTokens,
+  isModelAccessTier,
+  isModelSelectionMode,
+  isReasoningEffort,
+  MODEL_ACCESS_TIER_INFO,
+  MODEL_ACCESS_TIERS,
+  REASONING_EFFORTS,
+  modelLabel,
+  type ModelAccessTier,
+  type ModelSelectionMode,
+  type ProviderId,
+  type ProviderInfo,
+  type ProviderUpdateResult,
+  type ProviderUsage,
+  type ReasoningEffort,
+  type SettingField,
+  type SettingValue,
+} from "@hydra/shared";
+import { AgentAvatar } from "@/features/providers/components/AgentAvatar";
+import { AskChip } from "@/features/runs/components/RunStatus";
+import { SettingRow } from "@/features/settings/components/SettingField";
+import { SettingsGroupDialog } from "@/features/settings/components/SettingsGroupDialog";
+import { GROUP_BLURB, GROUP_TITLE } from "@/features/settings/lib/settingsGroups";
+import { ContentTitle } from "@/components/layout/PageCanvas";
+import { SidebarCollection, SidebarGroup, SidebarRow } from "@/components/layout/SidebarCollection";
+import { Badge, type Tone } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
+import { Switch } from "@/components/ui/Switch";
+import { useDialogs } from "@/components/ui/Dialogs";
+import { CountUp } from "@/components/ui/CountUp";
+import { cn } from "@/lib/cn";
+import { ACTIVITY_LABEL, agentState, type AgentState } from "@/features/runs/lib/agentState";
+import { providerTheme } from "@/features/providers/lib/providerTheme";
+import { SERVER_URL } from "@/api/serverUrl";
+import { useHydra } from "@/hooks/useHydra";
+import { useModelSelection } from "@/features/providers/hooks/useModelSelection";
+import { useProviderUsage } from "@/features/providers/hooks/useProviderUsage";
+import { useSettings } from "@/features/settings/hooks/useSettings";
+import { UsageBlock } from "./usage";
+
+const ACTIVITY_TONE: Record<AgentState["activity"], Tone> = {
+  offline: "neutral",
+  idle: "neutral",
+  starting: "info",
+  thinking: "info",
+  tooling: "accent",
+  speaking: "violet",
+  done: "success",
+  error: "danger",
+};
+
+/** Settings panel group name for each provider's field set. */
+const SETTINGS_GROUP: Record<ProviderId, string> = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  cursor: "Cursor CLI",
+  grok: "Grok CLI",
+  copilot: "GitHub Copilot",
+  kilocode: "Kilo Code",
+};
+
+function fleetSummary(writing: number, asking: number): string {
+  if (writing === 0 && asking === 0) return "All agents idle.";
+  if (writing > 0 && asking > 0) return `${writing} writing · ${asking} asking`;
+  if (writing > 0) return `${writing} agent${writing === 1 ? "" : "s"} writing.`;
+  return `${asking} agent${asking === 1 ? "" : "s"} asking.`;
+}
+
+function enabledKey(id: ProviderId): string {
+  return `${id}.enabled`;
+}
+
+/**
+ * Manage every agent in one place: on/off, model, live work, plan usage, and
+ * the provider's own settings.
+ */
+export function AgentsView() {
+  const { providers, runs, items, lastRun, connection, interrupt, refreshProviders } =
+    useHydra();
+  const credits = useProviderUsage(true);
+  const { snapshot, saving, save, reset, reload } = useSettings(SERVER_URL);
+  const models = useModelSelection(providers);
+  const dialogs = useDialogs();
+  const [drafts, setDrafts] = useState<Record<string, SettingValue>>({});
+  const [savingEnabled, setSavingEnabled] = useState<ProviderId | null>(null);
+  const [configuring, setConfiguring] = useState<ProviderId | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [updating, setUpdating] = useState<ProviderId[]>([]);
+
+  const agents = providers.map((provider) => agentState(provider, runs, items, lastRun));
+  const writing = runs.filter((run) => run.role === "execute").length;
+  const asking = runs.filter((run) => run.role === "consult").length;
+  const totalTokens = runs.reduce((sum, run) => sum + (run.usage?.totalTokens ?? 0), 0);
+
+  const onToggleEnabled = useCallback(
+    async (id: ProviderId, next: boolean) => {
+      setSavingEnabled(id);
+      setNotice(null);
+      const result = await save({ [enabledKey(id)]: next });
+      if (result.ok) {
+        // Refresh shared provider availability after enabling or disabling an agent.
+        await refreshProviders();
+      }
+      setSavingEnabled(null);
+    },
+    [save, refreshProviders],
+  );
+
+  const onUpdate = useCallback(
+    async (id: ProviderId, label: string) => {
+      setUpdating((current) => [...current, id]);
+      setNotice(`Updating ${label}…`);
+      try {
+        const response = await apiFetch(new URL(`/api/providers/${id}/update`, SERVER_URL), { method: "POST" });
+        const body = (await response.json()) as ProviderUpdateResult & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? `update failed (${response.status})`);
+        await refreshProviders();
+        setNotice(
+          body.updated
+            ? `${label} updated: ${body.before ?? "unknown"} → ${body.after ?? "unknown"}. New runs use it; no restart needed.`
+            : `${label} is already up to date (${body.after ?? "version unknown"}).`,
+        );
+      } catch (error) {
+        setNotice(`${label} update failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setUpdating((current) => current.filter((entry) => entry !== id));
+      }
+    },
+    [refreshProviders],
+  );
+
+  const dirtyKeys = useMemo(() => {
+    if (snapshot === null) return [];
+    return Object.keys(drafts).filter((key) => {
+      const field = snapshot.fields.find((entry) => entry.key === key);
+      if (field === undefined) return false;
+      return drafts[key] !== field.value;
+    });
+  }, [drafts, snapshot]);
+
+  /*
+   * Every group that is not a provider's own settings. Derived from
+   * SETTINGS_GROUP rather than listed by hand: "Run budgets" and "Pipeline
+   * policy" were both invisible here because the page filtered for "General"
+   * alone, so a new group silently had nowhere to render.
+   */
+  const providerGroups = new Set(Object.values(SETTINGS_GROUP));
+  const sharedGroups = (snapshot?.groups ?? []).filter(
+    (group) => !providerGroups.has(group) && group !== "Model access",
+  );
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const modelAccessField = snapshot?.fields.find((field) => field.key === "models.accessTier");
+  const modelAccessTier: ModelAccessTier = isModelAccessTier(modelAccessField?.value)
+    ? modelAccessField.value
+    : "all";
+  const modelSelectionField = snapshot?.fields.find((field) => field.key === "models.selectionMode");
+  const modelSelectionMode: ModelSelectionMode = isModelSelectionMode(modelSelectionField?.value)
+    ? modelSelectionField.value
+    : "manual";
+  const reasoningEffortField = snapshot?.fields.find((field) => field.key === "models.reasoningEffort");
+  const reasoningEffort: ReasoningEffort = isReasoningEffort(reasoningEffortField?.value)
+    ? reasoningEffortField.value
+    : "medium";
+
+  const saveDrafts = useCallback(
+    async (keys: string[]) => {
+      if (keys.length === 0 || snapshot === null) return;
+      const dangerous = keys.filter((key) => {
+        const field = snapshot.fields.find((entry) => entry.key === key);
+        if (field === undefined) return false;
+        const next = drafts[key];
+        if (field.type === "boolean") return next === true && field.dangerWhenTrue;
+        const option = field.options?.find((entry) => entry.value === String(next));
+        return option?.danger === true;
+      });
+      if (dangerous.length > 0) {
+        const labels = dangerous.map(
+          (key) => snapshot.fields.find((field) => field.key === key)?.label ?? key,
+        );
+        const confirmed = await dialogs.confirm({
+          title: "This turns off a sandbox or permission check",
+          description: `${labels.join(", ")} — the agent will be able to act outside its sandbox.`,
+          confirmLabel: "Save anyway",
+          tone: "danger",
+        });
+        if (!confirmed) return;
+      }
+      const patch = Object.fromEntries(keys.map((key) => [key, drafts[key] as SettingValue]));
+      const result = await save(patch);
+      if (result.ok) {
+        setDrafts((current) => {
+          const next = { ...current };
+          for (const key of keys) delete next[key];
+          return next;
+        });
+        setNotice(
+          result.changed.length === 0
+            ? "No changes to save."
+            : `Saved ${result.changed.length} setting${result.changed.length === 1 ? "" : "s"}.`,
+        );
+        if (keys.some((key) => key.endsWith(".enabled") || key.endsWith(".reasoningEffort") || key === "hostAccess")) {
+          await refreshProviders();
+        }
+      }
+    },
+    [drafts, dialogs, refreshProviders, save, snapshot],
+  );
+
+  return (
+    <div className="flex h-full flex-col">
+      <SidebarCollection label="Agents settings">
+        <SidebarRow title="Model access" onSelect={() => jumpTo("agents-model-access")} />
+        <SidebarGroup title={`Providers · ${agents.filter((agent) => agent.available).length} available`}>
+          {agents.map((agent) => {
+            const info = providers.find((provider) => provider.id === agent.provider);
+            return (
+              <SidebarRow
+                key={agent.provider}
+                title={info?.label ?? agent.provider}
+                onSelect={() => jumpTo(`agent-${agent.provider}`)}
+                status={agent.run !== null ? "Working" : agent.consultCount > 0 ? "Asking" : agent.available ? undefined : "Unavailable"}
+                statusTone={agent.run !== null || agent.consultCount > 0 ? "accent" : "muted"}
+              />
+            );
+          })}
+        </SidebarGroup>
+      </SidebarCollection>
+      <ContentTitle
+        title="Agents"
+        meta="Provider settings apply to every workspace."
+      />
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8 max-sm:px-4">
+        <p className="mb-5 text-sm text-fg-muted" role="status">
+          {connection === "open" ? fleetSummary(writing, asking) : "Reconnecting to the backend…"}
+          {credits.error !== null ? ` · ${credits.error}` : ""}
+          {notice !== null ? ` · ${notice}` : ""}
+        </p>
+
+        <ModelAccessPanel
+          tier={modelAccessTier}
+          selectionMode={modelSelectionMode}
+          reasoningEffort={reasoningEffort}
+          providers={providers}
+          saving={saving}
+          onSelect={async (tier) => {
+            setNotice(null);
+            const result = await save({ "models.accessTier": tier });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change model access.");
+              return;
+            }
+            await refreshProviders();
+            setNotice(`Model access changed to ${MODEL_ACCESS_TIER_INFO[tier].label}. New runs use this tier.`);
+          }}
+          onSelectMode={async (mode) => {
+            setNotice(null);
+            const result = await save({ "models.selectionMode": mode });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change model choice mode.");
+              return;
+            }
+            await refreshProviders();
+            setNotice(mode === "auto"
+              ? "Auto Select enabled. Manual model choices are locked and preserved for later."
+              : "Manual model selection enabled. Saved model choices are available again.");
+          }}
+          onSelectEffort={async (effort) => {
+            setNotice(null);
+            const result = await save({ "models.reasoningEffort": effort });
+            if (!result.ok) {
+              setNotice(result.errors[0] ?? "Could not change reasoning effort.");
+              return;
+            }
+            await refreshProviders();
+            setNotice(`Global reasoning effort changed to ${effort}. Cursor's model list now shows ${effort} variants. Provider overrides still take precedence.`);
+          }}
+        />
+
+        {/* Shared settings open as dialogs rather than sitting inline, so the
+            same form can be reached from the page each group actually governs. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {sharedGroups.map((group) => {
+            const count = snapshot?.fields.filter((field) => field.group === group).length ?? 0;
+            const pending = dirtyKeys.filter((key) =>
+              snapshot?.fields.some((field) => field.key === key && field.group === group),
+            ).length;
+            return (
+              <Button
+                key={group}
+                size="sm"
+                variant="secondary"
+                onClick={() => setOpenGroup(group)}
+                title={GROUP_BLURB[group]}
+              >
+                {GROUP_TITLE[group] ?? group}
+                <span className="ml-1.5 text-fg-dim">{pending > 0 ? `${pending} unsaved` : count}</span>
+              </Button>
+            );
+          })}
+        </div>
+
+        {openGroup !== null && (
+          <SettingsGroupDialog
+            group={openGroup}
+            onClose={() => setOpenGroup(null)}
+            onSaved={() => void reload()}
+          />
+        )}
+
+        <section aria-labelledby="agents-providers-heading" className="mt-8">
+        <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+          <h2 id="agents-providers-heading" className="text-base font-semibold text-fg">Providers</h2>
+          <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+            <Stat label="available" value={agents.filter((agent) => agent.available).length} />
+            {asking > 0 ? (
+              <>
+                {writing > 0 && <Stat label="writing" value={writing} />}
+                <Stat label="asking" value={asking} />
+              </>
+            ) : (
+              <Stat label="working" value={writing} />
+            )}
+            <Stat label="tokens" value={totalTokens} format={formatTokens} />
+          </dl>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void credits.refresh(true)}
+              loading={credits.loading && credits.usage !== null}
+              title="Refresh plan usage from each provider"
+            >
+              Refresh usage
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void refreshProviders()} title="Re-run provider detection">
+              Re-detect
+            </Button>
+          </div>
+        </div>
+        <ul className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {agents.map((agent) => {
+            const info = providers.find((provider) => provider.id === agent.provider);
+            if (info === undefined) return null;
+            const group = SETTINGS_GROUP[agent.provider];
+            const groupFields =
+              snapshot?.fields.filter(
+                (field) => field.group === group && field.key !== enabledKey(agent.provider),
+              ) ?? [];
+            const groupDirty = dirtyKeys.filter((key) =>
+              groupFields.some((field) => field.key === key),
+            );
+            const enabledField = snapshot?.fields.find(
+              (field) => field.key === enabledKey(agent.provider),
+            );
+            const enabled = enabledField === undefined ? true : enabledField.value === true;
+
+            return (
+              <AgentCard
+                key={agent.provider}
+                agent={agent}
+                info={info}
+                enabled={enabled}
+                enabledBusy={savingEnabled === agent.provider || saving}
+                onToggleEnabled={(next) => void onToggleEnabled(agent.provider, next)}
+                model={models.resolve(agent.provider)}
+                modelPinned={models.isPinned(agent.provider)}
+                onPickModel={(value) => models.select(agent.provider, value)}
+                onClearModel={() => models.clear(agent.provider)}
+                usage={credits.usage?.[agent.provider] ?? null}
+                usageLoading={credits.loading && credits.usage === null}
+                configureOpen={configuring === agent.provider}
+                onOpenConfigure={() => {
+                  // A stale "Saved 2 settings." from another card would read as
+                  // feedback for this one.
+                  setNotice(null);
+                  setConfiguring(agent.provider);
+                }}
+                onCloseConfigure={() => setConfiguring(null)}
+                notice={configuring === agent.provider ? notice : null}
+                fields={groupFields}
+                drafts={drafts}
+                fieldsDisabled={saving}
+                dirtyKeys={groupDirty}
+                onDraftChange={(key, value) => {
+                  setNotice(null);
+                  setDrafts((current) => ({ ...current, [key]: value }));
+                }}
+                onRevert={(key) => {
+                  setNotice(null);
+                  void reset([key]);
+                  setDrafts((current) => {
+                    const next = { ...current };
+                    delete next[key];
+                    return next;
+                  });
+                }}
+                onSaveSettings={() => void saveDrafts(groupDirty)}
+                onDiscardSettings={() => {
+                  setDrafts((current) => {
+                    const next = { ...current };
+                    for (const key of groupDirty) delete next[key];
+                    return next;
+                  });
+                }}
+                onStop={() => {
+                  if (agent.run !== null) interrupt(agent.run.runId);
+                }}
+                onStopConsult={(runId) => interrupt(runId)}
+                updating={updating.includes(agent.provider)}
+                onUpdate={() => void onUpdate(agent.provider, info.label)}
+              />
+            );
+          })}
+        </ul>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function jumpTo(id: string) {
+  document.getElementById(id)?.scrollIntoView({ block: "start" });
+}
+
+function ModelAccessPanel({
+  tier,
+  selectionMode,
+  reasoningEffort,
+  providers,
+  saving,
+  onSelect,
+  onSelectMode,
+  onSelectEffort,
+}: {
+  tier: ModelAccessTier;
+  selectionMode: ModelSelectionMode;
+  reasoningEffort: ReasoningEffort;
+  providers: ProviderInfo[];
+  saving: boolean;
+  onSelect(tier: ModelAccessTier): Promise<void>;
+  onSelectMode(mode: ModelSelectionMode): Promise<void>;
+  onSelectEffort(effort: ReasoningEffort): Promise<void>;
+}) {
+  const eligible = providers.reduce((total, provider) => total + provider.models.length, 0);
+  const available = providers.filter((provider) => provider.available).length;
+  return (
+    <section id="agents-model-access" className="scroll-mt-4 rounded-panel border border-line p-4" aria-labelledby="model-access-heading">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 id="model-access-heading" className="text-sm font-semibold text-fg">Model access</h2>
+          <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-fg-dim">
+            One credit-use ceiling for every console, task, pipeline, workspace, fallback, handoff, and reviewer run.
+            Saved choices outside the tier stay saved but the provider&apos;s tier default runs instead.
+          </p>
+        </div>
+        <Badge tone="info">{available} providers · {eligible} models</Badge>
+      </div>
+      <div className="mb-3 grid gap-2 md:grid-cols-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
+          <div>
+            <div className="text-xs font-semibold text-fg">Model choice</div>
+            <p className="mt-0.5 text-xs leading-snug text-fg-dim">
+              Auto Select chooses within the access tier for every run.
+            </p>
+          </div>
+          <div className="flex rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line">
+            {(["auto", "manual"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                disabled={saving}
+                aria-pressed={selectionMode === mode}
+                onClick={() => void onSelectMode(mode)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50",
+                  selectionMode === mode ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
+                )}
+              >
+                {mode === "auto" ? "Auto Select" : "Manual"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface-0 p-2.5">
+          <div>
+            <div className="text-xs font-semibold text-fg">Reasoning effort</div>
+            <p className="mt-0.5 text-xs leading-snug text-fg-dim">
+              Default for every agent unless its settings override it. Cursor only lists models at this effort.
+            </p>
+          </div>
+          <div className="flex rounded-md bg-surface-2 p-0.5 ring-1 ring-inset ring-line">
+            {REASONING_EFFORTS.map((effort) => (
+              <button
+                key={effort}
+                type="button"
+                disabled={saving}
+                aria-pressed={reasoningEffort === effort}
+                onClick={() => void onSelectEffort(effort)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-medium capitalize transition-colors disabled:opacity-50",
+                  reasoningEffort === effort ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
+                )}
+              >
+                {effort}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-5">
+        {MODEL_ACCESS_TIERS.map((value) => {
+          const info = MODEL_ACCESS_TIER_INFO[value];
+          const selected = value === tier;
+          return (
+            <button
+              key={value}
+              type="button"
+              disabled={saving}
+              aria-pressed={selected}
+              onClick={() => void onSelect(value)}
+              className={cn(
+                "rounded-md border p-2.5 text-left transition-colors disabled:opacity-50",
+                selected
+                  ? "border-accent bg-accent/10 text-fg"
+                  : "border-line bg-surface-0 text-fg-muted hover:border-line-strong hover:bg-surface-2",
+              )}
+            >
+              <span className="flex items-center justify-between gap-2 text-xs font-semibold">
+                {info.label}
+                {selected && <span className="text-accent">●</span>}
+              </span>
+              <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-fg-dim">
+                {info.creditUse}
+              </span>
+              <span className="mt-1.5 block text-xs leading-snug text-fg-dim">{info.description}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  format,
+}: {
+  label: string;
+  value: number;
+  format?: (value: number) => string;
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <dd className="numeric text-fg">
+        <CountUp value={value} format={format} />
+      </dd>
+      <dt className="text-fg-muted">{label}</dt>
+    </div>
+  );
+}
+
+function AgentCard({
+  agent,
+  info,
+  enabled,
+  enabledBusy,
+  onToggleEnabled,
+  model,
+  modelPinned,
+  onPickModel,
+  onClearModel,
+  usage,
+  usageLoading,
+  configureOpen,
+  onOpenConfigure,
+  onCloseConfigure,
+  notice,
+  fields,
+  drafts,
+  fieldsDisabled,
+  dirtyKeys,
+  onDraftChange,
+  onRevert,
+  onSaveSettings,
+  onDiscardSettings,
+  onStop,
+  onStopConsult,
+  updating,
+  onUpdate,
+}: {
+  agent: AgentState;
+  info: ProviderInfo;
+  enabled: boolean;
+  enabledBusy: boolean;
+  onToggleEnabled(next: boolean): void;
+  model: string | null;
+  modelPinned: boolean;
+  onPickModel(model: string | null): void;
+  onClearModel(): void;
+  usage: ProviderUsage | null;
+  usageLoading: boolean;
+  configureOpen: boolean;
+  onOpenConfigure(): void;
+  onCloseConfigure(): void;
+  notice: string | null;
+  fields: SettingField[];
+  drafts: Record<string, SettingValue>;
+  fieldsDisabled: boolean;
+  dirtyKeys: string[];
+  onDraftChange(key: string, value: SettingValue): void;
+  onRevert(key: string): void;
+  onSaveSettings(): void;
+  onDiscardSettings(): void;
+  onStop(): void;
+  onStopConsult(runId: string): void;
+  updating: boolean;
+  onUpdate(): void;
+}) {
+  const theme = providerTheme[agent.provider];
+  const busy = agent.run !== null || agent.consultCount > 0;
+  const label = modelLabel(agent.provider, model, info.models);
+
+  return (
+    <li
+      id={`agent-${agent.provider}`}
+      className={cn(
+        "relative flex scroll-mt-4 flex-col overflow-hidden rounded-panel border bg-surface-1 p-3 transition-colors",
+        busy ? "border-line-strong" : "border-line",
+        (!enabled || agent.activity === "offline") && "opacity-70",
+      )}
+    >
+      {busy && (
+        <span
+          aria-hidden
+          className={cn("pointer-events-none absolute inset-x-0 top-0 h-px opacity-70", theme.fill)}
+        />
+      )}
+
+      <div className="flex items-center gap-2.5">
+        <AgentAvatar
+          provider={agent.provider}
+          activity={enabled ? agent.activity : "offline"}
+          size={30}
+          title={`${info.label}: ${ACTIVITY_LABEL[agent.activity]}`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className={cn("truncate text-xs font-semibold", theme.text)}>{info.label}</span>
+            <Badge tone={ACTIVITY_TONE[enabled ? agent.activity : "offline"]} dot pulse={busy}>
+              {enabled ? ACTIVITY_LABEL[agent.activity] : "Off"}
+            </Badge>
+          </div>
+        </div>
+        <Switch
+          checked={enabled}
+          disabled={enabledBusy}
+          aria-label={`Enable ${info.label}`}
+          onCheckedChange={onToggleEnabled}
+        />
+      </div>
+
+      <p
+        className={cn(
+          "mt-2 line-clamp-2 text-xs leading-snug",
+          !enabled || agent.activity === "offline" ? "text-fg-dim" : "text-fg-muted",
+        )}
+      >
+        {!enabled ? "Turned off — hidden from the agent picker." : agent.caption}
+      </p>
+
+      {agent.run !== null && (
+        <>
+          <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 border-t border-line pt-2 text-xs">
+            <div>
+              <dt className="text-xs text-fg-dim">elapsed</dt>
+              <dd className="numeric text-fg">{formatElapsed(agent.run.elapsedMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-fg-dim">tokens</dt>
+              <dd className="numeric text-fg">
+                {agent.run.usage === null ? "—" : formatTokens(agent.run.usage.totalTokens)}
+              </dd>
+            </div>
+            <div className="col-span-2 min-w-0">
+              <dt className="text-xs text-fg-dim">workspace</dt>
+              <dd className="truncate text-fg" title={agent.run.workspace.workDirectory}>
+                {agent.run.workspace.name}
+              </dd>
+            </div>
+          </dl>
+          <div className="mt-2 flex gap-1.5">
+            <Link
+              href="/"
+              className="flex-1 rounded-md px-2 py-1 text-center text-xs text-fg-muted ring-1 ring-inset ring-line transition-colors hover:bg-surface-2 hover:text-fg"
+            >
+              Transcript
+            </Link>
+            <Button size="sm" variant="danger" onClick={onStop}>
+              Stop
+            </Button>
+          </div>
+        </>
+      )}
+
+      {agent.consultCount > 0 && (
+        <div className={cn("flex flex-col gap-1.5", agent.run !== null ? "mt-2" : "mt-2 border-t border-line pt-2")}>
+          <div className="text-xs uppercase tracking-wider text-fg-dim">
+            {agent.consultCount} asking
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {agent.consults.map((consult) => (
+              <AskChip key={consult.runId} run={consult} onStop={() => onStopConsult(consult.runId)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <UsageBlock usage={usage} loading={usageLoading} available={enabled && agent.available} />
+
+      {/* mt-auto keeps the trigger on the baseline of every card in a row. */}
+      <div className="mt-auto pt-2">
+        <button
+          type="button"
+          onClick={onOpenConfigure}
+          aria-haspopup="dialog"
+          className="flex w-full items-center justify-between gap-2 rounded-md border border-line bg-surface-2 px-2 py-1.5 text-xs text-fg-muted transition-colors hover:border-line-strong hover:bg-surface-3 hover:text-fg"
+        >
+          <span className="flex items-center gap-1.5">
+            <GearIcon />
+            Model &amp; settings
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            {dirtyKeys.length > 0 && (
+              <span className="shrink-0 rounded bg-warning/15 px-1 text-xs uppercase tracking-wider text-warning">
+                {dirtyKeys.length} unsaved
+              </span>
+            )}
+            <span className="truncate text-fg-dim">{label ?? "default"}</span>
+          </span>
+        </button>
+      </div>
+
+      <ConfigureDialog
+        open={configureOpen}
+        onClose={onCloseConfigure}
+        info={info}
+        notice={notice}
+        model={model}
+        modelPinned={modelPinned}
+        onPickModel={onPickModel}
+        onClearModel={onClearModel}
+        fields={fields}
+        drafts={drafts}
+        fieldsDisabled={fieldsDisabled}
+        dirtyKeys={dirtyKeys}
+        onDraftChange={onDraftChange}
+        onRevert={onRevert}
+        onSaveSettings={onSaveSettings}
+        onDiscardSettings={onDiscardSettings}
+      />
+
+      <footer className="mt-2 flex items-baseline gap-2 border-t border-line pt-2 text-xs text-fg-dim">
+        <span title={info.binary ?? info.transport} className="shrink-0">
+          {info.version ?? "version unknown"}
+        </span>
+        {/* Claude's SDK installs side by side, so only a CLI has to be idle. */}
+        <button
+          type="button"
+          onClick={onUpdate}
+          disabled={updating || (info.transport === "spawn" && (busy || info.binary === null))}
+          title={
+            info.transport === "sdk"
+              ? "Install the latest Agent SDK. New runs use it without a server restart."
+              : busy
+                ? "Wait for this agent's run to end before updating its CLI"
+                : "Run this CLI's own updater. New runs use the new version."
+          }
+          className="shrink-0 rounded px-1 text-accent transition-colors hover:bg-accent/10 disabled:cursor-not-allowed disabled:text-fg-dim disabled:opacity-60 disabled:hover:bg-transparent"
+        >
+          {updating ? "Updating…" : info.transport === "sdk" ? "Update SDK" : "Update CLI"}
+        </button>
+        <span title="permission mode" className="min-w-0 flex-1 truncate text-right">
+          {info.permissionMode} · {info.commandEnforcement ?? "cooperative"} commands
+        </span>
+      </footer>
+    </li>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0">
+      <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M8 1.4v1.6M8 13v1.6M1.4 8h1.6M13 8h1.6M3.3 3.3l1.2 1.2M11.5 11.5l1.2 1.2M12.7 3.3l-1.2 1.2M4.5 11.5l-1.2 1.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * One provider's model choice and its own settings, in a dialog.
+ *
+ * Both used to expand inside the card, which pushed every other card down the
+ * grid to read one agent's configuration. A dialog keeps the board still and
+ * gives the setting rows the width they were designed for.
+ */
+function ConfigureDialog({
+  open,
+  onClose,
+  info,
+  notice,
+  model,
+  modelPinned,
+  onPickModel,
+  onClearModel,
+  fields,
+  drafts,
+  fieldsDisabled,
+  dirtyKeys,
+  onDraftChange,
+  onRevert,
+  onSaveSettings,
+  onDiscardSettings,
+}: {
+  open: boolean;
+  onClose(): void;
+  info: ProviderInfo;
+  notice: string | null;
+  model: string | null;
+  modelPinned: boolean;
+  onPickModel(model: string | null): void;
+  onClearModel(): void;
+  fields: SettingField[];
+  drafts: Record<string, SettingValue>;
+  fieldsDisabled: boolean;
+  dirtyKeys: string[];
+  onDraftChange(key: string, value: SettingValue): void;
+  onRevert(key: string): void;
+  onSaveSettings(): void;
+  onDiscardSettings(): void;
+}) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="lg"
+      title={info.label}
+      description="The model this agent runs with next, and the provider's own settings. Model choice applies immediately; settings need saving."
+      footer={
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="min-w-0 truncate text-xs text-fg-dim">
+            {dirtyKeys.length > 0
+              ? `${dirtyKeys.length} unsaved change${dirtyKeys.length === 1 ? "" : "s"}`
+              : (notice ?? "")}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            {dirtyKeys.length > 0 && (
+              <Button size="sm" variant="ghost" onClick={onDiscardSettings} disabled={fieldsDisabled}>
+                Discard
+              </Button>
+            )}
+            {dirtyKeys.length > 0 ? (
+              <Button size="sm" variant="success" onClick={onSaveSettings} loading={fieldsDisabled}>
+                Save {dirtyKeys.length}
+              </Button>
+            ) : (
+              <Button size="sm" onClick={onClose}>
+                Done
+              </Button>
+            )}
+          </span>
+        </div>
+      }
+    >
+      <section>
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Model</h3>
+        <div className="mt-2">
+          <ModelRow
+            provider={info}
+            selected={model}
+            pinned={modelPinned}
+            onSelect={onPickModel}
+            onClear={onClearModel}
+          />
+        </div>
+      </section>
+
+      <section className="mt-4 border-t border-line pt-4">
+        <h3 className="text-xs uppercase tracking-wider text-fg-dim">Settings</h3>
+        {fields.length === 0 ? (
+          <p className="py-2 text-xs text-fg-dim">Settings are still loading…</p>
+        ) : (
+          fields.map((field) => (
+            <SettingRow
+              key={field.key}
+              field={field}
+              draft={drafts[field.key]}
+              disabled={fieldsDisabled}
+              onChange={onDraftChange}
+              onRevert={onRevert}
+            />
+          ))
+        )}
+      </section>
+    </Modal>
+  );
+}
+
+/**
+ * Compact model picker for a single provider card, using the shared catalog
+ * and pinned model selection.
+ */
+function ModelRow({
+  provider,
+  selected,
+  pinned,
+  onSelect,
+  onClear,
+}: {
+  provider: ProviderInfo;
+  selected: string | null;
+  pinned: boolean;
+  onSelect(model: string | null): void;
+  onClear(): void;
+}) {
+  const [custom, setCustom] = useState(
+    selected !== null && !provider.models.some((option) => option.id === selected) ? selected : "",
+  );
+  const [filter, setFilter] = useState("");
+  const theme = providerTheme[provider.id];
+  const needle = filter.trim().toLowerCase();
+  const options = needle === ""
+    ? provider.models
+    : provider.models.filter((option) => `${option.id ?? ""} ${option.label} ${option.hint}`.toLowerCase().includes(needle));
+
+  if (provider.modelSelectionMode === "auto") {
+    return (
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-xs text-fg-dim">
+          <span className="rounded bg-accent/10 px-1.5 py-0.5 font-medium text-accent">Auto Select</span>
+          <span>{MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}</span>
+        </div>
+        <div className={cn("rounded-md px-2.5 py-2 text-xs ring-1 ring-inset", theme.chip)}>
+          <div className="font-medium">
+            {modelLabel(provider.id, provider.model, provider.models) ?? "No eligible model"}
+          </div>
+          <p className="mt-1 text-xs leading-snug text-fg-dim">
+            Selected automatically for this tier. Switch Model choice to Manual above to choose a model.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2 text-xs text-fg-dim">
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-fg-muted">
+          {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].label}
+        </span>
+        {provider.id === "cursor" && (
+          <span className="rounded bg-surface-3 px-1.5 py-0.5 capitalize text-fg-muted">
+            {provider.reasoningEffort} effort
+          </span>
+        )}
+        <span>{provider.models.length}{provider.totalModels !== provider.models.length ? ` of ${provider.totalModels}` : ""} models</span>
+      </div>
+      {provider.models.length > 8 && (
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search model, family, or capability…"
+          spellCheck={false}
+          className="mb-2 w-full rounded border border-line bg-surface-0 px-2 py-1.5 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
+        />
+      )}
+      <div className="flex flex-wrap gap-1">
+        {options.map((option) => {
+          const isSelected = option.id === selected;
+          return (
+            <button
+              key={option.id ?? "__default__"}
+              type="button"
+              title={`${option.id === null ? "provider default" : classifyModel(provider.id, option.id) ?? "unclassified"} · ${option.hint}`}
+              onClick={() => onSelect(option.id)}
+              className={cn(
+                "rounded-md px-2 py-1 text-xs transition-colors ring-1 ring-inset",
+                isSelected ? theme.chip : "text-fg-muted ring-line hover:bg-surface-2 hover:text-fg",
+              )}
+            >
+              {option.label}
+              {option.id === provider.tierDefaultModel ? " · recommended" : ""}
+            </button>
+          );
+        })}
+        {options.length === 0 && <p className="py-2 text-xs text-fg-dim">No matching models.</p>}
+      </div>
+      {provider.modelAccessTier === "all" && (
+      <div className="mt-1.5 flex gap-1.5">
+        <input
+          value={custom}
+          onChange={(event) => setCustom(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            const value = custom.trim();
+            if (value !== "") onSelect(value);
+          }}
+          placeholder="custom model id…"
+          spellCheck={false}
+          className="min-w-0 flex-1 rounded border border-line bg-surface-0 px-2 py-1 text-xs text-fg placeholder:text-fg-dim focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            const value = custom.trim();
+            if (value !== "") onSelect(value);
+          }}
+          disabled={custom.trim() === ""}
+          className="shrink-0 rounded border border-line bg-surface-2 px-2 text-xs text-fg-muted disabled:opacity-40"
+        >
+          use
+        </button>
+      </div>
+      )}
+      {provider.modelAccessTier !== "all" && (
+        <p className="mt-2 text-xs text-fg-dim">
+          {MODEL_ACCESS_TIER_INFO[provider.modelAccessTier].description} Custom IDs are available under All models.
+        </p>
+      )}
+      {pinned && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-fg-dim hover:text-fg-muted"
+        >
+          ↺ follow settings{provider.model === null ? "" : ` (${provider.model})`}
+        </button>
+      )}
+    </div>
+  );
+}

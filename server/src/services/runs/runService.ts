@@ -1,0 +1,1241 @@
+import type { StartExecuteArgs, StartConsultArgs, StartProgramAuthorArgs, StartInstructionAuthorArgs, StartVerifySuiteArgs } from "../../contracts/runRequests.ts";
+import type { ProcessIdentity } from "../../contracts/execution.ts";
+import { resolveStationPolicy } from "@hydra/shared";
+import { executionHash } from "../../repositories/executionStore.ts";
+import { permissionForRun } from "../../config/settings.ts";
+import { compatibleSession, conversationContext } from "./conversationContext.ts";
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { classifyFailure, INSTRUCTION_FILE_NAMES, isProviderId, type InstructionProposalRecord, type ProgramDraftRecord, type NormalizedEvent, type ProviderId, type ProviderInfo, type WorkspaceInstructionField } from "@hydra/shared";
+import { detectProviders, getAdapter, resolveProviderModel } from "../../providers/registry.ts";
+import { consultWorkspaceMarkdown, contextMarkdown, liveTreeBanner, progressApiMarkdown } from "../agents/agentContext.ts";
+import { programAuthorPrompt, programRevisionPrompt } from "../programs/programAuthor.ts";
+import { programBriefMarkdown, programConsultMarkdown } from "../../domain/programs/programBrief.ts";
+import { config } from "../../config/config.ts";
+import { newId } from "../../utils/ids.ts";
+import { createLogger } from "../../utils/logger.ts";
+import { isCooling, markCooling } from "../../providers/providerHealth.ts";
+import { runHub } from "./runHub.ts";
+import { createAgentShim, removeAgentShim } from "../agents/agentShim.ts";
+import { runContexts } from "./runContext.ts";
+import { startRun } from "./runner.ts";
+import { captureInstructionRun, materialize, proposeFromWorkingTree, readInstructionFile } from "../workspaces/workspaceInstructions.ts";
+import { instructionAuthorPrompt } from "../agents/instructionAuthor.ts";
+import { pipelineScheduler } from "../pipeline/pipelineScheduler.ts";
+import { executionStore, DECOMPOSE_MAX_DEPTH, WorkspaceError, workspaces } from "../../repositories/workspaces.ts";
+import { checkpointRun, prepareChangeCapture, refreshChangeCapture, releaseChangeCapture, type PreparedChangeCapture } from "../workspaces/gitChanges.ts";
+
+const CONSULT_LIMIT = 3;
+
+const log = createLogger("run");
+
+export class ProviderUnavailableError extends WorkspaceError {
+  constructor(providerId: string, detail: string, readonly providers: ProviderInfo[]) {
+    super(409, "provider_unavailable", `Provider "${providerId}" is not available.`, { detail });
+  }
+}
+
+/** Saved, custom, or clarification execute. */
+export async function startExecute(args: StartExecuteArgs): Promise<{ runId: string }> {
+  const workspaceId = args.workspaceId;
+  const providerId = args.provider;
+  const mode = args.mode ?? "execute";
+  const prompt = args.prompt;
+  const promptId = args.promptId;
+  const question = args.question;
+  const history = args.threadId && !args.freshContext ? workspaces.conversationHistory(args.workspaceId, args.threadId) : [];
+  const latest = history.at(-1);
+  // A native writable session is reusable only for the immediately preceding
+  // turn with the same provider and permission class. Otherwise hand off history.
+  let resumeSessionId = !args.threadId ? args.resumeSessionId?.trim() || null : latest?.provider === args.provider && latest.role === "execute" && latest.sessionId === args.resumeSessionId
+    ? args.resumeSessionId?.trim() || null : null;
+  const threadId = args.threadId?.trim() || null;
+  const pipelineManaged = args.pipelineRunId !== undefined;
+
+  const redirect = args.redirect !== undefined && promptId !== undefined && mode === "execute" && args.pipelineRunId !== undefined ? args.redirect : null;
+  if (redirect !== null) resumeSessionId = redirect.sessionId;
+  if (resumeSessionId !== null && redirect === null && (mode !== "execute" || (promptId === undefined && (typeof prompt !== "string" || prompt.trim() === "")))) {
+    throw new WorkspaceError(422, "invalid_session_resume", "Only an execute turn can continue a compatible provider session.");
+  }
+
+  const owner = workspaces.activePipelineForWorkspace(workspaceId);
+  if (owner !== null) {
+    const authorized = args.pipelineRunId === owner.id;
+    const clarifyWaiting =
+      mode === "clarify" &&
+      owner.state === "WAITING_HUMAN" &&
+      promptId === owner.currentPromptId;
+    if (!authorized && !clarifyWaiting) {
+      throw new WorkspaceError(
+        409,
+        "workspace_busy",
+        "A pipeline is already active in this workspace.",
+        { detail: "Stop or finish the suite pipeline before starting another execute in this working directory." },
+      );
+    }
+    if (authorized && owner.currentPromptId !== null && promptId !== owner.currentPromptId) {
+      throw new WorkspaceError(
+        409,
+        "workspace_busy",
+        "A pipeline is already active in this workspace.",
+        { detail: "The pipeline is on a different station." },
+      );
+    }
+  }
+
+  const busy = runHub.activeForWorkspace(workspaceId);
+  if (busy !== undefined) {
+    throw new WorkspaceError(
+      409,
+      "workspace_busy",
+      `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`,
+      { detail: "Stop the running agent before starting another in the same working directory." },
+    );
+  }
+
+  const providerInfo = await requireAvailableProvider(providerId);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
+  const permissionKey = JSON.stringify(permissionForRun(provider, "inherit"));
+  if (threadId) resumeSessionId = compatibleSession(latest, provider, model, "execute", permissionKey);
+
+  let resolvedPrompt: string;
+  let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
+  let customDisplay = "";
+  let customTitle = "";
+  let clarificationId: number | null = null;
+  let activeContextRunId: string | null = null;
+  let executeShimPath: string | null = null;
+  const managedEffect = args.executionEffectId ? executionStore.effect(args.executionEffectId) : null;
+  const adopted = promptId === undefined ? null : executionStore.forPrompt(promptId);
+  if (adopted?.engine === "supervised" && (!managedEffect || managedEffect.promptId !== promptId || managedEffect.state !== "CLAIMED")) {
+    throw new WorkspaceError(409,"managed_execution_required","Start adopted requirements through the supervised pipeline so budget and ownership are reserved.");
+  }
+  const plannedRunId = managedEffect?.runId ?? newId("run");
+  if(managedEffect) executionStore.assertAttempt(plannedRunId);
+
+
+  const workspace = workspaces.get(workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  // Saved work-item runs claim a clean repository before the run row exists,
+  // whether an operator starts them directly or a pipeline starts them. A tree
+  // that cannot take a managed writer is refusing the start, not a run failure:
+  // done the other way round, the refusal was recorded as a crashed run, the
+  // work item went FAILED, and the scheduler blamed whichever provider it had
+  // just picked.
+  let capture: PreparedChangeCapture | null = null;
+  const openCapture = (): PreparedChangeCapture => {
+    // The provider CLI reads these off disk before it reads anything we send,
+    // so they are in place — and ignored — before the tree is inspected.
+    materialize(workspace);
+    return prepareChangeCapture(workspace.workDirectory, plannedRunId);
+  };
+  if (promptId !== undefined) {
+    const record = workspaces.resolvePrompt(workspaceId, promptId);
+    savedPrompt = record;
+    if (mode === "clarify") {
+      if (record.status !== "BLOCKED") throw new WorkspaceError(409, "prompt_not_blocked", "Clarification is only available while a prompt is blocked");
+      if (typeof question !== "string" || question.trim() === "") throw new WorkspaceError(422, "validation_error", "A clarification question is required");
+      clarificationId = workspaces.beginClarification(promptId, question, provider, model);
+      resolvedPrompt = `${contextMarkdown(workspaces.agentContext(workspaceId, promptId), "clarify")}\n\n## Human question\n\n${question.trim()}`;
+    } else {
+      if (!record.ready) throw new WorkspaceError(409, "dependencies_incomplete", `Prompt is waiting on: ${record.blockedBy.join(", ")}`);
+      capture = openCapture();
+      const context = workspaces.agentContext(workspaceId,promptId);
+      const instructionHash = executionHash({stationPolicy:workspaces.stationPolicy(promptId),execution:managedEffect?{contractId:managedEffect.contractId,revision:managedEffect.revision,policy:adopted?.policy,unit:executionStore.plan(managedEffect.contractId).units.find(u=>u.promptId===promptId)}:null,workspace:context.workspace,program:context.program,suite:context.suite,prompt:record.content,briefings:context.briefings,files:(Object.keys(INSTRUCTION_FILE_NAMES) as WorkspaceInstructionField[]).map(field=>readInstructionFile(workspace.workDirectory,field))});
+      const compatible = workspaces.savedSession(promptId,provider,model,instructionHash,permissionKey);
+      if(redirect === null) {
+        if(resumeSessionId !== null && resumeSessionId !== compatible) { releaseChangeCapture(plannedRunId); throw new WorkspaceError(422,"invalid_session_resume","Saved-item resume must match its latest provider, model, instructions and permissions"); }
+        resumeSessionId = args.freshContext ? null : (args.reuseSavedSession ? compatible : resumeSessionId);
+      }
+      const credential = runContexts.create(plannedRunId, workspaceId, promptId);
+      try {
+        workspaces.beginAgentRun({
+          runId: plannedRunId,
+          workspaceId,
+          promptId,
+          provider,
+          model,
+          tokenHash: credential.tokenHash,
+          expiresAt: credential.expiresAt,
+          role: "execute",
+        });
+      } catch (error) {
+        runContexts.revoke(plannedRunId);
+        releaseChangeCapture(plannedRunId);
+        throw error;
+      }
+      activeContextRunId = plannedRunId;
+      workspaces.recordExecutionManifest(plannedRunId,instructionHash,permissionKey);
+      const depth = workspaces.decomposeDepth(promptId);
+      // One command with this run's credentials already in it, rather than a
+      // curl the model has to assemble. Per-run rather than per-process: the
+      // Claude adapter runs in this process, so credentials on process.env
+      // would be shared by every concurrent run.
+      executeShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port,...(managedEffect?{generation:managedEffect.generation,planRevision:managedEffect.revision}:{}) });
+      // The context is inlined rather than fetched. Handing it over as a tool
+      // result cost a turn before any work started, put it where it could not
+      // serve as a cached prompt prefix, and led agents to fetch it more than
+      // once and re-read a saved copy — three copies of the same text in one
+      // transcript. The endpoint stays for refreshes and for the Progress API.
+      // A resumed session already holds the work item; what it lacks is the
+      // note and this run's credentials (the old launcher was revoked with
+      // the old run).
+      if (redirect !== null) resolvedPrompt = [
+        "# Message from the operator",
+        "",
+        "You were interrupted so this message reaches you now. It overrides earlier instructions where they disagree.",
+        "",
+        redirect.text,
+        "",
+        "---",
+        "",
+        `Continue work item ${record.externalKey ?? record.title} in light of it. This run has new credentials: from now on use only the launcher below; the one from earlier in this conversation no longer works.`,
+        "",
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: true, canAsk: false, shimPath:executeShimPath }),
+      ].join("\n");
+      else resolvedPrompt = [
+        `# Execute saved work item ${record.externalKey ?? record.title}`,
+        "",
+        "The context below is authoritative and complete. There is no Markdown prompt file to find and no tracker file to edit — this work item lives in a database outside this working directory, and the command below is the only thing that can change it. Record progress within this station's capabilities, and report your own outcome before finishing.",
+        "",
+        "---",
+        "",
+        contextMarkdown(workspaces.agentContext(workspaceId, promptId), "execute", { depth, maxDepth: DECOMPOSE_MAX_DEPTH, unattended: pipelineManaged }),
+        "",
+        progressApiMarkdown({ runId: plannedRunId, token: credential.token, port: config.port, canDecompose: depth < DECOMPOSE_MAX_DEPTH, canCheckpoint: true, canAsk: !pipelineManaged, stationPolicy:workspaces.stationPolicy(promptId), shimPath:executeShimPath }),
+      ].join("\n");
+    }
+  } else {
+    resolvedPrompt = prompt?.trim() ?? "";
+    customDisplay = resolvedPrompt;
+    if (resolvedPrompt === "") throw new WorkspaceError(422, "validation_error", "Prompt is empty");
+    if (workspace.description.trim() !== "") resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n# Work item\n\n${resolvedPrompt}`;
+    if (pipelineManaged) capture = openCapture();
+    const credential = runContexts.create(plannedRunId, workspaceId, null);
+    try {
+      customTitle = workspaces.beginCustomExecuteRun({
+        runId: plannedRunId,
+        workspaceId,
+        provider,
+        model,
+        tokenHash: credential.tokenHash,
+        expiresAt: credential.expiresAt,
+        displayText: customDisplay,
+        threadId: threadId ?? plannedRunId,
+      });
+    } catch (error) {
+      runContexts.revoke(plannedRunId);
+      releaseChangeCapture(plannedRunId);
+      throw error;
+    }
+    activeContextRunId = plannedRunId;
+    executeShimPath=createAgentShim({runId:plannedRunId,token:credential.token,port:config.port});
+    if (capture !== null) {
+      const checkpoint=executeShimPath===null
+        ? `git add -A && git commit -m "Short imperative summary"`
+        : `${JSON.stringify(executeShimPath)} checkpoint --message "Short imperative summary"`;
+      resolvedPrompt += `\n\n## Git checkpoint\n\nBefore you finish, commit every workspace change with a meaningful imperative subject of 72 characters or fewer:\n\n\`\`\`bash\n${checkpoint}\n\`\`\`\n\nDo not reset or rewrite existing history. The run's code review is built from commits after its starting revision.`;
+    }
+    if (!pipelineManaged && executeShimPath !== null) {
+      const ask = JSON.stringify(executeShimPath);
+      resolvedPrompt += `\n\n## Decisions from the operator\n\nIf a user decision materially changes the result and cannot be safely inferred, put every question in \`questions.json\` and run \`${ask} ask --file questions.json\`. Use 1–8 questions with \`id\`, \`prompt\`, \`kind\` (\`single\`, \`multiple\`, or \`text\`), optional \`options\`, \`recommendation\`, and \`why\`. Ask once; the command waits and returns all answers, then continue this run.`;
+    }
+  }
+
+  if(args.recoveryBrief) resolvedPrompt += `
+
+## Supervisor handoff
+
+${args.recoveryBrief}
+
+Use only this run's launcher and current instructions. Checkpoint does not end the session; keep working until the bounded unit is ready to verify or a genuine execution boundary is reached.`;
+  if(resumeSessionId && redirect===null && promptId!==undefined) resolvedPrompt = `This resumes the same work unit. The following instructions and credentials supersede the previous turn's launcher.
+
+${resolvedPrompt}`;
+
+  if (threadId && !resumeSessionId && !args.freshContext) resolvedPrompt += `
+
+${conversationContext(history)}`;
+  let clarificationAnswer = "";
+  let executionAnswer = "";
+  // A clarification writes nothing, so it claims no repository — but its
+  // provider still reads the instruction files off disk.
+  if (capture === null) materialize(workspace);
+  // The run row exists from here on, so a start that fails has to close it:
+  // left STARTING, it holds the work item IN_PROGRESS and the repository claim
+  // until the server restarts.
+  const abandonStart = (): void => {
+    releaseChangeCapture(plannedRunId);
+    if (activeContextRunId === null) return;
+    workspaces.finishAgentRun(activeContextRunId, "error");
+    runContexts.revoke(activeContextRunId);
+    removeAgentShim(activeContextRunId);
+  };
+  if (activeContextRunId !== null && capture !== null) {
+    try {
+      workspaces.beginRunChangeSet({runId:activeContextRunId,workspaceId:workspace.id,...capture});
+    } catch (error) {
+      abandonStart();
+      throw error;
+    }
+  }
+  let handle: ReturnType<typeof startRun>;
+  try {
+    handle = startRun({
+      runId: plannedRunId,
+      adapter: getAdapter(provider),
+      prompt: resolvedPrompt,
+      cwd: workspace.workDirectory,
+      model,
+      role: "execute",
+      stationPolicy: mode === "clarify"
+        ? { version:1, editFiles:false, build:false, generateContracts:false, verification:"deferred", verifier:null }
+        : savedPrompt ? workspaces.stationPolicy(savedPrompt.id) : resolveStationPolicy(prompt ?? ""),
+      launcherPath: executeShimPath,
+      permissionOverride: "inherit",
+      resumeSessionId,
+      preserveModel:resumeSessionId!==null,
+      ...(managedEffect ? {budget:{maxWallClockMs:adopted!.policy.workerMs,maxInputTokens:adopted!.policy.workerTokens,maxTotalTokens:adopted!.policy.workerTokens},onSpawn:(identity:ProcessIdentity)=>executionStore.attachProcess(managedEffect.id,identity)} : {}),
+      onEvent: (event) => {
+        if (event.type === "assistant_text" && event.payload.kind === "message") {
+          if (clarificationId !== null) clarificationAnswer += event.payload.text;
+          else if (activeContextRunId !== null) executionAnswer += event.payload.text;
+        }
+        if (event.type === "result" && event.payload.text) {
+          if (clarificationId !== null) clarificationAnswer = event.payload.text;
+          else if (activeContextRunId !== null) executionAnswer = event.payload.text;
+        }
+        if (activeContextRunId !== null) workspaces.recordAgentEvent(activeContextRunId, event);
+        runHub.event(plannedRunId, event);
+      },
+      onEnd: (runId, state, metrics) => {
+        if(managedEffect) {
+          try {executionStore.assertAttempt(runId);} catch {runContexts.revoke(runId);removeAgentShim(runId);runHub.end(runId,state);return;}
+        }
+        const endedPromptId = savedPrompt?.id ?? promptId;
+        const endedWorkspaceId = workspace.id;
+        let changesNeedCommit=false;
+        if(activeContextRunId!==null&&capture!==null){
+          try { changesNeedCommit=refreshChangeCapture(activeContextRunId).state==="NEEDS_COMMIT"; }
+          catch(error){log.warn(`could not finalize changes for ${activeContextRunId}`,error);}
+        }
+        // A budget stop is not a verdict on the work, and the agent that just hit
+        // it is the only cheap source of "what is done and what remains". Before
+        // anything concludes anything, it gets a short turn to say so — on the
+        // same provider session, so it does not pay to re-read what it just read.
+        //
+        // The status transition is held back for exactly as long as that takes:
+        // applying it here would move the item out of IN_PROGRESS and the wrap-up
+        // run's own post would be refused as an invalid transition.
+        if (managedEffect && changesNeedCommit && capture) {
+          try { checkpointRun(runId,"Preserve supervised worker checkpoint",provider,model); changesNeedCommit=false; }
+          catch(error) { log.warn(`supervised checkpoint failed for ${runId}`,error); }
+        }
+        const wrapUp =
+          managedEffect === null && mode === "execute" &&
+          activeContextRunId !== null &&
+          endedPromptId !== undefined &&
+          (changesNeedCommit||(typeof metrics.stopReason === "string"&&metrics.stopReason.startsWith("budget_"))) &&
+          workspaces.promptOutcome(endedPromptId).status === "IN_PROGRESS"
+            ? { promptId: endedPromptId, stopReason: metrics.stopReason??"uncommitted_changes", sessionId: metrics.sessionId }
+            : null;
+        if (activeContextRunId !== null) {
+          workspaces.finishAgentRun(activeContextRunId, state, executionAnswer, metrics, { deferStatus: wrapUp !== null });
+          runContexts.complete(activeContextRunId);
+          // The launcher holds this run's token. The credential is collapsed to a
+          // short TTL above, but a live-looking token sitting in tmp after its run
+          // is over is not something to leave lying around.
+          removeAgentShim(activeContextRunId);
+          activeContextRunId = null;
+        }
+        if(wrapUp===null)releaseChangeCapture(runId);
+        if (clarificationId !== null) {
+          workspaces.finishClarification(
+            clarificationId,
+            state === "done" ? "DONE" : state === "interrupted" ? "INTERRUPTED" : "ERROR",
+            clarificationAnswer,
+          );
+        }
+        runHub.end(runId, state);
+        if (mode === "execute") proposeFromWorkingTree(endedWorkspaceId, runId);
+        const tellPipeline = () => {
+          if (mode !== "execute" || endedPromptId === undefined) return;
+          // Always the *source* run id: the scheduler's `currentRunId` guard keys
+          // on the run it started, and the wrap-up's own end must not fire this a
+          // second time.
+          void pipelineScheduler
+            .onExecuteEnded({runId,workspaceId:endedWorkspaceId,promptId:endedPromptId,processState:state})
+            .catch((error:unknown)=>log.error(`pipeline advance failed after run ${runId}`,error));
+        };
+        if (wrapUp === null) { tellPipeline(); return; }
+        void (async () => {
+          // A cooling source provider cannot resume its session; pick another
+          // available provider for a fresh short turn, or skip the wrap-up and
+          // continue without notes (prompt 05).
+          let wrapProvider = provider;
+          let wrapModel = model;
+          let wrapSession = wrapUp.sessionId;
+          // A run its provider cut off — out of allowance, rate-limited, signed
+          // out — cannot be resumed for a wrap-up either: the turn dies on the
+          // same error two seconds in and the tree stays uncommitted. The
+          // scheduler cools the provider when it hears about this run; that is
+          // after the wrap-up, so it is said here first.
+          if (state === "error") {
+            const failure = classifyFailure({ errorText: workspaces.runFailureFacts(runId).errorText, toolCalls: metrics.toolCalls, startFailed: false });
+            if (failure.class === "transient_provider") markCooling(provider, failure.id ?? "died_before_work", undefined, failure.because);
+          }
+          if (isCooling(provider)) {
+            const providers = await detectProviders();
+            const next = providers.find((item) => item.available && item.id !== provider && !isCooling(item.id));
+            if (next === undefined) {
+              log.warn(`wrap-up skipped after run ${runId}: ${provider} is cooling and no fallback is free`);
+              workspaces.applyDeferredRunEnd(runId);
+              return;
+            }
+            wrapProvider = next.id;
+            // The model detection resolved for this provider, not null: under
+            // a restricted model tier with no model configured, null resolves
+            // to nothing and the wrap-up dies before it launches.
+            wrapModel = next.model;
+            wrapSession = null;
+            log.info(`wrap-up fallback after run ${runId}: ${provider}→${wrapProvider}`);
+          }
+          const started = await startWrapUp({
+            workspaceId: endedWorkspaceId,
+            promptId: wrapUp.promptId,
+            sourceRunId: runId,
+            provider: wrapProvider,
+            model: wrapModel,
+            sessionId: wrapSession,
+            stopReason: wrapUp.stopReason,
+          });
+          await started.done;
+        })()
+          .catch((error: unknown) => {
+            // The provider is gone, or the run could not be recorded. The item
+            // must land exactly where it would have without this feature rather
+            // than sitting IN_PROGRESS forever waiting for a turn that is not
+            // coming.
+            log.error(`wrap-up could not start after run ${runId}`, error);
+            workspaces.applyDeferredRunEnd(runId);
+          })
+          .finally(() => {
+            // A wrap-up that ran released this itself. One that was skipped or
+            // never started did not, and the claim would refuse every later
+            // writer in this repository as `git_repository_busy`.
+            releaseChangeCapture(runId);
+            tellPipeline();
+          });
+      },
+    });
+  } catch (error) {
+    abandonStart();
+    throw error;
+  }
+  // Marked RUNNING before the announcement, so a client that reacts to
+  // run_started by refetching never reads a stale STARTING row.
+  if (activeContextRunId !== null) workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    clientRequestId: args.clientRequestId,
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: savedPrompt === null
+      ? { type: "custom", displayText: customDisplay, threadId: threadId ?? plannedRunId, title: customTitle }
+      : mode === "clarify"
+        ? { type: "clarification", promptId: savedPrompt.id, promptKey: savedPrompt.externalKey, title: savedPrompt.title, question: question!.trim() }
+        : { type: "saved", promptId: savedPrompt.id, promptKey: savedPrompt.externalKey, title: savedPrompt.title, programName: savedPrompt.programName, suiteName: savedPrompt.suiteName },
+    role: "execute",
+    permissionMode: handle.permissionMode,
+  });
+  if (threadId) { const contextEvent: NormalizedEvent = { id: newId("evt"), runId: plannedRunId, provider, model, timestamp: new Date().toISOString(), type: "status", payload: {state: "starting", elapsedMs: 0, usage: null, detail: null, conversation: { permissionKey, context: args.freshContext ? "Fresh conversation requested" : conversationContext(history), nativeSessionId: resumeSessionId }} }; workspaces.recordAgentEvent(plannedRunId, contextEvent); runHub.event(plannedRunId, contextEvent); }
+  void handle.done.catch((error: unknown) => log.error("run failed", error));
+  return { runId: handle.runId };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The wrap-up turn                                                           */
+/* -------------------------------------------------------------------------- */
+
+/** What a wrap-up turn is allowed to spend. Long enough to write, not to work. */
+const WRAP_UP_BUDGET = {
+  maxToolCalls: 12,
+  maxWallClockMs: 4 * 60_000,
+  // Never metered: the run this speaks for already spent the money, and a
+  // wrap-up refused for cost is the one thing worse than no wrap-up at all.
+  maxInputTokens: null,
+  maxToolOutputBytes: null,
+  noProgressToolCalls: null,
+} as const;
+
+/** How much `git status`/`git diff --stat` a fresh-session brief may carry. */
+const WRAP_UP_TREE_BUDGET_BYTES = 8192;
+
+export interface StartWrapUpArgs {
+  workspaceId: number;
+  promptId: number;
+  sourceRunId: string;
+  provider: ProviderId;
+  model: string | null;
+  /** The provider session to resume, or null to run a fresh short session. */
+  sessionId: string | null;
+  /** The source run's stop reason, quoted to the agent verbatim. */
+  stopReason: string;
+}
+
+/**
+ * The turn a run gets after its budget stopped it, whose only job is to write
+ * down what it learned.
+ *
+ * 23 execute runs on this install were killed mid-work by a budget. Every one
+ * of them was interrupted with no wrap-up, no notes and no status, and the
+ * station landed UNREPORTED with the stop reason as its only record — one work
+ * item died that way four times in twenty minutes with nothing written to disk.
+ * The reviewer and handoff runs sent afterwards to reconstruct what happened
+ * have cost ~30 M input tokens. The agent that did the work is the cheapest and
+ * best source of "what is done and what remains": it already has the context,
+ * and on a resumed session it does not even have to re-read a file.
+ */
+export async function startWrapUp(args: StartWrapUpArgs): Promise<{ runId: string; done: Promise<unknown> }> {
+  const workspace = workspaces.get(args.workspaceId);
+  const record = workspaces.resolvePrompt(args.workspaceId, args.promptId);
+  const plannedRunId = newId("run");
+  // The prompt's own credential scope, on a new run id: the wrap-up posts
+  // against the same work item, and `requireActiveExecuteRun` admits it because
+  // it is a live execute run on that prompt.
+  const credential = runContexts.create(plannedRunId, args.workspaceId, args.promptId);
+  try {
+    workspaces.beginWrapUpRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      promptId: args.promptId,
+      provider: args.provider,
+      model: args.model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      sourceRunId: args.sourceRunId,
+      sessionId: args.sessionId,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  let answer = "";
+  let handle: ReturnType<typeof startRun>;
+  // The run row exists from here on, so a launch that fails has to close it.
+  // Left STARTING it is an active run nothing will ever end: every later start
+  // on this work item was refused `prompt_run_active`, and Resume re-parked the
+  // pipeline on that refusal until the server was restarted. The status is
+  // deferred so the caller's `applyDeferredRunEnd` concludes the item on the
+  // source run, exactly as if this turn had never been attempted.
+  try {
+    const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+    const resumable = args.sessionId !== null && providerCanResume(args.provider);
+    const prompt = wrapUpPrompt({
+      stopReason: args.stopReason,
+      shimPath,
+      runId: plannedRunId,
+      token: credential.token,
+      port: config.port,
+      canCheckpoint: workspaces.runChangeSet(args.sourceRunId) !== null,
+      freshSession: resumable
+        ? null
+        : {
+            title: `${record.externalKey ?? ""} ${record.title}`.trim(),
+            remarks: workspaces.recentProgressRemarks(args.promptId, 5),
+            tree: workingTreeSummary(workspace.workDirectory),
+          },
+    });
+
+    handle = startRun({
+      runId: plannedRunId,
+      adapter: getAdapter(args.provider),
+      prompt,
+      cwd: workspace.workDirectory,
+      model: args.model,
+      preserveModel: true,
+      role: "execute",
+      // Same as an execute run. `agent-step` is a shell command talking to
+      // 127.0.0.1, and a read-only sandbox blocks that outright on Codex — a
+      // wrap-up that cannot reach the door has nothing to write with.
+      permissionOverride: "inherit",
+      stationPolicy: { ...workspaces.stationPolicy(args.promptId), editFiles:false, build:false, generateContracts:false, verification:"deferred" },
+      launcherPath: shimPath,
+      resumeSessionId: resumable ? args.sessionId : null,
+      budget: { ...WRAP_UP_BUDGET },
+      onEvent: (event) => {
+        if (event.type === "assistant_text" && event.payload.kind === "message") answer += event.payload.text;
+        if (event.type === "result" && event.payload.text) answer = event.payload.text;
+        workspaces.recordAgentEvent(plannedRunId, event);
+        runHub.event(plannedRunId, event);
+      },
+      onEnd: (runId, state, metrics) => {
+        // No wrap-up of a wrap-up: if this one trips its own budget it simply
+        // ends, and `finishAgentRun` applies the transition the source run's end
+        // deferred — attributing the *source* run's stop reason, because that is
+        // what stopped the work.
+        workspaces.finishAgentRun(runId, state, answer, metrics);
+        runContexts.complete(runId);
+        removeAgentShim(runId);
+        runHub.end(runId, state);
+        releaseChangeCapture(args.sourceRunId);
+      },
+    });
+  } catch (error) {
+    workspaces.finishAgentRun(plannedRunId, "error", "", undefined, { deferStatus: true });
+    runContexts.revoke(plannedRunId);
+    removeAgentShim(plannedRunId);
+    throw error;
+  }
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: {
+      type: "wrapup",
+      promptId: args.promptId,
+      promptKey: record.externalKey,
+      title: record.title,
+      sourceRunId: args.sourceRunId,
+      stopReason: args.stopReason,
+    },
+    role: "execute",
+    permissionMode: handle.permissionMode,
+  });
+  // Handed back rather than only logged: the pipeline is not told about the
+  // source run until this turn has had its say.
+  return { runId: handle.runId, done: handle.done.catch((error: unknown) => log.error("wrap-up failed", error)) };
+}
+
+/**
+ * Whether this provider can be told to continue its own session.
+ *
+ * All six installed CLIs can (`cursor-agent --resume=`, `codex exec resume`,
+ * the Claude SDK's `resume`, `grok --resume=`, `copilot --resume=`,
+ * `kilo run --session`), so this is a list rather than a check — but it is a
+ * list so that a provider whose resume flag disappears in an upgrade can be
+ * demoted to the fresh-session form in one place instead of failing every
+ * wrap-up turn it is given.
+ */
+function providerCanResume(provider: ProviderId): boolean {
+  return provider === "cursor" || provider === "codex" || provider === "claude" || provider === "grok" || provider === "copilot" || provider === "kilocode";
+}
+
+/**
+ * What the working tree looks like right now, for a wrap-up that could not
+ * resume the session and therefore has to be told.
+ *
+ * Captured by the server rather than asked of the agent: a wrap-up turn has 12
+ * tool calls, and spending two of them re-discovering what the server already
+ * knows is two it cannot spend writing.
+ */
+function workingTreeSummary(cwd: string): string {
+  const read = (args: string[]): string => {
+    try {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1_000_000 });
+      if (result.status !== 0) return "";
+      return result.stdout.trim();
+    } catch {
+      return "";
+    }
+  };
+  const status = read(["status", "--short"]);
+  const stat = read(["diff", "--stat"]);
+  const text = [
+    status === "" ? "" : `git status --short:\n${status}`,
+    stat === "" ? "" : `git diff --stat:\n${stat}`,
+  ].filter((part) => part !== "").join("\n\n");
+  if (text === "") return "";
+  return text.length <= WRAP_UP_TREE_BUDGET_BYTES
+    ? text
+    : `${text.slice(0, WRAP_UP_TREE_BUDGET_BYTES)}\n… [truncated by the orchestrator]`;
+}
+
+/**
+ * The turn itself, in as few words as it can be said.
+ *
+ * On a resumed session the agent already holds everything: the prompt's whole
+ * job is to change what it is doing, not to tell it what it was doing. The
+ * fresh-session form adds only what a new session cannot know, and says plainly
+ * that it is new so the agent does not claim to have verified something it is
+ * reading about for the first time.
+ */
+function wrapUpPrompt(args: {
+  stopReason: string;
+  shimPath: string | null;
+  runId: string;
+  token: string;
+  port: number;
+  canCheckpoint: boolean;
+  freshSession: { title: string; remarks: Array<{ kind: string; content: string; createdAt: string }>; tree: string } | null;
+}): string {
+  const step = args.shimPath === null ? null : JSON.stringify(args.shimPath);
+  const base = `http://127.0.0.1:${args.port}/api/agent/runs/${args.runId}`;
+  const auth = `-H 'Authorization: Bearer ${args.token}' -H 'Content-Type: application/json'`;
+  const remark = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/remarks -d '{"requestId":"wrapup-progress","kind":"PROGRESS","content":"…"}'`
+    : `${step} remark --kind PROGRESS --text "…"`;
+  const checkpoint = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/checkpoint -d '{"message":"Checkpoint work before continuation"}'`
+    : `${step} checkpoint --message "Checkpoint work before continuation"`;
+  const done = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"DONE","reason":"Completed","verificationSummary":"…"}'`
+    : `${step} done --verification "…"`;
+  const cont = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"CONTINUE","reason":"…"}'`
+    : `${step} continue --remaining "…"`;
+  const blocked = step === null
+    ? `curl -fsS -X POST ${auth} ${base}/status -d '{"requestId":"wrapup-status","expectedStatus":"IN_PROGRESS","status":"BLOCKED","reason":"…","verificationSummary":"…"}'`
+    : `${step} blocked --reason "…" --action "…"`;
+
+  const context = args.freshSession === null
+    ? ""
+    : [
+        "",
+        "This is a **fresh session**: the run that did the work could not be resumed, so you are",
+        "reading this rather than remembering it. Report only what the evidence below and the",
+        "working tree actually show — do not claim to have verified anything yourself.",
+        "",
+        `## Work item\n\n${args.freshSession.title}`,
+        "",
+        "## What the stopped run banked",
+        "",
+        args.freshSession.remarks.length === 0
+          ? "Nothing. It was stopped before it recorded anything."
+          : args.freshSession.remarks.map((entry) => `### ${entry.kind} · ${entry.createdAt}\n\n${entry.content.trim()}`).join("\n\n"),
+        "",
+        ...(args.freshSession.tree === "" ? [] : ["## Working tree", "", "```", args.freshSession.tree, "```", ""]),
+      ].join("\n");
+
+  const checkpointStep = args.canCheckpoint
+    ? [`1. If the working tree has changes, commit them:\n\n   \`\`\`bash\n${checkpoint}\n\`\`\``, ""]
+    : [];
+  const remarkStep = args.canCheckpoint ? 2 : 1;
+  const statusStep = remarkStep + 1;
+
+  return [
+    `Your run was stopped by the orchestrator's budget (\`${args.stopReason}\`), not because anything failed.`,
+    "",
+    "**Do not edit files or run build/test commands.** Do exactly this, in order:",
+    "",
+    ...checkpointStep,
+    `${remarkStep}. \`\`\`bash\n${remark}\n\`\`\``,
+    "   — what is verified (with the command and result), what is partly done (file paths), and",
+    "   any decision you made that the next run must know.",
+    "",
+    `${statusStep}. Then exactly one of:`,
+    "",
+    `   - \`\`\`bash\n${done}\n\`\`\``,
+    "     only if every acceptance criterion is already verified; or",
+    "",
+    `   - \`\`\`bash\n${cont}\n\`\`\``,
+    "     — the remaining work as concrete instructions for the run that resumes this item on the",
+    "     same working tree (files, routes, commands, what \"done\" looks like); or",
+    "",
+    `   - \`\`\`bash\n${blocked}\n\`\`\``,
+    "     only for a concrete external dependency that needs a human.",
+    "",
+    "A run that ends without one of these is treated as `continue` with no notes.",
+    context,
+  ].join("\n");
+}
+
+/** Research consult: forced sandbox, no writer lock, no prompt status mutation. */
+export async function startConsult(args: StartConsultArgs): Promise<{ runId: string }> {
+  if (args.provider === "cursor") {
+    throw new WorkspaceError(422, "consult_not_supported", "Cursor read-only consult isolation is not supported by this adapter.");
+  }
+
+  const workspaceId = args.workspaceId;
+  if (runHub.consultsForWorkspace(workspaceId).length >= CONSULT_LIMIT) {
+    throw new WorkspaceError(
+      422,
+      "consult_limit",
+      "This workspace already has 3 consults running.",
+      { detail: "Stop a consult before starting another." },
+    );
+  }
+
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
+  const workspace = workspaces.get(workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+
+  const questionText = [args.question, args.prompt]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find((value) => value !== "") ?? "";
+
+  const program = args.programId === undefined
+    ? null
+    : workspaces.tree(workspaceId).programs.find((entry) => entry.id === args.programId) ?? null;
+  if (args.programId !== undefined && program === null) {
+    throw new WorkspaceError(404, "not_found", "Program not found in this workspace");
+  }
+  if (program !== null && questionText === "") {
+    throw new WorkspaceError(422, "validation_error", "Ask a question about the program");
+  }
+
+  let savedPrompt: ReturnType<typeof workspaces.resolvePrompt> | null = null;
+  if (args.promptId !== undefined) {
+    savedPrompt = workspaces.resolvePrompt(workspaceId, args.promptId);
+  } else if (questionText === "") {
+    throw new WorkspaceError(422, "validation_error", "Prompt is empty");
+  }
+
+  const question = questionText !== ""
+    ? questionText
+    : `Research ${savedPrompt!.externalKey ?? savedPrompt!.title}`;
+
+  const history = args.threadId && !args.freshContext ? workspaces.conversationHistory(workspaceId, args.threadId) : [];
+  const context = args.threadId ? conversationContext(history) : "";
+  const permissionKey = JSON.stringify(permissionForRun(provider, "consult"));
+  const nativeSessionId = compatibleSession(history.at(-1), provider, model, "consult", permissionKey);
+  const plannedRunId = newId("run");
+  const promptId = savedPrompt?.id ?? null;
+  const credential = runContexts.create(plannedRunId, workspaceId, promptId, undefined, question, program?.id ?? null);
+  try {
+    workspaces.beginConsultRun({
+      runId: plannedRunId,
+      workspaceId,
+      promptId,
+      provider,
+      model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText: question,
+      threadId: args.threadId,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  const writer = runHub.activeExecuteForWorkspace(workspaceId);
+  const liveBanner = liveTreeBanner(writer === undefined ? null : { provider: writer.provider, model: writer.model });
+  const contextUrl = `http://127.0.0.1:${config.port}/api/agent/runs/${plannedRunId}/context`;
+  let resolvedPrompt =
+    `${liveBanner}Answer a research question about this working tree. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable. The tree may be changing under you if a writer is active.\n\nBefore answering, retrieve the authoritative context with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nDo not post remarks or status. You cannot use the Progress API.\n\n## Question\n\n${question}`;
+  if (program !== null) {
+    resolvedPrompt =
+      `${liveBanner}Answer the operator's question about the program "${program.name}" in this workspace. Do not implement, edit, or run mutating commands. Tools that write or execute are unavailable.\n\nBefore answering, retrieve the whole program — every suite and work item, its status, dependencies, definition of done, and the pipelines that run it — with:\n\ncurl -fsS -H 'Authorization: Bearer ${credential.token}' ${contextUrl}\n\nIf the output looks cut off, redirect it to a file (> program.md) and read that in parts. For one work item's full text, add ?item=KEY to that URL. Read the repository as well when the answer depends on the code. Do not post remarks or status.\n\n## Question\n\n${question}`;
+  } else if (savedPrompt === null && workspace.description.trim() !== "") {
+    resolvedPrompt = `${workspace.description.trim()}\n\n---\n\n${resolvedPrompt}`;
+  }
+
+  if (context) resolvedPrompt += `\n\n${context}`;
+  materialize(workspace);
+  const consultShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  if (consultShimPath !== null) {
+    const ask = JSON.stringify(consultShimPath);
+    resolvedPrompt += `\n\n## Decisions from the operator\n\nIf the answer depends on a decision you cannot safely infer, put every question in \`questions.json\` and run \`${ask} ask --file questions.json\`. Questions may be \`single\`, \`multiple\`, or \`text\`, with optional choices, recommendation, and rationale. Ask once; the command waits for all answers. This is the only write-like command available to this read-only research run.`;
+  }
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(provider),
+    prompt: resolvedPrompt,
+    cwd: workspace.workDirectory,
+    model,
+    role: "consult",
+    permissionOverride: "consult",
+    resumeSessionId: nativeSessionId,
+    onEvent: (event) => {
+      workspaces.recordAgentEvent(plannedRunId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state, metrics) => {
+      workspaces.finishAgentRun(runId, state, "", metrics);
+      runContexts.complete(runId);
+      removeAgentShim(runId);
+      runHub.end(runId, state);
+    },
+  });
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    clientRequestId: args.clientRequestId,
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: args.threadId ? { type: "custom", displayText: question, threadId: args.threadId, title: question } : {
+      type: "consult",
+      promptId,
+      promptKey: savedPrompt?.externalKey ?? program?.externalKey ?? null,
+      title: savedPrompt?.title ?? (program === null ? null : `Program: ${program.name}`),
+      question,
+    },
+    role: "consult",
+    permissionMode: handle.permissionMode,
+  });
+  if (context) { const contextEvent: NormalizedEvent = { id: newId("evt"), runId: plannedRunId, provider, model, timestamp: new Date().toISOString(), type: "status", payload: { state: "starting", elapsedMs: 0, usage: null, detail: null, conversation: { permissionKey, context, nativeSessionId } } }; workspaces.recordAgentEvent(plannedRunId, contextEvent); runHub.event(plannedRunId, contextEvent); }
+  void handle.done.catch((error: unknown) => log.error("consult failed", error));
+  return { runId: handle.runId };
+}
+
+/**
+ * Drafts a program: suites and the work items inside them, for this workspace.
+ *
+ * The one run in this console that writes work items rather than doing them.
+ * It is an ordinary agent run in every other respect — same providers, same
+ * budget, same transcript — with two differences that matter:
+ *
+ *  - It has no work item, so it cannot post a status, a remark or a decompose;
+ *    `requireActiveAuthorRun` is a separate door from `requireActiveExecuteRun`
+ *    and neither can reach the other's operations.
+ *  - Everything it writes lands in `program_draft`, which nothing reads until an
+ *    operator applies it. That is the guarantee — not the paragraph in the
+ *    prompt asking it not to edit the tree, which is an instruction a model may
+ *    drop. It does start with normal permissions, because `agent-step` is a
+ *    shell command talking to 127.0.0.1 and a read-only sandbox blocks that
+ *    outright on Codex, so it holds the workspace's writer lock for its
+ *    duration like any execute run.
+ */
+export async function startProgramAuthor(args: StartProgramAuthorArgs): Promise<{ runId: string; draft: ProgramDraftRecord }> {
+  const workspace = workspaces.get(args.workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  const owner = workspaces.activePipelineForWorkspace(args.workspaceId);
+  if (owner !== null) {
+    throw new WorkspaceError(409, "workspace_busy", "A pipeline is already active in this workspace.", {
+      detail: "Stop or finish it before drafting a program in the same working directory.",
+    });
+  }
+  const busy = runHub.activeForWorkspace(args.workspaceId);
+  if (busy !== undefined) {
+    throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`, {
+      detail: "Stop the running agent before drafting a program in the same working directory.",
+    });
+  }
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
+
+  // The draft exists before the run does, so a run that dies in its first
+  // second still leaves the operator something to re-run or delete, and so the
+  // agent has somewhere to post from its very first call.
+  const existing = args.draftId === undefined ? null : workspaces.programDraft(args.draftId);
+  if (existing !== null && existing.workspaceId !== args.workspaceId) {
+    throw new WorkspaceError(404, "not_found", "That draft belongs to another workspace");
+  }
+  const goal = existing?.goal ?? args.goal ?? "";
+  const draft = existing
+    ?? (args.programId === undefined
+      ? workspaces.createProgramDraft({ workspaceId: args.workspaceId, goal })
+      : workspaces.createProgramRevision({ workspaceId: args.workspaceId, programId: args.programId, goal }));
+  const revising = draft.targetProgramId !== null;
+
+  const plannedRunId = newId("run");
+  const credential = runContexts.create(plannedRunId, args.workspaceId, null, undefined, goal);
+  const displayText = revising ? `Revise program ${draft.body.name}: ${goal}` : `Draft a program: ${goal}`;
+  try {
+    workspaces.beginAuthorRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      provider,
+      model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  try {
+    workspaces.attachDraftRun(draft.id, plannedRunId);
+  } catch (error) {
+    // The run row exists but nothing will ever write through it. Close it here
+    // rather than leaving a STARTING row that the next boot would report as an
+    // abandoned run.
+    workspaces.finishAgentRun(plannedRunId, "error");
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  const shimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  const promptArgs = {
+    workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+    draft: workspaces.programDraft(draft.id),
+    shimPath,
+    runId: plannedRunId,
+    token: credential.token,
+    port: config.port,
+    feedback: typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null,
+  };
+  let prompt = revising
+    ? programRevisionPrompt({ ...promptArgs, brief: workspaces.programBrief(draft.targetProgramId!) })
+    : programAuthorPrompt(promptArgs);
+  if (shimPath !== null) {
+    const ask = JSON.stringify(shimPath);
+    prompt += `\n\n## Decisions from the operator\n\nIf a decision would materially change this proposal and cannot be inferred from the repository, put all questions in \`questions.json\` and run \`${ask} ask --file questions.json\`. Ask once; the command waits for the answers, then continue drafting.`;
+  }
+
+  materialize(workspace);
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(provider),
+    prompt,
+    cwd: workspace.workDirectory,
+    model,
+    role: "author",
+    permissionOverride: "inherit",
+    onEvent: (event) => {
+      workspaces.recordAgentEvent(plannedRunId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state, metrics) => {
+      // Nothing concludes anything here. A draft is not a work item: an author
+      // run that ends without posting leaves a PENDING draft exactly as it
+      // found it, which is the honest record of what happened.
+      workspaces.finishAgentRun(runId, state, "", metrics);
+      runContexts.complete(runId);
+      removeAgentShim(runId);
+      runHub.end(runId, state);
+    },
+  });
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: { type: "author", draftId: draft.id, goal, programName: draft.body.name === "" ? null : draft.body.name, revision: revising },
+    role: "author",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("program author failed", error));
+  return { runId: handle.runId, draft: workspaces.programDraft(draft.id) };
+}
+
+/**
+ * Has an agent rewrite CLAUDE.md or AGENTS.md into a proposal.
+ *
+ * The agent edits the real file in the working tree — that is the copy it can
+ * read in context and change with its ordinary tools — and when the run ends
+ * the file's contents are stored as the proposal and the file is put back as
+ * it was. So, like a program draft, the guarantee is structural: the workspace
+ * record, which every later run is written from, only changes on apply.
+ *
+ * It holds the workspace's writer lock like an author run, and for the same
+ * reason: it needs normal permissions to edit a file, and a second writer in
+ * the tree could see the half-edited file or have its own edit captured here.
+ */
+export async function startInstructionAuthor(args: StartInstructionAuthorArgs): Promise<{ runId: string; proposal: InstructionProposalRecord }> {
+  const workspace = workspaces.get(args.workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  if (workspaces.activePipelineForWorkspace(args.workspaceId) !== null) {
+    throw new WorkspaceError(409, "workspace_busy", "A pipeline is already active in this workspace.", {
+      detail: "Stop or finish it before changing the instruction files it runs with.",
+    });
+  }
+  const busy = runHub.activeForWorkspace(args.workspaceId);
+  if (busy !== undefined) {
+    throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}${busy.model === null ? "" : ` · ${busy.model}`}).`, {
+      detail: "Stop the running agent before changing an instruction file in the same working directory.",
+    });
+  }
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
+
+  const existing = args.proposalId === undefined ? null : workspaces.instructionProposal(args.proposalId);
+  if (existing !== null && existing.workspaceId !== args.workspaceId) {
+    throw new WorkspaceError(404, "not_found", "That proposal belongs to another workspace");
+  }
+  if (existing === null && args.field === undefined) {
+    throw new WorkspaceError(422, "validation_error", "Choose CLAUDE.md or AGENTS.md", { field: "Required" });
+  }
+  const proposal = existing ?? workspaces.createInstructionProposal({ workspaceId: args.workspaceId, field: args.field!, goal: args.goal ?? "" });
+  const file = INSTRUCTION_FILE_NAMES[proposal.field];
+
+  const plannedRunId = newId("run");
+  const credential = runContexts.create(plannedRunId, args.workspaceId, null, undefined, proposal.goal);
+  try {
+    workspaces.beginAuthorRun({
+      runId: plannedRunId,
+      workspaceId: args.workspaceId,
+      provider,
+      model,
+      tokenHash: credential.tokenHash,
+      expiresAt: credential.expiresAt,
+      displayText: `Change ${file}: ${proposal.goal}`,
+    });
+  } catch (error) {
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+  try {
+    workspaces.attachInstructionProposalRun(proposal.id, plannedRunId);
+  } catch (error) {
+    workspaces.finishAgentRun(plannedRunId, "error");
+    runContexts.revoke(plannedRunId);
+    throw error;
+  }
+
+  // The file as the tree has it once the stored text is projected, which is
+  // what the run's end puts back. Reworking a proposal starts the agent from
+  // the proposal, not from the stored text it already moved away from.
+  materialize(workspace);
+  const before = readInstructionFile(workspace.workDirectory, proposal.field);
+  const reworking = existing !== null && existing.content !== existing.baseline;
+  if (reworking) writeFileSync(join(workspace.workDirectory, file), `${existing.content}\n`, "utf8");
+
+  const feedback = typeof args.feedback === "string" && args.feedback.trim() !== "" ? args.feedback.trim() : null;
+  let prompt = instructionAuthorPrompt({
+    workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+    field: proposal.field,
+    goal: proposal.goal,
+    exists: reworking || before !== null,
+    reworking,
+    feedback,
+  });
+  const instructionShimPath = createAgentShim({ runId: plannedRunId, token: credential.token, port: config.port });
+  if (instructionShimPath !== null) {
+    const ask = JSON.stringify(instructionShimPath);
+    prompt += `\n\nIf a user decision materially changes the instruction proposal and cannot be safely inferred, put all questions in \`questions.json\` and run \`${ask} ask --file questions.json\`. Ask once; the command waits for every answer.`;
+  }
+
+  let handle: ReturnType<typeof startRun>;
+  try {
+    handle = startRun({
+      runId: plannedRunId,
+      adapter: getAdapter(provider),
+      prompt,
+      cwd: workspace.workDirectory,
+      model,
+      role: "author",
+      permissionOverride: "inherit",
+      onEvent: (event) => {
+        workspaces.recordAgentEvent(plannedRunId, event);
+        runHub.event(plannedRunId, event);
+      },
+      onEnd: (runId, state, metrics) => {
+        captureInstructionRun(proposal.id, workspace.workDirectory, proposal.field, before);
+        workspaces.finishAgentRun(runId, state, "", metrics);
+        runContexts.complete(runId);
+        removeAgentShim(runId);
+        runHub.end(runId, state);
+      },
+    });
+  } catch (error) {
+    captureInstructionRun(proposal.id, workspace.workDirectory, proposal.field, before);
+    throw error;
+  }
+  workspaces.markAgentRunRunning(handle.runId);
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: { type: "instructions", proposalId: proposal.id, file, goal: proposal.goal },
+    role: "author",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("instruction author failed", error));
+  return { runId: handle.runId, proposal: workspaces.instructionProposal(proposal.id) };
+}
+
+/**
+ * Runs an agent verification of a suite, or of one work item inside it.
+ *
+ * The dossier is built here rather than in the browser, and the run is
+ * recorded before it starts, so its events persist and its report survives
+ * the page that launched it.
+ */
+export async function startVerifySuite(args: StartVerifySuiteArgs): Promise<{ runId: string }> {
+  const providerInfo = await requireAvailableProvider(args.provider);
+  const provider = providerInfo.id;
+  const model = resolveProviderModel(providerInfo, args.model);
+  const plannedRunId = newId("run");
+  const suite = workspaces.suiteHeader(args.suiteId);
+  const workspace = workspaces.get(suite.workspaceId);
+  if (!workspace.workDirectoryExists) {
+    throw new WorkspaceError(422, "invalid_directory", `Workspace directory does not exist: ${workspace.workDirectory}`);
+  }
+  const busy = runHub.activeForWorkspace(workspace.id);
+  if (busy !== undefined) {
+    throw new WorkspaceError(409, "workspace_busy", `A run is already in progress in this workspace (${busy.provider}). Stop it before verifying.`);
+  }
+  const scopePromptId = args.promptId ?? null;
+  const context = workspaces.suiteVerificationContext(args.suiteId, scopePromptId);
+  const verificationId = workspaces.beginSuiteVerification({
+    runId: plannedRunId,
+    suiteId: args.suiteId,
+    provider,
+    model,
+    stats: context.stats,
+    scopePromptId: context.scopePromptId,
+  });
+
+  // The agent's closing message is the report; keep the last full one.
+  let report = "";
+  materialize(workspace);
+  const handle = startRun({
+    runId: plannedRunId,
+    adapter: getAdapter(provider),
+    prompt: context.prompt,
+    cwd: workspace.workDirectory,
+    model,
+    role: "execute",
+    permissionOverride: "inherit",
+    onEvent: (event) => {
+      if (event.type === "assistant_text" && event.payload.kind === "message") report += event.payload.text;
+      if (event.type === "result" && event.payload.text) report = event.payload.text;
+      workspaces.recordVerificationEvent(verificationId, event);
+      runHub.event(plannedRunId, event);
+    },
+    onEnd: (runId, state) => {
+      workspaces.finishSuiteVerification(verificationId, state, report);
+      runHub.end(runId, state);
+    },
+  });
+  runHub.start({
+    handle,
+    workspace: { id: workspace.id, name: workspace.name, workDirectory: workspace.workDirectory },
+    source: {
+      type: "verification",
+      verificationId,
+      suiteId: suite.id,
+      suiteKey: suite.key,
+      suiteName: suite.name,
+      promptKey: context.scopePromptKey,
+    },
+    role: "execute",
+    permissionMode: handle.permissionMode,
+  });
+  void handle.done.catch((error: unknown) => log.error("verification failed", error));
+  return { runId: handle.runId };
+}
+
+export function consultContextText(workspaceId: number, promptId: number | null, question: string, programId: number | null = null, item: string | null = null): string {
+  const writer = runHub.activeExecuteForWorkspace(workspaceId);
+  const liveWriter = writer === undefined ? null : { provider: writer.provider, model: writer.model };
+  if (programId !== null) {
+    const brief = workspaces.programBrief(programId);
+    if (brief.workspace.id !== workspaceId) throw new WorkspaceError(403, "run_scope_mismatch", "Run credential scope does not match");
+    return item === null ? programConsultMarkdown(brief, question, liveTreeBanner(liveWriter)) : programBriefMarkdown(brief, { item });
+  }
+  if (promptId === null) {
+    const workspace = workspaces.get(workspaceId);
+    return consultWorkspaceMarkdown({
+      workspace: { name: workspace.name, workDirectory: workspace.workDirectory, description: workspace.description },
+      question,
+      liveWriter,
+    });
+  }
+  return contextMarkdown(workspaces.agentContext(workspaceId, promptId), "consult", { liveWriter, question });
+}
+
+async function requireAvailableProvider(providerId: string): Promise<ProviderInfo> {
+  if (!isProviderId(providerId)) {
+    throw new WorkspaceError(422, "unknown_provider", `Unknown provider "${providerId}".`);
+  }
+  const providers = await detectProviders(true);
+  const info = providers.find((provider) => provider.id === providerId);
+  if (info === undefined || !info.available) {
+    throw new ProviderUnavailableError(providerId, info?.reason ?? "detection failed", providers);
+  }
+  return info;
+}

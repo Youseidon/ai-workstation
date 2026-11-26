@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 const [mode,directory]=process.argv.slice(2);
-const {workspaces}=await import('../../src/workspaces.ts');
+const {workspaces}=await import('../../src/repositories/workspaces.ts');
 if(mode==='seed') {
   const workspace=workspaces.create({name:'Isolated migration fixture',description:'',workDirectory:directory});
   const program=workspaces.createChild('program',workspace.id,{name:'Program',overview:''});
@@ -13,6 +13,6 @@ if(mode==='seed') {
   workspaces.finishAgentRun(runId,'done');
 }
 workspaces.close();
-const db=new Database(process.env.AGENT_CONSOLE_DB);
+const db=new Database(process.env.HYDRA_DB);
 console.log(JSON.stringify({version:db.prepare('SELECT MAX(version) n FROM schema_migration').get().n,integrity:db.pragma('integrity_check',{simple:true}),foreignKeys:db.pragma('foreign_key_check')}));
 db.close();

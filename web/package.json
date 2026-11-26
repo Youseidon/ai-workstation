@@ -1,5 +1,5 @@
 {
-  "name": "@agent-console/web",
+  "name": "@hydra/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -11,7 +11,7 @@
     "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
   },
   "dependencies": {
-    "@agent-console/shared": "*",
+    "@hydra/shared": "*",
     "dotenv": "^16.6.1",
     "next": "16.3.3",
     "react": "19.2.8",

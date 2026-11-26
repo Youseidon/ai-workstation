@@ -1,6 +1,6 @@
 "use client";
 
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 import { Button } from "@/components/ui/Button";
 
 /** A route that fails to render shows the failure inside the shell, with a retry. */

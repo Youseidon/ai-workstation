@@ -1,8 +1,8 @@
 "use client";
 
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 import { Suspense, use } from "react";
-import { SuiteBoard } from "@/components/pipeline/SuiteBoard";
+import { SuiteBoard } from "@/features/pipeline/components/SuiteBoard";
 
 export default function SuitePage({ params }: { params: Promise<{ id: string }> }) {
   const { id: raw } = use(params);

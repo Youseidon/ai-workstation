@@ -1,6 +1,6 @@
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 import { Suspense } from "react";
-import { PipelineDashboard } from "@/components/pipeline/PipelineDashboard";
+import { PipelineDashboard } from "@/features/pipeline/components/PipelineDashboard";
 
 export default function PipelinePage() {
   return (

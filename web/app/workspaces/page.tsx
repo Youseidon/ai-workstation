@@ -1,7 +1,7 @@
 "use client";
 
-import { WorkspaceManager } from "@/components/WorkspaceManager";
-import { SERVER_URL } from "@/lib/serverUrl";
+import { WorkspaceManager } from "@/features/workspaces/components/WorkspaceManager";
+import { SERVER_URL } from "@/api/serverUrl";
 
 export default function WorkspacesPage() {
   return (

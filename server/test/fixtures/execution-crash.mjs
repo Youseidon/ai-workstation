@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { spawn } from 'node:child_process';
-import { createExecutionStore } from '../../src/executionStore.ts';
-import { processIdentity } from '../../src/executionProcess.ts';
+import { createExecutionStore } from '../../src/repositories/executionStore.ts';
+import { processIdentity } from '../../src/infrastructure/executionProcess.ts';
 const [path,mode]=process.argv.slice(2);
 const db=new Database(path),store=createExecutionStore(db,()=>1000);
 const c=store.contract('root');

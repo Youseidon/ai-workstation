@@ -1,9 +1,9 @@
 "use client";
 
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 import { Suspense, use, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { PipelineBoard } from "@/components/pipeline/PipelineBoard";
+import { PipelineBoard } from "@/features/pipeline/components/PipelineBoard";
 
 function PipelineDetail({ id }: { id: number }) {
   const params = useSearchParams();

@@ -1,6 +1,6 @@
 "use client";
 
-import { ReportView } from "@/components/report/ReportView";
+import { ReportView } from "@/features/report/components/ReportView";
 
 export default function ReportPage() {
   return (

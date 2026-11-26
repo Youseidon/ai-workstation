@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PageState } from "@/components/shell/PageCanvas";
+import { PageState } from "@/components/layout/PageCanvas";
 
 /** Unknown addresses stay inside the application shell. */
 export default function NotFound() {

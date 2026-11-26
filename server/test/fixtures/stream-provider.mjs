@@ -6,7 +6,7 @@ const mode=process.argv[2];
 const scenario=process.env.FIXTURE_SCENARIO ?? 'normal';
 const log=entry=>{ if(process.env.FIXTURE_LOG)appendFileSync(process.env.FIXTURE_LOG,JSON.stringify(entry)+'\n'); };
 const finish=()=>{ if(process.env.FIXTURE_FINISHED)writeFileSync(process.env.FIXTURE_FINISHED,'finished'); };
-log({pid:process.pid,cwd:process.cwd(),serverOnlyEnv:['AGENT_CONSOLE_DB','AGENT_CONSOLE_DATABASE_PATH','DATABASE_URL','SETTINGS_FILE'].filter(key=>process.env[key]!==undefined)});
+log({pid:process.pid,cwd:process.cwd(),serverOnlyEnv:['HYDRA_DB','HYDRA_DATABASE_PATH','DATABASE_URL','SETTINGS_FILE'].filter(key=>process.env[key]!==undefined)});
 let timer;
 if(mode==='codex'){
  const send=value=>{
