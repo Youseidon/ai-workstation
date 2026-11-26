@@ -706,6 +706,10 @@ processes, credentials and live-system safety.
 
 ## Architecture
 
+The design baseline lives in [`docs/`](docs/README.md): vision, requirements,
+domain, security, execution, data, and the service contracts. This section is
+the map of the tree built to that baseline.
+
 TypeScript throughout, using npm workspaces: **`@hydra/shared`**, **`@hydra/server`**
 and **`@hydra/web`**. The frontend is Next.js 16 / React; the backend uses SQLite
 and streams normalised provider events over WebSockets.
