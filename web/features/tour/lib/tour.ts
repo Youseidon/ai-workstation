@@ -57,8 +57,8 @@ export const TOUR_STEPS: readonly TourStep[] = [
     id: "workspace", chapter: "bearings", title: "Everything starts in a workspace",
     target: ['.app-sidebar-top button[aria-haspopup="listbox"]'],
     body: ctx => ctx.workDirectory
-      ? `A workspace is a folder on this machine. **${ctx.workspaceName ?? "This one"}** lives at \`${ctx.workDirectory}\` — open it in your editor; agents commit there for real. The dot shows its Git state.`
-      : "A workspace is a folder on this machine that agents work in. Create one on the Workspaces page and pick it here; every page follows the workspace you choose.",
+      ? `**Create a workspace first:** prompts and all other app controls stay unavailable until one is saved. A workspace points agents at a project folder on this machine. **${ctx.workspaceName ?? "This one"}** lives at \`${ctx.workDirectory}\`. Switch workspaces here; the dot shows its Git state.`
+      : "**Create a workspace first:** prompts and all other app controls stay unavailable until one is saved. Choose **Create workspace** on the setup screen and specify a project directory on this machine. Once saved, the app opens and you can switch workspaces here.",
   },
   {
     id: "switcher", chapter: "bearings", title: "Your compass",

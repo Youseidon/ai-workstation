@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { Geist, Geist_Mono, Unbounded } from "next/font/google";
 import { AppShell } from "@/components/layout/AppShell";
+import { WorkspaceGate } from "@/components/layout/WorkspaceGate";
 import { ThemeScript } from "@/components/theme/ThemeScript";
 import { DialogProvider } from "@/components/ui/Dialogs";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -46,7 +47,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Suspense fallback={null}>
                   <WorkspaceUrlSync />
                 </Suspense>
-                <AppShell>{children}</AppShell>
+                <WorkspaceGate>
+                  <AppShell>{children}</AppShell>
+                </WorkspaceGate>
               </WorkspaceProvider>
             </HydraProvider>
             </IdentityGate>

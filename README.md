@@ -143,6 +143,9 @@ entire billing system before lunch.”
 4. Select **Ask** for a read-only consultation, or **Run** to make changes.
 5. Send your prompt, watch the stream, and inspect the outcome.
 
+Until you create your first workspace, Hydra shows workspace setup on every page.
+Prompts and other app controls become available once a workspace is saved.
+
 For an **Ask**, try:
 
 ```text
