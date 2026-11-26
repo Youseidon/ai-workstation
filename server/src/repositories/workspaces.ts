@@ -3492,6 +3492,26 @@ export const workspaces = {
       .run(args.runId,args.workspaceId,args.promptId,args.provider,args.model,now,args.tokenHash,args.expiresAt);
   }); },
   markAgentRunRunning(runId:string):void { db.prepare("UPDATE agent_run SET state='RUNNING' WHERE id=? AND state='STARTING'").run(runId); },
+  // Demo seeding replays history through the normal write paths, which stamp
+  // "now". A finished run is moved back to when the story says it happened so
+  // Activity, Changes and Chat read as days of work, not one second.
+  backdateFinishedRun(runId:string,startedAt:string,endedAt:string):void { db.transaction(()=>{
+    const run=db.prepare("SELECT workspace_id workspaceId,thread_id threadId,state FROM agent_run WHERE id=?").get(runId) as {workspaceId:number;threadId:string|null;state:string}|undefined;
+    if(!run)throw new WorkspaceError(404,"not_found","Run not found");
+    if(run.state==="STARTING"||run.state==="RUNNING")throw new WorkspaceError(409,"run_active","Only a finished run can be backdated");
+    db.prepare("UPDATE agent_run SET started_at=?,ended_at=? WHERE id=?").run(startedAt,endedAt,runId);
+    db.prepare("UPDATE prompt_status_event SET created_at=? WHERE run_id=?").run(endedAt,runId);
+    db.prepare("UPDATE prompt_remark SET created_at=? WHERE run_id=?").run(endedAt,runId);
+    db.prepare("UPDATE run_change_set SET captured_at=?,updated_at=? WHERE run_id=?").run(startedAt,endedAt,runId);
+    db.prepare("UPDATE prompt SET updated_at=?,completed_at=CASE WHEN completed_at IS NULL THEN NULL ELSE ? END WHERE id=(SELECT prompt_id FROM agent_run WHERE id=?)").run(endedAt,endedAt,runId);
+    if(run.threadId!==null){
+      const last=db.prepare("SELECT MAX(COALESCE(ended_at,started_at)) at FROM agent_run WHERE workspace_id=? AND thread_id=?").get(run.workspaceId,run.threadId) as {at:string};
+      db.prepare("UPDATE chat_thread SET updated_at=?,last_reply_at=CASE WHEN last_reply_at IS NULL THEN NULL ELSE ? END WHERE workspace_id=? AND thread_id=?").run(last.at,last.at,run.workspaceId,run.threadId);
+    }
+  })(); },
+  backdatePipelineRun(id:string,startedAt:string,endedAt:string|null):void {
+    db.prepare("UPDATE pipeline_run SET started_at=?,ended_at=? WHERE id=?").run(startedAt,endedAt,id);
+  },
   beginWrapUpRun(args:{runId:string;workspaceId:number;promptId:number;provider:string;model:string|null;tokenHash:string;expiresAt:string;sourceRunId:string;sessionId:string|null}):void { sqliteGuard(()=>{
     const now=new Date().toISOString();
     db.prepare("INSERT INTO agent_run(id,workspace_id,prompt_id,provider,model,state,started_at,context_token_hash,token_expires_at,role,wrapup_of,session_id) VALUES(?,?,?,?,?,'STARTING',?,?,?,'execute',?,?)")

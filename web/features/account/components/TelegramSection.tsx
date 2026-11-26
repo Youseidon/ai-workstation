@@ -88,12 +88,15 @@ export function TelegramSection() {
   }
 
   if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
-  if (view === null) return <p className="text-sm text-fg-muted">Loading…</p>;
+  if (view === null) return <p role="status" className="rounded-lg border border-line bg-surface-0 p-4 text-sm text-fg-muted">Loading Telegram settings…</p>;
   const { bot, link, isOwner } = view;
 
   return <div className="flex flex-col gap-5">
-    <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-semibold">Bot</h3>
+    <div className="flex flex-col gap-3 rounded-lg border border-line bg-surface-0 p-4">
+      <div>
+        <h3 className="text-sm font-semibold">Installation bot</h3>
+        {isOwner && <p className="mt-1 text-xs leading-relaxed text-fg-dim">Shared by every account on this Hydra installation.</p>}
+      </div>
       {bot === null && !isOwner && <p className="text-sm text-fg-muted">Telegram is not set up on this installation. Ask the installation owner to add a bot on their Account page.</p>}
       {bot === null && isOwner && <BotSetup replacing={false} onSaved={next => { accept(next); toast.success("Bot saved"); }} />}
       {bot !== null && <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -107,8 +110,11 @@ export function TelegramSection() {
       {bot !== null && isOwner && replacing && <BotSetup replacing onCancel={() => setReplacing(false)} onSaved={next => { accept(next); setReplacing(false); toast.success("Bot replaced", "Every account needs to connect Telegram again."); }} />}
     </div>
 
-    {bot !== null && <div className="flex flex-col gap-3">
-      <h3 className="text-sm font-semibold">Your Telegram</h3>
+    {bot !== null && <div className="flex flex-col gap-4 rounded-lg border border-line bg-surface-0 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Your Telegram</h3>
+        <Badge tone={link === null ? "neutral" : "success"}>{link === null ? "Not connected" : "Connected"}</Badge>
+      </div>
       {link === null ? <Connect onLinked={next => { accept(next); toast.success("Telegram connected"); }} /> : <>
         <p className="text-sm">Connected{link.telegramUsername ? <> as <b>@{link.telegramUsername}</b></> : null} since {new Date(link.linkedAt).toLocaleString()}.</p>
         <fieldset className="flex flex-col gap-2" disabled={busy}>

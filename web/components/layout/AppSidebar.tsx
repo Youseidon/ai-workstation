@@ -14,6 +14,8 @@ import { attentionLabel, useAttentionCounts } from "./RunAttention";
 import { SectionSwitcher } from "./SectionSwitcher";
 import { WorkspaceBeacon } from "./WorkspaceBeacon";
 import { AccountControl } from "@/contexts/identity";
+import { DemoBadge } from "@/features/demo/components/DemoBadge";
+import { TourButton } from "@/features/tour/components/TourProvider";
 
 const COLLAPSED_KEY = "hydra.sidebar-collapsed";
 const MOBILE_QUERY = "(max-width: 1023px)";
@@ -81,6 +83,8 @@ function SidebarBody({ section, onClose, onNavigate, slot }: BodyProps) {
         <span className="text-xs text-fg-muted" role="status">{connection === "open" ? "Connected" : connection === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
         <ThemeToggle />
       </div>
+      <TourButton />
+      <DemoBadge />
       <AccountControl />
     </div>
   </>;

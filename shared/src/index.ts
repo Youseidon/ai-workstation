@@ -1,4 +1,4 @@
-export type { UserIdentity, IdentitySession, TelegramAccess, TelegramAccountView, TelegramAuditEntry, TelegramBotView, TelegramLinkCode, TelegramLinkView } from "./contracts/identity.ts";
+export type { UserIdentity, IdentitySession, DemoAvailability, DemoSeedProgress, DemoSeedStep, TelegramAccess, TelegramAccountView, TelegramAuditEntry, TelegramBotView, TelegramLinkCode, TelegramLinkView } from "./contracts/identity.ts";
 export {
   PROVIDER_IDS,
   isProviderId,

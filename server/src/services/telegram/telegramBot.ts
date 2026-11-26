@@ -352,6 +352,7 @@ export function createTelegramBot(options: TelegramBotOptions) {
       }
       let me;
       try { me = await createApi(token.trim()).getMe(); } catch (error) {
+        if (error instanceof TelegramApiError && error.status === 0) log.warn(`telegram getMe failed: ${error.message}`);
         if (error instanceof TelegramApiError && error.status === 0) throw new IdentityError(502, "Telegram could not be reached. Check this machine's internet connection.");
         if (error instanceof TelegramApiError && error.status === 400 && /BotFather/.test(error.message)) throw new IdentityError(422, error.message);
         throw new IdentityError(422, "Telegram rejected that token. Copy it again from @BotFather.");

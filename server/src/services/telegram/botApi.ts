@@ -40,7 +40,11 @@ export function createBotApi(token: string, fetchImpl: typeof fetch = fetch): Bo
       });
     } catch (error) {
       if (signal?.aborted) throw error;
-      throw new TelegramApiError(0, "Telegram could not be reached.");
+      // Keep only the errno-style code: the full cause can echo the request
+      // URL, and the URL carries the bot token.
+      const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+      const code = typeof cause === "string" && /^[A-Z_]+$/.test(cause) ? cause : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network error";
+      throw new TelegramApiError(0, `Telegram could not be reached (${code}).`);
     }
     let data: { ok?: boolean; result?: T; description?: string; parameters?: { retry_after?: number } };
     try { data = await response.json() as typeof data; } catch { throw new TelegramApiError(response.status, "Telegram sent an unreadable reply."); }

@@ -6,7 +6,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AgentInputAnswer, ClientMessage, ServerMessage } from "@hydra/shared";
 import { isProviderId, isRunRole } from "@hydra/shared";
-import type { DbAccessPayload, NormalizedEvent } from "@hydra/shared";
+import type { DbAccessPayload, DemoSeedProgress, NormalizedEvent } from "@hydra/shared";
+import { seedDemoAccount } from "../services/demo/demoSeed.ts";
 import { newId } from "../utils/ids.ts";
 import { describeAcceptedWrite, describeRead, describeRejectedWrite, type DbOperation } from "./dbAccessLog.ts";
 import { config } from "../config/config.ts";
@@ -361,6 +362,26 @@ const httpServer = createServer((req, res) => {
 
   if (url.pathname === "/api/health") {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // Only a runtime the gateway started for a demo account seeds sample data;
+  // the gateway also refuses to proxy this path, so a browser cannot reach it.
+  if (url.pathname === "/api/demo/seed" && req.method === "POST" && process.env.HYDRA_DEMO_ACCOUNT === "1") {
+    void readJsonBody(req).then(async (body) => {
+      const username = typeof body.username === "string" ? body.username : "";
+      res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+      const write = (line: DemoSeedProgress) => { if (!res.writableEnded) res.write(`${JSON.stringify(line)}\n`); };
+      try {
+        const result = await seedDemoAccount(username, write);
+        await broadcastSettingsChange();
+        write({ step: "ready", state: "done", detail: String(result.workspaceId) });
+      } catch (error) {
+        log.error("demo seeding failed", error);
+        write({ step: "ready", state: "error", detail: error instanceof Error ? error.message : "Seeding failed" });
+      }
+      res.end();
+    }).catch(() => sendJson(res, 400, { error: { message: "Expected a JSON object." } }));
     return;
   }
 

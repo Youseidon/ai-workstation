@@ -1,0 +1,245 @@
+/* The tour never blocks the app: the dimmed layer ignores the pointer, so
+   the visitor clicks the real thing, and only the card takes clicks. */
+.layer { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
+
+.spotlight {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 14px;
+  box-shadow: 0 0 0 200vmax rgb(6 8 12 / 0.58);
+  transition: top 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), left 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), width 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), height 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), box-shadow 0.45s;
+}
+:global([data-theme="daylight"]) .spotlight { box-shadow: 0 0 0 200vmax rgb(20 24 36 / 0.42); }
+.spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(from var(--spin, 0deg), var(--head), transparent 30%, var(--head) 55%, transparent 80%, var(--head));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: spin 3.2s linear infinite;
+}
+.spotlight[data-empty="true"]::before { opacity: 0; }
+.spotlight[data-done="true"]::before { background: var(--success); animation: none; }
+.spotlight[data-done="true"] { box-shadow: 0 0 0 200vmax rgb(6 8 12 / 0.5), 0 0 0 6px color-mix(in oklab, var(--success) 35%, transparent); }
+
+@property --spin { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+@keyframes spin { to { --spin: 360deg; } }
+
+.beacon { position: fixed; width: 0; height: 0; }
+.beacon i {
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--head);
+  animation: beacon 1.6s ease-out infinite;
+}
+.beacon i:nth-child(2) { animation-delay: 0.8s; }
+.beacon::after { content: ""; position: absolute; left: -5px; top: -5px; width: 10px; height: 10px; border-radius: 50%; background: var(--head); box-shadow: 0 0 12px var(--head); }
+@keyframes beacon { from { transform: scale(0.4); opacity: 1; } to { transform: scale(2.2); opacity: 0; } }
+
+.card {
+  position: fixed;
+  width: min(23rem, calc(100vw - 24px));
+  pointer-events: auto;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in oklab, var(--head) 35%, var(--line-strong));
+  background: color-mix(in oklab, var(--surface-1) 92%, transparent);
+  backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.65), 0 0 0 1px rgb(255 255 255 / 0.03) inset;
+  padding: 1rem 1.1rem 0.8rem;
+  color: var(--fg);
+  transition: top 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), left 0.45s cubic-bezier(0.2, 0.9, 0.3, 1), border-color 0.3s;
+  animation: card-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.card[data-done="true"] { border-color: color-mix(in oklab, var(--success) 60%, var(--line)); }
+.cardGlow { position: absolute; inset: -40% -20% auto auto; width: 14rem; height: 14rem; border-radius: 50%; background: var(--head); opacity: 0.13; filter: blur(50px); pointer-events: none; }
+.card[data-opener="true"] .cardGlow { opacity: 0.24; animation: glow 1.6s ease-out; }
+
+.cardHead { position: relative; display: flex; align-items: center; gap: 0.65rem; }
+.cardMark { color: var(--fg-dim); }
+.cardEyebrow { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.2; }
+.cardEyebrow span { font-size: 0.62rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-dim); }
+.cardEyebrow strong { font-size: 0.8rem; font-weight: 600; color: var(--head); }
+.close { display: grid; width: 1.75rem; height: 1.75rem; flex-shrink: 0; place-items: center; border-radius: 0.5rem; font-size: 0.75rem; color: var(--fg-dim); }
+.close:hover { background: var(--surface-3); color: var(--fg); }
+
+.cardTitle { position: relative; margin-top: 0.75rem; font-family: var(--font-display); font-size: 1.05rem; font-weight: 500; letter-spacing: -0.01em; animation: title-in 0.35s ease-out; }
+.cardBody { position: relative; margin-top: 0.45rem; font-size: 0.84rem; line-height: 1.55; color: var(--fg-muted); }
+.cardBody strong { color: var(--fg); font-weight: 600; }
+.cardBody code { overflow-wrap: anywhere; border-radius: 0.3rem; background: var(--surface-3); padding: 0.05rem 0.3rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--fg); }
+
+.away { position: relative; margin-top: 0.75rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; border-radius: 0.6rem; background: var(--surface-2); padding: 0.55rem 0.7rem; font-size: 0.76rem; color: var(--fg-muted); }
+.away button { font-weight: 600; color: var(--head); }
+
+.task {
+  position: relative;
+  margin-top: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  overflow: hidden;
+  border-radius: 0.7rem;
+  border: 1px dashed color-mix(in oklab, var(--head) 55%, transparent);
+  background: color-mix(in oklab, var(--head) 8%, transparent);
+  padding: 0.6rem 0.75rem;
+  transition: background 0.3s, border-color 0.3s;
+}
+.task[data-done="true"] { border-style: solid; border-color: color-mix(in oklab, var(--success) 60%, transparent); background: color-mix(in oklab, var(--success) 12%, transparent); }
+.task[data-done="true"]::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--success) 30%, transparent) 50%, transparent 70%); animation: sweep 0.9s ease-out forwards; }
+.taskIcon { display: grid; width: 1.6rem; height: 1.6rem; flex-shrink: 0; place-items: center; border-radius: 50%; background: var(--head); font-size: 0.8rem; font-weight: 700; color: #0b0d10; animation: nudge 1.6s ease-in-out infinite; }
+.task[data-done="true"] .taskIcon { background: var(--success); animation: pop 0.4s cubic-bezier(0.2, 1.6, 0.4, 1); }
+.taskText { display: flex; flex-direction: column; font-size: 0.82rem; font-weight: 550; color: var(--fg); }
+.taskText small { font-size: 0.6rem; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim); }
+
+.cardFoot { position: relative; margin-top: 0.9rem; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.dots { display: flex; gap: 0.3rem; }
+.dots li { width: 0.42rem; height: 0.42rem; border-radius: 999px; background: var(--line-strong); transition: width 0.3s, background 0.3s; }
+.dots li[data-state="past"] { background: color-mix(in oklab, var(--head) 55%, var(--line-strong)); }
+.dots li[data-state="now"] { width: 1.2rem; background: var(--head); }
+.buttons { display: flex; gap: 0.4rem; }
+.ghost { border-radius: 999px; padding: 0.4rem 0.8rem; font-size: 0.8rem; color: var(--fg-muted); }
+.ghost:hover { background: var(--surface-3); color: var(--fg); }
+.next { border-radius: 999px; background: var(--fg); padding: 0.4rem 1rem; font-size: 0.8rem; font-weight: 600; color: var(--surface-0); transition: transform 0.15s; }
+.next:hover { transform: translateY(-1px); }
+.keys { position: relative; margin-top: 0.6rem; font-size: 0.65rem; color: var(--fg-dim); }
+.keys kbd { margin-right: 0.15rem; border-radius: 0.25rem; border: 1px solid var(--line-strong); padding: 0 0.25rem; font-family: var(--font-mono); font-size: 0.6rem; }
+
+@media (max-width: 640px) {
+  .card { top: auto !important; bottom: 12px; left: 12px !important; right: 12px; width: auto; }
+}
+
+/* ── Chapter map, finale ────────────────────────────────────────── */
+
+.scrim { position: fixed; inset: 0; z-index: 75; display: grid; place-items: center; overflow-y: auto; background: var(--backdrop); padding: 1.5rem; backdrop-filter: blur(6px); animation: fade 0.25s ease-out; }
+
+.map, .finale {
+  position: relative;
+  display: flex;
+  width: min(100%, 34rem);
+  flex-direction: column;
+  align-items: center;
+  border-radius: 1.25rem;
+  border: 1px solid var(--line-strong);
+  background:
+    radial-gradient(100% 70% at 50% 0%, color-mix(in oklab, var(--brand-to) 14%, transparent), transparent 70%),
+    var(--surface-1);
+  padding: 2rem 1.75rem 1.5rem;
+  text-align: center;
+  box-shadow: 0 40px 100px -30px rgb(0 0 0 / 0.7);
+  animation: card-in 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.map > .close { position: absolute; right: 0.8rem; top: 0.8rem; }
+.map h2, .finale h2 { margin-top: 1rem; font-family: var(--font-display); font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+.map > p, .finale > p { margin-top: 0.5rem; max-width: 26rem; font-size: 0.88rem; line-height: 1.55; color: var(--fg-muted); }
+.finale > p strong { color: var(--fg); }
+
+.chapters { margin: 1.25rem 0 1.1rem; display: grid; width: 100%; gap: 0.4rem; text-align: left; }
+.chapters button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.8rem;
+  border-radius: 0.8rem;
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  transition: border-color 0.2s, transform 0.2s, background 0.2s;
+  animation: row-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+.chapters li:nth-child(2) button { animation-delay: 40ms; }
+.chapters li:nth-child(3) button { animation-delay: 80ms; }
+.chapters li:nth-child(4) button { animation-delay: 120ms; }
+.chapters li:nth-child(5) button { animation-delay: 160ms; }
+.chapters li:nth-child(6) button { animation-delay: 200ms; }
+.chapters button:hover, .chapters button:focus-visible { transform: translateX(3px); border-color: var(--head); background: color-mix(in oklab, var(--head) 7%, var(--surface-0)); }
+.chapters button > span:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.chapters strong { font-size: 0.88rem; }
+.chapters small { font-size: 0.74rem; color: var(--fg-muted); }
+.chapterNumber { display: grid; width: 1.9rem; height: 1.9rem; flex-shrink: 0; place-items: center; border-radius: 50%; border: 1.5px solid var(--head); font-family: var(--font-display); font-size: 0.78rem; color: var(--head); }
+.chapters button[data-done="true"] .chapterNumber { background: var(--head); color: #0b0d10; }
+.chapterCount { font-size: 0.7rem; color: var(--fg-dim); }
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand-from), var(--brand-to));
+  padding: 0.7rem 1.3rem;
+  font-weight: 600;
+  color: #0b0d10;
+  box-shadow: 0 10px 30px -12px color-mix(in oklab, var(--brand-to) 70%, transparent);
+  transition: transform 0.2s;
+}
+.primary:hover { transform: translateY(-1px) scale(1.02); }
+.map > .ghost { margin-top: 0.4rem; }
+
+.finaleEyebrow { margin-top: 1.1rem; font-size: 0.68rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--success); }
+.finale h2 { margin-top: 0.4rem; }
+.finaleActions { margin-top: 1.4rem; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem; }
+.finale :global(.hydra-mark) { animation: rise-mark 0.9s cubic-bezier(0.2, 1.4, 0.4, 1); filter: drop-shadow(0 12px 30px color-mix(in oklab, var(--brand-to) 40%, transparent)); }
+
+.sparks { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+.sparks i { position: absolute; top: -2vh; width: 7px; height: 12px; border-radius: 2px; opacity: 0; animation: spark 2.6s cubic-bezier(0.3, 0.6, 0.4, 1) forwards; }
+
+/* ── Invite, sidebar button ─────────────────────────────────────── */
+
+.invite {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 60;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--line-strong));
+  background: color-mix(in oklab, var(--surface-1) 92%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.6);
+  animation: invite-in 0.6s cubic-bezier(0.2, 1.3, 0.4, 1) 1.2s both;
+}
+.inviteMain { display: flex; align-items: center; gap: 0.65rem; padding: 0.5rem 0.4rem 0.5rem 0.6rem; text-align: left; }
+.inviteMain span { display: flex; flex-direction: column; line-height: 1.25; }
+.inviteMain strong { font-size: 0.82rem; }
+.inviteMain small { font-size: 0.7rem; color: var(--fg-muted); }
+.inviteMain:hover strong { color: var(--accent); }
+.inviteClose { padding: 0 0.9rem 0 0.5rem; font-size: 0.7rem; color: var(--fg-dim); }
+.inviteClose:hover { color: var(--fg); }
+
+.sidebarButton { display: flex; width: 100%; align-items: center; gap: 0.55rem; border-radius: 0.55rem; padding: 0.35rem 0.5rem; font-size: 0.76rem; color: var(--fg-muted); transition: background 0.2s, color 0.2s; }
+.sidebarButton:hover { background: var(--surface-2); color: var(--fg); }
+.sidebarHeads { display: flex; gap: 2px; }
+.sidebarHeads i { width: 5px; height: 12px; border-radius: 3px; background: var(--line-strong); transition: background 0.3s; }
+.sidebarHeads i[data-on="true"] { background: var(--head); }
+.sidebarButton:hover .sidebarHeads i { background: var(--head); }
+
+@keyframes card-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes title-in { from { opacity: 0; transform: translateX(-6px); } }
+@keyframes glow { from { opacity: 0.6; transform: scale(0.6); } }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(2px); } }
+@keyframes pop { from { transform: scale(0.4); } }
+@keyframes fade { from { opacity: 0; } }
+@keyframes row-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes rise-mark { from { transform: scale(0.5) rotate(-20deg); opacity: 0; } }
+@keyframes spark { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--drift), 105vh) rotate(720deg); } }
+@keyframes invite-in { from { opacity: 0; transform: translateY(20px) scale(0.9); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spotlight, .card { transition: none; }
+  .spotlight::before, .beacon i, .taskIcon, .card, .cardTitle, .chapters button, .map, .finale, .sparks i, .invite, .scrim, .finale :global(.hydra-mark) { animation: none !important; }
+  .sparks { display: none; }
+}

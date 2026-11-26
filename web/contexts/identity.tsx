@@ -2,11 +2,13 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { IdentitySession, UserIdentity } from "@hydra/shared";
 import { SERVER_URL } from "@/api/serverUrl";
 import { setBrowserIdentity } from "@/lib/identityStorage";
 import { HydraMark } from "@/components/brand/HydraMark";
 import { recoveryApi } from "@/api/accountApi";
+import { DemoEntry } from "@/features/demo/components/DemoEntry";
 
 const IdentityContext = createContext<{ user: UserIdentity; logout(): Promise<void> } | null>(null);
 export function useIdentity() {
@@ -86,6 +88,7 @@ export function IdentityGate({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState("");
   const [busy, setBusy] = useState(false);
   const currentIdentity = useRef<string | null | undefined>(undefined);
+  const launchingDemo = useRef(false);
 
   function accept(next: IdentitySession) {
     if (currentIdentity.current !== undefined && currentIdentity.current !== (next.user?.id ?? null)) {
@@ -100,7 +103,7 @@ export function IdentityGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let disposed = false;
-    const refresh = () => { void authRequest("session").then(next => { if (!disposed) accept(next); }).catch(reason => { if (!disposed) setError(reason instanceof Error ? reason.message : "Cannot reach the Hydra server."); }); };
+    const refresh = () => { if (launchingDemo.current) return; void authRequest("session").then(next => { if (!disposed) accept(next); }).catch(reason => { if (!disposed) setError(reason instanceof Error ? reason.message : "Cannot reach the Hydra server."); }); };
     const expire = () => { setBrowserIdentity(null); setSession(null); refresh(); };
     const channel = new BroadcastChannel("hydra.identity");
     channel.onmessage = () => { setBrowserIdentity(null); window.location.reload(); };
@@ -144,12 +147,26 @@ export function IdentityGate({ children }: { children: ReactNode }) {
         {!creating && <button type="button" disabled={busy} className={linkClass} onClick={() => { setForgot(true); setError(""); }}>Forgot password?</button>}
         <button type="button" disabled={busy} className={linkClass} onClick={() => { setRegister(!register); setError(""); }}>{register ? "Already have an account? Sign in" : "Create a separate account"}</button>
       </form>}
+      {session !== null && !forgot && <DemoEntry disabled={busy} onLaunching={active => { launchingDemo.current = active; }} onEnter={() => { notifyTabs(); window.location.reload(); }} />}
     </div>
   </main>;
 }
 
 export function AccountControl() {
   const { user, logout } = useIdentity();
+  const pathname = usePathname();
   const [error, setError] = useState("");
-  return <div className="mt-3 text-xs text-fg-muted"><div className="flex items-center justify-between gap-2"><Link href="/account" className="truncate hover:text-fg hover:underline" title={`${user.username}: password and Telegram`}>{user.username}</Link><button type="button" className="shrink-0 underline" onClick={() => { void logout().catch(() => setError("Could not sign out. Try again.")); }}>Sign out</button></div>{error && <p role="alert">{error}</p>}</div>;
+  return <div className="flex min-w-0 flex-col gap-2 border-t border-line pt-3 text-xs text-fg-muted">
+    <Link href="/account" aria-current={pathname === "/account" ? "page" : undefined} title="Account settings: password, Telegram and recovery"
+      className="group flex min-w-0 items-center gap-2.5 rounded-lg border border-line bg-surface-1 p-2.5 transition-colors hover:border-accent/40 hover:bg-surface-2 focus-visible:border-accent aria-[current=page]:border-accent/40 aria-[current=page]:bg-accent/5">
+      <span aria-hidden className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/10 font-semibold text-accent">{user.username.slice(0, 2).toUpperCase()}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-sm font-medium text-fg">{user.username}</span>
+        <span className="text-fg-muted group-hover:text-accent group-aria-[current=page]:text-accent">Account settings</span>
+      </span>
+      <svg aria-hidden width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="shrink-0 text-fg-dim group-hover:text-accent"><path d="m6 4 4 4-4 4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </Link>
+    <button type="button" className="self-end rounded px-2 py-1 text-xs text-fg-dim transition-colors hover:bg-surface-2 hover:text-fg" onClick={() => { void logout().catch(() => setError("Could not sign out. Try again.")); }}>Sign out</button>
+    {error && <p role="alert" className="text-danger">{error}</p>}
+  </div>;
 }

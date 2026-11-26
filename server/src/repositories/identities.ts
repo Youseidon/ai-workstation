@@ -67,13 +67,23 @@ export function openIdentityStore(path: string) {
       user_id TEXT PRIMARY KEY REFERENCES identity_user(id) ON DELETE CASCADE, code_hash TEXT NOT NULL,
       expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS identity_demo (
+      user_id TEXT PRIMARY KEY REFERENCES identity_user(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS identity_telegram_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL REFERENCES identity_user(id) ON DELETE CASCADE,
       at INTEGER NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL
     );
   `);
   for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
-  const users = () => (db.prepare("SELECT * FROM identity_user ORDER BY rowid").all() as UserRow[]).map(identity);
+  // Demo accounts are ordinary accounts with an expiry. The flag rides on the
+  // identity so the browser can start the tour and show the expiry, and so the
+  // gateway knows to let that runtime seed its sample data.
+  const withDemo = (user: UserIdentity): UserIdentity => {
+    const demo = db.prepare("SELECT expires_at FROM identity_demo WHERE user_id=?").get(user.id) as { expires_at: number } | undefined;
+    return demo ? { ...user, demo: true, demoExpiresAt: new Date(demo.expires_at).toISOString() } : user;
+  };
+  const users = () => (db.prepare("SELECT * FROM identity_user ORDER BY rowid").all() as UserRow[]).map(identity).map(withDemo);
   const userByName = (value: unknown) => {
     const username = typeof value === "string" ? value.trim().slice(0, 64) : "";
     return db.prepare("SELECT * FROM identity_user WHERE username=?").get(username) as UserRow | undefined;
@@ -115,6 +125,32 @@ export function openIdentityStore(path: string) {
       })();
       return createSession(user);
     },
+    async createDemo(lifetimeMs: number) {
+      // Nobody ever learns this password: the session cookie is the only way
+      // in, and when it is gone the account simply expires.
+      const salt = randomBytes(32).toString("hex");
+      const hash = (await derive(randomBytes(32).toString("base64url"), salt)).toString("hex");
+      const words = ["amber", "brisk", "cedar", "dawn", "ember", "fable", "gale", "harbor", "indigo", "juniper", "kestrel", "lumen", "maple", "nova", "orbit", "pebble", "quartz", "river", "sable", "tide"];
+      const user = db.transaction(() => {
+        const username = `demo-${words[randomInt(0, words.length)]}-${randomBytes(3).toString("hex")}`;
+        const result: UserIdentity = { id: randomUUID(), username, ownsLegacyData: false };
+        db.prepare("INSERT INTO identity_user VALUES (?,?,?,?,0)").run(result.id, username, hash, salt);
+        db.prepare("INSERT INTO identity_demo VALUES (?,?)").run(result.id, Date.now() + lifetimeMs);
+        return withDemo(result);
+      })();
+      return createSession(user);
+    },
+    expiredDemos(): UserIdentity[] {
+      return (db.prepare("SELECT u.* FROM identity_user u JOIN identity_demo d ON d.user_id=u.id WHERE d.expires_at<=?").all(Date.now()) as UserRow[]).map(identity).map(withDemo);
+    },
+    /** Deletes a demo account outright. Ordinary accounts are never deleted by Hydra. */
+    deleteDemo(userId: string) {
+      db.transaction(() => {
+        if (!db.prepare("SELECT 1 FROM identity_demo WHERE user_id=?").get(userId)) throw new IdentityError(409, "Only demo accounts can be deleted.");
+        db.prepare("DELETE FROM identity_session WHERE user_id=?").run(userId);
+        db.prepare("DELETE FROM identity_user WHERE id=?").run(userId);
+      })();
+    },
     async login(input: Record<string, unknown>) {
       const row = userByName(input.username);
       if (!await verifyPassword(row, input.password) || row === undefined) throw new IdentityError(401, "Username or password is incorrect.");
@@ -123,7 +159,7 @@ export function openIdentityStore(path: string) {
     authenticate(token: string) {
       if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
       const row = db.prepare(`SELECT u.*, s.expires_at FROM identity_session s JOIN identity_user u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).get(digest(token), Date.now()) as (UserRow & { expires_at: number }) | undefined;
-      return row ? { user: identity(row), expiresAt: row.expires_at } : null;
+      return row ? { user: withDemo(identity(row)), expiresAt: row.expires_at } : null;
     },
     logout(token: string) { db.prepare("DELETE FROM identity_session WHERE token_hash=?").run(digest(token)); },
 

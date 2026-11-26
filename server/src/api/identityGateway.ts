@@ -4,13 +4,14 @@ import type { Duplex } from "node:stream";
 import { createHash } from "node:crypto";
 import { config } from "../config/config.ts";
 import { configuredDatabasePath } from "../config/statePaths.ts";
-import { createIdentityWorkers, type IdentityWorker } from "../infrastructure/identityWorkers.ts";
+import { accountStateDirectory, createIdentityWorkers, type IdentityWorker } from "../infrastructure/identityWorkers.ts";
+import { demoEnabled, demoLifetimeHours, removeDemoFolder } from "../config/demo.ts";
 import { acquireInstanceLock } from "../infrastructure/instanceLock.ts";
 import { IdentityError, openIdentityStore } from "../repositories/identities.ts";
 import { createLogger } from "../utils/logger.ts";
 import { createTelegramBot, type RuntimeCaller } from "../services/telegram/telegramBot.ts";
-import type { TelegramAccountView, UserIdentity } from "@hydra/shared";
-import { mkdirSync } from "node:fs";
+import type { DemoSeedProgress, TelegramAccountView, UserIdentity } from "@hydra/shared";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 const log = createLogger("identity");
@@ -47,6 +48,61 @@ function sweepSockets(): void {
   for (const [token, active] of sockets) if (!identities.authenticate(token)) for (const socket of active) socket.destroy();
 }
 setInterval(sweepSockets, 30_000).unref();
+
+let demosBeingMade = 0;
+const DEMO_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Deletes demo accounts past their expiry: sessions, runtime, private state and sample folder. */
+async function sweepDemos(): Promise<void> {
+  for (const user of identities.expiredDemos()) {
+    try {
+      identities.deleteDemo(user.id);
+      sweepSockets();
+      await workers.stop(user.id);
+      const state = accountStateDirectory(databasePath, user.id);
+      if (DEMO_UUID.test(user.id) && existsSync(state)) rmSync(state, { recursive: true, force: true });
+      removeDemoFolder(user.username);
+      log.info(`removed expired demo account ${user.username}`);
+    } catch (error) { log.error(`could not remove demo account ${user.username}`, error); }
+  }
+}
+setInterval(() => { void sweepDemos(); }, 10 * 60_000).unref();
+
+/**
+ * Creates a demo account and streams its preparation as NDJSON. The session
+ * cookie goes out with the headers, before the seeding finishes, so a reload
+ * mid-way still lands in the (partially filled) demo rather than nowhere.
+ */
+async function createDemo(res: ServerResponse, previousToken: string): Promise<void> {
+  if (!demoEnabled()) throw new IdentityError(404, "The demo is turned off on this installation.");
+  if (demosBeingMade >= 2) throw new IdentityError(429, "Another demo is being prepared. Try again in a moment.");
+  demosBeingMade++;
+  try {
+    const created = await hashed(() => identities.createDemo(demoLifetimeHours() * 60 * 60_000));
+    if (previousToken) { identities.logout(previousToken); for (const socket of sockets.get(previousToken) ?? []) socket.destroy(); }
+    setCookie(res, created.token);
+    res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+    const write = (line: DemoSeedProgress) => { if (!res.writableEnded) res.write(`${JSON.stringify(line)}\n`); };
+    write({ step: "account", state: "done", detail: created.user.username });
+    write({ step: "runtime", state: "active", detail: "Starting a private runtime" });
+    const worker = await workers.get(created.user);
+    write({ step: "runtime", state: "done", detail: "Private runtime is up" });
+    const upstream = await fetch(`http://127.0.0.1:${worker.port}/api/demo/seed`, {
+      method: "POST", signal: AbortSignal.timeout(120_000),
+      headers: { "x-hydra-worker": worker.secret, "Content-Type": "application/json" },
+      body: JSON.stringify({ username: created.user.username }),
+    });
+    if (!upstream.ok || !upstream.body) throw new Error(`seed request answered ${upstream.status}`);
+    for await (const chunk of upstream.body) res.write(chunk);
+  } catch (error) {
+    if (!res.headersSent) throw error;
+    log.error("demo preparation failed", error);
+    res.write(`${JSON.stringify({ step: "ready", state: "error", detail: "The demo could not be prepared." } satisfies DemoSeedProgress)}\n`);
+  } finally {
+    demosBeingMade--;
+    if (res.headersSent) res.end();
+  }
+}
 
 function limitAttempt(req: IncomingMessage): void {
   const key = req.socket.remoteAddress ?? "local";
@@ -142,6 +198,14 @@ const server = createServer((req, res) => {
       });
       return;
     }
+    if (path === "/api/auth/demo" && req.method === "GET") {
+      json(res, 200, { available: demoEnabled(), lifetimeHours: demoLifetimeHours() }); return;
+    }
+    if (path === "/api/auth/demo" && req.method === "POST") {
+      limitAttempt(req);
+      await createDemo(res, token);
+      return;
+    }
     if (path === "/api/auth/recovery" && req.method === "GET") {
       json(res, 200, { telegram: telegram.status() !== null }); return;
     }
@@ -197,6 +261,7 @@ const server = createServer((req, res) => {
       }
       json(res, 200, telegramView(session.user)); return;
     }
+    if (path.startsWith("/api/auth/telegram") && req.method !== "GET" && session.user.demo === true) throw new IdentityError(403, "Demo accounts cannot connect Telegram.");
     if (path === "/api/auth/telegram/link" && req.method === "POST") {
       const code = identities.telegramBot() ? identities.createTelegramLinkCode(session.user.id) : null;
       const url = code ? telegram.linkUrl(code.code) : null;
@@ -224,6 +289,8 @@ const server = createServer((req, res) => {
     }
     if (path.startsWith("/api/auth/")) throw new IdentityError(404, "Not found.");
     if (path.startsWith("/api/agent/")) throw new IdentityError(403, "Agent callbacks use their run-scoped endpoint.");
+    // Seeding is the gateway's own call to a demo runtime, never a browser's.
+    if (path.startsWith("/api/demo/")) throw new IdentityError(404, "Not found.");
     if (/^\/api\/providers\/[^/]+\/(?:update|install)$/.test(path) && !session.user.ownsLegacyData) throw new IdentityError(403, "Only the installation owner can install or update provider executables.");
     const update = /^\/api\/providers\/([^/]+)\/(?:update|install)$/.exec(path);
     const provider = update?.[1];
@@ -276,7 +343,9 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(config.port, config.host, () => {
   log.info(`login gateway http://${config.host}:${(server.address() as { port: number }).port}`);
   void telegram.start().catch(error => log.error("telegram bot did not start", error));
-  for (const user of identities.users()) void workers.get(user).catch(error => log.error(`could not restore account ${user.username}`, error));
+  void sweepDemos().finally(() => {
+    for (const user of identities.users()) void workers.get(user).catch(error => log.error(`could not restore account ${user.username}`, error));
+  });
   process.send?.({ port: (server.address() as { port: number }).port });
 });
 

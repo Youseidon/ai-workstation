@@ -1,4 +1,4 @@
-import type { IdentitySession, TelegramAccess, TelegramAccountView, TelegramAuditEntry, TelegramLinkCode } from "@hydra/shared";
+import type { DemoAvailability, IdentitySession, TelegramAccess, TelegramAccountView, TelegramAuditEntry, TelegramLinkCode } from "@hydra/shared";
 import { apiFetch } from "@/api/http";
 import { SERVER_URL } from "@/api/serverUrl";
 
@@ -41,4 +41,29 @@ export const recoveryApi = {
   available: () => recovery<{ telegram: boolean }>(""),
   requestCode: (username: string) => recovery<{ ok: true }>("/request", { username }),
   reset: (username: string, code: string, password: string) => recovery<IdentitySession>("/reset", { username, code, password }),
+};
+
+export const demoApi = {
+  async availability(): Promise<DemoAvailability> {
+    const response = await fetch(new URL("/api/auth/demo", SERVER_URL), { credentials: "include", cache: "no-store" });
+    if (!response.ok) return { available: false, lifetimeHours: 0 };
+    return await response.json() as DemoAvailability;
+  },
+  /** Creates a demo account; the body is an NDJSON stream of `DemoSeedProgress`. */
+  async start(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const response = await fetch(new URL("/api/auth/demo", SERVER_URL), {
+      method: "POST", credentials: "include", cache: "no-store", signal,
+      headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!response.ok || !response.body) {
+      let message = "The demo could not be started.";
+      try { message = ((await response.json()) as { error?: { message?: string } }).error?.message ?? message; } catch { }
+      throw new Error(message);
+    }
+    return response.body;
+  },
+  /** Abandons a demo whose preparation failed, so its half-made account is not picked up. */
+  async abandon(): Promise<void> {
+    await fetch(new URL("/api/auth/logout", SERVER_URL), { method: "POST", credentials: "include", cache: "no-store", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => undefined);
+  },
 };

@@ -364,6 +364,9 @@ permissions, and work out your preferred model before tuning the entire engine.
 | **Workspace settings** | Project path, standing instructions and stored `CLAUDE.md` / `AGENTS.md` content |
 | **Account** | Password and Telegram settings |
 
+Click your name above **Account settings** at the bottom of the sidebar to open
+your account page.
+
 Saved settings override defaults and apply to the **next run** without a
 restart. Provider detection refreshes on save and open tabs receive the update.
 The owner’s overrides live in `.hydra/settings.json`; other accounts have their
@@ -504,6 +507,36 @@ keeping the **last 200 events** of each run. Cleanup starts after boot and runs
 periodically. It removes old transcript events, not the run records, remarks,
 status history or commands. Deleting events frees SQLite pages internally;
 shrinking the file can require an offline `VACUUM` after stopping Hydra.
+
+### Try the demo, take the tour
+
+**Try the demo** on the sign-in screen makes a throwaway account and fills it
+while you watch: a real Git project called *Kettle* (a tiny tea timer with
+passing tests) in `~/hydra-demo/<demo-account>/kettle`, four conversations,
+two pipelines with a stopped run and a station waiting on you, a week of
+activity, four committed change sets, and agent settings with a $5 / 15-minute
+run budget and two providers switched off. The history is replayed, not
+simulated: the diffs on **Changes** are real commits, and agents you have
+installed can work in the folder for real. Demo runs use the agents' existing
+logins on this machine, so they cost the same as anyone else's.
+
+A demo account has no password, so signing out abandons it: nobody can sign
+back in. It cannot connect Telegram. After `HYDRA_DEMO_HOURS` (default 24) Hydra
+deletes the account, its private state and its sample folder; the folder is
+only removed while it still carries the `.hydra-demo-owner` marker Hydra wrote.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `HYDRA_DEMO` | on | `0` hides **Try the demo** and refuses to create demo accounts |
+| `HYDRA_DEMO_HOURS` | `24` | Lifetime of a demo account |
+| `HYDRA_DEMO_ROOT` | `~/hydra-demo` | Where sample projects are written; never inside Hydra's state |
+
+The **guided tour** starts automatically after the demo, is offered once to
+every new account, and is always available from **Take the tour** at the
+bottom of the sidebar. It has six chapters — one per head of the mark — and
+most stops ask you to do the real thing (open a thread, switch to Ask, open a
+diff) before moving on. **Esc** pauses it; the sidebar button resumes it or
+jumps to a chapter. Progress is stored per account in the browser.
 
 ### Forgotten password? Still your machine.
 

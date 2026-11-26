@@ -11,6 +11,7 @@ import { FleetProvider } from "@/contexts/fleetContext";
 import { StopCenterProvider } from "@/features/stop/components/StopCenter";
 import { DetailLayerProvider } from "./DetailDrawer";
 import { SidebarSlotProvider } from "./SidebarCollection";
+import { TourProvider } from "@/features/tour/components/TourProvider";
 
 function ChatLinkSync({ active }: { active: boolean }) {
   const search = useSearchParams().toString();
@@ -54,6 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
+    <TourProvider>
     <FleetProvider>
     <StopCenterProvider>
     <ChatProvider active={chat}>
@@ -77,5 +79,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     </ChatProvider>
     </StopCenterProvider>
     </FleetProvider>
+    </TourProvider>
   );
 }
